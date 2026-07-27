@@ -11,7 +11,8 @@
 
 - 2026-07-27（D-G1）：核心波改为“冻结 130 方法论基线 + 执行时点
   快照清单”，0723 参考值为 armv7l/aarch64/x86_64 的 118/121/122。
-- 2026-07-27（D-G3）：Base 先行执行名单定为 6 包；abseil-cpp 与波 2
+- 2026-07-27（D-G3 R2）：Base 先行执行名单修订为 5 包；
+  boost-program-options 移入 T1-0008 跨 repo 原子分量；abseil-cpp 与波 2
   vision/ML 同窗；boost-test 转长尾。
 - 2026-07-27（C5）：波 1 批次口径修正为 19/23/26；Base 先行增加
   boost-log 同窗伴随；G7 rider 封边与 D5/S6 v2 重冻列为 8 月硬任务。
@@ -48,7 +49,8 @@
 | 波 1 cynara 补齐 aarch64/x86_64 | 三架构门禁全绿(构建与门禁并行,板验各架构一块板) |
 | 波 1.5 输入法栈(20 包,三架构) | 五步验收全绿 |
 | 波 2 vision/ML(44 包) | 同上,含静态归档同库重建约束 |
-| **Base 先行波(6 包 + boost-log 同窗伴随(COMPANION))** | `boost-filesystem`、`boost-iostreams`、`boost-program-options`、`boost-thread`、`libsigc++`、`taglib`；`boost-log` 与 `boost-filesystem`/`boost-thread` 同窗伴随；兼作 Base 发布线首次演练，Unified 消费者按台账跟进重编 |
+| **Base 先行波(5 包 + boost-log 同窗伴随(COMPANION))** | `boost-filesystem`、`boost-iostreams`、`boost-thread`、`libsigc++`、`taglib`；`boost-log` 与 `boost-filesystem`/`boost-thread` 同窗伴随；兼作 Base 发布线首次演练，Unified 消费者按台账跟进重编 |
+| **T1-0008 跨 repo 原子批次(4 包,排期待 S4 结果,Base+Unified 成对晋级)** | `boost-program-options`、`capi-appfw-capmgr`、`libsecurity-manager-client`、`security-manager` 始终同批；S4 PASS 时退出波 1 后另排，S4 不满足时整体并入波 1 的 23/26 路径 |
 | Base 名单治理注记 | `abseil-cpp` 不作独立先行，与波 2 vision/ML 同窗；`boost-test` 因生产图方法不可判定且无生产入边，转长尾 |
 | 长尾批量重建启动(~1500 单点包) | 首批 500 包通过,门禁抽检全绿 |
 | bundle compat DSO 实现 | 19 项桥接不变量测试通过 |

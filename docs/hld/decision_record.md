@@ -50,9 +50,10 @@ armv7l **43**、aarch64 **46**、x86_64 **41** 个。
 1. `boost-test` 从 Base 先行摘除并转长尾：其名称命中生产过滤规则，
    生产图方法不可判定，且已观测生产入边为 0；
 2. `abseil-cpp` 移出独立 Base 先行，与波 2 vision/ML 的 44 包分量同窗；
-3. Base 先行波执行名单定为以下 **6 包**：
-   `boost-filesystem`、`boost-iostreams`、`boost-program-options`、
-   `boost-thread`、`libsigc++`、`taglib`。
+3. Base 先行波执行名单修订为以下 **5 包**：
+   `boost-filesystem`、`boost-iostreams`、`boost-thread`、`libsigc++`、
+   `taglib`；`boost-log` 作为 `BASE_FIRST_COMPANION` 与
+   `boost-filesystem`/`boost-thread` 同窗，不计入五包名单。
 
 ## D-G2/D-G3 执行单元勘误
 
@@ -63,12 +64,16 @@ armv7l **43**、aarch64 **46**、x86_64 **41** 个。
 1. `SHARED-T1-0010`：`boost-log` 改标
    `BASE_FIRST_COMPANION`，与 `boost-filesystem`、`boost-thread`
    同窗；分量状态收敛为 `SINGLE_LABEL`。
-2. `SHARED-T1-0008`：在正式波 1 S4 结果产生前标为
-   `PENDING_WAVE1_S4_OUTCOME`。四包摘除生效时，
-   `boost-program-options` 按 `BASE_FIRST` 独立，三包留长尾；四包
-   保留时，整个分量服从波 1 条件分支。
-3. D-G3 的六包名单是名义执行名单；其中 `boost-program-options`
-   的实际执行归属由上述 S4 分支回写后生效。
+2. `SHARED-T1-0008`：在正式波 1 S4 结果产生前继续标为
+   `PENDING_WAVE1_S4_OUTCOME`，但 S4 只决定该完整分量的排期分支，
+   不构成拆分依据。
+
+> T1-0008 为跨 repo TIER1 分量(Base 成员 boost-program-options + Unified 成员三包),其内部 CPP_ABI 边(cross_repo_edges 第 7/51 行)独立于 UidSandboxing 存在,S4 结果不构成拆分依据。该分量在任一 S4 分支下均为单一执行单元:S4 摘除生效 → 整分量退出波 1,作为独立跨 repo 原子批次另行排期(Base+Unified 成对晋级,机制同波 4,规模 4 包);S4 不满足 → 整分量随波 1 条件分支(ACTIVE_BATCH=23/26 路径,boost-program-options 作为波 1 伴随成员进入,原 boost 三包条件分支相应并入)。
+
+3. `boost-program-options` 不再属于 Base 先行名单；S4 摘除生效时，
+   `boost-program-options`、`capi-appfw-capmgr`、
+   `libsecurity-manager-client`、`security-manager` 四包进入独立跨
+   repo 原子批次；S4 不满足时四包整体进入波 1 的 23/26 路径。
 
 数据依据：
 
@@ -83,5 +88,6 @@ armv7l **43**、aarch64 **46**、x86_64 **41** 个。
 三项裁决自 2026-07-27 起生效。本记录只治理排期、台账分层和数据口径，
 不修改冻结 HLD 正文，也不替代每次执行的校准门、门禁或发布签核。
 
-本勘误随 P1 出口评审 C2 生效；S4 结果尚未产生，因此
-`SHARED-T1-0008` 不得提前按任一分支记为 PASS。
+本勘误随 P1 出口评审整改二轮 R1 生效；S4 结果尚未产生，因此
+`SHARED-T1-0008` 不得提前按任一分支记为 PASS，也不得在任一分支中
+拆分四个成员。

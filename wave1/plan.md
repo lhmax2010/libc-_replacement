@@ -4,6 +4,8 @@
 `freeze_v1.1/evidence/`，生产包过滤沿用
 `unittests|gtest|haltests|-tests?$`。
 
+门禁与启动状态以 startup_conditions.md 为唯一权威,本文冲突处以彼为准
+
 ## 变更记录
 
 | 版本 | 评审出处 | 修订 |
@@ -20,6 +22,7 @@
 | review-final-4 | UidSandboxing 门终裁 | 将“扫描为空”修正为逐 ELF 台账对账；增加正式构建命令冻结 S6，四包摘除改为 `PENDING_BOARD_SCAN`，并登记 boost 三包条件同批分支 |
 | review-round3 | 三方评审缺口闭合 | 穷尽 capi callback invoke 根并确认 `UNCOVERED_ROOT=0`；补齐 pkgmgr-info Label view 与 user_data 旁证；callback 非空项强制并入 G7 异常轴 |
 | review-round3 | sibling 依赖核验 | 确认 `security-license-manager` 未版本锁定主包，RPM resolver 可接受新插件/旧主包混装；镜像组装门新增 sibling NEVRA/stdlib 对账 |
+| p1-exit-remediation-r2 | GPT B-04/B-07 | 启动红项与 `startup_conditions.md` 同步为两类；21.1.1-1 PoC 标记 SUPERSEDED，改以三架构 21.1.1-2 报告为权威 |
 
 ## 1. 数据支撑的结论
 
@@ -188,19 +191,20 @@ round3 已补齐 invoke 根、`pc::Label` non-owning view、pkgmgr-info
   目录复核：无 `libc++abi`/`libcxxabi` RPM；`clang-21.1.1-2.5.armv7l.rpm`
   文件表和 Requires 也无 libc++abi。因不存在候选 ELF，版本节点
   `readelf` 核验在当时是 **BLOCKED_NO_ARTIFACT**，不是“无版本问题”。
-- 后续 `p1/libcxx_packaging/` 已产出本地 PoC repo 的四个 armv7l RPM；
-  `packaging_report.md` 记录全导出 `@@LLVM_21`、依赖闭包、红绿混合进程、
-  无版本 UND 和 buildroot 冒烟均 PASS。因此波 1 的本地制品前置由
-  `BLOCKED_NO_ARTIFACT` 更新为 `PASS_LOCAL_POC_ARTIFACT`；正式平台仓仍未
-  补包，且 Step 2 必须在实际 wave buildroot 对同一 NEVRA 重跑硬门。
+- 三架构权威候选现为 `libc++/libc++abi 21.1.1-2`，报告见
+  `packaging/multiarch_packaging_report.md`；早期 armv7l 21.1.1-1 PoC
+  仅保留为历史证据，不再提供启动状态。
 
-当前启动红项收敛为一类：14 项 API 未三方签核。S4 已由先导板扫更新为
-`PASS_PRELIMINARY_LLVM_IMAGE`，S6 正式命令已冻结并通过零宏覆盖检查；
-两者分别仍受“正式 wave 镜像复跑”和“命令逐字 SHA 一致”约束。若正式
-板扫结果不允许摘除条件四包，S4 会机械展开 launchpad C tunnel 与 boost
-CPP_NOSTL 的附加关闭动作。正式平台仓缺包仍是平台化缺口，但不否定已批准
-供 wave1 使用的本地 PoC repo。证据见 `review_checks/`、
-`blocker_adjudication/board_scan_v1/` 与 `formal_build_command/`。
+当前启动红项为两类：
+
+1. 14 项 round3 API 的签署按人工决定推迟至正式开工；候选制品构建、
+   板上实测、3 项 callback G7 rider 与 Q3 裁决尚未完成（S1 文书已就绪）。
+2. D5 尚未正式并入，S6 v1 已标 superseded；S6 v2 与同 buildroot 的
+   S3 21.1.1-2 复验尚未产生。
+
+当前状态与进入顺序只引用 `startup_conditions.md` 的“执行期进入序列”：
+D5 并入后重冻 S6 v2，再进行候选构建、板测、14 项+Q3 签核、allowlist
+正式化与五步验收；不得以历史 PoC repo 或 S6 v1 越过该序列。
 
 ### 1.6 D6 方法论补注（N4）
 
@@ -314,9 +318,9 @@ packaging_evidence/unversioned_fixture_verdict.tsv
 actual_provider, raw_binding_log_line, verdict`；只有前三项证据成立且实际绑定行
 指向 `SYMBOL@@LLVM_21` 对应 provider 时才 PASS。
 
-### 3.4 波 1 本地 PoC repo 状态
+### 3.4 [SUPERSEDED] 波 1 armv7l 21.1.1-1 本地 PoC repo 状态
 
-`p1/libcxx_packaging/packaging_report.md` 已将 §3.3 的
+以下内容仅记录历史 PoC。`p1/libcxx_packaging/packaging_report.md` 曾将 §3.3 的
 `BLOCKED_NO_ARTIFACT` 对波 1 本地 repo 转为实测 PASS：
 
 - `libc++/libc++-devel/libc++abi/libc++abi-devel` 均为 armv7l
@@ -328,8 +332,10 @@ actual_provider, raw_binding_log_line, verdict`；只有前三项证据成立且
 - 红绿混合进程、无 version-need fixture、异常/dynamic_cast/string
   冒烟和 GBS 本地 repo 可见性均 PASS。
 
-本节只解除“没有首个制品”这一项；Step 2 仍以实际装入 wave buildroot 的
-RPM 为输入重跑全部判据，NEVRA 或 SHA 不一致即不得继承 PASS。
+本节已由 `packaging/multiarch_packaging_report.md` 的三架构
+**21.1.1-2** 权威报告取代，不得再用于启动判定。Step 2 仍以实际装入
+wave buildroot 的 21.1.1-2 RPM 为输入重跑全部判据，NEVRA 或 SHA
+不一致即不得继承 PASS。
 
 ## 4. 执行步骤
 
@@ -577,7 +583,13 @@ CYAD_SMOKE → REAL_AUTH → VERDICT`，每阶段写独立 raw log 和
 
 外置变更记录为 `change_log.tsv`；终裁自查为 `self_check.tsv`。注意：自查
 通过表示文档与证据一致，不表示 wave 已获准。27 项原 C API 已关闭；当前
-仍为 `NOT_READY`，唯一启动红项为 round3 14 项未签核（其中 3 项 callback
-还必须关闭 G7 rider 与 Q3 人工裁决）。S4 只是先导 PASS，
-正式 wave 镜像仍须复跑；S6 的命令 SHA 任一字节不符即重开。本地 PoC 制品
-PASS 也不能替代实际 wave buildroot 的同 NEVRA 复验。
+仍为 `NOT_READY`，启动红项为两类：
+
+1. 14 项 round3 API 的签署按人工决定推迟至正式开工；候选制品构建、
+   板上实测、3 项 callback G7 rider 与 Q3 裁决尚未完成（S1 文书已就绪）。
+2. D5 尚未正式并入，S6 v1 已标 superseded；S6 v2 与同 buildroot 的
+   S3 21.1.1-2 复验尚未产生。
+
+S4 只是先导 PASS，正式 wave 镜像仍须复跑。D5 并入后的 S6 v2 和同
+buildroot S3 复验必须按 `startup_conditions.md` 的“执行期进入序列”产生；
+历史 21.1.1-1 PoC 与 S6 v1 均不能替代。

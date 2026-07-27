@@ -25,7 +25,7 @@
 ## 波次预归属
 
 包级标签继承 `p1/base_unified_split/affected_base.tsv` 与
-`affected_unified.tsv`；D-G3 对 abseil-cpp、boost-test 和 Base 六包作
+`affected_unified.tsv`；D-G3 对 abseil-cpp、boost-test 和 Base 五包作
 显式覆盖。分量行不擅自消解冲突：
 
 - 一个分量只有一种已知标签：`SINGLE_LABEL`；
@@ -33,7 +33,8 @@
 - split 清单没有标签：`UNASSIGNED_NO_SPLIT_LABEL`，不静默猜成长尾。
 
 `boost-test` 因生产过滤不进入 TIER1 分量台账，但其 D-G3 长尾决策保留在
-`package_wave_preassignment.tsv`。Base 先行六包见 `base_first_6.tsv`。
+`package_wave_preassignment.tsv`。Base 先行五包见
+`base_first_6.tsv`；文件名为历史兼容名，现行内容以五行台账为准。
 
 ## 执行单元消解规则
 
@@ -44,12 +45,14 @@
 - `SHARED-T1-0010` 已收敛：`boost-log=BASE_FIRST_COMPANION`，与
   `boost-filesystem`、`boost-thread` 同窗，状态为 `SINGLE_LABEL`；
 - `SHARED-T1-0008` 尚不能二选一，状态为
-  `PENDING_WAVE1_S4_OUTCOME`。S4 四包摘除生效后，
-  `boost-program-options` 进入 Base-first、三包留长尾；若保留则整个
-  分量随波 1 条件分支。结果产生前禁止开工。
+  `PENDING_WAVE1_S4_OUTCOME`。S4 摘除生效后，完整四包分量退出波 1，
+  作为 Base+Unified 成对晋级的独立跨 repo 原子批次；S4 不满足时，
+  完整四包分量进入波 1 的 `ACTIVE_BATCH=23/26` 条件分支。
+  `cross_repo_edges.tsv` 第 7/51 行的 CPP_ABI 边在两分支中始终位于
+  同一批次，结果产生前禁止开工。
 
 `BASE_FIRST_COMPANION` 在分量归属上归一为主标签 `BASE_FIRST`，但保留
-后缀以说明该包不是原始六包名单成员。
+后缀以说明该包不是现行五包名单成员。
 
 ## 文件
 
