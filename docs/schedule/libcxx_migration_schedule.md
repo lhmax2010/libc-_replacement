@@ -16,6 +16,9 @@
   vision/ML 同窗；boost-test 转长尾。
 - 2026-07-27（C5）：波 1 批次口径修正为 19/23/26；Base 先行增加
   boost-log 同窗伴随；G7 rider 封边与 D5/S6 v2 重冻列为 8 月硬任务。
+- 2026-07-27（D-G4）：构建单元固定为 source RPM，镜像晋级单元固定为
+  TIER1 分量闭包；同源非晋级输出进入 HOLD_SIBLING，不再把二进制包名单
+  误作 D5 allowlist。
 
 ## 一、已交付(2026-07,提前于原计划)
 
@@ -33,10 +36,10 @@
 | 交付物 | 判据 |
 |---|---|
 | libc++ 入平台仓(三架构) | 三架构 RPM 各自过三组硬门(版本化/闭包/绑定归属) |
-| buildconf 全局可用 + 逐包切换机制 | rootstrap 装得到;per-package allowlist 生效 |
+| buildconf 全局可用 + 构建/晋级分层 | rootstrap 装得到；per-source D5 allowlist 生效；逐 RPM ADMIT/HOLD 台账完整且镜像 SHA 对账通过 |
 | D5 正式并入 + S6 v2 重冻(波 1 开工首步) | 空 allowlist 全平台差分与复杂包负对照通过；命令字节不变，`-D` 指向新 buildconf，OFF_PROVEN 重取证 |
 | G7 rider 封边补丁(ppm×2 provider 侧 + askuser 消费者侧) | owner 待定；P2 镜像组装前硬门 |
-| 波 1 cynara：19 MANDATORY(+4 fail-closed/+3 条件,批次 19/23/26) | 门禁全绿 + 板上鉴权 + 回退演练通过 |
+| 波 1 cynara：晋级批次 19/23/26 | 19 分支维持五个 source 构建单元；23/26 分支条件增加 `boost` source，逐 RPM 晋级台账闭包 + 门禁 + 板上鉴权 + 回退演练通过 |
 | **aarch64/x86_64 census** | 复用 v5 方法重跑 + 三架构差异对账报告 |
 | BASE/UNIFIED 受影响 RPM 分表 | 两清单 + 跨 repo 依赖边 + 首批对象建议 |
 | 门禁工具(G6/G7/边差分) | 各自负面对照实测跑红 |
@@ -49,8 +52,8 @@
 | 波 1 cynara 补齐 aarch64/x86_64 | 三架构门禁全绿(构建与门禁并行,板验各架构一块板) |
 | 波 1.5 输入法栈(20 包,三架构) | 五步验收全绿 |
 | 波 2 vision/ML(44 包) | 同上,含静态归档同库重建约束 |
-| **Base 先行波(5 包 + boost-log 同窗伴随(COMPANION))** | `boost-filesystem`、`boost-iostreams`、`boost-thread`、`libsigc++`、`taglib`；`boost-log` 与 `boost-filesystem`/`boost-thread` 同窗伴随；兼作 Base 发布线首次演练，Unified 消费者按台账跟进重编 |
-| **T1-0008 跨 repo 原子批次(4 包,排期待 S4 结果,Base+Unified 成对晋级)** | `boost-program-options`、`capi-appfw-capmgr`、`libsecurity-manager-client`、`security-manager` 始终同批；S4 PASS 时退出波 1 后另排，S4 不满足时整体并入波 1 的 23/26 路径 |
+| **Base 先行波(3 个 source 构建单元/6 个 ADMIT 输出)** | 构建 `boost`、`libsigc++`、`taglib`；晋级 ADMIT `boost-filesystem/boost-iostreams/boost-log/boost-thread`、`libsigc++`、`taglib`，其余同源输出 HOLD_SIBLING；兼作 Base 发布线首次构建/晋级分层演练 |
+| **T1-0008 跨 repo 原子晋级批次(4 包,排期待 S4 结果)** | S4 PASS 时构建 `boost/capi-appfw-capmgr/security-manager` 三个 source，只 ADMIT `boost-program-options/capi-appfw-capmgr/libsecurity-manager-client/security-manager` 四包，其他 sibling HOLD；S4 不满足时同一四包整体并入波 1 的 23/26 晋级路径 |
 | Base 名单治理注记 | `abseil-cpp` 不作独立先行，与波 2 vision/ML 同窗；`boost-test` 因生产图方法不可判定且无生产入边，转长尾 |
 | 长尾批量重建启动(~1500 单点包) | 首批 500 包通过,门禁抽检全绿 |
 | bundle compat DSO 实现 | 19 项桥接不变量测试通过 |

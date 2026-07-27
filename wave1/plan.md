@@ -23,6 +23,7 @@
 | review-round3 | 三方评审缺口闭合 | 穷尽 capi callback invoke 根并确认 `UNCOVERED_ROOT=0`；补齐 pkgmgr-info Label view 与 user_data 旁证；callback 非空项强制并入 G7 异常轴 |
 | review-round3 | sibling 依赖核验 | 确认 `security-license-manager` 未版本锁定主包，RPM resolver 可接受新插件/旧主包混装；镜像组装门新增 sibling NEVRA/stdlib 对账 |
 | p1-exit-remediation-r2 | GPT B-04/B-07 | 启动红项与 `startup_conditions.md` 同步为两类；21.1.1-1 PoC 标记 SUPERSEDED，改以三架构 21.1.1-2 报告为权威 |
+| p1-exit-remediation-r3 | D-G4 source/promotion 分层 | 将 D5 构建粒度固定为 source RPM，将镜像晋级粒度固定为 TIER1 分量闭包；19/23/26 分支补齐 Boost source 条件构建和逐输出 ADMIT/HOLD 台账 |
 
 ## 1. 数据支撑的结论
 
@@ -97,6 +98,15 @@ review-final-4 将批次固化为一份 **26 行条件化预台账**：
 分支规模为：摘除条件四包时 `ACTIVE_BATCH=19`；保留四包并以 shim/已签安全
 裁决关闭 boost 边时 `ACTIVE_BATCH=23`；保留四包且选择 boost 同批时
 `ACTIVE_BATCH=26`。当前尚未执行板扫，故不能提前选择 19 包分支。
+这里的 19/23/26 是镜像 **ADMIT 二进制输出**口径，不是 D5 source 构建
+单元数。19 分支仍用既定五个 source 构建单元；23/26 分支因
+`boost-program-options` 均须额外构建整个 `boost-1.83.0-5.1` source：
+23 分支只 ADMIT `boost-program-options`，26 分支再 ADMIT
+`boost-filesystem/boost-log/boost-thread`，其余 Boost candidate 输出均为
+`HOLD_SIBLING`。`security-manager` source 的八个输出也必须逐项登记；
+其中 `security-license-manager` 已属于波 1，其他非 ADMIT sibling 保持
+存量制品权威。完整输出事实见 `../ledger/boost_source_unit_census.tsv`
+和 `../ledger/related_source_unit_summary.tsv`。
 
 原 23 包候选构成为：
 
@@ -216,7 +226,8 @@ D5 并入后重冻 S6 v2，再进行候选构建、板测、14 项+Q3 签核、a
 
 ## 2. 设计决策待评审
 
-1. `ACTIVE_BATCH` 采用一个 allowlist/镜像事务；条件四包只有在
+1. `ACTIVE_BATCH` 是一个 TIER1 分量闭包的晋级/镜像事务；D5 allowlist
+   采用 source RPM 构建单元。条件四包只有在
    `OFF_PROVEN + S6 命令冻结 + UidSandboxing 逐 ELF 对账`均通过后才能
    摘除，须由 Security owner 与 Toolchain ABI owner 决定。
 2. 14 项新增 C API 的三方签核人及截止时间；若 S4 保留条件四包，还须决定
@@ -350,8 +361,10 @@ wave buildroot 的 21.1.1-2 RPM 为输入重跑全部判据，NEVRA 或 SHA
    四包，`security-manager` 系 ELF 命中还必须为 0。板扫与 S6 都通过后才
    可将四包从 `PENDING_BOARD_SCAN` 转为摘除生效。
 3. 由 `wave1_expanded_packages.tsv` 选择并冻结 19/23/26 的唯一
-   `ACTIVE_BATCH` 分支及 NEVRA，生成只含生效包的 `active_batch.tsv` 并
-   计算 SHA256；确认插件目录预期清单和 N2 consumer 集合。若四包保留，则对
+   `ACTIVE_BATCH` 分支及 NEVRA，生成只含 ADMIT 包的 `active_batch.tsv`，
+   再按 source 反查生成 `source_build_units.tsv` 和覆盖每个候选二进制输出的
+   `promotion_ledger.tsv`，三者均计算 SHA256；确认插件目录预期清单和 N2
+   consumer 集合。若四包保留，则对
    `security-manager → boost-filesystem` 选择已签安全/shim，或启用
    boost 三包同批分支；未关闭即停。
 4. 验证 `api_adjudication_registry_27.tsv` 仍为 27/27 `SIGNED` 且
@@ -368,11 +381,16 @@ wave buildroot 的 21.1.1-2 RPM 为输入重跑全部判据，NEVRA 或 SHA
 
 ### Step 1：allowlist 加入
 
-一次提交加入冻结的全部 `ACTIVE_BATCH` 包；台账记录 source commit、NEVRA、目标 stdlib、
-波次 ID、审批人及过期时间。禁止部分构建结果进入镜像。提交本身触发 §9
-归属集合 diff 和跨界边复审。`security-manager` source build 会同时生成
-多个 sibling RPM；即使 `security-license-manager` 的 payload 可独立安装，
-未列入 `ACTIVE_BATCH` 台账的 candidate sibling 也不得由 repo 优先级意外进入镜像。
+一次提交加入冻结的全部 **source 构建单元**；台账记录 source commit、
+source NEVRA、目标 stdlib、波次 ID、审批人及过期时间。19 分支沿用
+`wave1_source_admission.tsv` 的五源；23/26 分支必须先补入
+`boost-1.83.0-5.1` source 行，未补即阻塞。每个 source 的全部候选二进制
+输出必须在 `promotion_ledger.tsv` 恰好出现一次：`ADMIT` 表示其 TIER1
+分量闭包已在批内，`HOLD_SIBLING` 表示候选镜像禁入且存量 NEVRA/SHA
+继续为权威。提交本身触发 §9 归属集合 diff 和跨界边复审。
+`security-manager` 和 `boost` source build 都会生成多个 sibling RPM；
+未列入 `ACTIVE_BATCH` 的 candidate sibling 不得由 repo 优先级意外进入
+镜像。
 
 ### Step 2：双构建
 
@@ -382,8 +400,9 @@ wave buildroot 的 21.1.1-2 RPM 为输入重跑全部判据，NEVRA 或 SHA
 - `candidate`：clang + libc++ + libc++abi + libgcc_s。
 
 两线 source tarball SHA256 必须一致；buildroot 分离；保留主包、devel、
-debuginfo、完整构建日志、BUILDINFO 和编译命令。任何包失败即整波失败，
-不做源码绕过。
+debuginfo、完整构建日志、BUILDINFO 和编译命令。source 的全部输出都必须
+保留并进入晋级台账，不能通过丢弃未登记 sibling 制造表面闭包。任何 source
+构建失败即整波失败，不做源码绕过。
 
 本步骤在开始 `ACTIVE_BATCH` candidate 编译前先执行 libc++abi 打包硬门：对将进入
 rootstrap/镜像的同一 RPM 解包，逐项确认导出为 `SYMBOL@@LLVM_21`，并运行
@@ -397,7 +416,7 @@ verdict 原文全部写入本次构建的 `packaging_evidence/`。缺候选 RPM�
 | 门 | 二值 PASS 条件 | 负面对照：如何证明会红 |
 |---|---|---|
 | G1 迁移侧纯度 | `ACTIVE_BATCH` 无 `DT_NEEDED libstdc++.so.6`；导出面无未登记 `_ZNSt*`/GLIBCXX/CXXABI 泄漏；标准库模板默认隐藏 | 构建一个导出 `std::string`/显式模板实例的 candidate fixture，门必须报导出符号与所属 ELF |
-| G2 未迁移侧隔离 | 波外包无 `std::__1` 符号且无新增 `libc++.so.1/libc++abi.so.1` NEEDED | 构建一个 legacy fixture，故意链接 libc++ 并引用 `std::__1::string`，门必须红 |
+| G2 未迁移侧隔离 | 波外包无 `std::__1` 符号且无新增 `libc++.so.1/libc++abi.so.1` NEEDED；每个 `HOLD_SIBLING` 的候选 payload 均未进入镜像，存量 NEVRA/SHA 与台账相等 | 构建一个 legacy fixture，故意链接 libc++ 并引用 `std::__1::string`，门必须红；再把一个 HOLD candidate 放入 repo 优先路径，镜像门必须红 |
 | G3 NEEDED/归属 | 每个 ELF 的 NEEDED 闭包与台账一致；逐 UND 绑定到批准 provider；不强制无引用库成为直接 NEEDED；cynara 波无 G3 豁免 | 给一个波外 fixture 加 `--no-as-needed -lc++`，即使无 UND 也必须由 NEEDED 检查报红 |
 | G4 导出白名单 | candidate 相对冻结/双构建基线无未登记新增或消失导出；所有差异逐符号归档 | 给一个函数加 default visibility 的负面对照构建，新增导出必须红 |
 | G5 回绑与强解析 | 干净板环境对波内 ELF及全部波外入边消费者执行 `LD_BIND_NOW=1 ldd -r`，强未解析为0；`LD_DEBUG=bindings` 证明符号族 provider；libc++abi 全导出为 `@@LLVM_21`；无版本 UND fixture 实际绑定默认版本 | 强 UND必红；无版本化或仅单`@LLVM_21`构建必红；带version need的伪无版本fixture输入门必红；`__cxa_throw`绑错provider必红 |
@@ -422,10 +441,20 @@ G1/G2 的精确符号正则须随 libc++ 包产物做一次基线生成，避免
 
 ### Step 5：镜像组装
 
-从同一 candidate repo 原子组装含全部 `ACTIVE_BATCH` candidate RPM 的试点镜像，
-同时保留 libstdc++ 兼容运行时。镜像 manifest 必须证明没有混装批次中的
-legacy NEVRA，并保存 libc++/libc++abi/libgcc_s 包版本。镜像组装后、业务
-冒烟前必须先通过下一节三项 fail-closed 枚举门。
+从同一 candidate repo 原子组装恰好包含
+`promotion_ledger.tsv` 中全部 `ADMIT` candidate RPM、且不含任何
+`HOLD_SIBLING` candidate payload 的试点镜像，同时保留 libstdc++ 兼容
+运行时。镜像 manifest 必须逐项证明 ADMIT 无 legacy NEVRA、HOLD 仍为
+登记的存量 NEVRA/SHA，并保存 libc++/libc++abi/libgcc_s 包版本。门禁必须
+机械断言 ADMIT 集合覆盖其全部 TIER1 分量成员，且每个 source 构建输出在
+晋级台账中恰好出现一次。
+
+候选仓求解必须使用实际三架构候选 RPM 重跑完整依赖闭包和 Provides/Requires
+匹配。冻结 Boost 取证未发现 Boost sibling 间精确 EVR 强锁，内部 Boost
+名称/SONAME 依赖均能由同 source 输出集合解析；但 `boost-license` 是当前
+逐架构 census 外部提供者，因此缺失、版本漂移或候选元数据新增精确锁均直接
+阻塞，不能从冻结 `rpm -qR` 结论继承 PASS。镜像组装后、业务冒烟前必须先
+通过下一节三项 fail-closed 枚举门。
 
 `security-license-manager` 与 `security-manager` 之间没有 sibling 版本锁，
 所以组装门还必须逐 RPM 比较 source NEVRA/build-id/stdlib 身份：若装入新
@@ -478,6 +507,11 @@ legacy NEVRA，并保存 libc++/libc++abi/libgcc_s 包版本。镜像组装后�
 - [ ] `ACTIVE_BATCH` allowlist/镜像原子一致；条件四包若摘除，
       UidSandboxing 扫描满足“逐 ELF 对账台账内、台账外命中 0；
       security-manager 系命中 0”并已签核；
+- [ ] source 构建单元清单覆盖每个 source 的全部二进制输出；
+      `promotion_ledger.tsv` 对每个输出恰好一行，ADMIT 集合满足 TIER1
+      分量闭包，HOLD candidate 未入镜像且存量 NEVRA/SHA 保持权威；
+- [ ] 23/26 分支已在 `wave1_source_admission.tsv` 补入 Boost source；
+      19 分支未无条件引入 Boost，分支 ADMIT/HOLD 集合与 D-G4 一致；
 - [ ] 插件目录枚举与批次清单逐文件一致，无未登记/legacy/vendor 插件；
 - [ ] `security-license-manager` sibling NEVRA/stdlib 与镜像声明一致；
       包依赖虽可解析的新插件+旧主包组合若未登记，镜像门为红；
@@ -555,6 +589,11 @@ CYAD_SMOKE → REAL_AUTH → VERDICT`，每阶段写独立 raw log 和
   冻结图切片，仅作 review-final-3 前基线。
 - `wave1_expanded_packages.tsv`：26 行条件化预台账；启动时选择
   19/23/26 的单一 `ACTIVE_BATCH` 分支并生成 `active_batch.tsv`。
+- `../ledger/boost_source_unit_census.tsv`：Boost 三架构全部输出、分量、
+  生产边、Requires、devel/静态归档与分支 ADMIT/HOLD 事实。
+- `../ledger/related_source_unit_summary.tsv`：T1-0008 三个 Unified
+  成员、`libsigc++`、`taglib` 的 source 输出闭包审计。
+- `../ledger/promotion_ledger_template.tsv`：执行期逐 RPM 晋级台账模板。
 - `expanded_internal_edges.tsv`、`expanded_boundary_edges.tsv`：
   review-final-3 原 23 包的生产图切片；最终 `ACTIVE_BATCH` 冻结时必须
   按相同规则重算，不能把 23 包边界计数套用到 19/26 分支。

@@ -48,8 +48,14 @@
 
 RPM 宏在解析 spec 时以 `%{name}` 判定。因此 allowlist 的键是
 **source RPM/spec Name**，不是二进制子包名。一个 source RPM 产生的全部
-子包必须作为同一个迁移单元。波次台账中的二进制包必须先映射到 source
-RPM，再生成去重后的 buildconf allowlist。
+子包必须作为同一个 libc++ **构建单元**。波次台账中的二进制包必须先映射
+到 source RPM，再生成去重后的 buildconf allowlist。
+
+D-G4 将“同源构建”与“镜像晋级”分层：同一 source 的 candidate 全输出都
+使用 libc++ 构建，但每个输出必须进入逐 RPM 晋级台账，按 TIER1 分量闭包
+标为 `ADMIT` 或 `HOLD_SIBLING`。只有 ADMIT candidate 可进入镜像；
+HOLD_SIBLING 继续选择登记的存量 NEVRA+SHA256。构建同源不再被误解为
+同源 candidate 必须同时晋级。
 
 ### 2.3 RPM 4.14-safe 判定
 
@@ -233,7 +239,7 @@ buildconf 或 S6 `command.txt`。正式采用需要两处外部状态变化：
 ## 8. allowlist 准入模板
 
 每个 source package 加入 allowlist 前必须完成
-`admission_check_template.tsv` 的三项检查：
+`admission_check_template.tsv` 的四项检查：
 
 1. **静态归档**：是否产出 `.a`。若存在，归档及其消费者必须按冻结
    HLD 的静态归档条款在同一 stdlib 批次重建，不能把 `.a` 当成动态图
@@ -242,13 +248,31 @@ buildconf 或 S6 `command.txt`。正式采用需要两处外部状态变化：
    linker script。命中后必须单独证明 runtime、unwinder 和 ABI provider
    闭包；
 3. **混合子包**：是否由同一 source RPM 产生混合 C/C++ 子包。allowlist
-   键仍是 source package，禁止只迁其中一个二进制子包。
+   键仍是 source package，同源输出必须使用同一 stdlib 构建；
+4. **晋级台账完备性**：candidate RPM manifest 的每个输出必须恰有一条
+   `ADMIT/HOLD_SIBLING` 记录；ADMIT 集合必须是 TIER1 分量闭包，HOLD 的
+   镜像实选 SHA 必须等于存量权威。devel 与 `.a` 也不得漏行，libc++ `.a`
+   禁止对 libstdc++ 消费者可见。
 
 波 1 五个 source package 的当前只读预扫见
 `wave1_source_admission.tsv`：已覆盖 38 个相关冻结 RPM，未发现 `.a`；
 五个源码树均未发现上述自定义链接开关；`askuser-notification`、
 `libcynara-commons`、`security-manager` 是混合 C/C++ 源码树，正式构建
 仍须用实际 target→RPM 映射复核 C-only 输出。
+
+该五行表保持 S4 未决时的 19 包分支基线，不预填条件 source。若 S4 不满足
+并选择 wave1 23 或 26 晋级分支，D5 allowlist 和准入表必须先增加
+`boost-1.83.0-5.1.src.rpm` 行，并以
+`ledger/boost_source_unit_census.tsv` 复核三架构 31/28/31 个输出：
+
+- 23 分支只 ADMIT `boost-program-options`，其他 Boost candidate
+  HOLD_SIBLING；
+- 26 分支另 ADMIT
+  `boost-filesystem/boost-log/boost-thread`，其他 Boost candidate
+  HOLD_SIBLING。
+
+若 S4 PASS，后续独立 T1-0008 批次同样必须先为 `boost` source 完成四项
+准入，但不改写 wave1 五源基线。
 
 ## 9. OQ-5 正式采用门
 

@@ -31,9 +31,12 @@ Wave preassignment counts are mechanical and may overlap in the combined
 
 `BASE_FIRST=5` is the affected-dynamic-graph table count: `boost-iostreams`
 has no production incoming edge and therefore is absent from that mechanical
-label. D-G3's six-package execution list nevertheless includes
-`boost-iostreams` as an explicit Base provider rebuild; `boost-log` is a
-same-window companion rather than a seventh Base package.
+label. D-G3 R2's five-package named list is
+`boost-filesystem/boost-iostreams/boost-thread/libsigc++/taglib`;
+`boost-log` is its same-window companion. Under D-G4 these six binary outputs
+are ADMIT entries produced by three source build units
+(`boost-1.83.0-5.1`, `libsigc++`, `taglib`), while all other same-source
+candidate outputs are HOLD.
 
 ## Wave 4 cross-repository surface
 
