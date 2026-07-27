@@ -229,3 +229,36 @@ buildconf 或 S6 `command.txt`。正式采用需要两处外部状态变化：
   字节证据链应随新 SHA 做一次机械重取证；
 - 正式修改 buildconf/profile 超出本 PoC 隔离实现范围，状态为
   `ADOPTION_BLOCKED_PENDING_CONFIG_DECISION`，在此停下等待裁决。
+
+## 8. allowlist 准入模板
+
+每个 source package 加入 allowlist 前必须完成
+`admission_check_template.tsv` 的三项检查：
+
+1. **静态归档**：是否产出 `.a`。若存在，归档及其消费者必须按冻结
+   HLD 的静态归档条款在同一 stdlib 批次重建，不能把 `.a` 当成动态图
+   外的独立包；
+2. **自定义链接**：是否使用 `-nostdlib`、`-nodefaultlibs` 或自定义
+   linker script。命中后必须单独证明 runtime、unwinder 和 ABI provider
+   闭包；
+3. **混合子包**：是否由同一 source RPM 产生混合 C/C++ 子包。allowlist
+   键仍是 source package，禁止只迁其中一个二进制子包。
+
+波 1 五个 source package 的当前只读预扫见
+`wave1_source_admission.tsv`：已覆盖 38 个相关冻结 RPM，未发现 `.a`；
+五个源码树均未发现上述自定义链接开关；`askuser-notification`、
+`libcynara-commons`、`security-manager` 是混合 C/C++ 源码树，正式构建
+仍须用实际 target→RPM 映射复核 C-only 输出。
+
+## 9. OQ-5 正式采用门
+
+正式并入 buildconf 前，开工日 D5 步骤必须先完成：
+
+1. 对全平台 spec 运行空 allowlist 的 `rpmspec -P`，与 pre-D5
+   buildconf 逐文件 diff 必须为空；
+2. 选择至少一个含条件宏、生成子包和自定义 `%build` 的真实复杂包作
+   负面对照，空 allowlist 下预处理 spec、编译/链接命令和 RPM payload
+   必须与 pre-D5 基线一致；
+3. 任一差异即停止 D5 并入，不能用当前两个最小 fixture 的 PASS 外推。
+
+该项是 `startup_conditions.md` 执行期进入序列第 1 步的前置子项。

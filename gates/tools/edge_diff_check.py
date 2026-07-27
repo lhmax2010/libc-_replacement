@@ -10,7 +10,7 @@ from datetime import date
 from pathlib import Path
 
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 EDGE_FIELDS = {
     "consumer_pkg", "consumer_elf", "provider_pkg", "provider_soname",
     "symbol", "edge_class",
@@ -22,6 +22,17 @@ REGISTRY_FIELDS = {
 TRANSITION_FIELDS = {
     "transition_id", "provider_pkg", "before_soname", "after_soname",
     "status", "expiry", "owner",
+}
+NEVRA_BINDING_FIELDS = {
+    "signoff_id", "role", "package", "bound_source_nevra",
+    "observed_source_nevra", "binding_status",
+}
+NEW_EDGE_CODES = {
+    "CPP_ABI": "NEW_CPP_ABI_EDGE",
+    "CPP_NOSTL": "NEW_CPP_NOSTL_EDGE",
+    "LAYOUT_PROMOTED": "NEW_LAYOUT_PROMOTED_EDGE",
+    "A8_LAYOUT_PROMOTED": "NEW_LAYOUT_PROMOTED_EDGE",
+    "A9_POINTEE_PROMOTED": "NEW_LAYOUT_PROMOTED_EDGE",
 }
 
 
@@ -62,6 +73,9 @@ def main() -> int:
     parser.add_argument("--after", type=Path, required=True)
     parser.add_argument("--after-registry", type=Path, required=True)
     parser.add_argument("--transitions", type=Path, required=True)
+    parser.add_argument(
+        "--signoff-nevra-bindings", type=Path, required=True
+    )
     parser.add_argument("--as-of", type=date.fromisoformat, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -71,6 +85,9 @@ def main() -> int:
         after = read_tsv(args.after, EDGE_FIELDS)
         registry = read_tsv(args.after_registry, REGISTRY_FIELDS)
         transitions = read_tsv(args.transitions, TRANSITION_FIELDS)
+        nevra_bindings = read_tsv(
+            args.signoff_nevra_bindings, NEVRA_BINDING_FIELDS
+        )
     except (OSError, ValueError) as error:
         print(f"INPUT_ERROR {error}", file=sys.stderr)
         return 3
@@ -87,10 +104,11 @@ def main() -> int:
         if (
             key not in before_keys
             and logical_key(row) not in before_logical
-            and row["edge_class"] == "CPP_ABI"
+            and row["edge_class"] in NEW_EDGE_CODES
         ):
             findings.append([
-                "NEW_CPP_ABI_EDGE", row["consumer_pkg"], row["provider_pkg"],
+                NEW_EDGE_CODES[row["edge_class"]],
+                row["consumer_pkg"], row["provider_pkg"],
                 row["provider_soname"], row["symbol"],
                 f"consumer_elf={row['consumer_elf']}",
             ])
@@ -136,6 +154,30 @@ def main() -> int:
                 f"{old['provider_soname']}->{new['provider_soname']}",
                 old["symbol"], f"valid_transition_tokens={len(matching)}",
             ])
+
+    for binding in sorted(
+        nevra_bindings,
+        key=lambda row: (row["signoff_id"], row["role"], row["package"]),
+    ):
+        if (
+            binding["bound_source_nevra"]
+            == binding["observed_source_nevra"]
+            and binding["binding_status"] == "BOUND_MATCH"
+        ):
+            continue
+        findings.append([
+            "SIGNOFF_NEVRA_DRIFT",
+            binding["package"] if binding["role"] == "CONSUMER" else "",
+            binding["package"] if binding["role"] == "PROVIDER" else "",
+            binding["signoff_id"],
+            binding["role"],
+            (
+                f"bound={binding['bound_source_nevra']};"
+                f"observed={binding['observed_source_nevra']};"
+                f"binding_status={binding['binding_status']};"
+                "required_disposition=PROPOSED_REVALIDATE"
+            ),
+        ])
 
     findings_path = args.output / "findings.tsv"
     with findings_path.open("w", encoding="utf-8", newline="") as stream:

@@ -44,7 +44,9 @@ complements, but does not replace, cross-repository atomicity.
 
 **Fallback:** if the joint window or core gates are not ready, ship a
 dual-runtime image: migrated domains use libc++, the core remains on
-libstdc++, and the platform default is not flipped.
+libstdc++, and the platform default is not flipped. The fallback image must
+still pass the edge-diff gate and demonstrate that no cross-domain C++ ABI
+edge remains.
 
 Data appendix: `core_base_members.tsv`, `core_cross_repo_edges.tsv`,
 `cross_repo_edges.tsv`, `affected_base.tsv`, and `affected_unified.tsv`.

@@ -37,7 +37,8 @@ bundle 侧同时以 D-B1 的 **E48 精确版本脚本**承接旧 C++ 导出，�
 - 原子 promotion 技术手段、失败回滚 SLA、last-known-good 保留周期。
 
 **兜底：**若联合窗口或核心门禁未按期就绪，交付双运行时镜像——已迁域使用
-libc++，核心波继续使用 libstdc++，不做默认翻转。
+libc++，核心波继续使用 libstdc++，不做默认翻转。fallback 镜像仍须过
+边差分门验证无跨域 C++ ABI 边。
 
 数据附录：`core_base_members.tsv`、`core_cross_repo_edges.tsv`、
 `cross_repo_edges.tsv`、`affected_base.tsv`、`affected_unified.tsv`。

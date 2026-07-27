@@ -35,9 +35,31 @@
 `boost-test` 因生产过滤不进入 TIER1 分量台账，但其 D-G3 长尾决策保留在
 `package_wave_preassignment.tsv`。Base 先行六包见 `base_first_6.tsv`。
 
+## 执行单元消解规则
+
+> 执行单元 = 名单包所在 TIER1 分量闭包。MIXED_PACKAGE_LABELS 分量在其任一成员开工前必须收敛为 SINGLE_LABEL:伴随成员改标 <主标签>_COMPANION,或经 D1a/A6 证据把耦合边裁决为 shim 后拆分。波 1 三条件裁决结果必须回写台账与 D-G3。
+
+0723 台账的两个已知冲突按 C2 处理：
+
+- `SHARED-T1-0010` 已收敛：`boost-log=BASE_FIRST_COMPANION`，与
+  `boost-filesystem`、`boost-thread` 同窗，状态为 `SINGLE_LABEL`；
+- `SHARED-T1-0008` 尚不能二选一，状态为
+  `PENDING_WAVE1_S4_OUTCOME`。S4 四包摘除生效后，
+  `boost-program-options` 进入 Base-first、三包留长尾；若保留则整个
+  分量随波 1 条件分支。结果产生前禁止开工。
+
+`BASE_FIRST_COMPANION` 在分量归属上归一为主标签 `BASE_FIRST`，但保留
+后缀以说明该包不是原始六包名单成员。
+
 ## 文件
 
 - `shared_main_tier1.tsv`：1520 个共享分量；
 - `overlay_<arch>_tier1.tsv`：每架构差异分量；
 - `package_wave_preassignment.tsv`：机械标签及 D-G3 覆盖；
 - `validation.tsv`：共享/覆盖互斥、完备和计数硬断言。
+- `member_edge_sha256_spec.md`：成员+边摘要的字段、排序、转义和哈希规格。
+- `anchor_exemptions_per_arch.tsv`：D2 架构独立锚点豁免覆盖层。
+
+`member_edge_sha256` 必须包含 `edge_class`；跨类负面对照见
+`member_edge_sha256_cross_class_fixture.tsv`。新增架构锚点豁免按
+HLD errata v2 绑定 source-NEVRA，并作为 9 月开工前置。

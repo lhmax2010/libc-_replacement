@@ -54,6 +54,22 @@ armv7l **43**、aarch64 **46**、x86_64 **41** 个。
    `boost-filesystem`、`boost-iostreams`、`boost-program-options`、
    `boost-thread`、`libsigc++`、`taglib`。
 
+## D-G2/D-G3 执行单元勘误
+
+> 执行单元 = 名单包所在 TIER1 分量闭包。MIXED_PACKAGE_LABELS 分量在其任一成员开工前必须收敛为 SINGLE_LABEL:伴随成员改标 <主标签>_COMPANION,或经 D1a/A6 证据把耦合边裁决为 shim 后拆分。波 1 三条件裁决结果必须回写台账与 D-G3。
+
+当前机械消解：
+
+1. `SHARED-T1-0010`：`boost-log` 改标
+   `BASE_FIRST_COMPANION`，与 `boost-filesystem`、`boost-thread`
+   同窗；分量状态收敛为 `SINGLE_LABEL`。
+2. `SHARED-T1-0008`：在正式波 1 S4 结果产生前标为
+   `PENDING_WAVE1_S4_OUTCOME`。四包摘除生效时，
+   `boost-program-options` 按 `BASE_FIRST` 独立，三包留长尾；四包
+   保留时，整个分量服从波 1 条件分支。
+3. D-G3 的六包名单是名义执行名单；其中 `boost-program-options`
+   的实际执行归属由上述 S4 分支回写后生效。
+
 数据依据：
 
 - `p1/base_unified_split/base_first_8_verification.tsv`
@@ -66,3 +82,6 @@ armv7l **43**、aarch64 **46**、x86_64 **41** 个。
 
 三项裁决自 2026-07-27 起生效。本记录只治理排期、台账分层和数据口径，
 不修改冻结 HLD 正文，也不替代每次执行的校准门、门禁或发布签核。
+
+本勘误随 P1 出口评审 C2 生效；S4 结果尚未产生，因此
+`SHARED-T1-0008` 不得提前按任一分支记为 PASS。

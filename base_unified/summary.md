@@ -29,6 +29,12 @@ Wave preassignment counts are mechanical and may overlap in the combined
 `WAVE_2+BASE_FIRST_PROVIDER` label:
 `BASE_FIRST`=5, `LONG_TAIL`=117, `WAVE_1`=19, `WAVE_1_5`=20, `WAVE_2`=43, `WAVE_2+BASE_FIRST_PROVIDER`=1, `WAVE_4_CORE`=127.
 
+`BASE_FIRST=5` is the affected-dynamic-graph table count: `boost-iostreams`
+has no production incoming edge and therefore is absent from that mechanical
+label. D-G3's six-package execution list nevertheless includes
+`boost-iostreams` as an explicit Base provider rebuild; `boost-log` is a
+same-window companion rather than a seventh Base package.
+
 ## Wave 4 cross-repository surface
 
 The aligned-v2 TIER1 core is 118/121/122 packages on

@@ -32,6 +32,13 @@ for every file copied directly from the read-only source workspace.
 `MANIFEST.sha256` covers every tracked payload file except itself, which
 avoids an impossible self-referential digest.
 
+Historical count note: the initial repository had 169 tracked files while
+its manifest had 168 entries because the manifest excludes itself. The P1
+review corpus contained those 169 files plus `REVIEW_LINEAGE.md`, so its
+manifest had 170 entries; the tar contained 171 files after adding that
+review manifest. These are different, explicit counting scopes rather than
+missing payloads.
+
 ## Repository disciplines
 
 1. This repository is the single developer-facing fact source after P1 exit

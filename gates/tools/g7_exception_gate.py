@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 INVENTORY_FIELDS = {
     "interface_id", "escape_status", "ast_status", "callback_required",
     "disposition",
@@ -17,9 +17,10 @@ INVENTORY_FIELDS = {
 RIDER_FIELDS = {
     "rider_id", "interface_id", "required", "callback_count",
     "terminate_count", "stale_request_count", "closure_leak_count",
-    "partial_result_count", "status",
+    "partial_result_count", "cross_dso_unwind_count", "status",
 }
 ACCEPTED_ESCAPE = {"CAUGHT_BEFORE_BOUNDARY", "NO_ESCAPE_REVIEWED"}
+ACCEPTED_DISPOSITIONS = {"FIX_WITH_SEAL", "ACCEPT_WITH_RELEASE_NOTE"}
 
 
 def read_tsv(path: Path, required: set[str]) -> list[dict[str, str]]:
@@ -72,6 +73,11 @@ def main() -> int:
                 "AST_EVIDENCE_INCOMPLETE", interface_id, "",
                 f"ast_status={interface['ast_status']}",
             ])
+        if interface["disposition"] not in ACCEPTED_DISPOSITIONS:
+            findings.append([
+                "DISPOSITION_INVALID", interface_id, "",
+                f"disposition={interface['disposition'] or 'EMPTY'}",
+            ])
         linked = riders_by_interface.get(interface_id, [])
         if interface["callback_required"] == "YES" and len(linked) != 1:
             findings.append([
@@ -80,15 +86,21 @@ def main() -> int:
             ])
 
     for rider in riders:
-        if rider["required"] != "YES":
-            continue
         rider_id = rider["rider_id"]
+        if rider["required"] != "YES":
+            findings.append([
+                "RIDER_DISABLED", rider["interface_id"], rider_id,
+                f"required={rider['required'] or 'EMPTY'};expected=YES",
+            ])
         try:
             callback_count = parse_count(rider, "callback_count")
             terminate_count = parse_count(rider, "terminate_count")
             stale_count = parse_count(rider, "stale_request_count")
             closure_leak = parse_count(rider, "closure_leak_count")
             partial_result = parse_count(rider, "partial_result_count")
+            cross_dso_unwind = parse_count(
+                rider, "cross_dso_unwind_count"
+            )
         except ValueError as error:
             print(f"INPUT_ERROR {error}", file=sys.stderr)
             return 3
@@ -98,6 +110,7 @@ def main() -> int:
             ("STALE_REQUEST_REMAINS", stale_count, 0),
             ("CLOSURE_LEAK_REMAINS", closure_leak, 0),
             ("PARTIAL_RESULT_ACCEPTED", partial_result, 0),
+            ("CROSS_DSO_UNWIND", cross_dso_unwind, 0),
         )
         for code, actual, expected in metrics:
             if actual != expected:

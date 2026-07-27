@@ -11,7 +11,7 @@ from datetime import date
 from pathlib import Path
 
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 OBSERVED_FIELDS = {
     "edge_id", "consumer_pkg", "provider_pkg", "api_symbol",
     "api_signature", "boundary_kind",
