@@ -249,10 +249,13 @@ buildconf 或 S6 `command.txt`。正式采用需要两处外部状态变化：
    闭包；
 3. **混合子包**：是否由同一 source RPM 产生混合 C/C++ 子包。allowlist
    键仍是 source package，同源输出必须使用同一 stdlib 构建；
-4. **晋级台账完备性**：candidate RPM manifest 的每个输出必须恰有一条
+4. **晋级台账完备性**：candidate RPM manifest 的每个输出（包含
+   `noarch`/共享输出）必须恰有一条
    `ADMIT/HOLD_SIBLING` 记录；ADMIT 集合必须是 TIER1 分量闭包，HOLD 的
    镜像实选 SHA 必须等于存量权威。devel 与 `.a` 也不得漏行，libc++ `.a`
-   禁止对 libstdc++ 消费者可见。
+   禁止对 libstdc++ 消费者可见。执行件为
+   `gates/tools/promotion_ledger_check.py`；缺列或空输入以 exit 3
+   fail-closed。
 
 波 1 五个 source package 的当前只读预扫见
 `wave1_source_admission.tsv`：已覆盖 38 个相关冻结 RPM，未发现 `.a`；
@@ -262,17 +265,24 @@ buildconf 或 S6 `command.txt`。正式采用需要两处外部状态变化：
 
 该五行表保持 S4 未决时的 19 包分支基线，不预填条件 source。若 S4 不满足
 并选择 wave1 23 或 26 晋级分支，D5 allowlist 和准入表必须先增加
-`boost-1.83.0-5.1.src.rpm` 行，并以
-`ledger/boost_source_unit_census.tsv` 复核三架构 31/28/31 个输出：
+`boost-1.83.0-5.1.src.rpm` 与 `capi-appfw-capmgr-0.0.4-1.src.rpm`
+两行，并以 `ledger/boost_source_unit_census.tsv` 复核架构目录
+31/28/31 加共享 noarch 两输出后的三架构全量 **33/30/33**：
 
-- 23 分支只 ADMIT `boost-program-options`，其他 Boost candidate
-  HOLD_SIBLING；
+- 23 分支 ADMIT `boost-program-options` 与同源 `boost-license`，其他
+  Boost candidate HOLD_SIBLING；
 - 26 分支另 ADMIT
   `boost-filesystem/boost-log/boost-thread`，其他 Boost candidate
   HOLD_SIBLING。
 
 若 S4 PASS，后续独立 T1-0008 批次同样必须先为 `boost` source 完成四项
-准入，但不改写 wave1 五源基线。
+准入并 ADMIT `boost-license`，但不改写 wave1 五源基线。若 26 分支生效，
+还必须按 D-G4 跨批 authority 交接规则同步回写 Base-first 晋级台账。
+
+冻结 RPM 输入上的三组实例见
+`ledger/promotion_ledger_{basefirst,t1_0008_s4pass,wave1_cond}.tsv`
+及其 manifest/authority；三组均须由第四门实跑为 GREEN。验证器断言必须与
+数据同源生成，禁止硬编码预期。
 
 ## 9. OQ-5 正式采用门
 

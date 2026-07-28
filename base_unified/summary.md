@@ -34,9 +34,11 @@ has no production incoming edge and therefore is absent from that mechanical
 label. D-G3 R2's five-package named list is
 `boost-filesystem/boost-iostreams/boost-thread/libsigc++/taglib`;
 `boost-log` is its same-window companion. Under D-G4 these six binary outputs
-are ADMIT entries produced by three source build units
-(`boost-1.83.0-5.1`, `libsigc++`, `taglib`), while all other same-source
-candidate outputs are HOLD.
+are production/C++ ADMIT entries produced by three source build units
+(`boost-1.83.0-5.1`, `libsigc++`, `taglib`). R4 additionally classifies
+the shared noarch, non-ELF `boost-license` output from the Boost source as
+ADMIT because it satisfies the exact runtime `Requires`; `boost-doc-html`
+and all other same-source candidate outputs remain HOLD.
 
 ## Wave 4 cross-repository surface
 

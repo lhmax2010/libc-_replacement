@@ -33,8 +33,9 @@
 - split 清单没有标签：`UNASSIGNED_NO_SPLIT_LABEL`，不静默猜成长尾。
 
 `boost-test` 因生产过滤不进入 TIER1 分量台账，但其 D-G3 长尾决策保留在
-`package_wave_preassignment.tsv`。Base-first 的三个 source 构建单元及
-六个 ADMIT 输出见 `base_first_6.tsv`；文件名为历史兼容名。
+`package_wave_preassignment.tsv`。Base-first 的三个 source 构建单元、
+六个生产/C++ ADMIT 输出及同源 noarch `boost-license` 见
+`base_first_6.tsv`；文件名为历史兼容名。
 
 ## 构建单元与晋级单元
 
@@ -46,6 +47,14 @@
   `HOLD_SIBLING`，HOLD 输出继续由存量 NEVRA+SHA256 作为镜像权威；
 - ADMIT 集合不得拆 TIER1 分量；`.a`、devel 与其他 sibling 也必须有行，
   candidate HOLD payload 不得进入镜像。
+- 输出全集必须同时枚举目标架构目录和 `noarch/` 共享层；机械门
+  `gates/tools/promotion_ledger_check.py` 以候选 manifest、晋级台账和
+  legacy authority 三表为输入，检查逐输出唯一行、ADMIT 闭包、HOLD SHA
+  及精确锁跨批。
+
+后批重建已经由前批 ADMIT 的同源输出时，必须显式选择：重验闭包后再次
+ADMIT，或将前批已晋级 NEVRA/SHA 登记为新 legacy authority 并 HOLD。
+未完成这种交接不得组装镜像。
 
 `MIXED_PACKAGE_LABELS` 分量在其任一成员晋级前必须收敛为
 `SINGLE_LABEL`：伴随成员改标 `<主标签>_COMPANION`，或经 D1a/A6 证据
@@ -61,9 +70,14 @@
   作为 Base+Unified 成对晋级的独立跨 repo 原子批次；构建时扩为
   `boost/capi-appfw-capmgr/security-manager` 三个 source 单元，但只
   ADMIT 四个分量成员。S4 不满足时，完整四包分量进入波 1 的
-  `ACTIVE_BATCH=23/26` 晋级分支，`boost` source 作为条件 D5 构建单元。
+  `ACTIVE_BATCH=23/26` 晋级分支，`boost` 与 `capi-appfw-capmgr` source
+  作为条件 D5 构建单元。
   `cross_repo_edges.tsv` 第 7/51 行的 CPP_ABI 边在两分支中始终位于
   同一批次，结果产生前禁止开工。
+
+26 分支生效时，必须把本批重产的
+`boost-filesystem/boost-log/boost-thread` 处理结果回写 Base-first 台账，
+并按上一段完成跨批 authority 交接。
 
 `BASE_FIRST_COMPANION` 在分量归属上归一为主标签 `BASE_FIRST`，但保留
 后缀以说明该包不是现行五包名单成员。
@@ -73,11 +87,15 @@
 - `shared_main_tier1.tsv`：1520 个共享分量；
 - `overlay_<arch>_tier1.tsv`：每架构差异分量；
 - `package_wave_preassignment.tsv`：机械标签及 D-G3 覆盖；
-- `boost_source_unit_census.tsv`：Boost 三架构全输出、分量、边、
-  Requires 与 ADMIT/HOLD 取证；
+- `boost_source_unit_census.tsv`：Boost 架构输出 + noarch 共享输出、
+  分量、边、Requires 与 ADMIT/HOLD 取证；全量计数 33/30/33；
 - `related_source_unit_summary.tsv`：T1-0008 与 Base-first 其他 source
   输出反查；
 - `promotion_ledger_template.tsv`：D-G4 镜像组装门强制输入格式；
+- `promotion_ledger_{basefirst,t1_0008_s4pass,wave1_cond}.tsv`：
+  冻结 RPM 输入上的三组实例，配套 `_manifest.tsv` 与 `_authority.tsv`；
+- `base_first_startup_checklist.tsv`：D1a 人工边核查、boost-license
+  候选仓可用性和第四门的 Base-first 开工清单；
 - `validation.tsv`：共享/覆盖互斥、完备和计数硬断言。
 - `member_edge_sha256_spec.md`：成员+边摘要的字段、排序、转义和哈希规格。
 - `anchor_exemptions_per_arch.tsv`：D2 架构独立锚点豁免覆盖层。

@@ -59,18 +59,23 @@ armv7l **43**、aarch64 **46**、x86_64 **41** 个。
 
 三架构冻结 RPM 与 census v2 的 source-unit 反查给出：
 
-- `boost-1.83.0-5.1.src.rpm` 实际输出为 armv7l **31**、
-  aarch64 **28**、x86_64 **31** 个；aarch64 不产
+- `boost-1.83.0-5.1.src.rpm` 的架构目录输出为 armv7l **31**、
+  aarch64 **28**、x86_64 **31** 个；共享 `noarch/` 层另有
+  `boost-license`、`boost-doc-html` 两个同源输出，因此全 source 输出口径为
+  **33/30/33**。aarch64 不产
   `boost-context/boost-coroutine/boost-fiber`。三架构全部输出的文件清单
   实查 `.a=0`，`boost-* = 1.83.0-5.1` 型精确包锁为 0；
 - Base-first 的 Boost TIER1 晋级闭包稳定为
   `boost-filesystem/boost-log/boost-thread` 三包加
-  `boost-iostreams` 单点，共四个输出；T1-0008 中 Boost 输出只有
+  `boost-iostreams` 单点，共四个 C++ 输出；两种晋级场景均另 ADMIT
+  无 ELF、无 C++ 面的同源依赖提供者 `boost-license`，并 HOLD
+  `boost-doc-html`。T1-0008 的 C++ Boost 输出只有
   `boost-program-options`；
 - `capi-appfw-capmgr` source 每架构 3 个输出；`security-manager`
   source 每架构 8 个输出，其中另一个已知波次成员只有
   `security-license-manager=WAVE_1`，未发现第三个未登记跨波输出；
   `libsigc++`、`taglib` source 均各 2 个输出（runtime + devel），`.a=0`。
+  两个冻结仓的 repodata 复查确认这四个 source 均无额外 noarch 输出。
 
 裁决：
 
@@ -85,10 +90,18 @@ armv7l **43**、aarch64 **46**、x86_64 **41** 个。
 
 依赖审计未发现要求当前 Boost 输出强制同 NEVRA 合批的精确锁；现有同源
 内部 Requires 在包名/`libboost_*.so.1.83.0` 层均可由 ADMIT 或保留的
-HOLD 输出满足。`boost-license` 是架构 census 未收录的外部依赖，不属于
-source 拆分锁；实际候选仓仍须重跑 solver。候选 Provides/Requires 相对
+HOLD 输出满足。`boost-license` 已由冻结 Base `noarch/` 目录证明是
+`boost-1.83.0-5.1.src.rpm` 的同源输出；Base-first、T1-0008 与其波 1
+23/26 分支均将它记为 ADMIT，`boost-doc-html` 保持 HOLD。solver 检查仍保留
+为辅助验证，不再把 `boost-license` 归为外部 provider。候选
+Provides/Requires 相对
 存量权威不一致、solver 不可解，或执行时新增精确 EVR 锁时，必须把锁定
 依赖闭包改为同批 `ADMIT`，否则该批阻塞，不得以 HOLD 绕过。
+
+跨批次 legacy authority 交接规则：后批重新构建曾由前批 ADMIT 的同源输出
+时，必须二选一并显式记账：其一，重验 TIER1 闭包后在后批再次 ADMIT；其二，
+把前批已晋级 NEVRA+SHA256 登记为新的 legacy authority 并在后批保持
+HOLD_SIBLING。未选择、未登记或镜像实选 SHA 不等于所选 authority，均阻塞。
 
 权威模板为 `ledger/promotion_ledger_template.tsv`；当前取证为
 `ledger/boost_source_unit_census.tsv` 与
@@ -115,12 +128,17 @@ source 拆分锁；实际候选仓仍须重跑 solver。候选 Provides/Requires
 > `boost-program-options` + Unified 成员三包），其第 7/51 行
 > `CPP_ABI` 边独立于 UidSandboxing。S4 PASS 时，四包退出波 1，独立批次
 > 构建 `boost`、`capi-appfw-capmgr`、`security-manager` 三个 source
-> 单元；晋级台账只 ADMIT 四个 T1-0008 成员，其余同源输出
+> 单元；晋级台账 ADMIT 四个 T1-0008 成员与同源 `boost-license`，其余同源输出
 > HOLD_SIBLING。S4 不满足时，四包进入 wave1 23/26 晋级分支；
-> `boost` source 加入 wave1 D5 allowlist，23 分支只 ADMIT
-> `boost-program-options`，26 分支另 ADMIT
+> `boost` 与 `capi-appfw-capmgr` source 加入 wave1 D5 allowlist，23 分支
+> ADMIT `boost-program-options` 与 `boost-license`，26 分支另 ADMIT
 > `boost-filesystem/boost-log/boost-thread`，每个分支其余 Boost 输出
 > HOLD_SIBLING。
+
+> 26 分支一旦生效，必须同步回写 Base-first 晋级台账：对该分支重产的
+> `boost-filesystem/boost-log/boost-thread` 及同源输出，按上述跨批次
+> authority 交接规则逐行选择“再次 ADMIT”或“以前批 NEVRA 为新 authority
+> 保持 HOLD”，禁止两个批次对同一输出各自宣称不同 authority。
 
 3. `boost-program-options` 不再属于 Base 先行名单；S4 摘除生效时，
    `boost-program-options`、`capi-appfw-capmgr`、
@@ -129,7 +147,11 @@ source 拆分锁；实际候选仓仍须重跑 solver。候选 Provides/Requires
 4. Base-first 的构建形态固定为 `boost`、`libsigc++`、`taglib` 三个
    source 单元；晋级台账 ADMIT
    `boost-filesystem/boost-iostreams/boost-log/boost-thread`、
-   `libsigc++`、`taglib`，其余同源输出全部 HOLD_SIBLING。
+   `libsigc++`、`taglib` 和同源 `boost-license`，其余同源输出全部
+   HOLD_SIBLING。开工前另须完成
+   `ledger/base_first_startup_checklist.tsv`：其中
+   `dotnet-launcher→boost-filesystem` CPP_NOSTL 边必须取得 D1a 人工核查，
+   `boost-license` 候选仓 NEVRA/SHA 与 solver 可用性必须为 PASS。
 
 数据依据：
 
