@@ -67,8 +67,9 @@ armv7l **43**、aarch64 **46**、x86_64 **41** 个。
   实查 `.a=0`，`boost-* = 1.83.0-5.1` 型精确包锁为 0；
 - Base-first 的 Boost TIER1 晋级闭包稳定为
   `boost-filesystem/boost-log/boost-thread` 三包加
-  `boost-iostreams` 单点，共四个 C++ 输出；两种晋级场景均另 ADMIT
-  无 ELF、无 C++ 面的同源依赖提供者 `boost-license`，并 HOLD
+  `boost-iostreams` 单点，共四个 C++ 输出；两种晋级场景均另以
+  `ADMIT_STDLIB_NEUTRAL` 纳入无 ELF、无 C++ 面的同源依赖提供者
+  `boost-license`，并 HOLD
   `boost-doc-html`。T1-0008 的 C++ Boost 输出只有
   `boost-program-options`；
 - `capi-appfw-capmgr` source 每架构 3 个输出；`security-manager`
@@ -88,11 +89,28 @@ armv7l **43**、aarch64 **46**、x86_64 **41** 个。
 > 晋级台账是镜像组装门强制输入；同一 source 构建的每个输出必须恰有一行，
 > `ADMIT` 集合的 TIER1 分量闭包由门禁机械断言。
 
+`ADMIT_STDLIB_NEUTRAL` 是 `ADMIT` 的受限子类，只允许同时具备以下三项
+机械证据的输出使用：文件清单证明不含 ELF；符号/归档扫描证明无 C++ 面；
+candidate 内容 SHA 已由两个独立来源复验一致。该类仍须完成 candidate
+manifest、晋级台账与镜像实选 SHA 的三方身份对账，但因没有可参与动态
+C++ 图的 ELF，可免 TIER1 分量闭包断言。`boost-license` 三组实例均改用
+此 disposition；缺任一证据不得降格为 neutral。
+
+第四门以
+`(batch,target_arch,package,rpm_arch,nevra)` 为输出身份键，逐行要求
+candidate manifest 的 RPM SHA 等于台账 candidate SHA，ADMIT/neutral 的
+镜像实选 SHA 又必须等于 candidate SHA。完备性双向检查：candidate 无台账
+行与台账无 candidate 行均阻塞。闭包只从经冻结摘要认证的独立 census
+分量成员表读取；台账/manifest 自报的分量字段仅作交叉核对。
+
+> 门禁的断言数据源必须独立于被验对象且经 digest 认证;被验方自报字段仅可作交叉核对项,不得作断言唯一来源;完备性断言必须双向。
+
 依赖审计未发现要求当前 Boost 输出强制同 NEVRA 合批的精确锁；现有同源
 内部 Requires 在包名/`libboost_*.so.1.83.0` 层均可由 ADMIT 或保留的
 HOLD 输出满足。`boost-license` 已由冻结 Base `noarch/` 目录证明是
 `boost-1.83.0-5.1.src.rpm` 的同源输出；Base-first、T1-0008 与其波 1
-23/26 分支均将它记为 ADMIT，`boost-doc-html` 保持 HOLD。solver 检查仍保留
+23/26 分支均将它记为 `ADMIT_STDLIB_NEUTRAL`，`boost-doc-html` 保持
+HOLD。solver 检查仍保留
 为辅助验证，不再把 `boost-license` 归为外部 provider。候选
 Provides/Requires 相对
 存量权威不一致、solver 不可解，或执行时新增精确 EVR 锁时，必须把锁定
@@ -128,10 +146,12 @@ HOLD_SIBLING。未选择、未登记或镜像实选 SHA 不等于所选 authorit
 > `boost-program-options` + Unified 成员三包），其第 7/51 行
 > `CPP_ABI` 边独立于 UidSandboxing。S4 PASS 时，四包退出波 1，独立批次
 > 构建 `boost`、`capi-appfw-capmgr`、`security-manager` 三个 source
-> 单元；晋级台账 ADMIT 四个 T1-0008 成员与同源 `boost-license`，其余同源输出
-> HOLD_SIBLING。S4 不满足时，四包进入 wave1 23/26 晋级分支；
+> 单元；晋级台账 ADMIT 四个 T1-0008 成员，同源 `boost-license` 记为
+> `ADMIT_STDLIB_NEUTRAL`，其余同源输出 HOLD_SIBLING。S4 不满足时，
+> 四包进入 wave1 23/26 晋级分支；
 > `boost` 与 `capi-appfw-capmgr` source 加入 wave1 D5 allowlist，23 分支
-> ADMIT `boost-program-options` 与 `boost-license`，26 分支另 ADMIT
+> ADMIT `boost-program-options`，`boost-license` 记为
+> `ADMIT_STDLIB_NEUTRAL`；26 分支另 ADMIT
 > `boost-filesystem/boost-log/boost-thread`，每个分支其余 Boost 输出
 > HOLD_SIBLING。
 
@@ -147,7 +167,8 @@ HOLD_SIBLING。未选择、未登记或镜像实选 SHA 不等于所选 authorit
 4. Base-first 的构建形态固定为 `boost`、`libsigc++`、`taglib` 三个
    source 单元；晋级台账 ADMIT
    `boost-filesystem/boost-iostreams/boost-log/boost-thread`、
-   `libsigc++`、`taglib` 和同源 `boost-license`，其余同源输出全部
+   `libsigc++`、`taglib`，同源 `boost-license` 记为
+   `ADMIT_STDLIB_NEUTRAL`，其余同源输出全部
    HOLD_SIBLING。开工前另须完成
    `ledger/base_first_startup_checklist.tsv`：其中
    `dotnet-launcher→boost-filesystem` CPP_NOSTL 边必须取得 D1a 人工核查，

@@ -52,10 +52,11 @@ RPM 宏在解析 spec 时以 `%{name}` 判定。因此 allowlist 的键是
 到 source RPM，再生成去重后的 buildconf allowlist。
 
 D-G4 将“同源构建”与“镜像晋级”分层：同一 source 的 candidate 全输出都
-使用 libc++ 构建，但每个输出必须进入逐 RPM 晋级台账，按 TIER1 分量闭包
-标为 `ADMIT` 或 `HOLD_SIBLING`。只有 ADMIT candidate 可进入镜像；
-HOLD_SIBLING 继续选择登记的存量 NEVRA+SHA256。构建同源不再被误解为
-同源 candidate 必须同时晋级。
+使用 libc++ 构建，但每个输出必须进入逐 RPM 晋级台账，标为 `ADMIT`、
+`ADMIT_STDLIB_NEUTRAL` 或 `HOLD_SIBLING`。只有前两类 candidate 可进入
+镜像；普通 ADMIT 按 TIER1 分量闭包，neutral 必须满足 D-G4 三项机械
+证据。HOLD_SIBLING 继续选择登记的存量 NEVRA+SHA256。构建同源不再被
+误解为同源 candidate 必须同时晋级。
 
 ### 2.3 RPM 4.14-safe 判定
 
@@ -249,13 +250,19 @@ buildconf 或 S6 `command.txt`。正式采用需要两处外部状态变化：
    闭包；
 3. **混合子包**：是否由同一 source RPM 产生混合 C/C++ 子包。allowlist
    键仍是 source package，同源输出必须使用同一 stdlib 构建；
-4. **晋级台账完备性**：candidate RPM manifest 的每个输出（包含
-   `noarch`/共享输出）必须恰有一条
-   `ADMIT/HOLD_SIBLING` 记录；ADMIT 集合必须是 TIER1 分量闭包，HOLD 的
-   镜像实选 SHA 必须等于存量权威。devel 与 `.a` 也不得漏行，libc++ `.a`
-   禁止对 libstdc++ 消费者可见。执行件为
-   `gates/tools/promotion_ledger_check.py`；缺列或空输入以 exit 3
-   fail-closed。
+4. **晋级台账完备性与身份性**：candidate RPM manifest 的每个输出（包含
+   `noarch`/共享输出）必须恰有一条台账记录，台账也不得出现 candidate
+   manifest 中不存在的孤行。连接键固定为
+   `(batch,target_arch,package,rpm_arch,nevra)`，manifest、ledger 与镜像
+   实选 SHA 必须逐输出对账。普通 `ADMIT` 集合必须按经摘要认证的独立
+   census 成员表形成 TIER1 分量闭包；台账自报分量只作交叉核对。
+   `ADMIT_STDLIB_NEUTRAL` 仅在“不含 ELF/无 C++ 面/内容 SHA 双源复验”
+   三项机械证明均 PASS 时免闭包，仍须做身份三方对账。HOLD 的镜像实选
+   SHA 必须等于存量权威。devel 与 `.a` 也不得漏行，libc++ `.a` 禁止对
+   libstdc++ 消费者可见。执行件为
+   `gates/tools/promotion_ledger_check.py`；缺列、空输入或缺少 census
+   认证输入以 exit 3 fail-closed，摘要不符以业务红码
+   `CENSUS_INPUT_UNVERIFIED` 阻塞。
 
 波 1 五个 source package 的当前只读预扫见
 `wave1_source_admission.tsv`：已覆盖 38 个相关冻结 RPM，未发现 `.a`；
@@ -269,14 +276,15 @@ buildconf 或 S6 `command.txt`。正式采用需要两处外部状态变化：
 两行，并以 `ledger/boost_source_unit_census.tsv` 复核架构目录
 31/28/31 加共享 noarch 两输出后的三架构全量 **33/30/33**：
 
-- 23 分支 ADMIT `boost-program-options` 与同源 `boost-license`，其他
-  Boost candidate HOLD_SIBLING；
+- 23 分支 ADMIT `boost-program-options`，同源 `boost-license` 记为
+  `ADMIT_STDLIB_NEUTRAL`，其他 Boost candidate HOLD_SIBLING；
 - 26 分支另 ADMIT
   `boost-filesystem/boost-log/boost-thread`，其他 Boost candidate
   HOLD_SIBLING。
 
 若 S4 PASS，后续独立 T1-0008 批次同样必须先为 `boost` source 完成四项
-准入并 ADMIT `boost-license`，但不改写 wave1 五源基线。若 26 分支生效，
+准入并以 `ADMIT_STDLIB_NEUTRAL` 纳入 `boost-license`，但不改写 wave1
+五源基线。若 26 分支生效，
 还必须按 D-G4 跨批 authority 交接规则同步回写 Base-first 晋级台账。
 
 冻结 RPM 输入上的三组实例见

@@ -34,7 +34,7 @@
 
 `boost-test` 因生产过滤不进入 TIER1 分量台账，但其 D-G3 长尾决策保留在
 `package_wave_preassignment.tsv`。Base-first 的三个 source 构建单元、
-六个生产/C++ ADMIT 输出及同源 noarch `boost-license` 见
+六个生产/C++ ADMIT 输出及同源 noarch neutral `boost-license` 见
 `base_first_6.tsv`；文件名为历史兼容名。
 
 ## 构建单元与晋级单元
@@ -43,14 +43,22 @@
 
 - D5 构建单元是 source RPM；同源全部输出用同一 stdlib 构建；
 - 镜像晋级单元是 TIER1 分量闭包。每个 candidate 输出必须在
-  `promotion_ledger_template.tsv` 的实例中标为 `ADMIT` 或
-  `HOLD_SIBLING`，HOLD 输出继续由存量 NEVRA+SHA256 作为镜像权威；
+  `promotion_ledger_template.tsv` 的实例中标为 `ADMIT`、
+  `ADMIT_STDLIB_NEUTRAL` 或 `HOLD_SIBLING`，HOLD 输出继续由存量
+  NEVRA+SHA256 作为镜像权威；
 - ADMIT 集合不得拆 TIER1 分量；`.a`、devel 与其他 sibling 也必须有行，
   candidate HOLD payload 不得进入镜像。
 - 输出全集必须同时枚举目标架构目录和 `noarch/` 共享层；机械门
-  `gates/tools/promotion_ledger_check.py` 以候选 manifest、晋级台账和
-  legacy authority 三表为输入，检查逐输出唯一行、ADMIT 闭包、HOLD SHA
-  及精确锁跨批。
+  `gates/tools/promotion_ledger_check.py` 以候选 manifest、晋级台账、
+  legacy authority 和独立 census 分量成员表为输入；census 输入必须由
+  `gates/census_input_manifest.tsv` 的冻结摘要认证。门以
+  `(batch,target_arch,package,rpm_arch,nevra)` 连接，检查双向逐输出唯一
+  行、candidate/ledger/image 三方 SHA、ADMIT 闭包、HOLD authority 及
+  精确锁跨批。
+
+`ADMIT_STDLIB_NEUTRAL` 只适用于三项证明均为 PASS 的输出：不含 ELF、无
+C++ 面、内容 SHA 双源复验。该类仍做身份三方对账，但免 TIER1 闭包检查；
+当前仅 `boost-license` 使用。
 
 后批重建已经由前批 ADMIT 的同源输出时，必须显式选择：重验闭包后再次
 ADMIT，或将前批已晋级 NEVRA/SHA 登记为新 legacy authority 并 HOLD。
@@ -94,6 +102,10 @@ ADMIT，或将前批已晋级 NEVRA/SHA 登记为新 legacy authority 并 HOLD�
 - `promotion_ledger_template.tsv`：D-G4 镜像组装门强制输入格式；
 - `promotion_ledger_{basefirst,t1_0008_s4pass,wave1_cond}.tsv`：
   冻结 RPM 输入上的三组实例，配套 `_manifest.tsv` 与 `_authority.tsv`；
+- `census_membership_production_tier1.tsv`：第四门只读的三架构 0723
+  生产 TIER1 分量成员输入；其来源与摘要见
+  `census_membership_source_manifest.tsv`，冻结认证入口为
+  `gates/census_input_manifest.tsv`；
 - `base_first_startup_checklist.tsv`：D1a 人工边核查、boost-license
   候选仓可用性和第四门的 Base-first 开工清单；
 - `validation.tsv`：共享/覆盖互斥、完备和计数硬断言。
