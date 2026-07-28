@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import TypeAlias
 
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 TRUSTED_CENSUS_MANIFEST_SHA256 = (
-    "1ff1387e4094704c65dba29d9de40339d50ee747ae23788bef2a0a7357b87192"
+    "06bd30a0c143f290c6cac4f61363a61b142dd192f14ab7a40c6afccda9e384ee"
 )
 MANIFEST_FIELDS = {
     "batch_id",
@@ -43,9 +43,6 @@ LEDGER_FIELDS = {
     "legacy_authority_nevra",
     "legacy_authority_sha256",
     "image_selected_sha256",
-    "neutral_non_elf_proof",
-    "neutral_no_cpp_surface_proof",
-    "neutral_dual_source_sha_proof",
 }
 AUTHORITY_FIELDS = {
     "batch_id",
@@ -60,7 +57,9 @@ AUTHORITY_FIELDS = {
 CENSUS_MANIFEST_FIELDS = {
     "census_id",
     "membership_sha256",
-    "logical_path",
+    "membership_logical_path",
+    "neutral_registry_sha256",
+    "neutral_registry_logical_path",
     "scope",
 }
 CENSUS_FIELDS = {
@@ -75,11 +74,16 @@ APPROVED_DISPOSITIONS = {
     "ADMIT_STDLIB_NEUTRAL",
     "HOLD_SIBLING",
 }
-NEUTRAL_PROOF_FIELDS = (
-    "neutral_non_elf_proof",
-    "neutral_no_cpp_surface_proof",
-    "neutral_dual_source_sha_proof",
-)
+NEUTRAL_REGISTRY_FIELDS = {
+    "census_id",
+    "target_arch",
+    "package",
+    "rpm_arch",
+    "nevra",
+    "rpm_sha256",
+    "filelist_sha256",
+    "qualification_evidence",
+}
 
 IdentityKey: TypeAlias = tuple[str, str, str, str, str]
 PackageKey: TypeAlias = tuple[str, str, str]
@@ -151,6 +155,7 @@ def main() -> int:
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--authority", type=Path, required=True)
     parser.add_argument("--census-membership", type=Path, required=True)
+    parser.add_argument("--neutral-registry", type=Path, required=True)
     parser.add_argument("--census-manifest", type=Path, required=True)
     parser.add_argument("--census-id", required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -164,6 +169,9 @@ def main() -> int:
             args.census_manifest, CENSUS_MANIFEST_FIELDS
         )
         census = read_tsv(args.census_membership, CENSUS_FIELDS)
+        neutral_registry = read_tsv(
+            args.neutral_registry, NEUTRAL_REGISTRY_FIELDS
+        )
     except (OSError, ValueError) as error:
         print(f"INPUT_ERROR {error}", file=sys.stderr)
         return 3
@@ -216,6 +224,22 @@ def main() -> int:
                 ),
             )
             census_verified = False
+        expected_registry_sha = census_authority_rows[0][
+            "neutral_registry_sha256"
+        ]
+        actual_registry_sha = sha256(args.neutral_registry)
+        if actual_registry_sha != expected_registry_sha:
+            append_finding(
+                findings,
+                "CENSUS_INPUT_UNVERIFIED",
+                census_finding_key(args.census_id),
+                (
+                    "neutral registry digest differs from frozen census "
+                    f"manifest;expected={expected_registry_sha};"
+                    f"actual={actual_registry_sha}"
+                ),
+            )
+            census_verified = False
 
     if any(row["census_id"] != args.census_id for row in census):
         append_finding(
@@ -223,6 +247,40 @@ def main() -> int:
             "CENSUS_INPUT_UNVERIFIED",
             census_finding_key(args.census_id),
             "membership rows contain an unexpected census_id",
+        )
+        census_verified = False
+    if any(
+        row["census_id"] != args.census_id for row in neutral_registry
+    ):
+        append_finding(
+            findings,
+            "CENSUS_INPUT_UNVERIFIED",
+            census_finding_key(args.census_id),
+            "neutral registry rows contain an unexpected census_id",
+        )
+        census_verified = False
+
+    neutral_registry_by_key: dict[
+        tuple[str, str, str, str, str], list[dict[str, str]]
+    ] = defaultdict(list)
+    for row in neutral_registry:
+        neutral_key = (
+            row["census_id"],
+            row["target_arch"],
+            row["package"],
+            row["rpm_arch"],
+            row["nevra"],
+        )
+        neutral_registry_by_key[neutral_key].append(row)
+    duplicate_neutral_keys = [
+        key for key, rows in neutral_registry_by_key.items() if len(rows) != 1
+    ]
+    if duplicate_neutral_keys:
+        append_finding(
+            findings,
+            "CENSUS_INPUT_UNVERIFIED",
+            census_finding_key(args.census_id),
+            f"neutral_registry_duplicate_keys={len(duplicate_neutral_keys)}",
         )
         census_verified = False
 
@@ -320,18 +378,35 @@ def main() -> int:
                         f"image={ledger_row['image_selected_sha256']}"
                     ),
                 )
-        if disposition == "ADMIT_STDLIB_NEUTRAL":
-            failed_proofs = [
-                field
-                for field in NEUTRAL_PROOF_FIELDS
-                if ledger_row[field] != "PASS"
-            ]
-            if failed_proofs:
+        if disposition == "ADMIT_STDLIB_NEUTRAL" and census_verified:
+            neutral_key = (
+                args.census_id,
+                item[1],
+                item[2],
+                item[3],
+                item[4],
+            )
+            registry_rows = neutral_registry_by_key.get(neutral_key, [])
+            exact_match = (
+                len(registry_rows) == 1
+                and registry_rows[0]["rpm_sha256"]
+                == ledger_row["candidate_sha256"]
+            )
+            if not exact_match:
                 append_finding(
                     findings,
-                    "STDLIB_NEUTRAL_EVIDENCE_INCOMPLETE",
+                    "NEUTRAL_NOT_IN_TRUSTED_REGISTRY",
                     item,
-                    "failed_proofs=" + ",".join(failed_proofs),
+                    (
+                        f"registry_rows={len(registry_rows)};"
+                        f"candidate_sha={ledger_row['candidate_sha256']};"
+                        "expected_sha="
+                        + (
+                            registry_rows[0]["rpm_sha256"]
+                            if len(registry_rows) == 1
+                            else "NONE"
+                        )
+                    ),
                 )
 
     authority_by_key: dict[
@@ -519,6 +594,10 @@ def main() -> int:
     print(
         f"CENSUS_ID={args.census_id} "
         f"CENSUS_VERIFIED={'YES' if census_verified else 'NO'}"
+    )
+    print(
+        "NEUTRAL_REGISTRY_VERIFIED="
+        f"{'YES' if census_verified else 'NO'}"
     )
     for finding in findings:
         print(

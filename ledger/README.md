@@ -56,9 +56,11 @@
   行、candidate/ledger/image 三方 SHA、ADMIT 闭包、HOLD authority 及
   精确锁跨批。
 
-`ADMIT_STDLIB_NEUTRAL` 只适用于三项证明均为 PASS 的输出：不含 ELF、无
-C++ 面、内容 SHA 双源复验。该类仍做身份三方对账，但免 TIER1 闭包检查；
-当前仅 `boost-license` 使用。
+`ADMIT_STDLIB_NEUTRAL` 只适用于五元身份和 RPM SHA 精确命中
+`gates/stdlib_neutral_registry.tsv` 的输出；登记册由
+`gates/census_input_manifest.tsv` 与成员表并列认证。该类仍做身份三方
+对账，但免 TIER1 闭包检查；台账不再含 neutral 自报证明列。当前仅
+`boost-license` 三架构登记行合格。
 
 后批重建已经由前批 ADMIT 的同源输出时，必须显式选择：重验闭包后再次
 ADMIT，或将前批已晋级 NEVRA/SHA 登记为新 legacy authority 并 HOLD。
@@ -106,6 +108,8 @@ ADMIT，或将前批已晋级 NEVRA/SHA 登记为新 legacy authority 并 HOLD�
   生产 TIER1 分量成员输入；其来源与摘要见
   `census_membership_source_manifest.tsv`，冻结认证入口为
   `gates/census_input_manifest.tsv`；
+- `gates/stdlib_neutral_registry.tsv`：第四门只读的 neutral 资格登记册；
+  与上项作为同一 authority manifest 的两个认证叶子；
 - `base_first_startup_checklist.tsv`：D1a 人工边核查、boost-license
   候选仓可用性和第四门的 Base-first 开工清单；
 - `validation.tsv`：共享/覆盖互斥、完备和计数硬断言。

@@ -54,9 +54,9 @@ RPM 宏在解析 spec 时以 `%{name}` 判定。因此 allowlist 的键是
 D-G4 将“同源构建”与“镜像晋级”分层：同一 source 的 candidate 全输出都
 使用 libc++ 构建，但每个输出必须进入逐 RPM 晋级台账，标为 `ADMIT`、
 `ADMIT_STDLIB_NEUTRAL` 或 `HOLD_SIBLING`。只有前两类 candidate 可进入
-镜像；普通 ADMIT 按 TIER1 分量闭包，neutral 必须满足 D-G4 三项机械
-证据。HOLD_SIBLING 继续选择登记的存量 NEVRA+SHA256。构建同源不再被
-误解为同源 candidate 必须同时晋级。
+镜像；普通 ADMIT 按 TIER1 分量闭包，neutral 必须精确命中经 authority
+manifest 认证的 D-G4 登记册。HOLD_SIBLING 继续选择登记的存量
+NEVRA+SHA256。构建同源不再被误解为同源 candidate 必须同时晋级。
 
 ### 2.3 RPM 4.14-safe 判定
 
@@ -256,9 +256,11 @@ buildconf 或 S6 `command.txt`。正式采用需要两处外部状态变化：
    `(batch,target_arch,package,rpm_arch,nevra)`，manifest、ledger 与镜像
    实选 SHA 必须逐输出对账。普通 `ADMIT` 集合必须按经摘要认证的独立
    census 成员表形成 TIER1 分量闭包；台账自报分量只作交叉核对。
-   `ADMIT_STDLIB_NEUTRAL` 仅在“不含 ELF/无 C++ 面/内容 SHA 双源复验”
-   三项机械证明均 PASS 时免闭包，仍须做身份三方对账。HOLD 的镜像实选
-   SHA 必须等于存量权威。devel 与 `.a` 也不得漏行，libc++ `.a` 禁止对
+   `ADMIT_STDLIB_NEUTRAL` 仅在五元身份和 RPM SHA 精确命中经
+   `gates/census_input_manifest.tsv` 认证的
+   `gates/stdlib_neutral_registry.tsv` 时免闭包，仍须做身份三方对账；
+   neutral 资格不再由台账列自行声明。HOLD 的镜像实选 SHA 必须等于
+   存量权威。devel 与 `.a` 也不得漏行，libc++ `.a` 禁止对
    libstdc++ 消费者可见。执行件为
    `gates/tools/promotion_ledger_check.py`；缺列、空输入或缺少 census
    认证输入以 exit 3 fail-closed，摘要不符以业务红码

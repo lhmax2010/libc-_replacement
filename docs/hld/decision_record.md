@@ -89,12 +89,16 @@ armv7l **43**、aarch64 **46**、x86_64 **41** 个。
 > 晋级台账是镜像组装门强制输入；同一 source 构建的每个输出必须恰有一行，
 > `ADMIT` 集合的 TIER1 分量闭包由门禁机械断言。
 
-`ADMIT_STDLIB_NEUTRAL` 是 `ADMIT` 的受限子类，只允许同时具备以下三项
-机械证据的输出使用：文件清单证明不含 ELF；符号/归档扫描证明无 C++ 面；
-candidate 内容 SHA 已由两个独立来源复验一致。该类仍须完成 candidate
-manifest、晋级台账与镜像实选 SHA 的三方身份对账，但因没有可参与动态
-C++ 图的 ELF，可免 TIER1 分量闭包断言。`boost-license` 三组实例均改用
-此 disposition；缺任一证据不得降格为 neutral。
+`ADMIT_STDLIB_NEUTRAL` 是 `ADMIT` 的受限子类。资格唯一来源为
+`gates/stdlib_neutral_registry.tsv`：登记前机械执行 RPM 文件清单、ELF
+magic 零命中和内容 SHA 双源复验，并把证据摘要写入登记行。authority
+manifest 同时认证 TIER1 成员表与 neutral 登记册两个叶子；门以
+`(census_id,target_arch,package,rpm_arch,nevra)+rpm_sha256` 精确匹配。
+该类仍须完成 candidate manifest、晋级台账与镜像实选 SHA 的三方身份
+对账，但因登记证据证明没有可参与动态 C++ 图的 ELF，可免 TIER1 分量
+闭包断言。台账自身不得声明 neutral 资格。
+
+> 豁免/减免通道与主通道适用同一信任纪律:任何放松断言的 disposition,其资格必须来自认证数据源,不得由行自身声明。
 
 第四门以
 `(batch,target_arch,package,rpm_arch,nevra)` 为输出身份键，逐行要求
