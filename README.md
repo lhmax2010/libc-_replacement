@@ -48,4 +48,4 @@ missing payloads.
 3. Large artifacts are resolved only through `REF_INDEX.md` and their
    recorded hashes.
 
-**PENDING_P1_EXIT_REVIEW —— 三方评审 PASS 前不得作为开发依据**
+**P1_EXIT_REVIEW_PASSED — 2026-07-30；GPT `reviewers/p1_exit/r6/gpt_closure_verdict_r6.md` SHA256 `163f54f7076bf6cd9d2e84c8b70773743303fd118bc7738552cf7860101f4210`；Claude `reviewers/p1_exit/r6/claude_confirmation_neutral-registry.md` SHA256 `109aa9de9ccfe9b45f2ae7fda2b6be0f6f1013988444c6db732ae26ac4822524`；Kimi `reviewers/p1_exit/r6/kimi_confirmation_r6.md` SHA256 `769abb562e491fca2e2f06cde5905bc15a871af3242e2f4d76673714cdc282b6`。**
