@@ -12,6 +12,19 @@
 - 2026-07-27 资源控制续跑：首次 rootstrap 下载在第 66/105 项处随会话
   中断；后续统一限制为 CPU 0–1、`nice 10`、单线程和每进程 6 GiB
   虚拟内存上限。
+- 2026-07-30 OQ-5 红项裁决：`D5_MACRO_GLUE_WHITESPACE` 维持为真缺陷；
+  空 allowlist 的“逐字节不变”判据不放宽。修复限定为宏胶水形态调整：
+  条件展开自带分隔符、注入点无缝紧贴，机制本体不变。首跑证据路径追溯和
+  本次复跑证据入口记录于
+  `/home/toolchain/plan_evaluation/p1/d5_allowlist/evidence/oq5_red_rerun2/oq5_first_run_locator.md`。
+
+勘误注记（2026-07-30）：§3 的 PoC 阴性对照只覆盖单包最小 fixture，
+没有覆盖平台 buildconf 在空 allowlist 下对真实 spec 的逐字节影响，因此
+存在单包盲区。OQ-5 平台差分首跑发现旧宏把分隔空格留在注入点外侧，空展开
+仍会残留空格，违反“逐字节不变”。本次修正只改变胶水形态：命中时宏输出自带
+前导分隔符，未命中时零字节；source 名判定、注入点位置和 POSIX token 循环
+机制维持不变。正文关于机制可行性的结论不因该勘误放宽，必须以 OQ-5 复跑
+重新证明。
 
 ## 1. 数据支撑的输入事实
 
@@ -65,8 +78,8 @@ NEVRA+SHA256。构建同源不再被误解为同源 candidate 必须同时晋级
 
 ```spec
 %d5_libcxx_allowlist d5-positive
-%d5_package_cxxflags %(result=; for item in %{d5_libcxx_allowlist}; do if test "x$item" = "x%{name}"; then result='-stdlib=libc++'; fi; done; echo -n "$result")
-%d5_package_ldflags %(result=; for item in %{d5_libcxx_allowlist}; do if test "x$item" = "x%{name}"; then result='-lc++ -lc++abi'; fi; done; echo -n "$result")
+%d5_package_cxxflags %(result=; for item in %{d5_libcxx_allowlist}; do if test "x$item" = "x%{name}"; then result=' -stdlib=libc++'; fi; done; echo -n "$result")
+%d5_package_ldflags %(result=; for item in %{d5_libcxx_allowlist}; do if test "x$item" = "x%{name}"; then result=' -lc++ -lc++abi'; fi; done; echo -n "$result")
 ```
 
 该宏追加在现有 `Optflags` 的公共来源中。结果为：
@@ -75,6 +88,11 @@ NEVRA+SHA256。构建同源不再被误解为同源 candidate 必须同时晋级
   `-stdlib=libc++`，`%build_ldflags` 另令链接命令出现
   `-lc++ -lc++abi`；
 - `%{name}` 不在 allowlist：宏输出严格为空，既有 flags 的字符序列不变。
+
+胶水形态说明：D5 选项宏在命中时自带前导分隔符，未命中时输出零字节；
+各注入点与 `%{d5_package_*flags}` 无缝紧贴。因此空 allowlist 不会留下额外
+空格，`%build_ldflags` 的尾部空格也同法收干净；source 名判定、注入点和
+POSIX token 循环机制不变。
 
 `-stdlib=libc++` 负责 clang 头文件选择和 driver 的标准库链接语义；
 显式 `-lc++/-lc++abi` 只追加到 `%build_ldflags`，保留在链接命令中作为
