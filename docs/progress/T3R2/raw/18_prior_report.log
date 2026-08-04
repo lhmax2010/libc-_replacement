@@ -1,0 +1,62 @@
+WORKING_DIRECTORY=/home/toolchain/development/libc++_replacement
+COMMAND_BEGIN
+sed -n 1\,280p docs/progress/T3R/T3R_report.md 
+COMMAND_END
+# T3 重开：LLVM 22.1.8 三架构构建与 R2 链条复核报告
+
+状态：`RED_STOP`。T3-0 与 R2 链条复核通过；x86_64 构建成功并归档 7 个二进制 RPM、1 个源 RPM；armv7l 与 aarch64 均在进入单包 buildroot 前出现 `UNCLASSIFIED` 红项并按一根一用纪律退役。未进入 T4。
+
+## 1. main 合并与构建输入身份
+
+`codex/r3-t3-input-gap-evidence` 已以普通 merge 合入 `main`，合并提交和远端 `main` 均为 `89bc0b8ad6f0d41c0fcdf4b9c942b08c3f378e72`。R3、基线导入、R4 三个原提交 SHA 均是该提交的祖先，未 squash、未 rebase、未强推（`merge_result.tsv:2`、`merge_result.tsv:3`、`merge_result.tsv:4`、`merge_result.tsv:5`、`merge_result.tsv:6`）。
+
+构建 spec 身份为该 main 提交中的 `packaging/libcxx-runtimes.spec`，SHA256 为 `a8437cca668ee785906ba5349efcd5b4b91a049ffd4b53e5234a6c2c6066af74`；map、manifest、SOURCE_PROVENANCE 和全部 packaging 文件 SHA 见 `build_input_identity.tsv:2` 至 `build_input_identity.tsv:7`、`packaging_sha256.tsv:2` 至 `packaging_sha256.tsv:9`。
+
+为遵守“不重新打包平台 tarball”，本次以 GBS `--style obs` 消费预导出输入：四个 packaging 文本逐字来自上述 main 提交，`Source0` 逐字来自平台 SRPM。成功生成的 x86_64 SRPM 再解包核对，内含 `llvm-22.1.8.tar.gz` 仍为裁决 SHA（`build_input_identity.tsv:8` 至 `build_input_identity.tsv:11`）。从 21.1.1 冻结构建命令提取原文、三架构实际命令及完整日志 SHA 见 `commands/02_freeze_inputs_and_t3_0.log:50` 至 `commands/02_freeze_inputs_and_t3_0.log:68`、`build_commands.tsv:2` 至 `build_commands.tsv:4`。
+
+## 2. T3-0 三锚与版本断言
+
+三锚全部逐项实测通过：
+
+- 平台 tarball SHA256 为 `16a932e1bad4e1ed68938b48aa9fe5613992426584a75dd17dacabf2151d122e`（`commands/02_freeze_inputs_and_t3_0.log:69` 至 `commands/02_freeze_inputs_and_t3_0.log:72`）；
+- 平台 spec VCS 为 `platform/upstream/llvm#c12cbe887ff08f04628e1b1165f8d02ce69a9146`（`commands/02_freeze_inputs_and_t3_0.log:73` 至 `commands/02_freeze_inputs_and_t3_0.log:79`）；
+- `llvmorg-22.1.8` peeled commit 为 `ca7933e47d3a3451d81e72ac174dcb5aa28b59d1`（`commands/02_freeze_inputs_and_t3_0.log:80` 至 `commands/02_freeze_inputs_and_t3_0.log:82`）。
+
+源码 `LLVMVersion.cmake` 的 Major/Minor/Patch 为 22/1/8；平台实际 RPM 为 `clang-22.1.8-18.1.x86_64`，其隔离执行首行为 `clang version 22.1.8`。原文与命令退出 0 见 `commands/02_freeze_inputs_and_t3_0.log:83` 至 `commands/02_freeze_inputs_and_t3_0.log:118`；结论表见 `three_anchor.tsv:2` 至 `three_anchor.tsv:4`、`version_assertion.tsv:2` 至 `version_assertion.tsv:6`。T3-0 为 `PASS`。
+
+## 3. 三架构构建结果
+
+| 架构 | 退出码 | 状态 | 红项分类 | 制品 |
+|---|---:|---|---|---:|
+| armv7l | 1 | 单包构建前失败，根已退役 | `UNCLASSIFIED` | 0 |
+| aarch64 | 1 | 单包构建前失败，根已退役 | `UNCLASSIFIED` | 0 |
+| x86_64 | 0 | `SUCCEEDED`，根已退役 | 无 | 7 binary + 1 source RPM |
+
+机械状态表见 `architecture_status.tsv:2` 至 `architecture_status.tsv:4`。
+
+armv7l 的 GBS/depanneur 将工作树内部预导出路径向上归一为仓根，扫描全仓 spec 后报 `circle found in 389 packages`；退出 1 原文见 `armv7l/failure_classification.raw.log:1` 至 `armv7l/failure_classification.raw.log:7`。aarch64 虽已把 `--path` 指向仓外输入，但启动工作目录仍优先命中仓根，扫描全仓后报 `circle found in 392 packages`；退出 1 原文见 `aarch64/failure_classification.raw.log:1` 至 `aarch64/failure_classification.raw.log:7`。两者均未进入 libcxx-runtimes 单包 scratch 根，未实际解析工具链，未产生 RPM；按“其他失败”登记 `UNCLASSIFIED`，未复用或重试对应根。
+
+x86_64 明确解析为单包、出现完整 `init_buildsystem --repository` 行、安装 `clang-22.1.8-18.1.x86_64`，并写出全部 8 个 RPM后退出 0（`x86_64/build_success.raw.log:1` 至 `x86_64/build_success.raw.log:15`）。逐 RPM NEVRA、大小和 SHA256 见 `x86_64/rpm_sha256.tsv:2` 至 `x86_64/rpm_sha256.tsv:9`；归档配置及所有归档对象见 `artifact_inventory.tsv:2` 至 `artifact_inventory.tsv:16`。这些 RPM 和配置只保存在 `artifacts/rebuild_2218/`，不上传 GitHub。
+
+x86_64 scratch 根内实际安装的 110 个 RPM 全列见 `x86_64/installed_all_nevra.tsv:1`；工具链子集全列见 `x86_64/toolchain_nevra.tsv:1`。其中 clang、libllvm、llvm、llvm-devel、lldb 均为 `22.1.8-18.1.x86_64`，根内 `clang --version` 为 22.1.8（`x86_64/buildroot_clang_version.raw.log:1` 至 `x86_64/buildroot_clang_version.raw.log:5`）。
+
+C10 在 x86_64 首次构建中已走过 `check-files` 并成功写包，登记 `VERIFIED_BY_FIRST_BUILD`；armv7l/aarch64 未到达该阶段，仍为 `PENDING_FIRST_BUILD_VERIFICATION`。BuildRequires 版本形态在 x86_64 未触发红项；分类全集见 `red_items.tsv:2` 至 `red_items.tsv:8`。
+
+## 4. R2 注入链条复核
+
+复核取自已经退役、仅只读的 x86_64 22.1.8 scratch 根。新根 `tizen_macros` 与 R2 的 21.1.1 退役根文件 SHA256 同为 `f0f991bd97f44b7bf906ac4a7a45cd34b7444c1acce2358261e4a95b3e68ebc8`；相关块逐字 diff 均退出 0（`r2_chain_conclusion.tsv:2` 至 `r2_chain_conclusion.tsv:6`）。
+
+22.1.8 根内的精确定义为：
+
+- `%build_cxxflags %{optflags}` 位于 `usr/lib/rpm/macros:1049`；
+- `%set_build_flags` 位于 `usr/lib/rpm/macros:1057`，变量为空时执行 `CXXFLAGS=${CXXFLAGS:-%{?build_cxxflags}}` 和 `LDFLAGS=${LDFLAGS:-%{?build_ldflags}}`（`R2_chain/new_22_1_8_set_build_flags.file_line.log:7`、`R2_chain/new_22_1_8_set_build_flags.file_line.log:15` 至 `R2_chain/new_22_1_8_set_build_flags.file_line.log:18`）；
+- `%__spec_build_pre` 位于 `usr/lib/rpm/tizen_macros:229`，第 231 行仍调用 `%{set_build_flags}`（`R2_chain/new_22_1_8_spec_build_pre.file_line.log:1` 至 `R2_chain/new_22_1_8_spec_build_pre.file_line.log:4`）。
+
+与 21.1.1 对应块的输入 SHA 见 `R2_chain/input_sha256.tsv:1` 至 `R2_chain/input_sha256.tsv:4`；两份 diff 均为零字节且退出 0，该结果固化于 `r2_chain_conclusion.tsv:3` 至 `r2_chain_conclusion.tsv:6`。最终三选一结论为 `CHAIN_PRESERVED`（`r2_chain_conclusion.tsv:7`）。
+
+## 5. 红项、留痕与停止边界
+
+本任务最终状态为 `RED_STOP`，具体含两个 `UNCLASSIFIED` 架构红项；T3-0 和 R2 不受其影响且均完成。证据采集过程中两次非构建命令失败也完整保留：首次使用宿主 `rpm --root` 命中了错误的用户 RPMDB 路径，第二次被空验证目录守卫拒绝，第三次改为根内 `chroot rpm` 后退出 0；这两项不改变 x86_64 构建退出 0 和 RPM 字节（`execution_incidents.tsv:2` 至 `execution_incidents.tsv:6`）。
+
+三份构建全程日志、RPM、SRPM、tarball、buildroot 和临时解包树均为 `LOCAL_ONLY`；日志 SHA/大小见 `build_commands.tsv:2` 至 `build_commands.tsv:4`，其他排除对象见 `EXCLUDED.tsv:2` 起。任务状态行见 `state.tsv:2`。本任务止于此，未执行 T4 打包门禁，未修改任何 spec、源码、`plan_evaluation/` 或备份目录内容。
+EXIT_CODE=0
