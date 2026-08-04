@@ -1,0 +1,65 @@
+FORMAL_BUILDCONF_D5_AND_FLAGS
+   355	########## compilation flags ##########
+   356	Macros:
+   357	# D5 Wave 1 source-package allowlist; RPM 4.14-safe POSIX token loop.
+   358	%d5_libcxx_allowlist libcynara-commons libcynara-creds-dbus cynara askuser-notification security-manager
+   359	%d5_package_cxxflags %(result=; for item in %{d5_libcxx_allowlist}; do if test "x$item" = "x%{name}"; then result=' -stdlib=libc++'; fi; done; echo -n "$result")
+   360	%d5_package_ldflags %(result=; for item in %{d5_libcxx_allowlist}; do if test "x$item" = "x%{name}"; then result=' -lc++ -lc++abi'; fi; done; echo -n "$result")
+   361	:Macros
+   362	
+   363	%define __optflags %{__optflags_toolchain} -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches%{d5_package_cxxflags}
+   364	
+   365	Optflags: armv7l %{__optflags} -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64
+   366	Optflags: armv7hl %{__optflags} -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=hard -mthumb -D_FILE_OFFSET_BITS=64
+   367	Optflags: aarch64 %{__optflags} -march=armv8-a+fp+simd+crc+crypto -mtune=cortex-a53
+   368	Optflags: i686 %{__optflags} -fdiagnostics-color=never -m32 -march=i686 -mtune=i686 -msse4.2 -mfpmath=sse -fasynchronous-unwind-tables -fno-omit-frame-pointer -mstackrealign
+   369	Optflags: x86_64 %{__optflags} -fdiagnostics-color=never -m64 -march=nehalem -msse4.2 -mfpmath=sse -fasynchronous-unwind-tables -fno-omit-frame-pointer
+   370	Optflags: riscv64 %{__optflags} -mabi=lp64d -march=rv64gc
+   371	
+   372	%ifarch armv7l armv7hl
+   373	Macros:
+   374	%build_ldflags -Wl,-z,relro,--as-needed,-O1,--hash-style=gnu%{d5_package_ldflags}
+   375	:Macros
+   376	%endif
+
+RPM_SET_BUILD_FLAGS
+  1043	# C compiler flags.  This is traditionally called CFLAGS in makefiles.
+  1044	# Historically also available as %%{optflags}, and %%build sets the
+  1045	# environment variable RPM_OPT_FLAGS to this value.
+  1046	%build_cflags %{optflags}
+  1047	
+  1048	# C++ compiler flags.  This is traditionally called CXXFLAGS in makefiles.
+  1049	%build_cxxflags %{optflags}
+  1050	
+  1051	# Link editor flags.  This is usually called LDFLAGS in makefiles.
+  1052	#%build_ldflags -Wl,-z,relro
+  1053	
+  1054	# Expands to shell code to seot the compiler/linker environment
+  1055	# variables CFLAGS, CXXFLAGS, LDFLAGS if they have
+  1056	# not been set already.
+  1057	%set_build_flags \
+  1058	  CFLAGS="${CFLAGS:-%{?build_cflags}}" ; export CFLAGS ; \
+  1059	  CXXFLAGS="${CXXFLAGS:-%{?build_cxxflags}}" ; export CXXFLAGS ; \
+  1060	  LDFLAGS="${LDFLAGS:-%{?build_ldflags}}" ; export LDFLAGS
+
+TIZEN_SPEC_BUILD_PRE
+   229	%__spec_build_pre\
+   230	%{___build_pre}\
+   231	%{set_build_flags};\
+   232	%{nil}
+
+SPEC_APPEND_AND_CMAKE
+   222	%build
+   223	export CXXFLAGS+=" -Wl,-z,relro,-z,now"
+   224	
+   225	%if %{?build_type} == "DEBUG" || %{?build_type} == "COVERAGE"
+   226	export CXXFLAGS+=" -Wp,-U_FORTIFY_SOURCE"
+   227	%endif
+   228	
+   229	export LDFLAGS+=" -Wl,--rpath=%{_libdir}"
+   230	
+   231	%cmake . \
+   232	        -DBUILD_TESTS=ON \
+   233	        -DBUILD_WITH_SYSTEMD_DAEMON=OFF \
+   234	        -DLOG_TYPE=%{log_type} \
+   235	        -DCMAKE_BUILD_TYPE=%{?build_type} \
