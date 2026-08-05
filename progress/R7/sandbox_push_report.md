@@ -78,6 +78,8 @@ To ssh://review.tizen.org:29418/platform/upstream/llvm
 3d3e3da49e00ae89b0ff928dee811d6d0d1d4f0b	refs/heads/sandbox/lhmax2025/libcxx-ehabi-backport
 ```
 
+本项目证据提交 `d39f70b9e0ad10ac5f2adbd5222abdfd345abffe` 已推送到 GitHub 分支 `codex/r5-ehabi-diagnosis`，退出码为 0；这次 GitHub push 仅交付证据，与上述 LLVM sandbox push 分开记录。
+
 ## 证据导航
 
 - 全部命令原文与退出码：`commands/`
