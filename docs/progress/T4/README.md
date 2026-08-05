@@ -1,5 +1,18 @@
-# T4 策展说明
+# T4 策展证据索引
 
-产物为三架构打包期门禁状态。状态为 `NOT_RUN`：依赖任务 T3 已红停且无新的 LLVM 22 三架构制品，所有门禁均保持未运行。
+- `T4_report.md`：中文主报告；最终状态为 armv7l `RED`、aarch64
+  `NOT_AVAILABLE`、x86_64 `PASS`。
+- `gate_inventory.tsv` / `no_tool_mapping.tsv`：21.1.1 门项全集、出处与
+  T5 145 项冻结登记映射。
+- `gate_results.tsv` / `three_arch_gate_comparison.tsv` /
+  `architecture_summary.tsv`：逐项结果与三架构结论。
+- `artifact_identity.tsv` / `source_input_delta.tsv`：24 个 RPM 的归档
+  SHA 核验，以及 armv7l Source0 红项。
+- `commands/`：本轮命令原文与退出码 ledger；失败重试原文未删除。
+- `<arch>/static/`：门禁结果和为报告保留的关键原始加载证据。
+- `EXCLUDED.tsv`：未策展的本地全量文件逐文件登记。
 
-全量本地证据位于 `/home/toolchain/development/libc++_replacement/progress/T4/`；交叉引用的 T3 结论也随本目录策展。未上传项见 `EXCLUDED.tsv`。
+本地全量证据目录：
+`/home/toolchain/development/libc++_replacement/progress/T4/`。
+本地全量 `MANIFEST.sha256` 共 6075 项；RPM、临时别名载体、解包树和
+批量原始输出不上传。

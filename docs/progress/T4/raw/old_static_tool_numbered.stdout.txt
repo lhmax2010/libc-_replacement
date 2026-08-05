@@ -1,0 +1,119 @@
+     1	#!/bin/bash
+     2	set -euo pipefail
+     3	
+     4	if [ "$#" -ne 3 ]; then
+     5	    echo "usage: $0 ARCH GBS_ROOT OUTPUT_DIR" >&2
+     6	    exit 64
+     7	fi
+     8	
+     9	arch=$1
+    10	gbs_root=$2
+    11	out=$3
+    12	repo="$gbs_root/local/repos/tizen_unified_standard/$arch"
+    13	
+    14	mkdir -p "$out/artifacts" "$out/extracted" "$out/evidence"
+    15	
+    16	find "$repo/RPMS" -maxdepth 1 -type f -name '*21.1.1-2.*.rpm' \
+    17	    -exec cp -a {} "$out/artifacts/" \;
+    18	find "$repo/SRPMS" -maxdepth 1 -type f -name '*21.1.1-2.src.rpm' \
+    19	    -exec cp -a {} "$out/artifacts/" \;
+    20	
+    21	{
+    22	    printf 'filename\tname\tepoch_version_release\tarch\tpayload_size_bytes\tsha256\n'
+    23	    find "$out/artifacts" -maxdepth 1 -type f -name '*.rpm' -print0 |
+    24	        sort -z |
+    25	        while IFS= read -r -d '' rpm_file; do
+    26	            meta=$(rpm -qp --qf '%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\t%{SIZE}' "$rpm_file")
+    27	            digest=$(sha256sum "$rpm_file" | awk '{print $1}')
+    28	            printf '%s\t%s\t%s\n' "$(basename "$rpm_file")" "$meta" "$digest"
+    29	        done
+    30	} > "$out/rpm_manifest.tsv"
+    31	
+    32	find "$out/artifacts" -maxdepth 1 -type f \
+    33	    \( -name 'libc++-21.1.1-2.*.rpm' \
+    34	       -o -name 'libc++-devel-21.1.1-2.*.rpm' \
+    35	       -o -name 'libc++abi-21.1.1-2.*.rpm' \
+    36	       -o -name 'libc++abi-devel-21.1.1-2.*.rpm' \) \
+    37	    -print0 |
+    38	    sort -z |
+    39	    while IFS= read -r -d '' rpm_file; do
+    40	        (cd "$out/extracted" && rpm2cpio "$rpm_file" | cpio -idmuv)
+    41	    done > "$out/evidence/rpm_extract.log" 2>&1
+    42	
+    43	mapfile -t libraries < <(
+    44	    find "$out/extracted" -type f \
+    45	        \( -name 'libc++.so.1.0' -o -name 'libc++abi.so.1.0' \) |
+    46	        sort
+    47	)
+    48	
+    49	if [ "${#libraries[@]}" -ne 2 ]; then
+    50	    printf 'expected 2 runtime DSOs, found %s\n' "${#libraries[@]}" >&2
+    51	    exit 2
+    52	fi
+    53	
+    54	printf 'library\tdefined_exports\tdefault_LLVM_21\tsingle_at_LLVM_21\tunversioned_or_other\tcoverage_percent\tverdict\n' \
+    55	    > "$out/versioning_gate.tsv"
+    56	printf 'library\tdynsym_line\n' > "$out/unversioned_exports.tsv"
+    57	printf 'library\tdynsym_line\n' > "$out/single_at_exports.tsv"
+    58	printf 'library\tneeded_soname\n' > "$out/direct_needed.tsv"
+    59	
+    60	for library in "${libraries[@]}"; do
+    61	    base=$(basename "$library")
+    62	    stem=${base//+/x}
+    63	    readelf --dyn-syms -W "$library" > "$out/evidence/${stem}_dynsyms.log"
+    64	    readelf --version-info -W "$library" > "$out/evidence/${stem}_version_info.log"
+    65	    readelf -d -W "$library" > "$out/evidence/${stem}_dynamic.log"
+    66	    readelf -h -W "$library" > "$out/evidence/${stem}_elf_header.log"
+    67	
+    68	    awk '$5 ~ /^(GLOBAL|WEAK)$/ && $6 ~ /^(DEFAULT|PROTECTED)$/ &&
+    69	         $7 != "UND" && $7 != "ABS" {print}' \
+    70	        "$out/evidence/${stem}_dynsyms.log" \
+    71	        > "$out/evidence/${stem}_defined_exports.log"
+    72	
+    73	    total=$(wc -l < "$out/evidence/${stem}_defined_exports.log")
+    74	    default=$(awk '$8 ~ /@@LLVM_21$/ {n++} END {print n+0}' \
+    75	        "$out/evidence/${stem}_defined_exports.log")
+    76	    single=$(awk '$8 ~ /@LLVM_21$/ && $8 !~ /@@LLVM_21$/ {n++} END {print n+0}' \
+    77	        "$out/evidence/${stem}_defined_exports.log")
+    78	    other=$((total - default - single))
+    79	    coverage=$(awk -v n="$default" -v d="$total" \
+    80	        'BEGIN {if (d == 0) print "0.000"; else printf "%.3f", 100*n/d}')
+    81	    verdict=PASS
+    82	    if [ "$single" -ne 0 ] || [ "$other" -ne 0 ] || [ "$total" -eq 0 ]; then
+    83	        verdict=FAIL
+    84	    fi
+    85	    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    86	        "$base" "$total" "$default" "$single" "$other" "$coverage" "$verdict" \
+    87	        >> "$out/versioning_gate.tsv"
+    88	
+    89	    awk -v lib="$base" \
+    90	        '$5 ~ /^(GLOBAL|WEAK)$/ && $6 ~ /^(DEFAULT|PROTECTED)$/ &&
+    91	         $7 != "UND" && $7 != "ABS" && $8 !~ /@LLVM_21$/ {
+    92	             print lib "\t" $0
+    93	         }' "$out/evidence/${stem}_dynsyms.log" \
+    94	        >> "$out/unversioned_exports.tsv"
+    95	    awk -v lib="$base" \
+    96	        '$5 ~ /^(GLOBAL|WEAK)$/ && $6 ~ /^(DEFAULT|PROTECTED)$/ &&
+    97	         $7 != "UND" && $7 != "ABS" &&
+    98	         $8 ~ /@LLVM_21$/ && $8 !~ /@@LLVM_21$/ {
+    99	             print lib "\t" $0
+   100	         }' "$out/evidence/${stem}_dynsyms.log" \
+   101	        >> "$out/single_at_exports.tsv"
+   102	    awk -v lib="$base" '/\(NEEDED\)/ {
+   103	        soname=$NF
+   104	        gsub(/^\[/, "", soname)
+   105	        gsub(/\]$/, "", soname)
+   106	        print lib "\t" soname
+   107	    }' "$out/evidence/${stem}_dynamic.log" >> "$out/direct_needed.tsv"
+   108	done
+   109	
+   110	{
+   111	    printf 'arch\tmachine\n'
+   112	    for library in "${libraries[@]}"; do
+   113	        machine=$(readelf -h -W "$library" | awk -F: '/Machine:/ {
+   114	            sub(/^[[:space:]]+/, "", $2)
+   115	            print $2
+   116	        }')
+   117	        printf '%s\t%s\n' "$arch" "$machine"
+   118	    done
+   119	} > "$out/elf_identity.tsv"

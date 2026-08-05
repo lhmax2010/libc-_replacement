@@ -1,0 +1,191 @@
+     1	# libc++/libc++abi 21.1.1 三架构入仓候选报告
+     2	
+     3	日期：2026-07-25  
+     4	结论：armv7l、aarch64、x86_64 的 `21.1.1-2` 候选 RPM 均已由
+     5	`gbs_llvm.conf` clean build 产出；三架构逐一通过版本化、依赖闭包和
+     6	红绿绑定三组硬门。当前没有 `PENDING_RUNTIME_CARRIER`。本任务未向
+     7	Gerrit、OBS 或任何平台仓提交。
+     8	
+     9	## 1. 输入身份与构建命令
+    10	
+    11	- 源仓 commit：
+    12	  `67e4b73a5f6a40545555ba6b1318807967f86678`。
+    13	- 三架构实际 GBS source tarball SHA256 完全相同：
+    14	  `867a37f81994efb213228e3475c3c51930187c6980e7ac36b8a5ecd5e4485026`。
+    15	- 最终 spec SHA256：
+    16	  `25db13b28204be28d21bab4a54cfbfc96b2abfc9e3f114f1041175a967f13f4f`。
+    17	- `gbs_llvm.conf` SHA256：
+    18	  `a32c1aba714714bfba8aba1b4e78bf015f297f4162bcff9652250c6d5b81f2b7`。
+    19	- 三条命令均有独立 buildroot、`-A`、`-C`，且 `--define` 数为 0。
+    20	  命令原文、SHA 和机械断言见 `command_integrity.tsv`、
+    21	  `armv7l/build/command.txt`、`aarch64/build/command.txt`、
+    22	  `x86_64/build/command.txt`。
+    23	- 三架构 debuginfo 的 `DW_AT_producer` 都是
+    24	  `clang version 21.1.1`；GNU AS 2.43 仅作为汇编 producer 同时出现。
+    25	
+    26	三条最终构建退出码均为 0。逐字日志保存在各架构
+    27	`build/gbs_build.log`，最终门表见各架构 `gate_verdict.tsv`。
+    28	
+    29	## 2. spec 复核与最小适配
+    30	
+    31	### 数据支撑的结论
+    32	
+    33	1. 原 spec 的 compiler、C++ compiler、ASM compiler target 和
+    34	   `LLVM_DEFAULT_TARGET_TRIPLE` 都取 `%{_host}`，无需硬编码架构
+    35	   triple。
+    36	2. ARM EHABI、LP64/DWARF EH 和架构 builtins 由 LLVM 上游按 target
+    37	   宏选择；aarch64/x86_64 不应继承 armv7l 的 EHABI 分支。
+    38	3. `--rtlib=libgcc` 与 `LIBCXXABI_USE_LLVM_UNWINDER=OFF` 可直接复用。
+    39	4. LLVM 21 runtimes 的最终安装目录由
+    40	   `LIBCXX_INSTALL_LIBRARY_DIR` 与 `LIBCXXABI_INSTALL_LIBRARY_DIR`
+    41	   决定；只设置 `CMAKE_INSTALL_LIBDIR` 对这两个 DSO 无效。
+    42	
+    43	### 最终实际 diff
+    44	
+    45	在初始 spec 上只发生以下候选打包改动：
+    46	
+    47	- `Release: 1` → `Release: 2`；
+    48	- 增加 `ExclusiveArch: armv7l aarch64 x86_64`；
+    49	- 显式设置
+    50	  `LIBCXX_INSTALL_LIBRARY_DIR=%{_lib}`、
+    51	  `LIBCXXABI_INSTALL_LIBRARY_DIR=%{_lib}`；
+    52	- 增加 Release 2 changelog。
+    53	
+    54	最终逐行 diff 为 `spec_review/spec_actual_v3.diff`。
+    55	
+    56	适配严格遵守“先提案、后修改”：
+    57	
+    58	- 初始提案：`spec_diff_proposal.patch`；
+    59	- v2 提案：`spec_diff_proposal_v2.patch`；
+    60	- 最终 v3 提案：`spec_diff_proposal_v3.patch`，修改前
+    61	  `git apply --check` 退出 0。
+    62	
+    63	失败历史没有删除：
+    64	
+    65	- armv7l 首轮失败是三个 `--include-all` 同时导出同一 Git 工作树，
+    66	  争用 `.git/gbp_index.lock`，见
+    67	  `armv7l/build/gbs_build_attempt1.log`；
+    68	- 64 位首轮和 v2 均完成编译，但库仍装入 `/usr/lib`，RPM 清单要求
+    69	  `/usr/lib64`，见各架构 `gbs_build_attempt1.log` 与
+    70	  `gbs_build_v2.log`；
+    71	- v3 显式使用 LLVM runtimes 专用变量后，armv7l 实装 `/usr/lib`，
+    72	  aarch64/x86_64 实装 `/usr/lib64`，三者均成功。
+    73	
+    74	`spec_review/spec_review_followup_v2.md` 已明确标
+    75	`SUPERSEDED`，最终依据为 `spec_review_followup_v3.md`。
+    76	
+    77	## 3. 候选制品
+    78	
+    79	每架构产出 7 个二进制 RPM 和 1 个 SRPM：
+    80	
+    81	- `libc++`、`libc++-devel`、`libc++-debuginfo`；
+    82	- `libc++abi`、`libc++abi-devel`、`libc++abi-debuginfo`；
+    83	- `libcxx-runtimes-debugsource`；
+    84	- `libcxx-runtimes` SRPM。
+    85	
+    86	| 架构 | NEVRA 基线 | RPM 数 | RPM 字节数 | digest |
+    87	|---|---:|---:|---:|---|
+    88	| armv7l | 21.1.1-2.armv7l | 8 | 25,560,728 | 8/8 OK |
+    89	| aarch64 | 21.1.1-2.aarch64 | 8 | 25,646,186 | 8/8 OK |
+    90	| x86_64 | 21.1.1-2.x86_64 | 8 | 25,667,405 | 8/8 OK |
+    91	
+    92	逐 RPM NEVRA、payload size、SHA256 在各架构 `rpm_manifest.tsv`。
+    93	候选目录为各架构 `artifacts/`；其中已生成本地 `repodata/`，可直接作为
+    94	后续 wave 构建的本地 repo。`rpm -K --nosignature` 原文在
+    95	`evidence/rpm_digest_check.log`，三架构均 8/8 digest OK。
+    96	
+    97	## 4. 硬门 A：全部导出为 `@@LLVM_21`
+    98	
+    99	统计口径是 dynsym 中已定义、GLOBAL/WEAK、DEFAULT/PROTECTED、
+   100	非 UND、非 ABS 的实际可导出符号；ABS 的版本节点记录本身不算函数或
+   101	对象导出。
+   102	
+   103	| 架构 | DSO | 导出数 | `@@LLVM_21` | 单 `@LLVM_21` | 无版本/其他 | 结论 |
+   104	|---|---|---:|---:|---:|---:|---|
+   105	| armv7l | libc++.so.1.0 | 1,965 | 1,965 | 0 | 0 | PASS |
+   106	| armv7l | libc++abi.so.1.0 | 371 | 371 | 0 | 0 | PASS |
+   107	| aarch64 | libc++.so.1.0 | 1,966 | 1,966 | 0 | 0 | PASS |
+   108	| aarch64 | libc++abi.so.1.0 | 369 | 369 | 0 | 0 | PASS |
+   109	| x86_64 | libc++.so.1.0 | 1,966 | 1,966 | 0 | 0 | PASS |
+   110	| x86_64 | libc++abi.so.1.0 | 369 | 369 | 0 | 0 | PASS |
+   111	
+   112	三架构覆盖率均为 100.000%。`unversioned_exports.tsv` 和
+   113	`single_at_exports.tsv` 都只有表头，故“未版本化符号全量清单”为
+   114	空集。`readelf --dyn-syms` 与 `--version-info` 逐字输出在各架构
+   115	`evidence/*_dynsyms.log` 和 `evidence/*_version_info.log`。
+   116	
+   117	## 5. 硬门 B：依赖闭包完整
+   118	
+   119	三架构共同满足：
+   120	
+   121	- `libc++.so.1` 直接依赖 `libc++abi.so.1` 和 `libgcc_s.so.1`；
+   122	- `libc++abi.so.1` 直接依赖 `libgcc_s.so.1`；
+   123	- `LD_BIND_NOW=1 ldd -r` 的完整闭包中，`libstdc++` 为 0，
+   124	  `libunwind` 为 0，强未解析为 0；
+   125	- 两个正式 DSO 都带 `BIND_NOW/NOW`。
+   126	
+   127	aarch64/x86_64 另直接需要 `libatomic.so.1`；这是两架构实际产物数据，
+   128	不影响上述禁止项。完整 NEEDED 表见 `direct_needed.tsv`，运行闭包原文
+   129	见 `evidence/needed_closure_ldd_r.log`。
+   130	
+   131	运行时归属也逐架构通过：
+   132	
+   133	- `__cxa_finalize` → glibc；
+   134	- `_Unwind_RaiseException` → libgcc_s；
+   135	- `__cxa_throw`、`__cxa_allocate_exception`、
+   136	  `__gxx_personality_v0` → 候选 libc++abi。
+   137	
+   138	机械判读见 `provider_family_gate.tsv`，绑定原文见
+   139	`evidence/smoke_provider_bindings.log`。
+   140	
+   141	## 6. 硬门 C：混链红绿 fixture
+   142	
+   143	每个架构都重新构建并执行同一对探针：
+   144	
+   145	- 绿探针使用正式 `@@LLVM_21` 候选库。其
+   146	  `__cxa_throw`/`__cxa_allocate_exception` 两条绑定均落到候选
+   147	  `libc++abi.so.1`，判 `PASS_GREEN`。
+   148	- 红探针故意保留无版本 `__cxa_*` UND，并先全局装载
+   149	  `libstdc++.so.6`。两条绑定均错误落到 libstdc++，机械门将该候选
+   150	  判为 `EXPECTED_RED_DETECTED`，即负面对照被成功拒绝。
+   151	
+   152	红探针进程本身退出 0 正是该缺陷的危险之处：动态链接器允许错误绑定；
+   153	“拒绝”由门禁看到错误 provider 后执行，而不是等待进程崩溃。
+   154	
+   155	逐架构编译/运行命令及 SHA 在 `runtime_fixture_commands.txt`，
+   156	判读见 `binding_gate.tsv`；完整 `LD_DEBUG=bindings` 原文及摘录在
+   157	`evidence/{green,red}_bind.*` 和
+   158	`evidence/{green,red}_relevant_bindings.log`。
+   159	
+   160	## 7. 运行载体与冒烟
+   161	
+   162	冒烟程序覆盖 `std::string`、异常抛接和 `dynamic_cast`。
+   163	
+   164	| 架构 | 本轮载体 | 退出码 | 状态 | 作用域 |
+   165	|---|---|---:|---|---|
+   166	| armv7l | QEMU user/binfmt + GBS chroot | 0 | PASS | 新候选本轮重跑；另有既往 RPI4 板上先例 |
+   167	| aarch64 | `qemu-aarch64-binfmt` + GBS chroot | 0 | PASS | 实际执行证据，不是静态推断 |
+   168	| x86_64 | x86_64 宿主原生 GBS chroot | 0 | PASS | 实际执行证据 |
+   169	
+   170	宿主及 binfmt 原文在 `runtime_carrier_probe.log`；逐架构输出在
+   171	`runtime_smoke.tsv` 和 `evidence/smoke_run.log`。
+   172	
+   173	aarch64 当前载体是 QEMU user，不等价于 aarch64 真机上的内核、驱动和
+   174	整镜像集成验证；因此它足以关闭本任务的运行冒烟载体缺口，但不能替代
+   175	入仓后的目标板系统测试。当前不存在因“完全无执行载体”而产生的
+   176	`PENDING_RUNTIME_CARRIER`。
+   177	
+   178	## 8. 汇总与交付边界
+   179	
+   180	权威汇总是 `multiarch_gate_matrix.tsv`：
+   181	
+   182	- build：3/3 PASS；
+   183	- 版本化：7,006/7,006 个导出均为 `@@LLVM_21`，单 `@` 0，
+   184	  无版本 0；
+   185	- 闭包：三个架构的 libstdc++、libunwind、强未解析均为 0；
+   186	- 绿探针：3/3 PASS；
+   187	- 红负面对照：3/3 被正确识别并拒绝；
+   188	- 冒烟：3/3 实际运行 PASS。
+   189	
+   190	制品、命令、逐字 readelf/ldd/LD_DEBUG 日志和判读表均已落在本目录。
+   191	入平台仓、Gerrit 提交、OBS 提交及仓权限动作不在本任务范围内，均未执行。

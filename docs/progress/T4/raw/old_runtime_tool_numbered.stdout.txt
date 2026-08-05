@@ -1,0 +1,219 @@
+     1	#!/bin/bash
+     2	set -euo pipefail
+     3	
+     4	if [ "$#" -ne 3 ]; then
+     5	    echo "usage: $0 ARCH GBS_ROOT OUTPUT_DIR" >&2
+     6	    exit 64
+     7	fi
+     8	
+     9	arch=$1
+    10	gbs_root=$2
+    11	out=$3
+    12	root="$gbs_root/local/BUILD-ROOTS/scratch.$arch.0"
+    13	fixture=/tmp/libcxx-multiarch-release2
+    14	fixture_host="$root$fixture"
+    15	source_dir=/home/toolchain/plan_evaluation/p1/libcxx_packaging/fixtures
+    16	chroot_cmd=(unshare -Ur chroot "$root")
+    17	
+    18	mkdir -p "$out/evidence"
+    19	find "$out/evidence" -maxdepth 1 -type f \
+    20	    \( -name 'smoke_bind.*' -o -name 'green_bind.*' -o -name 'red_bind.*' \) \
+    21	    -delete
+    22	rm -rf -- "$fixture_host"
+    23	install -d -m 0755 "$fixture_host/sysroot"
+    24	cp -a "$out/extracted/usr" "$fixture_host/sysroot/"
+    25	cp -a \
+    26	    "$source_dir/smoke.cpp" \
+    27	    "$source_dir/mixed_throw.cpp" \
+    28	    "$source_dir/dlopen_driver.c" \
+    29	    "$fixture_host/"
+    30	
+    31	{
+    32	    set -x
+    33	    rpm -qp --qf '%{NEVRA}\n' \
+    34	        "$out"/artifacts/libc++-21.1.1-2.*.rpm \
+    35	        "$out"/artifacts/libc++-devel-21.1.1-2.*.rpm \
+    36	        "$out"/artifacts/libc++abi-21.1.1-2.*.rpm \
+    37	        "$out"/artifacts/libc++abi-devel-21.1.1-2.*.rpm
+    38	    find "$fixture_host/sysroot" -type f -o -type l
+    39	} > "$out/evidence/runtime_rpm_stage.log" 2>&1
+    40	set +x
+    41	
+    42	runtime_libs=$(find "$fixture_host/sysroot" -type f \
+    43	    \( -name 'libc++.so.1.0' -o -name 'libc++abi.so.1.0' \) |
+    44	    sed "s#^$root##" | sort)
+    45	printf '%s\n' "$runtime_libs" > "$out/evidence/runtime_library_paths.log"
+    46	
+    47	libcxx_path=$(printf '%s\n' "$runtime_libs" |
+    48	    awk '/\/libc\+\+\.so\.1\.0$/ {print; exit}')
+    49	libcxxabi_path=$(printf '%s\n' "$runtime_libs" |
+    50	    awk '/\/libc\+\+abi\.so\.1\.0$/ {print; exit}')
+    51	
+    52	if [ -z "$libcxx_path" ] || [ -z "$libcxxabi_path" ]; then
+    53	    echo "runtime library path discovery failed" >&2
+    54	    exit 2
+    55	fi
+    56	
+    57	{
+    58	    set -x
+    59	    set +e
+    60	    "${chroot_cmd[@]}" /usr/bin/env \
+    61	        LD_BIND_NOW=1 LD_LIBRARY_PATH="$(dirname "$libcxx_path")" \
+    62	        /usr/bin/ldd -r "$libcxx_path"
+    63	    libcxx_ldd_exit=$?
+    64	    "${chroot_cmd[@]}" /usr/bin/env \
+    65	        LD_BIND_NOW=1 LD_LIBRARY_PATH="$(dirname "$libcxxabi_path")" \
+    66	        /usr/bin/ldd -r "$libcxxabi_path"
+    67	    libcxxabi_ldd_exit=$?
+    68	    set -e
+    69	    printf 'libcxx_ldd_exit=%s\n' "$libcxx_ldd_exit"
+    70	    printf 'libcxxabi_ldd_exit=%s\n' "$libcxxabi_ldd_exit"
+    71	} > "$out/evidence/needed_closure_ldd_r.log" 2>&1
+    72	set +x
+    73	
+    74	compiler_cxx=$("${chroot_cmd[@]}" /bin/sh -lc \
+    75	    'find /usr/bin /bin -maxdepth 1 -type f -o -type l 2>/dev/null |
+    76	     sed -n "/-clang++$/p" | sort -u | head -1')
+    77	compiler_c=$("${chroot_cmd[@]}" /bin/sh -lc \
+    78	    'find /usr/bin /bin -maxdepth 1 -type f -o -type l 2>/dev/null |
+    79	     sed -n "/-clang$/p" | sort -u | head -1')
+    80	
+    81	if [ -z "$compiler_cxx" ] || [ -z "$compiler_c" ]; then
+    82	    echo "target clang wrapper discovery failed" >&2
+    83	    exit 3
+    84	fi
+    85	
+    86	{
+    87	    printf 'arch=%s\n' "$arch"
+    88	    printf 'root=%s\n' "$root"
+    89	    printf 'compiler_cxx=%s\n' "$compiler_cxx"
+    90	    printf 'compiler_c=%s\n' "$compiler_c"
+    91	    printf 'fixture=%s\n' "$fixture"
+    92	    printf 'staged_libdir=%s\n' "$(dirname "$libcxx_path")"
+    93	    printf 'smoke=%s -nostdinc++ -isystem %s/sysroot/usr/include/c++/v1 smoke.cpp -nostdlib++ -L%s -Wl,-rpath,%s -lc++ -lc++abi -Wl,-z,now -o smoke\n' \
+    94	        "$compiler_cxx" "$fixture" "$(dirname "$libcxx_path")" "$(dirname "$libcxx_path")"
+    95	    printf 'green=%s -nostdinc++ -isystem %s/sysroot/usr/include/c++/v1 -fPIC -shared mixed_throw.cpp -nostdlib++ -L%s -Wl,-rpath,%s -lc++ -lc++abi -Wl,-z,now -o mixed_green.so\n' \
+    96	        "$compiler_cxx" "$fixture" "$(dirname "$libcxx_path")" "$(dirname "$libcxx_path")"
+    97	    printf 'red=%s -fPIC -shared -nostdlib++ -Wl,--allow-shlib-undefined -Wl,-z,now mixed_throw.cpp -o mixed_red.so\n' "$compiler_cxx"
+    98	    printf 'driver=%s dlopen_driver.c -ldl -o dlopen_driver\n' "$compiler_c"
+    99	    printf 'green_run=LD_BIND_NOW=1 LD_DEBUG=bindings LD_DEBUG_OUTPUT=%s/green_bind ./dlopen_driver ./mixed_green.so\n' "$fixture"
+   100	    printf 'red_run=LD_BIND_NOW=1 LD_DEBUG=bindings LD_DEBUG_OUTPUT=%s/red_bind ./dlopen_driver ./mixed_red.so\n' "$fixture"
+   101	} > "$out/runtime_fixture_commands.txt"
+   102	sha256sum "$out/runtime_fixture_commands.txt" > "$out/runtime_fixture_commands.txt.sha256"
+   103	
+   104	{
+   105	    set -x
+   106	    "${chroot_cmd[@]}" /bin/sh -lc "
+   107	        set -e
+   108	        cd '$fixture'
+   109	        '$compiler_cxx' -nostdinc++ -isystem '$fixture/sysroot/usr/include/c++/v1' \
+   110	            smoke.cpp -nostdlib++ -L'$(dirname "$libcxx_path")' \
+   111	            -Wl,-rpath,'$(dirname "$libcxx_path")' -lc++ -lc++abi \
+   112	            -Wl,-z,now -o smoke
+   113	        '$compiler_cxx' -nostdinc++ -isystem '$fixture/sysroot/usr/include/c++/v1' \
+   114	            -fPIC -shared mixed_throw.cpp -nostdlib++ \
+   115	            -L'$(dirname "$libcxx_path")' -Wl,-rpath,'$(dirname "$libcxx_path")' \
+   116	            -lc++ -lc++abi -Wl,-z,now -o mixed_green.so
+   117	        '$compiler_cxx' -fPIC -shared -nostdlib++ -Wl,--allow-shlib-undefined -Wl,-z,now mixed_throw.cpp -o mixed_red.so
+   118	        '$compiler_c' dlopen_driver.c -ldl -o dlopen_driver
+   119	        /usr/bin/readelf --dyn-syms -W mixed_green.so
+   120	        /usr/bin/readelf --version-info -W mixed_green.so
+   121	        /usr/bin/readelf -d -W mixed_green.so
+   122	        /usr/bin/readelf --dyn-syms -W mixed_red.so
+   123	        /usr/bin/readelf --version-info -W mixed_red.so
+   124	        /usr/bin/readelf -d -W mixed_red.so
+   125	    "
+   126	} > "$out/evidence/fixture_build_and_elf.log" 2>&1
+   127	set +x
+   128	
+   129	set +e
+   130	"${chroot_cmd[@]}" /bin/sh -lc "
+   131	    cd '$fixture'
+   132	    LD_BIND_NOW=1 LD_LIBRARY_PATH='$(dirname "$libcxx_path")' \
+   133	        LD_DEBUG=bindings LD_DEBUG_OUTPUT='$fixture/smoke_bind' ./smoke
+   134	" > "$out/evidence/smoke_run.log" 2>&1
+   135	smoke_exit=$?
+   136	"${chroot_cmd[@]}" /bin/sh -lc "
+   137	    cd '$fixture'
+   138	    LD_BIND_NOW=1 LD_LIBRARY_PATH='$(dirname "$libcxx_path")' \
+   139	        LD_DEBUG=bindings LD_DEBUG_OUTPUT='$fixture/green_bind' \
+   140	        ./dlopen_driver ./mixed_green.so
+   141	" > "$out/evidence/green_run.log" 2>&1
+   142	green_exit=$?
+   143	"${chroot_cmd[@]}" /bin/sh -lc "
+   144	    cd '$fixture'
+   145	    LD_BIND_NOW=1 LD_LIBRARY_PATH='$(dirname "$libcxx_path")' \
+   146	        LD_DEBUG=bindings LD_DEBUG_OUTPUT='$fixture/red_bind' \
+   147	        ./dlopen_driver ./mixed_red.so
+   148	" > "$out/evidence/red_run.log" 2>&1
+   149	red_exit=$?
+   150	set -e
+   151	
+   152	printf 'smoke_exit=%s\ngreen_exit=%s\nred_exit=%s\n' \
+   153	    "$smoke_exit" "$green_exit" "$red_exit" \
+   154	    > "$out/evidence/runtime_exit_codes.log"
+   155	
+   156	for kind in smoke green red; do
+   157	    find "$fixture_host" -maxdepth 1 -type f -name "${kind}_bind.*" \
+   158	        -exec cp -a {} "$out/evidence/" \;
+   159	done
+   160	
+   161	grep -H -E "binding file .*mixed_green\\.so.*(__cxa_allocate_exception|__cxa_throw)" \
+   162	    "$out"/evidence/green_bind.* \
+   163	    > "$out/evidence/green_relevant_bindings.log" || true
+   164	grep -H -E "binding file .*mixed_red\\.so.*(__cxa_allocate_exception|__cxa_throw)" \
+   165	    "$out"/evidence/red_bind.* \
+   166	    > "$out/evidence/red_relevant_bindings.log" || true
+   167	grep -H -E "binding file .*(__cxa_finalize|__cxa_allocate_exception|__cxa_throw|_Unwind_RaiseException|__gxx_personality_v0)" \
+   168	    "$out"/evidence/smoke_bind.* \
+   169	    > "$out/evidence/smoke_provider_bindings.log" || true
+   170	
+   171	closure_forbidden=$(grep -c 'libstdc++' "$out/evidence/needed_closure_ldd_r.log" || true)
+   172	closure_libunwind=$(grep -c 'libunwind' "$out/evidence/needed_closure_ldd_r.log" || true)
+   173	strong_unresolved=$(grep -c -E 'undefined symbol:|not found' "$out/evidence/needed_closure_ldd_r.log" || true)
+   174	closure_verdict=PASS
+   175	if [ "$closure_forbidden" -ne 0 ] || [ "$closure_libunwind" -ne 0 ] ||
+   176	   [ "$strong_unresolved" -ne 0 ]; then
+   177	    closure_verdict=FAIL
+   178	fi
+   179	
+   180	green_hits=$(grep -E -c 'libc\+\+abi\.so\.1.*normal symbol .__cxa_(allocate_exception|throw)' \
+   181	    "$out/evidence/green_relevant_bindings.log" || true)
+   182	red_hits=$(grep -E -c 'libstdc\+\+\.so\.6.*normal symbol .__cxa_(allocate_exception|throw)' \
+   183	    "$out/evidence/red_relevant_bindings.log" || true)
+   184	green_verdict=FAIL
+   185	red_verdict=FAIL
+   186	if [ "$green_exit" -eq 0 ] && [ "$green_hits" -ge 2 ]; then
+   187	    green_verdict=PASS_GREEN
+   188	fi
+   189	if [ "$red_hits" -ge 2 ]; then
+   190	    red_verdict=EXPECTED_RED_DETECTED
+   191	fi
+   192	
+   193	printf 'arch\tforbidden_libstdcxx_lines\tforbidden_libunwind_lines\tstrong_unresolved_lines\tverdict\traw_evidence\n' \
+   194	    > "$out/dependency_closure_gate.tsv"
+   195	printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+   196	    "$arch" "$closure_forbidden" "$closure_libunwind" "$strong_unresolved" "$closure_verdict" \
+   197	    'evidence/needed_closure_ldd_r.log' >> "$out/dependency_closure_gate.tsv"
+   198	
+   199	printf 'arch\tfixture\truntime_exit\tmatching_binding_lines\tverdict\traw_evidence\n' \
+   200	    > "$out/binding_gate.tsv"
+   201	printf '%s\tgreen_formal\t%s\t%s\t%s\t%s\n' \
+   202	    "$arch" "$green_exit" "$green_hits" "$green_verdict" \
+   203	    'evidence/green_relevant_bindings.log' >> "$out/binding_gate.tsv"
+   204	printf '%s\tred_unversioned_mixed\t%s\t%s\t%s\t%s\n' \
+   205	    "$arch" "$red_exit" "$red_hits" "$red_verdict" \
+   206	    'evidence/red_relevant_bindings.log' >> "$out/binding_gate.tsv"
+   207	
+   208	smoke_verdict=FAIL
+   209	if [ "$smoke_exit" -eq 0 ]; then
+   210	    smoke_verdict=PASS
+   211	fi
+   212	carrier=QEMU_USER_BINFMT_GBS_CHROOT
+   213	if [ "$arch" = x86_64 ]; then
+   214	    carrier=NATIVE_X86_64_GBS_CHROOT
+   215	fi
+   216	printf 'arch\tcarrier\tsmoke_exit\tverdict\traw_evidence\n' > "$out/runtime_smoke.tsv"
+   217	printf '%s\t%s\t%s\t%s\t%s\n' \
+   218	    "$arch" "$carrier" "$smoke_exit" "$smoke_verdict" \
+   219	    'evidence/smoke_run.log' >> "$out/runtime_smoke.tsv"
