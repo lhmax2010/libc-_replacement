@@ -1,0 +1,169 @@
+From: liushanshan <ss0217.liu@samsung.com>
+Date: Fri, 10 Jul 2026 21:44:33 +0800
+Subject: Apply Tizen toolchain compatibility fixes
+
+---
+ clang/include/clang/Config/config.h.cmake  | 3 +++
+ clang/include/clang/Driver/Driver.h        | 4 ++++
+ clang/lib/Driver/Driver.cpp                | 7 +++++++
+ clang/lib/Driver/ToolChains/CommonArgs.cpp | 2 +-
+ clang/lib/Driver/ToolChains/Linux.cpp      | 3 ++-
+ clang/lib/Options/OptionUtils.cpp          | 6 ++++--
+ compiler-rt/cmake/base-config-ix.cmake     | 2 +-
+ compiler-rt/lib/asan/CMakeLists.txt        | 1 +
+ llvm/include/llvm/TargetParser/Triple.h    | 3 ++-
+ llvm/lib/TargetParser/Triple.cpp           | 1 +
+ 10 files changed, 26 insertions(+), 6 deletions(-)
+
+diff --git a/clang/include/clang/Config/config.h.cmake b/clang/include/clang/Config/config.h.cmake
+index 00c352b458c3..0e7107a1964e 100644
+--- a/clang/include/clang/Config/config.h.cmake
++++ b/clang/include/clang/Config/config.h.cmake
+@@ -32,6 +32,9 @@
+ /* Default architecture for SystemZ. */
+ #define CLANG_SYSTEMZ_DEFAULT_ARCH "${CLANG_SYSTEMZ_DEFAULT_ARCH}"
+ 
++/* Multilib suffix for libdir. */
++#define CLANG_LIBDIR_SUFFIX "${CLANG_LIBDIR_SUFFIX}"
++
+ /* Multilib basename for libdir. */
+ #define CLANG_INSTALL_LIBDIR_BASENAME "${CLANG_INSTALL_LIBDIR_BASENAME}"
+ 
+diff --git a/clang/include/clang/Driver/Driver.h b/clang/include/clang/Driver/Driver.h
+index b7bd1bc8aab4..1dbbe9e81f7a 100644
+--- a/clang/include/clang/Driver/Driver.h
++++ b/clang/include/clang/Driver/Driver.h
+@@ -179,6 +179,10 @@ public:
+   /// command line.
+   std::string Dir;
+ 
++  /// The real path the driver executable was in, as invoked from the
++  /// command line. It differs from Dir in case of accelerated environment.
++  std::string RealDir;
++
+   /// The original path to the clang executable.
+   std::string ClangExecutable;
+ 
+diff --git a/clang/lib/Driver/Driver.cpp b/clang/lib/Driver/Driver.cpp
+index eb3f9cbea284..df5264665c6c 100644
+--- a/clang/lib/Driver/Driver.cpp
++++ b/clang/lib/Driver/Driver.cpp
+@@ -186,6 +186,13 @@ Driver::Driver(StringRef ClangExecutable, StringRef TargetTriple,
+   if (!this->VFS)
+     this->VFS = llvm::vfs::getRealFileSystem();
+ 
++     RealDir = llvm::sys::path::parent_path(ClangExecutable);
++
++    // Skip /emul if we work in accelerated environment
++    #define QEMU_ACCEL_DIR "/emul"
++    if (ClangExecutable.substr(0, sizeof(QEMU_ACCEL_DIR) - 1) == QEMU_ACCEL_DIR)
++      ClangExecutable = ClangExecutable.drop_front(sizeof(QEMU_ACCEL_DIR) - 1);
++
+   Name = std::string(llvm::sys::path::filename(ClangExecutable));
+   Dir = std::string(llvm::sys::path::parent_path(ClangExecutable));
+ 
+diff --git a/clang/lib/Driver/ToolChains/CommonArgs.cpp b/clang/lib/Driver/ToolChains/CommonArgs.cpp
+index 10a1a412eea0..cd77f43b5937 100644
+--- a/clang/lib/Driver/ToolChains/CommonArgs.cpp
++++ b/clang/lib/Driver/ToolChains/CommonArgs.cpp
+@@ -1029,7 +1029,7 @@ void tools::addLTOOptions(const ToolChain &ToolChain, const ArgList &Args,
+ #endif
+ 
+     SmallString<1024> Plugin;
+-    llvm::sys::path::native(Twine(D.Dir) +
++    llvm::sys::path::native(Twine(D.RealDir) +
+                                 "/../" CLANG_INSTALL_LIBDIR_BASENAME +
+                                 PluginName + Suffix,
+                             Plugin);
+diff --git a/clang/lib/Driver/ToolChains/Linux.cpp b/clang/lib/Driver/ToolChains/Linux.cpp
+index d525b417b4ea..8a8a755a136c 100644
+--- a/clang/lib/Driver/ToolChains/Linux.cpp
++++ b/clang/lib/Driver/ToolChains/Linux.cpp
+@@ -813,6 +813,7 @@ void Linux::addLibStdCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
+     return;
+ 
+   StringRef LibDir = GCCInstallation.getParentLibPath();
++  const StringRef InstallDir = GCCInstallation.getInstallPath();
+   const Multilib &Multilib = GCCInstallation.getMultilib();
+   const GCCVersion &Version = GCCInstallation.getVersion();
+ 
+@@ -822,7 +823,7 @@ void Linux::addLibStdCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
+       LibDir.str() + "/../" + TripleStr.str() + "/include/c++/" + Version.Text,
+       // Freescale SDK C++ headers are directly in <sysroot>/usr/include/c++,
+       // without a subdirectory corresponding to the gcc version.
+-      LibDir.str() + "/../include/c++",
++      LibDir.str() + "/../include/c++", InstallDir.str() + "/include/c++",
+       // Cray's gcc installation puts headers under "g++" without a
+       // version suffix.
+       LibDir.str() + "/../include/g++",
+diff --git a/clang/lib/Options/OptionUtils.cpp b/clang/lib/Options/OptionUtils.cpp
+index e5aefa012f67..a061892a25eb 100644
+--- a/clang/lib/Options/OptionUtils.cpp
++++ b/clang/lib/Options/OptionUtils.cpp
+@@ -228,11 +228,13 @@ std::string clang::GetResourcesPath(StringRef BinaryPath) {
+     // On non-Windows, libclang.so/.dylib is in lib/.
+     // With a static-library build of libclang, LibClangPath will contain the
+     // path of the embedding binary, which for LLVM binaries will be in bin/.
+-    // ../lib gets us to lib/ in both cases.
++    // ../lib gets us to lib/ in both cases.c
++    const char *NO_LIBDIR_SUFFIX = std::getenv("CLANG_NO_LIBDIR_SUFFIX");
++    StringRef ClangLibdirSuffix(NO_LIBDIR_SUFFIX ? "" : CLANG_LIBDIR_SUFFIX);
+     P = llvm::sys::path::parent_path(Dir);
+     // This search path is also created in the COFF driver of lld, so any
+     // changes here also needs to happen in lld/COFF/Driver.cpp
+-    llvm::sys::path::append(P, CLANG_INSTALL_LIBDIR_BASENAME, "clang",
++    llvm::sys::path::append(P, Twine("lib") + ClangLibdirSuffix, "clang",
+                             CLANG_VERSION_MAJOR_STRING);
+   }
+ 
+diff --git a/compiler-rt/cmake/base-config-ix.cmake b/compiler-rt/cmake/base-config-ix.cmake
+index 37dfa5534dfe..b90fec62723c 100644
+--- a/compiler-rt/cmake/base-config-ix.cmake
++++ b/compiler-rt/cmake/base-config-ix.cmake
+@@ -273,7 +273,7 @@ macro(test_targets)
+       test_target_arch(nvptx64 "" "--nvptx64-nvidia-cuda" "-nogpulib" "-flto"
+                        "-fconvergent-functions" "-c")
+     elseif("${COMPILER_RT_DEFAULT_TARGET_ARCH}" MATCHES "arm")
+-      if(WIN32)
++      if(WIN32 OR "${COMPILER_RT_DEFAULT_TARGET_TRIPLE}" MATCHES ".*-tizen-.*")
+         test_target_arch(arm "" "" "")
+       else()
+         test_target_arch(armv4t "" "-march=armv4t" "-mfloat-abi=soft")
+diff --git a/compiler-rt/lib/asan/CMakeLists.txt b/compiler-rt/lib/asan/CMakeLists.txt
+index 232bb2574a77..254032d26f43 100644
+--- a/compiler-rt/lib/asan/CMakeLists.txt
++++ b/compiler-rt/lib/asan/CMakeLists.txt
+@@ -161,6 +161,7 @@ append_list_if(COMPILER_RT_HAS_LIBM m ASAN_DYNAMIC_LIBS)
+ append_list_if(COMPILER_RT_HAS_LIBPTHREAD pthread ASAN_DYNAMIC_LIBS)
+ append_list_if(COMPILER_RT_HAS_LIBLOG log ASAN_DYNAMIC_LIBS)
+ append_list_if(MINGW "${MINGW_LIBRARIES}" ASAN_DYNAMIC_LIBS)
++list(APPEND ASAN_DYNAMIC_LIBS ${LLVM_ATOMIC_LIB})
+ 
+ # Compile ASan sources into an object library.
+ 
+diff --git a/llvm/include/llvm/TargetParser/Triple.h b/llvm/include/llvm/TargetParser/Triple.h
+index 9c83abeeb3b1..4a3f8bbac59a 100644
+--- a/llvm/include/llvm/TargetParser/Triple.h
++++ b/llvm/include/llvm/TargetParser/Triple.h
+@@ -203,7 +203,8 @@ public:
+     OpenEmbedded,
+     Intel,
+     Meta,
+-    LastVendorType = Meta
++    Tizen,
++    LastVendorType = Tizen
+   };
+   enum OSType {
+     UnknownOS,
+diff --git a/llvm/lib/TargetParser/Triple.cpp b/llvm/lib/TargetParser/Triple.cpp
+index a4f9dd42c0fe..3014e992ad21 100644
+--- a/llvm/lib/TargetParser/Triple.cpp
++++ b/llvm/lib/TargetParser/Triple.cpp
+@@ -703,6 +703,7 @@ static Triple::VendorType parseVendor(StringRef VendorName) {
+       .Case("oe", Triple::OpenEmbedded)
+       .Case("intel", Triple::Intel)
+       .Case("meta", Triple::Meta)
++      .Case("tizen", Triple::Tizen)
+       .Default(Triple::UnknownVendor);
+ }
+ 
