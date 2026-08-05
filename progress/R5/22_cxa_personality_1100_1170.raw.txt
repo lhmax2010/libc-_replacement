@@ -1,0 +1,71 @@
+  1100	    assert(actions & _UA_CLEANUP_PHASE);
+  1101	    assert(results.reason == _URC_HANDLER_FOUND);
+  1102	    set_registers(unwind_exception, context, results);
+  1103	    // Cache base for calculating the address of ttype in __cxa_call_unexpected.
+  1104	    if (results.ttypeIndex < 0) {
+  1105	      __cxa_exception* exception_header =
+  1106	            (__cxa_exception*)(unwind_exception + 1) - 1;
+  1107	#if defined(_AIX)
+  1108	      exception_header->catchTemp = (void *)_Unwind_GetDataRelBase(context);
+  1109	#else
+  1110	      exception_header->catchTemp = 0;
+  1111	#endif
+  1112	    }
+  1113	    return _URC_INSTALL_CONTEXT;
+  1114	}
+  1115	
+  1116	#if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
+  1117	extern "C" _LIBCXXABI_FUNC_VIS EXCEPTION_DISPOSITION
+  1118	__gxx_personality_seh0(PEXCEPTION_RECORD ms_exc, void *this_frame,
+  1119	                       PCONTEXT ms_orig_context, PDISPATCHER_CONTEXT ms_disp)
+  1120	{
+  1121	  return _GCC_specific_handler(ms_exc, this_frame, ms_orig_context, ms_disp,
+  1122	                               __gxx_personality_imp);
+  1123	}
+  1124	#endif
+  1125	
+  1126	#else
+  1127	
+  1128	// Helper function to unwind one frame.
+  1129	// ARM EHABI 7.3 and 7.4: If the personality function returns _URC_CONTINUE_UNWIND, the
+  1130	// personality routine should update the virtual register set (VRS) according to the
+  1131	// corresponding frame unwinding instructions (ARM EHABI 9.3.)
+  1132	static _Unwind_Reason_Code continue_unwind(_Unwind_Exception* unwind_exception,
+  1133	                                           _Unwind_Context* context)
+  1134	{
+  1135	  switch (__gnu_unwind_frame(unwind_exception, context)) {
+  1136	  case _URC_OK:
+  1137	    return _URC_CONTINUE_UNWIND;
+  1138	  case _URC_END_OF_STACK:
+  1139	    return _URC_END_OF_STACK;
+  1140	  default:
+  1141	    return _URC_FAILURE;
+  1142	  }
+  1143	}
+  1144	
+  1145	// ARM register names
+  1146	#if !defined(_LIBUNWIND_VERSION)
+  1147	static const uint32_t REG_UCB = 12;  // Register to save _Unwind_Control_Block
+  1148	#endif
+  1149	static const uint32_t REG_SP = 13;
+  1150	
+  1151	static void save_results_to_barrier_cache(_Unwind_Exception* unwind_exception,
+  1152	                                          const scan_results& results)
+  1153	{
+  1154	    unwind_exception->barrier_cache.bitpattern[0] = (uint32_t)results.adjustedPtr;
+  1155	    unwind_exception->barrier_cache.bitpattern[1] = (uint32_t)results.actionRecord;
+  1156	    unwind_exception->barrier_cache.bitpattern[2] = (uint32_t)results.languageSpecificData;
+  1157	    unwind_exception->barrier_cache.bitpattern[3] = (uint32_t)results.landingPad;
+  1158	    unwind_exception->barrier_cache.bitpattern[4] = (uint32_t)results.ttypeIndex;
+  1159	}
+  1160	
+  1161	static void load_results_from_barrier_cache(scan_results& results,
+  1162	                                            const _Unwind_Exception* unwind_exception)
+  1163	{
+  1164	    results.adjustedPtr = (void*)unwind_exception->barrier_cache.bitpattern[0];
+  1165	    results.actionRecord = (const uint8_t*)unwind_exception->barrier_cache.bitpattern[1];
+  1166	    results.languageSpecificData = (const uint8_t*)unwind_exception->barrier_cache.bitpattern[2];
+  1167	    results.landingPad = (uintptr_t)unwind_exception->barrier_cache.bitpattern[3];
+  1168	    results.ttypeIndex = (int64_t)(int32_t)unwind_exception->barrier_cache.bitpattern[4];
+  1169	}
+  1170	

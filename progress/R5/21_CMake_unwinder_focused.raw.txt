@@ -1,0 +1,121 @@
+    45	include(CMakeDependentOption)
+    46	include(HandleCompilerRT)
+    47	
+    48	# Define options.
+    49	option(LIBCXXABI_ENABLE_EXCEPTIONS
+    50	  "Provide support for exceptions in the runtime.
+    51	  When disabled, libc++abi does not support stack unwinding and other exceptions-related features." ON)
+    52	option(LIBCXXABI_ENABLE_ASSERTIONS "Enable assertions independent of build mode." ON)
+    53	option(LIBCXXABI_ENABLE_PEDANTIC "Compile with pedantic enabled." OFF)
+    54	option(LIBCXXABI_ENABLE_WERROR "Fail and stop if a warning is triggered." OFF)
+    55	option(LIBCXXABI_USE_LLVM_UNWINDER "Build and use the LLVM unwinder." ON)
+    56	if (LIBCXXABI_USE_LLVM_UNWINDER AND NOT "libunwind" IN_LIST LLVM_ENABLE_RUNTIMES)
+    57	  message(FATAL_ERROR "LIBCXXABI_USE_LLVM_UNWINDER is set to ON, but libunwind is not specified in LLVM_ENABLE_RUNTIMES.")
+    58	endif()
+    59	option(LIBCXXABI_ENABLE_STATIC_UNWINDER "Statically link the LLVM unwinder." OFF)
+    60	option(LIBCXXABI_USE_COMPILER_RT "Use compiler-rt instead of libgcc" OFF)
+    61	option(LIBCXXABI_ENABLE_THREADS "Build with threads enabled" ON)
+    62	option(LIBCXXABI_HAS_PTHREAD_API "Ignore auto-detection and force use of pthread API" OFF)
+    63	option(LIBCXXABI_HAS_WIN32_THREAD_API "Ignore auto-detection and force use of win32 thread API" OFF)
+    64	option(LIBCXXABI_HAS_EXTERNAL_THREAD_API
+    65	  "Build libc++abi with an externalized threading API.
+   465	#===============================================================================
+   466	# Setup Source Code
+   467	#===============================================================================
+   468	
+   469	set(LIBCXXABI_LIBUNWIND_INCLUDES "${LIBCXXABI_LIBUNWIND_INCLUDES}" CACHE PATH
+   470	    "Specify path to libunwind includes." FORCE)
+   471	set(LIBCXXABI_LIBUNWIND_PATH "${LIBCXXABI_LIBUNWIND_PATH}" CACHE PATH
+   472	    "Specify path to libunwind source." FORCE)
+   473	
+   474	if (LIBCXXABI_USE_LLVM_UNWINDER OR LLVM_NATIVE_ARCH MATCHES ARM)
+   475	  find_path(LIBCXXABI_LIBUNWIND_INCLUDES_INTERNAL libunwind.h
+   476	    PATHS ${LIBCXXABI_LIBUNWIND_INCLUDES}
+   477	          ${LIBCXXABI_LIBUNWIND_PATH}/include
+   478	          ${CMAKE_BINARY_DIR}/${LIBCXXABI_LIBUNWIND_INCLUDES}
+   479	          ${LLVM_MAIN_SRC_DIR}/projects/libunwind/include
+   480	          ${LLVM_MAIN_SRC_DIR}/runtimes/libunwind/include
+   481	          ${LLVM_MAIN_SRC_DIR}/../libunwind/include
+   482	    NO_DEFAULT_PATH
+   483	    NO_CMAKE_FIND_ROOT_PATH
+   484	  )
+   485	
+   486	  if (LIBCXXABI_LIBUNWIND_INCLUDES_INTERNAL STREQUAL "LIBCXXABI_LIBUNWIND_INCLUDES_INTERNAL-NOTFOUND")
+   487	    set(LIBCXXABI_LIBUNWIND_INCLUDES_INTERNAL "")
+   488	  endif()
+   489	endif()
+   490	
+   491	if (NOT "${LIBCXXABI_LIBUNWIND_INCLUDES_INTERNAL}" STREQUAL "")
+   492	  include_directories("${LIBCXXABI_LIBUNWIND_INCLUDES_INTERNAL}")
+   493	endif()
+   494	
+   495	add_custom_target(cxxabi-test-depends
+   496	  COMMENT "Build dependencies required to run the libc++abi test suite.")
+   497	
+   498	# Add source code. This also contains all of the logic for deciding linker flags
+   499	# soname, etc...
+   500	add_subdirectory(include)
+   501	add_subdirectory(src)
+   502	
+   503	if (LIBCXXABI_INCLUDE_TESTS)
+   504	  add_subdirectory(test)
+   505	  add_subdirectory(fuzz)
+82-endif()
+83-
+84-if (NOT LIBCXXABI_USE_COMPILER_RT)
+85-  add_library_flags_if(LIBCXXABI_HAS_GCC_LIB gcc)
+86-endif()
+87:if (NOT LIBCXXABI_USE_LLVM_UNWINDER)
+88-  add_library_flags_if(LIBCXXABI_HAS_GCC_S_LIB gcc_s)
+89-endif()
+90-
+91-if (MINGW)
+92-  # MINGW_LIBRARIES is defined in config-ix.cmake
+--
+101-  add_link_flags_if_supported(-nostdlib++)
+102-else()
+103-  add_link_flags_if_supported(-nodefaultlibs)
+104-endif()
+105-
+106:if (CXX_SUPPORTS_UNWINDLIB_EQ_NONE_FLAG AND LIBCXXABI_USE_LLVM_UNWINDER)
+107-  # If we're linking directly against the libunwind that we're building
+108-  # in the same invocation, don't try to link in the toolchain's
+109-  # default libunwind (which may be missing still).
+110-  add_link_flags_if_supported(--unwindlib=none)
+111-endif()
+--
+161-include(WarningFlags)
+162-
+163-# Build the shared library.
+164-add_library(cxxabi_shared_objects OBJECT EXCLUDE_FROM_ALL ${LIBCXXABI_SOURCES} ${LIBCXXABI_HEADERS})
+165-cxx_add_warning_flags(cxxabi_shared_objects ${LIBCXXABI_ENABLE_WERROR} ${LIBCXXABI_ENABLE_PEDANTIC})
+166:if (LIBCXXABI_USE_LLVM_UNWINDER)
+167-  if (LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY OR
+168-      (DEFINED LIBUNWIND_ENABLE_SHARED AND NOT LIBUNWIND_ENABLE_SHARED))
+169-    target_link_libraries(cxxabi_shared_objects PUBLIC unwind_shared_objects) # propagate usage requirements
+170-    target_sources(cxxabi_shared_objects PUBLIC $<TARGET_OBJECTS:unwind_shared_objects>)
+171-  else()
+--
+269-endif()
+270-
+271-# Build the static library.
+272-add_library(cxxabi_static_objects OBJECT EXCLUDE_FROM_ALL ${LIBCXXABI_SOURCES} ${LIBCXXABI_HEADERS})
+273-cxx_add_warning_flags(cxxabi_static_objects ${LIBCXXABI_ENABLE_WERROR} ${LIBCXXABI_ENABLE_PEDANTIC})
+274:if (LIBCXXABI_USE_LLVM_UNWINDER AND LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY)
+275-  target_link_libraries(cxxabi_static_objects PUBLIC unwind_static_objects) # propagate usage requirements
+276-  target_sources(cxxabi_static_objects PUBLIC $<TARGET_OBJECTS:unwind_static_objects>)
+277-endif()
+278-target_link_libraries(cxxabi_static_objects
+279-  PUBLIC cxxabi-headers
+--
+310-      _LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS
+311-      _LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS=)
+312-endif()
+313-
+314-add_library(cxxabi_static STATIC)
+315:if (LIBCXXABI_USE_LLVM_UNWINDER AND NOT LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY)
+316-  target_link_libraries(cxxabi_static PUBLIC unwind_static runtimes-libc-static)
+317-endif()
+318-set_target_properties(cxxabi_static
+319-  PROPERTIES
+320-    EXCLUDE_FROM_ALL "$<IF:$<BOOL:${LIBCXXABI_ENABLE_STATIC}>,FALSE,TRUE>"

@@ -1,0 +1,199 @@
+    24	/* Language-independent unwinder header public defines.  This contains both
+    25	   ABI defined objects, and GNU support routines.  */
+    26	
+    27	#ifndef UNWIND_ARM_COMMON_H
+    28	#define UNWIND_ARM_COMMON_H
+    29	
+    30	#define __ARM_EABI_UNWINDER__ 1
+    31	
+    32	#ifdef __cplusplus
+    33	extern "C" {
+    34	#endif
+    35	  typedef unsigned _Unwind_Word __attribute__((__mode__(__word__)));
+    36	  typedef signed _Unwind_Sword __attribute__((__mode__(__word__)));
+    37	  typedef unsigned _Unwind_Ptr __attribute__((__mode__(__pointer__)));
+    38	  typedef unsigned _Unwind_Internal_Ptr __attribute__((__mode__(__pointer__)));
+    39	  typedef _Unwind_Word _uw;
+    40	  typedef unsigned _uw64 __attribute__((mode(__DI__)));
+    41	  typedef unsigned _uw16 __attribute__((mode(__HI__)));
+    42	  typedef unsigned _uw8 __attribute__((mode(__QI__)));
+    43	
+    44	  typedef enum
+    45	    {
+    46	      _URC_OK = 0,       /* operation completed successfully */
+    47	      _URC_FOREIGN_EXCEPTION_CAUGHT = 1,
+    48	      _URC_END_OF_STACK = 5,
+    49	      _URC_HANDLER_FOUND = 6,
+    50	      _URC_INSTALL_CONTEXT = 7,
+    51	      _URC_CONTINUE_UNWIND = 8,
+    52	      _URC_FAILURE = 9   /* unspecified failure of some kind */
+    53	    }
+    54	  _Unwind_Reason_Code;
+    55	
+    56	  typedef enum
+    57	    {
+    58	      _US_VIRTUAL_UNWIND_FRAME = 0,
+    59	      _US_UNWIND_FRAME_STARTING = 1,
+    60	      _US_UNWIND_FRAME_RESUME = 2,
+    61	      _US_ACTION_MASK = 3,
+    62	      _US_FORCE_UNWIND = 8,
+    63	      _US_END_OF_STACK = 16
+    64	    }
+    65	  _Unwind_State;
+    66	
+    67	  /* Provided only for compatibility with existing code.  */
+    68	  typedef int _Unwind_Action;
+    69	#define _UA_SEARCH_PHASE	1
+    70	#define _UA_CLEANUP_PHASE	2
+    71	#define _UA_HANDLER_FRAME	4
+    72	#define _UA_FORCE_UNWIND	8
+    73	#define _UA_END_OF_STACK	16
+    74	#define _URC_NO_REASON 	_URC_OK
+    75	
+    76	  typedef struct _Unwind_Control_Block _Unwind_Control_Block;
+    77	  typedef struct _Unwind_Context _Unwind_Context;
+    78	  typedef _uw _Unwind_EHT_Header;
+    79	
+    80	
+    81	  /* UCB: */
+    82	
+    83	  struct _Unwind_Control_Block
+    84	    {
+    85	      char exception_class[8];
+    86	      void (*exception_cleanup)(_Unwind_Reason_Code, _Unwind_Control_Block *);
+    87	      /* Unwinder cache, private fields for the unwinder's use */
+    88	      struct
+    89		{
+    90		  _uw reserved1;  /* Forced unwind stop fn, 0 if not forced */
+    91		  _uw reserved2;  /* Personality routine address */
+    92		  _uw reserved3;  /* Saved callsite address */
+    93		  _uw reserved4;  /* Forced unwind stop arg */
+    94		  _uw reserved5;  /* Personality routine GOT value in FDPIC mode.  */
+    95		}
+    96	      unwinder_cache;
+    97	      /* Propagation barrier cache (valid after phase 1): */
+    98	      struct
+    99		{
+   100		  _uw sp;
+   101		  _uw bitpattern[5];
+   102		}
+   103	      barrier_cache;
+   104	      /* Cleanup cache (preserved over cleanup): */
+   105	      struct
+   106		{
+   107		  _uw bitpattern[4];
+   108		}
+   109	      cleanup_cache;
+   110	      /* Pr cache (for pr's benefit): */
+   111	      struct
+   112		{
+   113		  _uw fnstart;			/* function start address */
+   114		  _Unwind_EHT_Header *ehtp;	/* pointer to EHT entry header word */
+   115		  _uw additional;		/* additional data */
+   116		  _uw reserved1;
+   117		}
+   118	      pr_cache;
+   119	      long long int :0;	/* Force alignment to 8-byte boundary */
+   120	    };
+   121	
+   122	  /* Virtual Register Set*/
+   123	
+   124	  typedef enum
+   125	    {
+   126	      _UVRSC_CORE = 0,      /* integer register */
+   127	      _UVRSC_VFP = 1,       /* vfp */
+   128	      _UVRSC_FPA = 2,       /* fpa */
+   129	      _UVRSC_WMMXD = 3,     /* Intel WMMX data register */
+   130	      _UVRSC_WMMXC = 4,     /* Intel WMMX control register */
+   131	      _UVRSC_PAC = 5        /* Armv8.1-M Mainline PAC/AUTH pseudo-register */
+   132	    }
+   133	  _Unwind_VRS_RegClass;
+   134	
+   135	  typedef enum
+   136	    {
+   137	      _UVRSD_UINT32 = 0,
+   138	      _UVRSD_VFPX = 1,
+   139	      _UVRSD_FPAX = 2,
+   140	      _UVRSD_UINT64 = 3,
+   141	      _UVRSD_FLOAT = 4,
+   142	      _UVRSD_DOUBLE = 5
+   143	    }
+   144	  _Unwind_VRS_DataRepresentation;
+   145	
+   146	  typedef enum
+   147	    {
+   148	      _UVRSR_OK = 0,
+   149	      _UVRSR_NOT_IMPLEMENTED = 1,
+   150	      _UVRSR_FAILED = 2
+   151	    }
+   152	  _Unwind_VRS_Result;
+   153	
+   154	  /* Frame unwinding state.  */
+   155	  typedef struct
+   156	    {
+   157	      /* The current word (bytes packed msb first).  */
+   158	      _uw data;
+   159	      /* Pointer to the next word of data.  */
+   160	      _uw *next;
+   161	      /* The number of bytes left in this word.  */
+   162	      _uw8 bytes_left;
+   163	      /* The number of words pointed to by ptr.  */
+   164	      _uw8 words_left;
+   165	    }
+   166	  __gnu_unwind_state;
+   167	
+   168	  typedef _Unwind_Reason_Code (*personality_routine) (_Unwind_State,
+   169	      _Unwind_Control_Block *, _Unwind_Context *);
+   170	
+   171	  _Unwind_VRS_Result _Unwind_VRS_Set(_Unwind_Context *, _Unwind_VRS_RegClass,
+   172	                                     _uw, _Unwind_VRS_DataRepresentation,
+   173	                                     void *);
+   174	
+   175	  _Unwind_VRS_Result _Unwind_VRS_Get(_Unwind_Context *, _Unwind_VRS_RegClass,
+   176	                                     _uw, _Unwind_VRS_DataRepresentation,
+   177	                                     void *);
+   178	
+   179	  _Unwind_VRS_Result _Unwind_VRS_Pop(_Unwind_Context *, _Unwind_VRS_RegClass,
+   180	                                     _uw, _Unwind_VRS_DataRepresentation);
+   181	
+   182	
+   183	  /* Support functions for the PR.  */
+   184	#define _Unwind_Exception _Unwind_Control_Block
+   185	  typedef char _Unwind_Exception_Class[8];
+   186	
+   187	  void * _Unwind_GetLanguageSpecificData (_Unwind_Context *);
+   188	  _Unwind_Ptr _Unwind_GetRegionStart (_Unwind_Context *);
+   189	
+   190	  _Unwind_Ptr _Unwind_GetDataRelBase (_Unwind_Context *);
+   191	  /* This should never be used.  */
+   192	  _Unwind_Ptr _Unwind_GetTextRelBase (_Unwind_Context *);
+   193	
+   194	  /* Interface functions: */
+   195	  _Unwind_Reason_Code _Unwind_RaiseException(_Unwind_Control_Block *ucbp);
+   196	  void __attribute__((noreturn)) _Unwind_Resume(_Unwind_Control_Block *ucbp);
+   197	  _Unwind_Reason_Code _Unwind_Resume_or_Rethrow (_Unwind_Control_Block *ucbp);
+   198	
+   199	  typedef _Unwind_Reason_Code (*_Unwind_Stop_Fn)
+   200	       (int, _Unwind_Action, _Unwind_Exception_Class,
+   201		_Unwind_Control_Block *, struct _Unwind_Context *, void *);
+   202	  _Unwind_Reason_Code _Unwind_ForcedUnwind (_Unwind_Control_Block *,
+   203						    _Unwind_Stop_Fn, void *);
+   204	  /* @@@ Use unwind data to perform a stack backtrace.  The trace callback
+   205	     is called for every stack frame in the call chain, but no cleanup
+   206	     actions are performed.  */
+   207	  typedef _Unwind_Reason_Code (*_Unwind_Trace_Fn) (_Unwind_Context *, void *);
+   208	  _Unwind_Reason_Code _Unwind_Backtrace(_Unwind_Trace_Fn,
+   209						void*);
+   210	
+   211	  _Unwind_Word _Unwind_GetCFA (struct _Unwind_Context *);
+   212	  void _Unwind_Complete(_Unwind_Control_Block *ucbp);
+   213	  void _Unwind_DeleteException (_Unwind_Exception *);
+   214	
+   215	  _Unwind_Reason_Code __gnu_unwind_frame (_Unwind_Control_Block *,
+   216						  _Unwind_Context *);
+   217	  _Unwind_Reason_Code __gnu_unwind_execute (_Unwind_Context *,
+   218						    __gnu_unwind_state *);
+   219	
+   220	  static inline _Unwind_Word
+   221	  _Unwind_GetGR (_Unwind_Context *context, int regno)
+   222	    {
