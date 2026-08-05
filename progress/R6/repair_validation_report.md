@@ -191,6 +191,8 @@ armv7l 唯一独有的诊断原文为：
 
 二进制制品保存在 `artifacts/rebuild_2218/armv7l/`；证据仓只提交 R6 文本证据、原始日志和人工上传用 patch，不把 329 MiB RPM 制品重复上传 GitHub，逐 RPM SHA 已完整落盘。
 
+本项目证据主提交 `83b753fc21992e3c4778dba8347ab61d760b1c36` 已推送至 GitHub 分支 `codex/r5-ehabi-diagnosis`，首次 push 退出码为 0；命令与远端输出见 `github_delivery.tsv`。该 push 的目标是 `libc-_replacement` 证据仓，不是 LLVM/Gerrit 源码仓。
+
 ## 七、证据导航
 
 - 全量构建日志：`build_armv7l_git_r3b.full.log`
