@@ -7,7 +7,7 @@
 1. **D106703 本身未合入**：LLVM Phabricator 当前标记 `Abandoned`。其功能方向后来以独立的 `llvm-libgcc` 子项目落地，初始提交为 `c5a20b518203613497fa864867fc232648006068`；LLVM 22.1.8 本地源码与查询时 upstream main 均仍有该设施。
 2. **现存合成设施有明确边界**：`llvm-libgcc` 用 compiler-rt builtins 与 libunwind 组成共享对象，使用 `gcc_s.ver.in`，并生成 `libgcc_s.so.1.0/.1/.so` 名称链；需要 `LLVM_LIBGCC_EXPLICIT_OPT_IN=Yes`。ChromeOS 当前公开 ebuild 也默认启用 `+synth_libgcc`，把 builtins 与 libunwind 静态对象链接成带版本脚本的 `libgcc_s.so.1`。
 3. **平台 glibc 三架构均按 SONAME 硬编码依赖**：三份 `libc.so.6` 都包含 `libgcc_s.so.1`、unwind 函数名以及“unwinding / pthread_cancel / pthread_exit”三类 fatal 文本；对应 `_Unwind_*` 动态 UND 为 0，且 `DT_NEEDED` 不含 libgcc_s。因此这是运行时按名称加载/查找，不是普通链接依赖。
-4. **板端运行实证本轮不可得**：`192.168.108.25` ping 2/2 成功、TCP/26101 可连接，但 `sdb connect` 两次失败，后续命令均为 target not found。宿主 x86_64 旁证中，基线进程未加载 libgcc_s；调用 glibc `backtrace()` 后 `LD_DEBUG=libs` 实测查找并初始化 `/lib/x86_64-linux-gnu/libgcc_s.so.1`。
+4. **板端续跑已恢复 SDB，但 unwind-link 加载仍未被隔离观测**：板子确认为 armv7l。候选程序要么启动闭包已含 libgcc_s，要么安全路径不触发目标 API；唯一导入 `pthread_cancel` 且仅 `DT_NEEDED libc` 的 `dlog_logger` 在 `-h` 路径经 NSS 模块的已证实依赖闭包加载 libgcc_s，该路径不能归因于 glibc unwind-link。宿主 x86_64 旁证仍清楚观察到 `backtrace()` 首次触发 libgcc_s 加载。
 5. **平台 compiler-rt builtins 与平台 libgcc_s helper 导出面并不相同**：按精确符号名，未覆盖数为 armv7l `986/1137`、aarch64 `25/122`、x86_64 `27/139`。这只是一项符号集合事实，不等价于运行时兼容性判定。
 
 ## 0. 上游设施现状
@@ -56,12 +56,19 @@
 
 ### 开发板
 
-结论：`NOT_AVAILABLE_NO_SDB_PROTOCOL_SESSION`。
+结论：`SDB_RECOVERED_UNWIND_LINK_LOAD_NOT_OBSERVED`。
 
-- ping：2/2，退出 0，见 `commands/50_board_ping.txt`。
-- TCP 26101：连接成功，退出 0，见 `commands/58_board_tcp_26101.txt`。
-- `sdb connect 192.168.108.25:26101`：两次均退出 1；见 `commands/51_board_sdb_connect.txt`、`commands/59_board_sdb_retry.txt`。
-- 因无 target，身份/工具探测退出 1；未运行板上系统命令，未设置板上 `LD_DEBUG`，没有观察到板端 libgcc_s 加载行为。
+- 初次尝试：ping 2/2、TCP 26101 成功，但 `sdb connect` 两次退出 1；原结论 `NOT_AVAILABLE_INITIAL_ATTEMPT` 保留在 `tables/runtime_observation.tsv`。
+- 人工恢复后续跑：`sdb connect` 退出 0，`sdb devices` 显示 `192.168.108.25:26101 device rpi4`；`uname` 为 armv7l，系统为 Tizen 11.0 Unified，BUILD_ID `tizen-unified-dev_20260727.074529_tizen-headed-armv7l`。见 `commands/60_*` 至 `commands/62_*`。
+- 板上 glibc 为 `glibc-2.40-3.12.armv7l`。只读拉取的 `/lib/libc.so.6` SHA256 为 `971cf825cce4fed4dd82bfe8f6b689fa5df0c238a180be3aea671ae5764cbc68`；它仍包含 `libgcc_s.so.1`、六个 unwind 名称与三类 fatal 文本，且只有 `DT_NEEDED ld-linux.so.3`。见 `commands/82_board_libc_hardcode_static_check.txt`。
+
+载体筛选和实测：
+
+- 扫描 `/bin`、`/usr/bin`、`/usr/sbin` 中含 `pthread_exit`、`pthread_cancel` 或 `backtrace` 的文件，并以 `ldd` 分类。完整结果见 `commands/67_board_api_symbol_candidate_scan.txt` 与 `commands/77_board_api_candidate_libgcc_classification.txt`。
+- `/bin/true` 和 `/usr/bin/pkg-config` 的拉取副本均直接 `DT_NEEDED libgcc_s.so.1`；`LD_DEBUG` 观察到的是启动依赖，不能证明 glibc unwind-link 的 `dlopen`。见 `commands/69_*`、`commands/70_*`、`commands/76_*`。
+- `/usr/bin/dlog_logger`（`dlog-logger-9.0.2-1.armv7l`，SHA256 `415978a68f28317bb496a9103812f3505059715d1753511731af042f41b91849`）只 `DT_NEEDED libc.so.6`，并有 `UND pthread_cancel@GLIBC_2.34`。安全执行 `-h` 时，`LD_DEBUG` 显示 libc 加载 `libnss_securitymanager.so.2` 后出现 `/usr/lib/libgcc_s.so.1`；拉取副本进一步确认该 NSS 模块直接 `DT_NEEDED libstdc++.so.6` 和 `libgcc_s.so.1`，而 libstdc++ 也直接需要 libgcc_s。该加载来自 NSS 依赖闭包，没有证据表明 `pthread_cancel` 被调用。见 `commands/80_*`、`commands/81_*`、`commands/83_*`、`commands/87_*`。
+- 启动 `dlog_logger` 的真实 logger 路径会写持久日志，超出本任务板端只读边界，未执行。故本次没有把 NSS/DT_NEEDED 加载冒充 glibc unwind-link 动态加载。
+- 载体表：`tables/board_followup_carriers.tsv`。
 
 ### 宿主旁证（不得冒充板端实测）
 
@@ -69,7 +76,7 @@
 - 触发：同一 Python 载体以 `ctypes` 调用 glibc `backtrace()`，正常退出；日志新增 `find library=libgcc_s.so.1` 与 `calling init: /lib/x86_64-linux-gnu/libgcc_s.so.1`。
 - 原文：`commands/55_host_ld_debug_baseline.txt`、`commands/56_host_ld_debug_backtrace.txt`、差异提取 `commands/57_host_libgcc_load_delta.txt`。
 
-结论标识：板端 `NOT_OBSERVED`；宿主 `GLIBC_RUNTIME_DLOPEN_CORROBORATED_ON_HOST_ONLY`。
+结论标识：板端 `SDB_RECOVERED`、`UNWIND_LINK_LOAD_NOT_OBSERVED`；宿主 `GLIBC_RUNTIME_DLOPEN_CORROBORATED_ON_HOST_ONLY`。
 
 ## 3. libgcc_s 导出面量化
 

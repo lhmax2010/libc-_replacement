@@ -25,5 +25,8 @@
 
 ## 运行时观察口径
 
-- 板端只允许既有命令和只读环境变量；本轮 ping 与 TCP 端口可达，但 SDB 协议连接失败，未获得执行载体，因此没有板端运行行为。
+- 初次执行时 ping 与 TCP 端口可达，但 SDB 协议连接失败。人工恢复后于同日续跑，SDB 连接成功并实测为 armv7l；续跑证据使用 `commands/60_*` 至 `commands/87_*`。
+- 板端只允许既有命令和只读环境变量。候选扫描范围为 `/bin`、`/usr/bin`、`/usr/sbin` 中含 `pthread_exit`、`pthread_cancel` 或 `backtrace` 字面量的普通文件，并以 `ldd` 排除启动闭包已含 libgcc_s 者。
+- 唯一满足“含目标 API 且启动闭包不含 libgcc_s”的命令是 `/usr/bin/dlog_logger`：拉取副本的动态符号表确认 `UND pthread_cancel@GLIBC_2.34`，动态段只有 `DT_NEEDED libc.so.6`。安全的 `-h` 路径没有触发 cancel，却经 glibc NSS 加载 `libnss_securitymanager`；该 NSS 模块自身 `DT_NEEDED libstdc++.so.6` 与 `libgcc_s.so.1`，而 libstdc++ 也 `DT_NEEDED libgcc_s.so.1`，所以该加载来自 NSS 依赖闭包、不能归因于 unwind-link。启动真实 logger 会写持久日志，违反板端只读边界，未执行。
+- `/bin/true` 与 `/usr/bin/pkg-config` 的拉取副本均直接 `DT_NEEDED libgcc_s.so.1`，其 `LD_DEBUG` 只能证明启动加载，不能充当 glibc `dlopen` 证据。
 - 宿主旁证以同一 `python3` 进程做基线与 `ctypes` 调用 glibc `backtrace()` 两次独立运行；只把 `LD_DEBUG=libs` 的新增 `find library=libgcc_s.so.1` 和 `calling init` 视为实测加载。结果不得冒充 Tizen 板端结论。
