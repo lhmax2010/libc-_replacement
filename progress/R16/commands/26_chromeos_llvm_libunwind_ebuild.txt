@@ -1,0 +1,275 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc url=\"https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/refs/heads/main/sys-libs/llvm-libunwind/llvm-libunwind-9999.ebuild\?format=TEXT\"\;\ echo\ URL=\$url\;\ curl\ -fLsS\ \"\$url\"\ \|\ base64\ -d\ \|\ nl\ -ba
+URL=https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/refs/heads/main/sys-libs/llvm-libunwind/llvm-libunwind-9999.ebuild?format=TEXT
+     1	# Copyright 1999-2017 Gentoo Foundation
+     2	# Distributed under the terms of the GNU General Public License v2
+     3	
+     4	# Cache bust: 4
+     5	
+     6	EAPI=7
+     7	
+     8	PYTHON_COMPAT=( python3_11 )
+     9	
+    10	CROS_WORKON_REPO="${CROS_GIT_HOST_URL}"
+    11	CROS_WORKON_PROJECT="external/github.com/llvm/llvm-project"
+    12	CROS_WORKON_LOCALNAME="llvm-project"
+    13	# b/534730232: Track ChromeOS LLVM branches by default here
+    14	# to keep syncs minimal, but accurate.
+    15	CROS_WORKON_EGIT_BRANCH="chromeos/llvm-r*"
+    16	CROS_WORKON_OUTOFTREE_BUILD="1"
+    17	
+    18	# Build somewhat differently when a dev is iterating on LLVM.
+    19	if [[ "${PV}" == "9999" ]]; then
+    20		# Use incremental builds only for 9999 ebuilds, since caching in the
+    21		# face of toolchain updates can get subtle, and non-9999 builders
+    22		# (mostly bots) won't benefit from keeping cache artifacts around.
+    23		CROS_WORKON_INCREMENTAL_BUILD="1"
+    24	fi
+    25	
+    26	inherit cros-fuzzer cros-sanitizers cros-constants cmake-multilib flag-o-matic git-2 cros-llvm cros-workon python-any-r1
+    27	
+    28	DESCRIPTION="C++ runtime stack unwinder from LLVM"
+    29	HOMEPAGE="https://github.com/llvm-mirror/libunwind"
+    30	SRC_URI=""
+    31	EGIT_REPO_URI="${CROS_GIT_HOST_URL}/external/github.com/llvm/llvm-project
+    32		${CROS_GIT_HOST_URL}/external/github.com/llvm/llvm-project"
+    33	
+    34	LICENSE="|| ( UoI-NCSA MIT )"
+    35	SLOT="0"
+    36	KEYWORDS="~*"
+    37	IUSE="cros_host debug llvm-asserts +static-libs +shared-libs +synth_libgcc
+    38		+compiler-rt"
+    39	
+    40	# Disable unittests because they are slow and we test on-device.
+    41	# We can manually re-enable with accept-restrict if needed.
+    42	RESTRICT="test"
+    43	
+    44	RDEPEND="!${CATEGORY}/libunwind"
+    45	
+    46	DEPEND="
+    47		${RDEPEND}
+    48	"
+    49	
+    50	if [[ "${CATEGORY}" == cross-*-linux* ]]; then
+    51		DEPEND+="
+    52			${CATEGORY}/linux-headers
+    53			${CATEGORY}/glibc
+    54		"
+    55	elif [[ "${CATEGORY}" == cross-* ]]; then
+    56		DEPEND+="
+    57			${CATEGORY}/newlib
+    58		"
+    59	else
+    60		DEPEND+="
+    61			sys-kernel/linux-headers
+    62			sys-libs/glibc
+    63		"
+    64	fi
+    65	
+    66	BDEPEND="
+    67		sys-devel/llvm
+    68		${PYTHON_DEPS}
+    69	"
+    70	
+    71	if [[ "${CATEGORY}" == cross-* ]]; then
+    72		BDEPEND+="
+    73			sys-libs/libcxx
+    74		"
+    75		# The x86 compiler-rt is provided by sys-devel/llvm.
+    76		if [[ "${CATEGORY}" != cross-x86_64-* && "${CATEGORY}" != cross-i686-* ]]; then
+    77			BDEPEND+="
+    78				compiler-rt? ( ${CATEGORY}/compiler-rt )
+    79			"
+    80		fi
+    81	fi
+    82	
+    83	if is_baremetal_abi && [[ ${CTARGET} == riscv* ]]; then
+    84		export CROSTC_USER_ACKNOWLEDGES_THAT_RISCV_IS_EXPERIMENTAL=1
+    85	fi
+    86	
+    87	pkg_setup() {
+    88		# Setup llvm toolchain for cross-compilation
+    89		setup_cross_toolchain
+    90	}
+    91	
+    92	src_prepare() {
+    93		python_setup
+    94	
+    95		cros-llvm_ensure_patches_applied
+    96	
+    97		export CMAKE_USE_DIR="${S}/runtimes"
+    98		eapply_user
+    99		cmake_src_prepare
+   100	}
+   101	
+   102	should_enable_asserts() {
+   103		if is_baremetal_abi; then
+   104			echo no
+   105		elif use debug || use llvm-asserts; then
+   106			echo yes
+   107		else
+   108			echo no
+   109		fi
+   110	}
+   111	
+   112	multilib_src_configure() {
+   113		# Disable sanitization of llvm-libunwind (b/193934733).
+   114		use_sanitizers && filter_sanitizers
+   115	
+   116		# Filter default portage flags to allow unwinding.
+   117		cros_enable_cxx_exceptions
+   118		append-cppflags "-D_LIBUNWIND_USE_DLADDR=0"
+   119		if [[ ${CATEGORY} == cross-armv7a* ]] ; then
+   120			# Allow targeting non-neon targets for armv7a.
+   121			append-flags -mfpu=vfpv3
+   122	
+   123			# cross-armv7 builds fail due a to libgcc_eh.a bootstrap bug
+   124			# due to a global variable used for stack canary memory.
+   125			# https://bugzilla.redhat.com/show_bug.cgi?id=708452
+   126			# https://gcc.gnu.org/bugzilla/show_bug.cgi?id=102352
+   127			# TODO(toolchain): Revisit this when the above GCC bug is
+   128			# fixed or we have glibc arm clang build support.
+   129			append-flags -fno-stack-protector
+   130		fi
+   131	
+   132		if [[ $(should_enable_asserts) == no ]]; then
+   133			append-cppflags "-DNDEBUG"
+   134		fi
+   135	
+   136		local libdir=$(get_libdir)
+   137		local mycmakeargs=(
+   138			"${mycmakeargs[@]}"
+   139			"-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"
+   140			"-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
+   141			"-DLLVM_LIBDIR_SUFFIX=${libdir#lib}"
+   142			"-DLIBUNWIND_ENABLE_ASSERTIONS=$(should_enable_asserts)"
+   143			"-DLIBUNWIND_ENABLE_STATIC=$(usex static-libs)"
+   144			"-DLIBUNWIND_ENABLE_SHARED=OFF"
+   145			"-DLIBUNWIND_ENABLE_THREADS=OFF"
+   146			"-DLIBUNWIND_ENABLE_CROSS_UNWINDING=OFF"
+   147			"-DLIBUNWIND_ENABLE_FRAME_APIS=ON"
+   148			"-DLIBUNWIND_USE_COMPILER_RT=$(usex compiler-rt)"
+   149			"-DLIBUNWIND_TARGET_TRIPLE=$(get_abi_CTARGET)"
+   150			"-DCMAKE_INSTALL_PREFIX=${PREFIX}"
+   151			"-DLLVM_ENABLE_RUNTIMES=libunwind"
+   152			# Avoid old libstdc++ errors when bootstrapping.
+   153			"-DLLVM_ENABLE_LIBCXX=ON"
+   154			"-DLIBUNWIND_HAS_COMMENT_LIB_PRAGMA=OFF"
+   155			"-DLIBUNWIND_HAS_DL_LIB=OFF"
+   156			"-DLIBUNWIND_HAS_PTHREAD_LIB=OFF"
+   157		)
+   158	
+   159		if is_baremetal_abi; then
+   160			# Options for baremetal toolchains e.g. armv7m-cros-eabi.
+   161			append-flags -Oz # Optimize for smallest size.
+   162			mycmakeargs+=(
+   163				"-DCMAKE_POSITION_INDEPENDENT_CODE=OFF"
+   164				"-DLIBUNWIND_IS_BAREMETAL=ON"
+   165				"-DLIBUNWIND_REMEMBER_HEAP_ALLOC=ON"
+   166				"-DLLVM_ENABLE_LTO=Full"
+   167			)
+   168	
+   169			# TODO(b/416568977): It would be more flexible to set up multilib so
+   170			# that applications can customize the flags they want (CPU/arch,
+   171			# soft/hard float, etc.)
+   172			if [[ "${CTARGET}" == arm-none-eabi ]]; then
+   173				# b/205342596: This is a hack to provide armv6m libraries for use with
+   174				# arm-none-eabi without creating a separate armv6m toolchain.
+   175				# shellcheck disable=SC2154 # CTARGET is set elsewhere
+   176				append-flags "-march=armv6m --sysroot=/usr/arm-none-eabi"
+   177				mycmakeargs+=(
+   178					"-DCMAKE_C_COMPILER_TARGET=armv6m-none-eabi"
+   179					"-DCMAKE_CXX_COMPILER_TARGET=armv6m-none-eabi"
+   180				)
+   181			elif [[ "${CTARGET}" == armv7m-cros-eabi ]]; then
+   182				# b/286910996: Set target-specific floating point flags.
+   183				append-flags -mcpu=cortex-m4
+   184				append-flags -mfloat-abi=hard
+   185			elif [[ ${CTARGET} == riscv* ]]; then
+   186				# b/416568282: Set target-specific floating point flags.
+   187				append-flags -march=rv32imfc
+   188			fi
+   189		fi
+   190	
+   191		cmake_src_configure
+   192	}
+   193	
+   194	multilib_src_install_all() {
+   195		# Remove files that are installed by sys-libs/llvm-libunwind
+   196		# to avoid collision when installing cross-${TARGET}/llvm-libunwind.
+   197		if [[ ${CATEGORY} == cross-* ]]; then
+   198			rm -rf "${ED}"/usr/share || die
+   199		fi
+   200	
+   201		# Install headers.
+   202		insinto "${PREFIX}"/include
+   203		doins -r "${S}"/libunwind/include/.
+   204	}
+   205	
+   206	multilib_src_install() {
+   207		cmake_src_install
+   208		if is_baremetal_abi; then
+   209			return
+   210		fi
+   211	
+   212		# Generate libunwind.so or libgcc_s.so.
+   213		local myabi=$(get_abi_CTARGET)
+   214		if [[ ${myabi} == *armv7a* ]]; then
+   215			LIBGCC_ARCH="armhf"
+   216		elif [[ ${myabi} == *aarch64* ]]; then
+   217			LIBGCC_ARCH="aarch64"
+   218		elif [[ ${myabi} =~ ^i[0-9]86 ]]; then
+   219			LIBGCC_ARCH="i386"
+   220		elif [[ ${myabi} == *x86_64* ]] ; then
+   221			LIBGCC_ARCH="x86_64"
+   222		else
+   223			echo "unsupported arch" && die
+   224		fi
+   225	
+   226		local COMPILER_RT_BUILTINS=$($(tc-getCC) -print-libgcc-file-name -rtlib=compiler-rt)
+   227		local my_installdir="${D%/}${PREFIX}/$(get_libdir)"
+   228		local out_file soname
+   229	
+   230		if use synth_libgcc; then
+   231			out_file=libgcc_s.so.1
+   232			soname=libgcc_s.so.1
+   233		else
+   234			out_file=libunwind.so.1.0
+   235			soname=libunwind.so.1
+   236		fi
+   237	
+   238		echo "Creating ${out_file} using libunwind.a + compiler-rt".
+   239		# Ignore split word warnings, we need them for flags.
+   240		# shellcheck disable=SC2086
+   241		$(tc-getCC) -o "${my_installdir}"/"${out_file}"                                 \
+   242			${CFLAGS}                                                                   \
+   243			${LDFLAGS}                                                                  \
+   244			-shared                                                                     \
+   245			-nostdlib                                                                   \
+   246			-Wl,--whole-archive                                                         \
+   247			-Wl,--version-script,"${FILESDIR}/version-scripts/gcc_s-${LIBGCC_ARCH}.ver" \
+   248			-Wl,-soname,"${soname}"                                                     \
+   249			"${COMPILER_RT_BUILTINS}"                                                   \
+   250			"${my_installdir}"/libunwind.a                                              \
+   251			-Wl,--no-whole-archive                                                      \
+   252			-lm                                                                         \
+   253			-lc                                                                         \
+   254		|| die "Failed to create ${out_file}".
+   255	
+   256		# Point libunwind.so.1, libunwind_shared.so and libunwind.so to libunwind.so.1.0.
+   257		ln -s libunwind.so.1.0 "${my_installdir}"/libunwind.so.1 || die
+   258		ln -s libunwind.so.1   "${my_installdir}"/libunwind.so || die
+   259		ln -s libunwind.so     "${my_installdir}"/libunwind_shared.so || die
+   260	
+   261		# Generate libgcc{,_eh,_s} if requested.
+   262		if use synth_libgcc; then
+   263			# We already created libgcc_s.so.1 if we are here.
+   264			# Point libunwind.so.1.0 and libgcc_s.so to it.
+   265			# Also make sure that libgcc.a and libgcc_eh.a point to compiler-rt/libunwind.
+   266			ln -s libgcc_s.so.1 "${my_installdir}"/libunwind.so.1.0 || die
+   267			ln -s libgcc_s.so.1 "${my_installdir}"/libgcc_s.so || die
+   268			ln -s libunwind.a "${my_installdir}"/libgcc_eh.a || die
+   269			cp "${COMPILER_RT_BUILTINS}" "${my_installdir}"/libgcc.a || die
+   270		fi
+   271	}
+EXIT_CODE=0

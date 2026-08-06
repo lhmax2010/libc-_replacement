@@ -1,0 +1,635 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc nl\ -ba\ codes/llvm/llvm-libgcc/docs/LLVMLibgcc.rst\;\ nl\ -ba\ codes/llvm/llvm-libgcc/CMakeLists.txt\;\ nl\ -ba\ codes/llvm/llvm-libgcc/gcc_s.ver.in\;\ nl\ -ba\ codes/llvm/llvm-libgcc/generate_version_script.py
+     1	.. llvm-libgcc:
+     2	
+     3	===========
+     4	llvm-libgcc
+     5	===========
+     6	
+     7	.. contents::
+     8	  :local:
+     9	
+    10	**Note that these instructions assume a Linux and bash-friendly environment.
+    11	YMMV if you’re on a non Linux-based platform.**
+    12	
+    13	.. _introduction:
+    14	
+    15	Motivation
+    16	============
+    17	
+    18	Enabling libunwind as a replacement for libgcc on Linux has proven to be
+    19	challenging since libgcc_s.so is a required dependency in the [Linux standard
+    20	base][5]. Some software is transitively dependent on libgcc because glibc makes
+    21	hardcoded calls to functions in libgcc_s. For example, the function
+    22	``__GI___backtrace`` eventually makes its way to a [hardcoded dlopen to libgcc_s'
+    23	_Unwind_Backtrace][1]. Since libgcc_{eh.a,s.so} and libunwind have the same ABI,
+    24	but different implementations, the two libraries end up [cross-talking, which
+    25	ultimately results in a segfault][2].
+    26	
+    27	To solve this problem, libunwind needs libgcc "front" that is, link the
+    28	necessary functions from compiler-rt and libunwind into an archive and shared
+    29	object that advertise themselves as ``libgcc.a``, ``libgcc_eh.a``, and
+    30	``libgcc_s.so``, so that glibc’s baked calls are diverted to the correct objects
+    31	in memory. Fortunately for us, compiler-rt and libunwind use the same ABI as the
+    32	libgcc family, so the problem is solvable at the llvm-project configuration
+    33	level: no program source needs to be edited. Thus, the end result is for a
+    34	distro manager to configure their LLVM build with a flag that indicates they
+    35	want to archive compiler-rt/unwind as libgcc. We achieve this by compiling
+    36	libunwind with all the symbols necessary for compiler-rt to emulate the libgcc
+    37	family, and then generate symlinks named for our "libgcc" that point to their
+    38	corresponding libunwind counterparts.
+    39	
+    40	.. _alternatives
+    41	
+    42	Alternatives
+    43	============
+    44	
+    45	We alternatively considered patching glibc so that the source doesn't directly
+    46	refer to libgcc, but rather _defaults_ to libgcc, so that a system preferring
+    47	compiler-rt/libunwind can point to these libraries at the config stage instead.
+    48	Even if we modified the Linux standard base, this alternative won't work because
+    49	binaries that are built using libgcc will still end up having cross-talk between
+    50	the differing implementations.
+    51	
+    52	.. _target audience:
+    53	
+    54	Target audience
+    55	===============
+    56	
+    57	llvm-libgcc is not for the casual LLVM user. It is intended to be used by distro
+    58	managers who want to replace libgcc with compiler-rt and libunwind, but cannot
+    59	fully abandon the libgcc family (e.g. because they are dependent on glibc). Such
+    60	managers must have worked out their compatibility requirements ahead of using
+    61	llvm-libgcc.
+    62	
+    63	.. _cmake options:
+    64	
+    65	CMake options
+    66	=============
+    67	
+    68	.. option:: `LLVM_LIBGCC_EXPLICIT_OPT_IN`
+    69	
+    70	  **Required**
+    71	
+    72	  Since llvm-libgcc is such a fundamental, low-level component, we have made it
+    73	  difficult to accidentally build, by requiring you to set an opt-in flag.
+    74	
+    75	.. _Building llvm-libgcc
+    76	
+    77	Building llvm-libgcc
+    78	--------------------
+    79	
+    80	The first build tree is a mostly conventional build tree and gets you a Clang
+    81	build with these compiler-rt symbols exposed.
+    82	
+    83	.. code-block:: bash
+    84	  # Assumes $(PWD) is /path/to/llvm-project
+    85	  $ cmake -GNinja -S llvm -B build-primary                    \
+    86	      -DCMAKE_BUILD_TYPE=Release                              \
+    87	      -DCMAKE_CROSSCOMPILING=On                               \
+    88	      -DCMAKE_INSTALL_PREFIX=/tmp/aarch64-unknown-linux-gnu   \
+    89	      -DLLVM_ENABLE_PROJECTS='clang'                          \
+    90	      -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;llvm-libgcc"   \
+    91	      -DLLVM_TARGETS_TO_BUILD=AArch64                         \
+    92	      -DLLVM_DEFAULT_TARGET_TRIPLE=aarch64-unknown-linux-gnu  \
+    93	      -DLLVM_LIBGCC_EXPLICIT_OPT_IN=Yes
+    94	  $ ninja -C build-primary install
+    95	
+    96	It's very important to notice that neither ``compiler-rt``, nor ``libunwind``,
+    97	are listed in ``LLVM_ENABLE_RUNTIMES``. llvm-libgcc makes these subprojects, and
+    98	adding them to this list will cause you problems due to there being duplicate
+    99	targets. As such, configuring the runtimes build will reject explicitly mentioning
+   100	either project with ``llvm-libgcc``.
+   101	
+   102	To avoid issues when building with ``-DLLVM_ENABLE_RUNTIMES=all``, ``llvm-libgcc``
+   103	is not included, and all runtimes targets must be manually listed.
+   104	
+   105	## Verifying your results
+   106	
+   107	This gets you a copy of libunwind with the libgcc symbols. You can verify this
+   108	using ``readelf``.
+   109	
+   110	.. code-block:: bash
+   111	
+   112	  $ llvm-readelf -W --dyn-syms "${LLVM_LIBGCC_SYSROOT}/lib/libunwind.so" | grep FUNC | grep GCC_3.0
+   113	
+   114	
+   115	Roughly sixty symbols should appear, all suffixed with ``@@GCC_3.0``. You can
+   116	replace ``GCC_3.0`` with any of the supported version names in the version
+   117	script you’re exporting to verify that the symbols are exported.
+   118	
+   119	
+   120	.. _supported platforms:
+   121	
+   122	Supported platforms
+   123	===================
+   124	
+   125	llvm-libgcc currently supports the following target triples:
+   126	
+   127	* ``aarch64-*-*-*``
+   128	* ``armv7a-*-*-gnueabihf``
+   129	* ``i386-*-*-*``
+   130	* ``x86_64-*-*-*``
+   131	
+   132	If you would like to support another triple (e.g. ``powerpc64-*-*-*``), you'll
+   133	need to generate a new version script, and then edit ``lib/gcc_s.ver``.
+   134	
+   135	.. _Generating a new version script
+   136	
+   137	Generating a new version script
+   138	-------------------------------
+   139	
+   140	To generate a new version script, we need to generate the list of symbols that
+   141	exist in the set (``clang-builtins.a`` ∪ ``libunwind.a``) ∩ ``libgcc_s.so.1``.
+   142	The prerequisites for generating a version script are a binaries for the three
+   143	aforementioned libraries targeting your architecture (without having built
+   144	llvm-libgcc).
+   145	
+   146	Once these libraries are in place, to generate a new version script, run the
+   147	following command.
+   148	
+   149	.. code-block:: bash
+   150	
+   151	  /path/to/llvm-project
+   152	  $ export ARCH=powerpc64
+   153	  $ llvm/tools/llvm-libgcc/generate_version_script.py       \
+   154	      --compiler_rt=/path/to/libclang_rt.builtins-${ARCH}.a \
+   155	      --libunwind=/path/to/libunwind.a                      \
+   156	      --libgcc_s=/path/to/libgcc_s.so.1                     \
+   157	      --output=${ARCH}
+   158	
+   159	This will generate a new version script a la
+   160	``/path/to/llvm-project/llvm/tools/llvm-libgcc/gcc_s-${ARCH}.ver``, which we use
+   161	in the next section.
+   162	
+   163	.. _Editing ``lib/gcc_s.ver``
+   164	
+   165	Editing ``lib/gcc_s.ver``
+   166	-------------------------
+   167	
+   168	Our freshly generated version script is unique to the specific architecture that
+   169	it was generated for, but a lot of the symbols are shared among many platforms.
+   170	As such, we don't check in unique version scripts, but rather have a single
+   171	version script that's run through the C preprocessor to prune symbols we won't
+   172	be using in ``lib/gcc_s.ver``.
+   173	
+   174	Working out which symbols are common is largely a manual process at the moment,
+   175	because some symbols may be shared across different architectures, but not in
+   176	the same versions of libgcc. As such, a symbol appearing in ``lib/gcc_s.ver``
+   177	doesn't guarantee that the symbol is available for our new architecture: we need
+   178	to verify that the versions are the same, and if they're not, add the symbol to
+   179	the new version section, with the appropriate include guards.
+   180	
+   181	There are a few macros that aim to improve readability.
+   182	
+   183	* ``ARM_GNUEABIHF``, which targets exactly ``arm-*-*-gnueabihf``.
+   184	* ``GLOBAL_X86``, which should be used to target both x86 and x86_64, regardless
+   185	  of the triple.
+   186	* ``GLOBAL_32BIT``, which is be used to target 32-bit platforms.
+   187	* ``GLOBAL_64BIT``, which is be used to target 64-bit platforms.
+     1	#===============================================================================
+     2	# Setup Project
+     3	#===============================================================================
+     4	
+     5	cmake_minimum_required(VERSION 3.20.0)
+     6	set(LLVM_SUBPROJECT_TITLE "LLVM libgcc")
+     7	
+     8	set(LLVM_COMMON_CMAKE_UTILS "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
+     9	
+    10	# Check if llvm-libgcc is built as a standalone project
+    11	if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR OR LLVM_LIBGCC_STANDALONE_BUILD)
+    12	  project(llvm-libgcc LANGUAGES C CXX ASM)
+    13	  set(COMPILER_RT_STANDALONE_BUILD ON)
+    14	  set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+    15	  set(LLVM_LIBGCC_COMPILER_RT_BINARY_DIR "compiler-rt")
+    16	  set(LLVM_LIBGCC_LIBUNWIND_BINARY_DIR "libunwind")
+    17	else()
+    18	  set(LLVM_LIBGCC_COMPILER_RT_BINARY_DIR "../compiler-rt")
+    19	  set(LLVM_LIBGCC_LIBUNWIND_BINARY_DIR "../libunwind")
+    20	endif()
+    21	
+    22	# Add path for custom modules
+    23	list(INSERT CMAKE_MODULE_PATH 0
+    24	  "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
+    25	  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Modules"
+    26	  "${CMAKE_CURRENT_SOURCE_DIR}/../runtimes/cmake/Modules"
+    27	  "${LLVM_COMMON_CMAKE_UTILS}"
+    28	  "${LLVM_COMMON_CMAKE_UTILS}/Modules"
+    29	)
+    30	
+    31	set(LLVM_LIBGCC_LIBUNWIND_PATH "${CMAKE_CURRENT_LIST_DIR}/../libunwind"
+    32	  CACHE PATH "Specify path to libunwind source.")
+    33	set(LLVM_LIBGCC_COMPILER_RT_PATH "${CMAKE_CURRENT_LIST_DIR}/../compiler-rt"
+    34	  CACHE PATH "Specify path to compiler-rt source.")
+    35	
+    36	include(GNUInstallDirs)
+    37	
+    38	if(NOT LLVM_LIBGCC_EXPLICIT_OPT_IN)
+    39	  message(FATAL_ERROR
+    40	    "llvm-libgcc is not for the casual LLVM user. It is intended to be used by distro "
+    41	    "managers who want to replace libgcc with compiler-rt and libunwind, but cannot "
+    42	    "fully abandon the libgcc family (e.g. because they are dependent on glibc). Such "
+    43	    "managers must have worked out their compatibility requirements ahead of using "
+    44	    "llvm-libgcc. If you want to build llvm-libgcc, please add -DLLVM_LIBGCC_EXPLICIT_OPT_IN=Yes "
+    45	    "to your CMake invocation and try again.")
+    46	endif()
+    47	
+    48	if(HAVE_COMPILER_RT)
+    49	  message(FATAL_ERROR
+    50	    "Attempting to build both compiler-rt and llvm-libgcc will cause irreconcilable "
+    51	    "target clashes. Please choose one or the other, but not both.")
+    52	endif()
+    53	
+    54	if(HAVE_LIBUNWIND)
+    55	  message(FATAL_ERROR
+    56	    "Attempting to build both libunwind and llvm-libgcc will cause irreconcilable "
+    57	    "target clashes. Please choose one or the other, but not both.")
+    58	endif()
+    59	
+    60	#===============================================================================
+    61	# Configure System
+    62	#===============================================================================
+    63	
+    64	if(LLVM_ENABLE_PER_TARGET_RUNTIME_DIR AND NOT APPLE)
+    65	  set(TARGET_SUBDIR ${LLVM_DEFAULT_TARGET_TRIPLE})
+    66	  if(LLVM_LIBGCC_LIBDIR_SUBDIR)
+    67	    string(APPEND TARGET_SUBDIR /${LLVM_LIBGCC_LIBDIR_SUBDIR})
+    68	  endif()
+    69	  set(LLVM_LIBGCC_LIBRARY_DIR ${LLVM_LIBRARY_OUTPUT_INTDIR}/${TARGET_SUBDIR})
+    70	  set(LLVM_LIBGCC_INSTALL_LIBRARY_DIR lib${LLVM_LIBDIR_SUFFIX}/${TARGET_SUBDIR} CACHE PATH
+    71	      "Path where built llvm-libgcc libraries should be installed.")
+    72	  unset(TARGET_SUBDIR)
+    73	else()
+    74	  if(LLVM_LIBRARY_OUTPUT_INTDIR)
+    75	    set(LLVM_LIBGCC_LIBRARY_DIR ${LLVM_LIBRARY_OUTPUT_INTDIR})
+    76	  else()
+    77	    set(LLVM_LIBGCC_LIBRARY_DIR ${CMAKE_BINARY_DIR}/lib${LLVM_LIBGCC_LIBDIR_SUFFIX})
+    78	  endif()
+    79	  set(LLVM_LIBGCC_INSTALL_LIBRARY_DIR lib${LLVM_LIBGCC_LIBDIR_SUFFIX} CACHE PATH
+    80	      "Path where built llvm-libgcc libraries should be installed.")
+    81	endif()
+    82	
+    83	set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${LLVM_LIBGCC_LIBRARY_DIR})
+    84	set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${LLVM_LIBGCC_LIBRARY_DIR})
+    85	set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LLVM_LIBGCC_LIBRARY_DIR})
+    86	
+    87	#===============================================================================
+    88	# Build libraries
+    89	#===============================================================================
+    90	
+    91	set(COMPILER_RT_BUILD_BUILTINS ON)
+    92	set(COMPILER_RT_BUILTINS_HIDE_SYMBOLS OFF)
+    93	add_subdirectory(${LLVM_LIBGCC_COMPILER_RT_PATH} ${LLVM_LIBGCC_COMPILER_RT_BINARY_DIR})
+    94	
+    95	set(LIBUNWIND_ENABLE_STATIC ON)
+    96	set(LIBUNWIND_ENABLE_SHARED ON)
+    97	set(LIBUNWIND_USE_COMPILER_RT OFF)
+    98	set(LIBUNWIND_HAS_GCC_LIB OFF)
+    99	set(LIBUNWIND_HAS_GCC_S_LIB OFF)
+   100	add_subdirectory(${LLVM_LIBGCC_LIBUNWIND_PATH} ${LLVM_LIBGCC_LIBUNWIND_BINARY_DIR})
+   101	
+   102	add_custom_target(gcc_s.ver
+   103	  SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/gcc_s.ver.in
+   104	  COMMAND ${CMAKE_C_COMPILER} -E
+   105	    -xc ${CMAKE_CURRENT_SOURCE_DIR}/gcc_s.ver.in
+   106	    -o ${CMAKE_CURRENT_BINARY_DIR}/gcc_s.ver
+   107	)
+   108	
+   109	add_dependencies(unwind_shared gcc_s.ver)
+   110	
+   111	construct_compiler_rt_default_triple()
+   112	
+   113	target_link_options(unwind_shared PUBLIC
+   114	  -Wl,--version-script,${CMAKE_CURRENT_BINARY_DIR}/gcc_s.ver
+   115	)
+   116	
+   117	target_link_libraries(unwind_shared PUBLIC
+   118	  $<TARGET_OBJECTS:clang_rt.builtins-${COMPILER_RT_DEFAULT_TARGET_ARCH}>
+   119	  m
+   120	)
+   121	
+   122	#===============================================================================
+   123	# Install Symlinks
+   124	#===============================================================================
+   125	
+   126	get_compiler_rt_install_dir(${COMPILER_RT_DEFAULT_TARGET_ARCH} install_dir_builtins)
+   127	string(REGEX REPLACE "^lib/" "" install_dir_builtins "${install_dir_builtins}")
+   128	string(FIND "${install_dir_builtins}" "clang" install_path_contains_triple)
+   129	if(install_path_contains_triple EQUAL -1)
+   130	  set(builtins_suffix "-${COMPILER_RT_DEFAULT_TARGET_ARCH}")
+   131	else()
+   132	  string(PREPEND install_dir_builtins "../")
+   133	endif()
+   134	set(LLVM_LIBGCC_COMPILER_RT ${install_dir_builtins}/libclang_rt.builtins${builtins_suffix}.a)
+   135	
+   136	add_custom_target(llvm-libgcc ALL
+   137	  DEPENDS unwind_shared unwind_static clang_rt.builtins-${COMPILER_RT_DEFAULT_TARGET_ARCH}
+   138	  COMMAND ${CMAKE_COMMAND} -E create_symlink ${LLVM_LIBGCC_COMPILER_RT} libgcc.a
+   139	  COMMAND ${CMAKE_COMMAND} -E create_symlink libunwind.a libgcc_eh.a
+   140	  COMMAND ${CMAKE_COMMAND} -E create_symlink libunwind.so libgcc_s.so.1.0
+   141	  COMMAND ${CMAKE_COMMAND} -E create_symlink libgcc_s.so.1.0 libgcc_s.so.1
+   142	  COMMAND ${CMAKE_COMMAND} -E create_symlink libgcc_s.so.1 libgcc_s.so
+   143	)
+   144	
+   145	install(TARGETS unwind_shared unwind_static
+   146	  LIBRARY DESTINATION ${LLVM_LIBGCC_INSTALL_LIBRARY_DIR} COMPONENT llvm-libgcc
+   147	  ARCHIVE DESTINATION ${LLVM_LIBGCC_INSTALL_LIBRARY_DIR} COMPONENT llvm-libgcc
+   148	  RUNTIME DESTINATION ${LLVM_LIBGCC_INSTALL_RUNTIME_DIR} COMPONENT llvm-libgcc)
+   149	
+   150	install(TARGETS clang_rt.builtins-${COMPILER_RT_DEFAULT_TARGET_ARCH}
+   151	  LIBRARY DESTINATION ${LLVM_LIBGCC_INSTALL_LIBRARY_DIR}/${install_dir_builtins} COMPONENT llvm-libgcc
+   152	  ARCHIVE DESTINATION ${LLVM_LIBGCC_INSTALL_LIBRARY_DIR}/${install_dir_builtins} COMPONENT llvm-libgcc
+   153	  RUNTIME DESTINATION ${LLVM_LIBGCC_INSTALL_RUNTIME_DIR}/${install_dir_builtins} COMPONENT llvm-libgcc)
+   154	
+   155	foreach(VAR libgcc.a libgcc_eh.a libgcc_s.so.1.0 libgcc_s.so.1 libgcc_s.so)
+   156	  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${VAR}
+   157	    DESTINATION ${LLVM_LIBGCC_INSTALL_LIBRARY_DIR}
+   158	    COMPONENT llvm-libgcc)
+   159	endforeach()
+     1	// Detect if we're using arm-*-*-gnueabihf
+     2	#if defined(__arm__) && \
+     3	    defined(__ARM_ARCH_7A__) && defined(__ARM_EABI__) && \
+     4	    defined(__ARM_FP) && (__ARM_FP >= 0x04)
+     5	  #define ARM_GNUEABIHF
+     6	#endif
+     7	
+     8	#if !defined(__x86_64__)  && \
+     9	    !defined(__aarch64__) && \
+    10	    !defined(__i386__)    && \
+    11	    !defined(ARM_GNUEABIHF)
+    12	  #error The only platforms that are currently supported are x86_64, i386, arm-gnueabihf, and aarch64.
+    13	#endif
+    14	
+    15	#if defined(__x86_64__) || defined(__i386__)
+    16	  #define GLOBAL_X86
+    17	#endif
+    18	
+    19	#if __SIZEOF_POINTER__ >= 8
+    20	  #define GLOBAL_64BIT
+    21	#else
+    22	  #define GLOBAL_32BIT
+    23	#endif
+    24	
+    25	GCC_3.0 {
+    26	  __absvdi2;    __absvsi2;    __addvdi3; __addvsi3; __clear_cache; __ffsdi2;
+    27	  __fixunsdfdi; __fixunssfdi; __mulvdi3; __mulvsi3; __negvdi2;     __negvsi2;
+    28	  __subvdi3;    __subvsi3;
+    29	  _Unwind_DeleteException;
+    30	  _Unwind_ForcedUnwind;
+    31	  _Unwind_GetDataRelBase;
+    32	  _Unwind_GetLanguageSpecificData;
+    33	  _Unwind_GetRegionStart;
+    34	  _Unwind_GetTextRelBase;
+    35	  _Unwind_RaiseException;
+    36	  _Unwind_Resume;
+    37	};
+    38	
+    39	GCC_3.3   { _Unwind_GetCFA; _Unwind_Resume_or_Rethrow;                    };
+    40	GCC_3.3.1 { __gcc_personality_v0;                                         };
+    41	GCC_3.4   { __clzdi2; __ctzdi2; __paritydi2; __popcountdi2;               };
+    42	GCC_3.4.2 { __enable_execute_stack;                                       };
+    43	GCC_4.0.0 { __divdc3; __divsc3; __muldc3; __mulsc3; __powidf2; __powisf2; };
+    44	GCC_4.3.0 { __bswapdi2; __bswapsi2; __emutls_get_address;                 };
+    45	
+    46	#if defined(GLOBAL_32BIT)
+    47	  GCC_3.0 {
+    48	    __ashldi3;    __ashrdi3;   __cmpdi2;    __fixdfdi; __fixsfdi; __fixunsdfsi;
+    49	    __fixunssfsi; __floatdidf; __floatdisf; __lshrdi3; __muldi3;  __negdi2;
+    50	    __ucmpdi2;    __udivmoddi4;
+    51	  };
+    52	
+    53	  GCC_3.4   { __clzsi2;      __ctzsi2;      __paritysi2; __popcountsi2; };
+    54	  GCC_4.2.0 { __floatundidf; __floatundisf;                             };
+    55	  GCC_4.3.0 { __ffssi2;                                                 };
+    56	  GCC_7.0.0 { __divmoddi4;                                              };
+    57	  GLIBC_2.0 { __divdi3;     __moddi3;       __udivdi3; __umoddi3;       };
+    58	#elif defined(GLOBAL_64BIT)
+    59	  GCC_3.0 {
+    60	    __ashlti3; __ashrti3;    __cmpti2;     __divti3;  __ffsti2;  __fixdfti;
+    61	    __fixsfti; __fixunssfti; __floattidf;  __lshrti3; __modti3;  __multi3;
+    62	    __negti2;  __ucmpti2;    __udivmodti4; __udivti3; __umodti3; __fixunsdfti;
+    63	    __floattisf;
+    64	  };
+    65	
+    66	  GCC_3.4   { __clzti2;      __ctzti2;  __parityti2; __popcountti2;           };
+    67	  GCC_3.4.4 { __absvti2;     __addvti3; __mulvti3;   __negvti2;    __subvti3; };
+    68	  GCC_4.2.0 { __floatuntidf; __floatuntisf;                                   };
+    69	  GCC_7.0.0 { __divmodti4;                                                    };
+    70	#endif
+    71	
+    72	#if defined(GLOBAL_X86)
+    73	  GCC_3.0 { __fixunsxfdi; };
+    74	  GCC_4.0.0 { __divxc3; __mulxc3; __powixf2; };
+    75	  GCC_4.8.0 { __cpu_indicator_init;          };
+    76	#endif
+    77	
+    78	#if !defined(ARM_GNUEABIHF)
+    79	  GCC_3.0 {
+    80	    _Unwind_Find_FDE; _Unwind_GetGR; _Unwind_GetIP; _Unwind_SetGR; _Unwind_SetIP;
+    81	  };
+    82	
+    83	  GCC_3.3   { _Unwind_Backtrace; _Unwind_FindEnclosingFunction; };
+    84	  GCC_4.2.0 { _Unwind_GetIPInfo; };
+    85	#else // defined(ARM_GNUEABIHF)
+    86	  GCC_3.0 {
+    87	    __adddf3;  __addsf3;      __divdf3;  __divsf3;    __divsi3;    __eqdf2;
+    88	    __eqsf2;   __extendsfdf2; __fixdfsi; __fixsfsi;   __floatsidf; __floatsisf;
+    89	    __gedf2;   __gesf2;       __gtdf2;   __gtsf2;     __ledf2;     __lesf2;
+    90	    __ltdf2;   __ltsf2;       __modsi3;  __muldf3;    __mulsf3;    __nedf2;
+    91	    __negdf2;  __negsf2;      __nesf2;   __subdf3;    __subsf3;    __truncdfsf2;
+    92	    __udivsi3; __umodsi3;
+    93	  };
+    94	
+    95	  GCC_3.3.4 { __unorddf2; __unordsf2; };
+    96	
+    97	  GCC_3.5 {
+    98	    __aeabi_cdcmpeq; __aeabi_cdcmple;  __aeabi_cdrcmple;       __aeabi_cfcmpeq;
+    99	    __aeabi_cfcmple; __aeabi_cfrcmple; __aeabi_d2f;            __aeabi_d2iz;
+   100	    __aeabi_d2lz;    __aeabi_d2uiz;    __aeabi_d2ulz;          __aeabi_dadd;
+   101	    __aeabi_dcmpeq;  __aeabi_dcmpge;   __aeabi_dcmpgt;         __aeabi_dcmple;
+   102	    __aeabi_dcmplt;  __aeabi_dcmpun;   __aeabi_ddiv;           __aeabi_dmul;
+   103	    __aeabi_dneg;    __aeabi_drsub;    __aeabi_dsub;           __aeabi_f2d;
+   104	    __aeabi_f2iz;    __aeabi_f2lz;     __aeabi_f2uiz;          __aeabi_f2ulz;
+   105	    __aeabi_fadd;    __aeabi_fcmpeq;   __aeabi_fcmpge;         __aeabi_fcmpgt;
+   106	    __aeabi_fcmple;  __aeabi_fcmplt;   __aeabi_fcmpun;         __aeabi_fdiv;
+   107	    __aeabi_fmul;    __aeabi_fneg;     __aeabi_frsub;          __aeabi_fsub;
+   108	    __aeabi_i2d;     __aeabi_i2f;      __aeabi_idiv;           __aeabi_idiv0;
+   109	    __aeabi_idivmod; __aeabi_l2d;      __aeabi_l2f;            __aeabi_lasr;
+   110	    __aeabi_lcmp;    __aeabi_ldiv0;    __aeabi_ldivmod;        __aeabi_llsl;
+   111	    __aeabi_llsr;    __aeabi_lmul;     __aeabi_ui2d;           __aeabi_ui2f;
+   112	    __aeabi_uidiv;   __aeabi_uidivmod; __aeabi_ul2d;           __aeabi_ul2f;
+   113	    __aeabi_ulcmp;   __aeabi_uldivmod; __aeabi_unwind_cpp_pr0;
+   114	    __aeabi_unwind_cpp_pr1;            __aeabi_unwind_cpp_pr2;
+   115	    __gnu_unwind_frame;
+   116	    _Unwind_Complete;
+   117	    _Unwind_VRS_Get;
+   118	    _Unwind_VRS_Pop;
+   119	    _Unwind_VRS_Set;
+   120	  };
+   121	
+   122	  GCC_4.2.0 { __floatunsidf; __floatunsisf; };
+   123	  GCC_4.3.0 { _Unwind_Backtrace;            };
+   124	#endif
+   125	
+   126	#if defined(__aarch64__)
+   127	  GCC_3.0 {
+   128	    __addtf3;     __divtf3;     __eqtf2;     __extenddftf2; __extendsftf2;
+   129	    __fixtfdi;    __fixtfsi;    __fixtfti;   __fixunstfdi;  __fixunstfsi;
+   130	    __fixunstfti; __floatditf;  __floatsitf; __floattitf;   __getf2;
+   131	    __gttf2;      __letf2;      __lttf2;     __multf3;      __netf2;
+   132	    __subtf3;     __trunctfdf2; __trunctfsf2;
+   133	  };
+   134	
+   135	  GCC_4.0.0 { __powitf2;     __divtc3;      __multc3; };
+   136	  GCC_4.2.0 { __floatunditf; __floatunsitf; __floatuntitf; };
+   137	  GCC_4.5.0 { __unordtf2; };
+   138	#endif
+   139	
+   140	#if defined(__aarch64__) || defined(__i386__)
+   141	  GLIBC_2.0 { __deregister_frame; __register_frame; };
+   142	#endif
+   143	
+   144	#if defined(__i386__)
+   145	  GCC_3.0   { __fixunsxfsi; __fixxfdi; __floatdixf; };
+   146	  GCC_4.2.0 { __floatundixf; };
+   147	#endif
+   148	
+   149	#if defined(__x86_64__)
+   150	  GCC_3.0 {
+   151	    __deregister_frame;    __register_frame;
+   152	    __fixunsxfti;          __fixxfti;                   __floattixf;
+   153	  };
+   154	
+   155	  GCC_4.2.0 { __floatuntixf; };
+   156	  GCC_4.3.0 { __divtc3; __multc3; };
+   157	#endif
+     1	#!/usr/bin/env python3
+     2	
+     3	# Generates a version script for an architecture so that it can be incorporated
+     4	# into gcc_s.ver.
+     5	
+     6	from collections import defaultdict
+     7	from itertools import chain
+     8	import argparse, subprocess, sys, os
+     9	
+    10	
+    11	def split_suffix(symbol):
+    12	    """
+    13	    Splits a symbol such as `__gttf2@GCC_3.0` into a triple representing its
+    14	    function name (__gttf2), version name (GCC_3.0), and version number (300).
+    15	
+    16	    The version number acts as a priority. Since earlier versions are more
+    17	    accessible and are likely to be used more, the lower the number is, the higher
+    18	    its priortiy. A symbol that has a '@@' instead of '@' has been designated by
+    19	    the linker as the default symbol, and is awarded a priority of -1.
+    20	    """
+    21	    if "@" not in symbol:
+    22	        return None
+    23	    data = [i for i in filter(lambda s: s, symbol.split("@"))]
+    24	    _, version = data[-1].split("_")
+    25	    version = version.replace(".", "")
+    26	    priority = -1 if "@@" in symbol else int(version + "0" * (3 - len(version)))
+    27	    return data[0], data[1], priority
+    28	
+    29	
+    30	def invert_mapping(symbol_map):
+    31	    """Transforms a map from Key->Value to Value->Key."""
+    32	    store = defaultdict(list)
+    33	    for symbol, (version, _) in symbol_map.items():
+    34	        store[version].append(symbol)
+    35	    result = []
+    36	    for k, v in store.items():
+    37	        v.sort()
+    38	        result.append((k, v))
+    39	    result.sort(key=lambda x: x[0])
+    40	    return result
+    41	
+    42	
+    43	def intersection(llvm, gcc):
+    44	    """
+    45	    Finds the intersection between the symbols extracted from compiler-rt.a/libunwind.a
+    46	    and libgcc_s.so.1.
+    47	    """
+    48	    common_symbols = {}
+    49	    for i in gcc:
+    50	        suffix_triple = split_suffix(i)
+    51	        if not suffix_triple:
+    52	            continue
+    53	
+    54	        symbol, version_name, version_number = suffix_triple
+    55	        if symbol in llvm:
+    56	            if symbol not in common_symbols:
+    57	                common_symbols[symbol] = (version_name, version_number)
+    58	                continue
+    59	            if version_number < common_symbols[symbol][1]:
+    60	                common_symbols[symbol] = (version_name, version_number)
+    61	    return invert_mapping(common_symbols)
+    62	
+    63	
+    64	def find_function_names(path):
+    65	    """
+    66	    Runs readelf on a binary and reduces to only defined functions. Equivalent to
+    67	    `llvm-readelf --wide ${path} | grep 'FUNC' | grep -v 'UND' | awk '{print $8}'`.
+    68	    """
+    69	    result = subprocess.run(args=["llvm-readelf", "-su", path], capture_output=True)
+    70	
+    71	    if result.returncode != 0:
+    72	        print(result.stderr.decode("utf-8"), file=sys.stderr)
+    73	        sys.exit(1)
+    74	
+    75	    stdout = result.stdout.decode("utf-8")
+    76	    stdout = filter(lambda x: "FUNC" in x and "UND" not in x, stdout.split("\n"))
+    77	    stdout = chain(map(lambda x: filter(None, x), (i.split(" ") for i in stdout)))
+    78	
+    79	    return [list(i)[7] for i in stdout]
+    80	
+    81	
+    82	def to_file(versioned_symbols):
+    83	    path = f"{os.path.dirname(os.path.realpath(__file__))}/new-gcc_s-symbols"
+    84	    with open(path, "w") as f:
+    85	        f.write(
+    86	            "Do not check this version script in: you should instead work "
+    87	            "out which symbols are missing in `lib/gcc_s.ver` and then "
+    88	            "integrate them into `lib/gcc_s.ver`. For more information, "
+    89	            "please see `doc/LLVMLibgcc.rst`.\n"
+    90	        )
+    91	        for version, symbols in versioned_symbols:
+    92	            f.write(f"{version} {{\n")
+    93	            for i in symbols:
+    94	                f.write(f"  {i};\n")
+    95	            f.write("};\n\n")
+    96	
+    97	
+    98	def read_args():
+    99	    parser = argparse.ArgumentParser()
+   100	    parser.add_argument(
+   101	        "--compiler_rt",
+   102	        type=str,
+   103	        help="Path to `libclang_rt.builtins-${ARCH}.a`.",
+   104	        required=True,
+   105	    )
+   106	    parser.add_argument(
+   107	        "--libunwind", type=str, help="Path to `libunwind.a`.", required=True
+   108	    )
+   109	    parser.add_argument(
+   110	        "--libgcc_s",
+   111	        type=str,
+   112	        help="Path to `libgcc_s.so.1`. Note that unlike the other two arguments, this is a dynamic library.",
+   113	        required=True,
+   114	    )
+   115	    return parser.parse_args()
+   116	
+   117	
+   118	def main():
+   119	    args = read_args()
+   120	    llvm = find_function_names(args.compiler_rt) + find_function_names(args.libunwind)
+   121	    gcc = find_function_names(args.libgcc_s)
+   122	    versioned_symbols = intersection(llvm, gcc)
+   123	    # TODO(cjdb): work out a way to integrate new symbols in with the existing
+   124	    #             ones
+   125	    to_file(versioned_symbols)
+   126	
+   127	
+   128	if __name__ == "__main__":
+   129	    main()
+EXIT_CODE=0

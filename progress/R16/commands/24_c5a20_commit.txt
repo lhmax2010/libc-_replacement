@@ -1,0 +1,115 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc git\ -C\ codes/llvm\ show\ --stat\ --format=fuller\ c5a20b518203613497fa864867fc232648006068\;\ git\ -C\ codes/llvm\ branch\ -a\ --contains\ c5a20b518203613497fa864867fc232648006068
+commit c5a20b518203613497fa864867fc232648006068
+Author:     Christopher Di Bella <cjdb@google.com>
+AuthorDate: Tue Aug 17 20:23:22 2021 +0000
+Commit:     Christopher Di Bella <cjdb@google.com>
+CommitDate: Wed Feb 16 17:06:45 2022 +0000
+
+    [llvm-libgcc] initial commit
+    
+    Note: the term "libgcc" refers to the all of `libgcc.a`, `libgcc_eh.a`,
+    and `libgcc_s.so`.
+    
+    Enabling libunwind as a replacement for libgcc on Linux has proven to be
+    challenging since libgcc_s.so is a required dependency in the [Linux
+    standard base][5]. Some software is transitively dependent on libgcc
+    because glibc makes hardcoded calls to functions in libgcc_s. For example,
+    the function `__GI___backtrace` eventually makes its way to a [hardcoded
+    dlopen to libgcc_s' _Unwind_Backtrace][1]. Since libgcc_{eh.a,s.so} and
+    libunwind have the same ABI, but different implementations, the two
+    libraries end up [cross-talking, which ultimately results in a
+    segfault][2].
+    
+    To solve this problem, libunwind needs to build a “libgcc”. That is, link
+    the necessary functions from compiler-rt and libunwind into an archive
+    and shared object that advertise themselves as `libgcc.a`, `libgcc_eh.a`,
+    and `libgcc_s.so`, so that glibc’s baked calls are diverted to the
+    correct objects in memory. Fortunately for us, compiler-rt and libunwind
+    use the same ABI as the libgcc family, so the problem is solvable at the
+    llvm-project configuration level: no program source needs to be edited.
+    Thus, the end result is for a user to configure their LLVM build with a
+    flag that indicates they want to archive compiler-rt/unwind as libgcc.
+    We achieve this by compiling libunwind with all the symbols necessary
+    for compiler-rt to emulate the libgcc family, and then generate symlinks
+    named for our "libgcc" that point to their corresponding libunwind
+    counterparts.
+    
+    We alternatively considered patching glibc so that the source doesn't
+    directly refer to libgcc, but rather _defaults_ to libgcc, so that a
+    system preferring compiler-rt/libunwind can point to these libraries
+    at the config stage instead. Even if we modified the Linux standard
+    base, this alternative won't work because binaries that are built using
+    libgcc will still end up having crosstalk between the differing
+    implementations.
+    
+    This problem has been solved in this manner for [FreeBSD][3], and this
+    CL has been tested against [Chrome OS][4].
+    
+    [1]: https://github.com/bminor/glibc/blob/master/sysdeps/arm/backtrace.c#L68
+    [2]: https://bugs.chromium.org/p/chromium/issues/detail?id=1162190#c16
+    [3]: https://github.com/freebsd/freebsd-src/tree/main/lib/libgcc_s
+    [4]: https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/2945947
+    [5]: https://refspecs.linuxbase.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/libgcc-s.html
+    
+    Differential Revision: https://reviews.llvm.org/D108416
+
+ compiler-rt/cmake/Modules/AddCompilerRT.cmake |   2 +-
+ llvm-libgcc/CMakeLists.txt                    |  42 ++++++
+ llvm-libgcc/docs/LLVMLibgcc.rst               | 187 ++++++++++++++++++++++++++
+ llvm-libgcc/generate_version_script.py        | 131 ++++++++++++++++++
+ llvm-libgcc/lib/CMakeLists.txt                |  85 ++++++++++++
+ llvm-libgcc/lib/blank.c                       |   0
+ llvm-libgcc/lib/gcc_s.ver                     | 167 +++++++++++++++++++++++
+ runtimes/CMakeLists.txt                       |  17 +++
+ 8 files changed, 630 insertions(+), 1 deletion(-)
+* tizen_base
+  remotes/origin/aarch64_ilp32
+  remotes/origin/accepted/tizen_10.0_base
+  remotes/origin/accepted/tizen_10.0_base_mr
+  remotes/origin/accepted/tizen_10.1_base
+  remotes/origin/accepted/tizen_9.0_base
+  remotes/origin/accepted/tizen_base
+  remotes/origin/accepted/tizen_base_asan
+  remotes/origin/accepted/tizen_base_dev
+  remotes/origin/accepted/tizen_base_riscv
+  remotes/origin/accepted/tizen_base_sc
+  remotes/origin/accepted/tizen_base_tool_dev
+  remotes/origin/accepted/tizen_base_toolchain
+  remotes/origin/accepted/tizen_base_x
+  remotes/origin/accepted/tizen_base_x_asan
+  remotes/origin/develop_backup
+  remotes/origin/sanbox/kaic/dev
+  remotes/origin/sandbox/Pusha/329225-4
+  remotes/origin/sandbox/Pusha/330332-1
+  remotes/origin/sandbox/Pusha/clang
+  remotes/origin/sandbox/Pusha/test
+  remotes/origin/sandbox/Pusha/with_link
+  remotes/origin/sandbox/Pusha/with_ninja
+  remotes/origin/sandbox/dkson95/libc++
+  remotes/origin/sandbox/dkson95/mlgo
+  remotes/origin/sandbox/fangyuhe/libomp
+  remotes/origin/sandbox/hoegeun/devel
+  remotes/origin/sandbox/hoegeun/llvm-static
+  remotes/origin/sandbox/kaic/omp
+  remotes/origin/sandbox/lhmax2025/libcxx-ehabi-backport
+  remotes/origin/sandbox/lhmax2025/llvm_only_clang
+  remotes/origin/sandbox/lhmax2025/mlgo
+  remotes/origin/sandbox/lhmax2025/mlgo_aot
+  remotes/origin/sandbox/liushanshan/llvm_upgrade
+  remotes/origin/sandbox/v.solomin/21.1.1
+  remotes/origin/sandbox/v.solomin/clang-links-19
+  remotes/origin/sandbox/v.solomin/mb_len_max
+  remotes/origin/sandbox/v.solomin/ninja
+  remotes/origin/sandbox/vbarinov/fix-check
+  remotes/origin/tizen_10.0_base
+  remotes/origin/tizen_10.1_base
+  remotes/origin/tizen_9.0_base
+  remotes/origin/tizen_base
+  remotes/origin/tizen_base_15.0.7
+  remotes/origin/tizen_base_19.1.4
+  remotes/origin/tizen_base_21.1.1
+  remotes/origin/tizen_base_dev
+  remotes/origin/tizen_base_next
+  remotes/origin/upstream
+EXIT_CODE=0
