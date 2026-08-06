@@ -1,0 +1,62 @@
+     1	# CMake script that writes version control information to a header.
+     2	#
+     3	# Input variables:
+     4	#   NAMES             - A list of names for each of the source directories.
+     5	#   <NAME>_SOURCE_DIR - A path to source directory for each name in NAMES.
+     6	#   HEADER_FILE       - The header file to write
+     7	#
+     8	# The output header will contain macros <NAME>_REPOSITORY and <NAME>_REVISION,
+     9	# where "<NAME>" is substituted with the names specified in the input variables,
+    10	# for each of the <NAME>_SOURCE_DIR given.
+    11	
+    12	get_filename_component(LLVM_CMAKE_DIR "${CMAKE_SCRIPT_MODE_FILE}" PATH)
+    13	
+    14	list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
+    15	
+    16	include(VersionFromVCS)
+    17	
+    18	# Handle strange terminals
+    19	set(ENV{TERM} "dumb")
+    20	
+    21	function(append_info name revision repository)
+    22	  if(revision)
+    23	    file(APPEND "${HEADER_FILE}.tmp"
+    24	      "#define ${name}_REVISION \"${revision}\"\n")
+    25	  else()
+    26	    file(APPEND "${HEADER_FILE}.tmp"
+    27	      "#undef ${name}_REVISION\n")
+    28	  endif()
+    29	  if(repository)
+    30	    file(APPEND "${HEADER_FILE}.tmp"
+    31	      "#define ${name}_REPOSITORY \"${repository}\"\n")
+    32	  else()
+    33	    file(APPEND "${HEADER_FILE}.tmp"
+    34	      "#undef ${name}_REPOSITORY\n")
+    35	  endif()
+    36	endfunction()
+    37	
+    38	foreach(name IN LISTS NAMES)
+    39	  if(LLVM_FORCE_VC_REVISION AND LLVM_FORCE_VC_REPOSITORY)
+    40	    set(revision ${LLVM_FORCE_VC_REVISION})
+    41	    set(repository ${LLVM_FORCE_VC_REPOSITORY})
+    42	  elseif(LLVM_FORCE_VC_REVISION)
+    43	    set(revision ${LLVM_FORCE_VC_REVISION})
+    44	  elseif(LLVM_FORCE_VC_REPOSITORY)
+    45	    set(repository ${LLVM_FORCE_VC_REPOSITORY})
+    46	  elseif(${name}_VC_REPOSITORY AND ${name}_VC_REVISION)
+    47	    set(revision ${${name}_VC_REVISION})
+    48	    set(repository ${${name}_VC_REPOSITORY})
+    49	  elseif(DEFINED ${name}_SOURCE_DIR)
+    50	    if (${name}_SOURCE_DIR)
+    51	      get_source_info("${${name}_SOURCE_DIR}" revision repository)
+    52	    endif()
+    53	  else()
+    54	    message(FATAL_ERROR "${name}_SOURCE_DIR is not defined")
+    55	  endif()
+    56	  append_info(${name} "${revision}" "${repository}")
+    57	endforeach()
+    58	
+    59	# Copy the file only if it has changed.
+    60	execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    61	  "${HEADER_FILE}.tmp" "${HEADER_FILE}")
+    62	file(REMOVE "${HEADER_FILE}.tmp")

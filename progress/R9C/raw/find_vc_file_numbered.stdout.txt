@@ -1,0 +1,66 @@
+  2613	
+  2614	# If the sources at the given `path` are under version control, set `out_var`
+  2615	# to the the path of a file which will be modified when the VCS revision
+  2616	# changes, attempting to create that file if it does not exist; if no such
+  2617	# file exists and one cannot be created, instead set `out_var` to the
+  2618	# empty string.
+  2619	#
+  2620	# If the sources are not under version control, do not define `out_var`.
+  2621	function(find_first_existing_vc_file path out_var)
+  2622	  if(NOT EXISTS "${path}")
+  2623	    return()
+  2624	  endif()
+  2625	  find_package(Git)
+  2626	  if(GIT_FOUND)
+  2627	    execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --git-dir
+  2628	      WORKING_DIRECTORY ${path}
+  2629	      RESULT_VARIABLE git_result
+  2630	      OUTPUT_VARIABLE git_output
+  2631	      ERROR_QUIET)
+  2632	    if(git_result EQUAL 0)
+  2633	      string(STRIP "${git_output}" git_output)
+  2634	      get_filename_component(git_dir ${git_output} ABSOLUTE BASE_DIR ${path})
+  2635	      # Some branchless cases (e.g. 'repo') may not yet have .git/logs/HEAD
+  2636	      if (NOT EXISTS "${git_dir}/logs/HEAD")
+  2637	        execute_process(COMMAND ${CMAKE_COMMAND} -E touch HEAD
+  2638	          WORKING_DIRECTORY "${git_dir}/logs"
+  2639	          RESULT_VARIABLE touch_head_result
+  2640	          ERROR_QUIET)
+  2641	        if (NOT touch_head_result EQUAL 0)
+  2642	          set(${out_var} "" PARENT_SCOPE)
+  2643	          return()
+  2644	        endif()
+  2645	      endif()
+  2646	      set(${out_var} "${git_dir}/logs/HEAD" PARENT_SCOPE)
+  2647	    endif()
+  2648	  endif()
+  2649	endfunction()
+  2650	
+  2651	function(get_host_tool_path tool_name setting_name exe_var_name target_var_name)
+  2652	  set(${setting_name}_DEFAULT "")
+  2653	
+  2654	  if(LLVM_NATIVE_TOOL_DIR)
+  2655	    if(EXISTS "${LLVM_NATIVE_TOOL_DIR}/${tool_name}${LLVM_HOST_EXECUTABLE_SUFFIX}")
+  2656	      set(${setting_name}_DEFAULT "${LLVM_NATIVE_TOOL_DIR}/${tool_name}${LLVM_HOST_EXECUTABLE_SUFFIX}")
+  2657	    endif()
+  2658	  endif()
+  2659	
+  2660	  set(${setting_name} "${${setting_name}_DEFAULT}" CACHE
+  2661	    STRING "Host ${tool_name} executable. Saves building if cross-compiling.")
+  2662	
+  2663	  if(${setting_name})
+  2664	    set(exe_name ${${setting_name}})
+  2665	    set(target_name "")
+  2666	  elseif(LLVM_USE_HOST_TOOLS)
+  2667	    get_native_tool_path(${tool_name} exe_name)
+  2668	    set(target_name host_${tool_name})
+  2669	  else()
+  2670	    set(exe_name $<TARGET_FILE:${tool_name}>)
+  2671	    set(target_name ${tool_name})
+  2672	  endif()
+  2673	  # Force setting the cache variable because they are only used for being
+  2674	  # global in scope. Using regular variables would require careful audit of the
+  2675	  # code with several parent scope set commands.
+  2676	  set(${exe_var_name} "${exe_name}" CACHE STRING "" FORCE)
+  2677	  set(${target_var_name} "${target_name}" CACHE STRING "" FORCE)
+  2678	endfunction()
