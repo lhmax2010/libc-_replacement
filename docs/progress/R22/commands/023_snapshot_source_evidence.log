@@ -1,0 +1,73 @@
+cwd: /home/toolchain/development/libc++_replacement
+command: bash -lc for\ f\ in\ progress/R11/tables/snapshot_identity.tsv\ progress/R11/tables/repodata_identity.tsv\ progress/R11/tables/download_registry.tsv\ progress/R19b/tables/analysis_object_sources.tsv\ progress/R19b/tables/applicability_scope.tsv\ progress/R19_21/R20/R20_migration_phases_report.md\ progress/R19_21/R19/chromium_efl_report.md\;\ do\ echo\ FILE=\$f\;\ if\ test\ -f\ \"\$f\"\;\ then\ sed\ -n\ \"1\,160p\"\ \"\$f\"\;\ else\ echo\ NOT_FOUND\;\ fi\;\ done
+--- stdout+stderr ---
+FILE=progress/R11/tables/snapshot_identity.tsv
+snapshot_id_type	repo_id	kind	repomd_revision	repomd_sha256	note
+COMPOSITE_REPOSITORY_COMPONENT	base_binary	binary	1785866115	1789528921ae67d70ba657c787899ec580ab0b17a8368a0245ec09440710cf16	repomd does not expose one cross-repository platform snapshot ID; these four immutable revision+SHA pairs are the R11 composite identity
+COMPOSITE_REPOSITORY_COMPONENT	unified_binary	binary	1785904307	e425b6a91a3cfb2f67cbd73160ac48e2bb776e92866de81d5b97bb25e5ab39c3	repomd does not expose one cross-repository platform snapshot ID; these four immutable revision+SHA pairs are the R11 composite identity
+COMPOSITE_REPOSITORY_COMPONENT	base_source	source	1785866095	cf7fca47147304ec114e8e0c19f6f43353dbf973ee623d3eb5188919c509fe72	repomd does not expose one cross-repository platform snapshot ID; these four immutable revision+SHA pairs are the R11 composite identity
+COMPOSITE_REPOSITORY_COMPONENT	unified_source	source	1785904240	f15c6854277fb975d6d5e52d9a33c120eb85bb5cdc726acdf4243026098fde59	repomd does not expose one cross-repository platform snapshot ID; these four immutable revision+SHA pairs are the R11 composite identity
+FILE=progress/R11/tables/repodata_identity.tsv
+NOT_FOUND
+FILE=progress/R11/tables/download_registry.tsv
+NOT_FOUND
+FILE=progress/R19b/tables/analysis_object_sources.tsv
+NOT_FOUND
+FILE=progress/R19b/tables/applicability_scope.tsv
+scope_item	declaration
+R19 repository scope	Tizen Unified Toolchain standard binary repository component revision 1785904307, repomd SHA256 e425b6a91a3cfb2f67cbd73160ac48e2bb776e92866de81d5b97bb25e5ab39c3
+R19 RPM scope	15 RPM instances listed in analyzed_rpm_origin.tsv; the 42 runtime ELF come from chromium-efl and chromium-efl-browser across aarch64/armv7l/x86_64
+Board installed scope	Only chromium-efl-0:1.1.144-1.armv7l was observed installed; its NEVRA matches the analyzed armv7l main RPM
+Board byte identity boundary	Installed payload SHA256 was not queried; byte-for-byte identity is NOT_OBSERVED
+Applicability	R19 conclusions strictly apply to the 15 repository RPM identities and their 42 analyzed runtime ELF. At NEVRA level the armv7l chromium-efl main package matches the board; uninstalled subpackages and payload byte identity are outside the board observation.
+FILE=progress/R19_21/R20/R20_migration_phases_report.md
+# R20：平台分阶段迁移源码包清单
+
+## 口径
+
+平台输入含 1,450 个源码 RPM 记录、11,332 个二进制 RPM 记录、36,829 个运行时 ELF。需适配集合按“至少一个运行时 ELF 含 C++ 指标（Itanium 修饰符号或 C++ 运行时 DT_NEEDED）”机械取并集，共 483/1,450 个源码 RPM 身份；源码包与二进制 Name/架构实例映射在 `tables/phase_package_list.tsv`。
+
+R11/R13 输入及 SHA256 见 `../inputs/input_identity.tsv`。本轮没有重扫仓库，只由已有 `elf_inventory.tsv`、`dependency_edge_resolution.tsv` 和闭包表聚合。
+
+## C++ ABI 图
+
+在 151,403 条运行时 ELF DT_NEEDED 边中，138,236 条唯一解析（91.30%），13,167 条不可唯一解析（8.70%）。不可解析边不被补全；其中需适配包作为消费者的 12,457 条逐条列在 `tables/unresolved_runtime_edges.tsv`。
+
+若被依赖 ELF 已实测导出 Itanium 修饰符号，或自身 DT_NEEDED C++ 运行时，则记 C++ ABI provider 边；得到 1,705 条去重源码包有向边（A→B 表示 A 依赖 B），原始逐架构/ELF 证据 27,818 行。被依赖 ELF 两项指标均为 NO 的 110,418 行单列为“纯 C provider 边界”。此判据只能证明 provider 没有这两类 C++ 指标；对“C++ provider 是否仅暴露 C 接口”无法由现有表可靠判定，未作推断。
+
+483 个节点的强连通分量全部为单节点；本次实测图中没有规模大于 1 的 SCC。
+
+## 分档规则与结果
+
+规则完全机械执行：
+
+1. 第一阶段先纳入明确要求的首批五包和测试框架；再纳入 C++ ABI 图出度为 0、且至少有一个上层依赖者的底层节点。
+2. 第三阶段纳入规模大于 1 的 SCC、R13 插件宿主源码包、或五个厂商二进制包的直接消费者；首批五包和测试框架的显式规则优先。
+3. 第二阶段纳入剩余单节点中“入度为 0”或“所有 C++ ABI 依赖均属于第一阶段”的包。
+4. 不满足以上条款者记 `UNKNOWN`，不擅自塞入任一阶段。
+5. 五个厂商二进制包单列；它们映射为 4 个源码 RPM 身份，不计入三个阶段。
+
+实测结果：第一阶段 30、第二阶段 311、第三阶段 17、UNKNOWN 121、厂商单列源码身份 4；合计 483/483。厂商对象为 5 个二进制 Name，其中 `pen-wave` 与 `pen-wave-devel` 同属一个源码 RPM。平台只命中一个测试框架源码包 `gtest-1.15.2-0.src.rpm`。
+
+第三阶段的 17 个源码包来自 19 个适配集合内插件宿主源码身份与显式优先规则的交集处理；没有规模大于 1 的 SCC，且从现有已解析边中没有观测到五个厂商包的直接消费者。完整机制原因逐包写在 `phase_package_list.tsv`。
+
+## 逐包标注与特殊对象
+
+每个源码 RPM 给出阶段、机械理由、二进制 Name 数、三架构 RPM 实例数、图入/出度、SCC、R13 风险集归属，以及 R1 三档。R1 只在 source RPM 身份逐字相同时复用；不相同者全部标 `UNKNOWN`，没有按名称或相近版本外推。
+
+- `chromium-efl-1.1.144-1.src.rpm`：阶段归属 `UNKNOWN`；R19 实测为 42/42 运行时 ELF 依赖 libstdc++，R13 风险集；T1/R1 因 SRPM 解包失败，源码/构建修改分类均为 `UNKNOWN`。
+- 五个厂商二进制及其四个源码身份见 `vendor_prebuilt_five.tsv`；直接消费者表为空（只含表头），表示在现有唯一解析边内未观测到。
+- 测试框架见 `test_framework_packages.tsv`。
+- C++ 插件宿主源码包见 `plugin_host_source_packages.tsv`。
+
+## 交叉校验
+
+首批五包全部落第一阶段；`libcynara-commons` 与 `security-manager` 均标为需源码修改；阶段与单列集合合计 483/483，三项断言均 PASS。
+
+实测仍有 462/1,705 条“较早阶段消费者依赖较晚阶段 provider”的逆向源码 ABI 边，完整列在 `inverse_phase_dependencies.tsv`。按纪律没有为隐藏这些边而调整分组；它们是当前机械规则与实测图同时成立时的原始结果。
+
+本报告只给事实清单，不含排期、工时、优先级或风险评级。
+FILE=progress/R19_21/R19/chromium_efl_report.md
+NOT_FOUND
+--- end ---
+exit_code: 0

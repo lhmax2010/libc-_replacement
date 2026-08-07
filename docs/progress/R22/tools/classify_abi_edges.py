@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+import csv
+import subprocess
+from collections import Counter, defaultdict
+from pathlib import Path
+
+ROOT=Path(__file__).resolve().parents[3]
+OUT=ROOT/"progress/R22/tables"
+OUT.mkdir(parents=True,exist_ok=True)
+
+def read(rel):
+    with (ROOT/rel).open(encoding="utf-8",newline="") as f:return list(csv.DictReader(f,delimiter="\t"))
+def write(name,fields,rows):
+    with (OUT/name).open("w",encoding="utf-8",newline="") as f:
+        w=csv.DictWriter(f,fieldnames=fields,delimiter="\t",lineterminator="\n",extrasaction="ignore");w.writeheader();w.writerows(rows)
+
+phase_rows=read("progress/R19_21/R20/tables/phase_package_list.tsv")
+phase={r["source_rpm"]:r["phase"] for r in phase_rows}
+phase_nodes=set(phase)
+candidate_raw=read("progress/R19_21/R20/tables/cpp_abi_edges.tsv")
+candidate_pairs={(r["consumer_source_rpm"],r["provider_source_rpm"]) for r in candidate_raw if r["consumer_source_rpm"] in phase_nodes and r["provider_source_rpm"] in phase_nodes and r["consumer_source_rpm"]!=r["provider_source_rpm"]}
+reverse_rows=read("progress/R19_21/R20/tables/inverse_phase_dependencies.tsv")
+reverse_pairs={(r["consumer_source_rpm"],r["provider_source_rpm"]) for r in reverse_rows}
+
+elfs=read("progress/R11/tables/elf_inventory.tsv")
+elf_by={(r["rpm_sha256"],r["path"]):r for r in elfs}
+bins=read("progress/R11/tables/binary_package_records.tsv")
+bin_by_sha={r["checksum"]:r for r in bins}
+deps=read("progress/R13/tables/dependency_edge_resolution.tsv")
+
+evidence=[]
+for d in deps:
+    if d["resolution_status"]!="RESOLVED_UNIQUE":continue
+    ce=elf_by.get((d["consumer_rpm_sha256"],d["consumer_path"]))
+    pe=elf_by.get((d["provider_rpm_sha256"],d["provider_path"]))
+    if not ce or not pe or ce["runtime_elf"]!="YES":continue
+    pair=(ce["sourcerpm"],pe["sourcerpm"])
+    if pair not in candidate_pairs:continue
+    cb=bin_by_sha.get(d["consumer_rpm_sha256"],{})
+    pb=bin_by_sha.get(d["provider_rpm_sha256"],{})
+    evidence.append({
+      "consumer_source_rpm":pair[0],"provider_source_rpm":pair[1],"arch":ce["arch"],
+      "consumer_binary":cb.get("name",ce["name"]),"consumer_rpm_sha256":d["consumer_rpm_sha256"],"consumer_elf":d["consumer_path"],
+      "needed_soname":d["needed_soname"],"provider_binary":pb.get("name",pe["name"]),"provider_rpm_sha256":d["provider_rpm_sha256"],"provider_elf":d["provider_path"],
+    })
+
+probe_keys=sorted({(r["consumer_rpm_sha256"],r["consumer_elf"]) for r in evidence}|{(r["provider_rpm_sha256"],r["provider_elf"]) for r in evidence})
+symbols={}; commands=[]
+for i,(rpm_sha,path) in enumerate(probe_keys,1):
+    local=ROOT/"tmp/R11/extracted"/rpm_sha[:2]/rpm_sha/path.lstrip("/")
+    cmd=["readelf","--dyn-syms","-W",str(local)]
+    if not local.exists():
+        commands.append({"probe_id":i,"rpm_sha256":rpm_sha,"elf_path":path,"local_path":str(local),"command":" ".join(cmd),"exit_code":"NOT_RUN","stderr":"local extracted ELF NOT_FOUND"})
+        symbols[(rpm_sha,path)]=None;continue
+    p=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    commands.append({"probe_id":i,"rpm_sha256":rpm_sha,"elf_path":path,"local_path":str(local),"command":" ".join(cmd),"exit_code":p.returncode,"stderr":p.stderr.replace("\n","\\n")})
+    if p.returncode:
+        symbols[(rpm_sha,path)]=None;continue
+    und=set();defined=set()
+    for line in p.stdout.splitlines():
+        parts=line.split(None,7)
+        if len(parts)!=8 or not parts[0].endswith(":"):continue
+        ndx,name=parts[6],parts[7].strip().split()[0]
+        if name in {"", "0"}:continue
+        name=name.split("@",1)[0]
+        (und if ndx=="UND" else defined).add(name)
+    symbols[(rpm_sha,path)]={"und":und,"defined":defined}
+write("symbol_probe_commands.tsv",list(commands[0]),commands)
+
+classified=[]
+for r in evidence:
+    cs=symbols.get((r["consumer_rpm_sha256"],r["consumer_elf"]))
+    ps=symbols.get((r["provider_rpm_sha256"],r["provider_elf"]))
+    if cs is None or ps is None:
+        cls="NOT_AVAILABLE"; cpp=[]; c=[]
+    else:
+        inter=sorted(cs["und"]&ps["defined"])
+        cpp=[s for s in inter if s.startswith("_Z")]
+        c=[s for s in inter if not s.startswith("_Z")]
+        if cpp: cls="TRUE_CPP_ABI_COUPLING"
+        elif c: cls="PURE_C_INTERFACE"
+        else: cls="OTHER_NO_SYMBOL_INTERSECTION"
+    classified.append({**r,"classification":cls,"cpp_symbol_count":len(cpp),"c_symbol_count":len(c),"cpp_symbols":";".join(cpp),"c_symbols":";".join(c)})
+write("candidate_edge_evidence.tsv",list(classified[0]),classified)
+write("reverse_edge_evidence.tsv",list(classified[0]),[r for r in classified if (r["consumer_source_rpm"],r["provider_source_rpm"]) in reverse_pairs])
+
+by_pair=defaultdict(list)
+for r in classified:by_pair[(r["consumer_source_rpm"],r["provider_source_rpm"])].append(r)
+source=[]
+for pair in sorted(candidate_pairs):
+    rows=by_pair.get(pair,[]); counts=Counter(r["classification"] for r in rows)
+    cpp=sorted({s for r in rows for s in r["cpp_symbols"].split(";") if s})
+    c=sorted({s for r in rows for s in r["c_symbols"].split(";") if s})
+    if counts["TRUE_CPP_ABI_COUPLING"]: cls="TRUE_CPP_ABI_COUPLING"
+    elif counts["NOT_AVAILABLE"] or not rows: cls="NOT_AVAILABLE"
+    elif counts["PURE_C_INTERFACE"]: cls="PURE_C_INTERFACE"
+    else: cls="OTHER_NO_SYMBOL_INTERSECTION"
+    source.append({"consumer_source_rpm":pair[0],"provider_source_rpm":pair[1],"R20_consumer_phase":phase[pair[0]],"R20_provider_phase":phase[pair[1]],"classification":cls,"evidence_DT_NEEDED_rows":len(rows),"true_cpp_evidence_rows":counts["TRUE_CPP_ABI_COUPLING"],"pure_c_evidence_rows":counts["PURE_C_INTERFACE"],"other_evidence_rows":counts["OTHER_NO_SYMBOL_INTERSECTION"],"not_available_rows":counts["NOT_AVAILABLE"],"cpp_symbol_count":len(cpp),"c_symbol_count":len(c),"cpp_symbols":";".join(cpp),"c_symbols":";".join(c)})
+write("source_edge_classification.tsv",list(source[0]),source)
+rev=[r for r in source if (r["consumer_source_rpm"],r["provider_source_rpm"]) in reverse_pairs]
+write("reverse_edge_attribution.tsv",list(rev[0]),rev)
+
+summary=[]
+for scope,rows in [("ALL_R20_SOURCE_CANDIDATE_EDGES",source),("R20_REVERSE_462",rev)]:
+    count=Counter(r["classification"] for r in rows)
+    for cls in ["TRUE_CPP_ABI_COUPLING","PURE_C_INTERFACE","OTHER_NO_SYMBOL_INTERSECTION","NOT_AVAILABLE"]:
+        summary.append({"scope":scope,"classification":cls,"edge_count":count[cls],"denominator":len(rows),"unit":"directed source RPM edge"})
+summary.append({"scope":"SYMBOL_PROBES","classification":"READ_ELF_PASS","edge_count":sum(str(r["exit_code"])=="0" for r in commands),"denominator":len(commands),"unit":"unique ELF"})
+summary.append({"scope":"SYMBOL_PROBES","classification":"READ_ELF_NOT_AVAILABLE","edge_count":sum(str(r["exit_code"])!="0" for r in commands),"denominator":len(commands),"unit":"unique ELF"})
+write("edge_attribution_summary.tsv",list(summary[0]),summary)
