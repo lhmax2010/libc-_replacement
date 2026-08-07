@@ -1,5 +1,13 @@
 # R15：开发板 192.168.108.25 能力探测
 
+> 状态更新（R23，依据 R22）：本报告记录的是 R15 当次会话的历史事实，
+> 其中“无执行载体”不再是当前阻塞。R22 已在同一块板上实测确认 SDB
+> 可达，并确认 `/root`、`/opt/usr`、`/opt/home`、`/home/owner`、
+> `/var/tmp`、`/opt/var/tmp` 六个路径可写且可执行；证据见
+> `docs/progress/R22/R22_board_path_report.md` 与
+> `docs/progress/R22/board/path_probe_results_v2.tsv`。以下 R15 原结论保留，
+> 不回写为当时未观测到的结果。
+
 状态：`NOT_FEASIBLE_CURRENT_SESSION_NO_EXECUTION_CARRIER`。板 IP 在线，但 SSH 与 SDB 均不可用；没有任何板上命令实际启动。因此身份、运行时现状与部署能力均按纪律记 `NOT_AVAILABLE/NOT_OBSERVED`，没有推断补全。
 
 ## 1. 连通性实测

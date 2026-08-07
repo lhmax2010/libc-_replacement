@@ -1,5 +1,13 @@
 # R15b：开发板 192.168.108.25 能力探测续跑
 
+> 状态更新（R23，依据 R22）：R15b 尚未实际执行未签名探针而留下的
+> “可执行路径未观测”已由 R22 闭合。R22 在 `/root`、`/opt/usr`、
+> `/opt/home`、`/home/owner`、`/var/tmp`、`/opt/var/tmp` 六个路径逐一
+> 完成 ARM 静态探针执行（退出 0）和删除核验；`/tmp` 仍为 `noexec`，
+> 但不再阻塞板上验证。证据见 `docs/progress/R22/R22_board_path_report.md`
+> 与 `docs/progress/R22/board/path_probe_results_v2.tsv`。R15b 以下内容仍按
+> 当次任务边界保留。
+
 状态：`LIMITED`。网络问题修复后，SDB `192.168.108.25:26101` 已成为可用执行载体；板端实测为 Tizen 11.0、armv7l、32 位。SSH 22 端口仍为 `Connection refused`。探测没有安装包、没有启停服务、没有运行本项目制品；唯一板端写入是任务授权的 `/opt`、`/tmp`、`/home` 临时探针，均在同一命令中完整删除。
 
 ## 1. 连通与身份
@@ -41,3 +49,11 @@ RPM 版本为 4.14.1，`rpm -qa` 计数 1270。Smackfs 已挂载，当前标签�
 首次运行时清单的 07–09 号命令因宿主 shell 提前展开远端变量而生成空结果，原文保留为 `07_runtime_ls_invalid_attempt.log`、`08_runtime_sha256_invalid_attempt.log`、`09_runtime_presence_invalid_attempt.log`；随后只修正参数引用方式，判据与扫描路径不变，并以同号正式日志重新执行。三次无效尝试和正式结果均为只读。
 
 本报告只陈述探测事实，不提供后续方案建议。
+
+## 6. 后续状态下仍存在的能力限制
+
+当前项目只有一块已识别的 armv7l 板卡。SDB 在 R15 当次会话不可达、
+在 R15b 与 R22 会话实测可达；未做跨会话连续性监测，因此连接稳定性
+没有更强的持续可用结论。板端 `clang`、`clang++`、`gcc`、`g++` 均
+不可得，后续板上程序仍须由宿主交叉编译。这些限制不改变 R22 已实测的
+六个可写可执行路径结论。
