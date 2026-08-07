@@ -1,0 +1,99 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc nl\ -ba\ progress/R11/tools/scan_binary_rpms.py\ \|\ sed\ -n\ \'120\,215p\'
+   120	                dirs.sort()
+   121	                files.sort()
+   122	                for filename in files:
+   123	                    path = pathlib.Path(root) / filename
+   124	                    if path.is_symlink() or not path.is_file() or not is_elf(path):
+   125	                        continue
+   126	                    relpath = "/" + str(path.relative_to(out_dir))
+   127	                    inspect_cmd = [readelf, "-hSWd", "--dyn-syms", "-W", str(path)]
+   128	                    proc = subprocess.run(inspect_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+   129	                    result["commands"].append({
+   130	                        "label": f"readelf:{relpath}",
+   131	                        "pwd": os.getcwd(),
+   132	                        "command": shlex.join(inspect_cmd),
+   133	                        "exit_code": str(proc.returncode),
+   134	                        "stderr": clean_text(proc.stderr),
+   135	                    })
+   136	                    if proc.returncode != 0:
+   137	                        result["failures"].append({
+   138	                            "path": relpath, "operation": "readelf_inventory",
+   139	                            "exit_code": str(proc.returncode), "stderr": clean_text(proc.stderr),
+   140	                        })
+   141	                        continue
+   142	                    text = proc.stdout
+   143	                    elf_type_match = HEADER_TYPE_RE.search(text)
+   144	                    machine_match = HEADER_MACHINE_RE.search(text)
+   145	                    elf_type = elf_type_match.group(1) if elf_type_match else "UNKNOWN"
+   146	                    machine = machine_match.group(1) if machine_match else "UNKNOWN"
+   147	                    sections = sorted(set(SECTION_RE.findall(text)))
+   148	                    needed = sorted(set(NEEDED_RE.findall(text)))
+   149	                    symbols = []
+   150	                    und = []
+   151	                    for line in text.splitlines():
+   152	                        match = SYMBOL_RE.match(line)
+   153	                        if not match:
+   154	                            continue
+   155	                        ndx, raw_name = match.groups()
+   156	                        name = symbol_name(raw_name)
+   157	                        symbols.append(name)
+   158	                        if ndx == "UND":
+   159	                            und.append(name)
+   160	                    cpp_symbol = any(split_version(name)[0].startswith("_Z") for name in symbols)
+   161	                    cpp_needed = any(
+   162	                        re.match(r"^(libstdc\+\+|libc\+\+|libc\+\+abi)\.so", item)
+   163	                        for item in needed
+   164	                    )
+   165	                    is_debug_payload = (
+   166	                        relpath.startswith("/usr/lib/debug/")
+   167	                        or relpath.startswith("/usr/src/debug/")
+   168	                        or relpath.endswith(".debug")
+   169	                    )
+   170	                    is_runtime = elf_type in {"EXEC", "DYN"} and not is_debug_payload
+   171	                    note_cmd = [readelf, "-n", "-W", str(path)]
+   172	                    note = subprocess.run(note_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+   173	                    result["commands"].append({
+   174	                        "label": f"readelf_notes:{relpath}",
+   175	                        "pwd": os.getcwd(),
+   176	                        "command": shlex.join(note_cmd),
+   177	                        "exit_code": str(note.returncode),
+   178	                        "stderr": clean_text(note.stderr),
+   179	                    })
+   180	                    build_id_match = BUILD_ID_RE.search(note.stdout) if note.returncode == 0 else None
+   181	                    result["elfs"].append({
+   182	                        "path": relpath,
+   183	                        "elf_type": elf_type,
+   184	                        "machine": machine,
+   185	                        "runtime_elf": "YES" if is_runtime else "NO",
+   186	                        "debug_payload": "YES" if is_debug_payload else "NO",
+   187	                        "itanium_mangled_symbol": "YES" if cpp_symbol else "NO",
+   188	                        "cpp_runtime_needed": "YES" if cpp_needed else "NO",
+   189	                        "cpp_indicator": "YES" if cpp_symbol or cpp_needed else "NO",
+   190	                        "eh_frame": "YES" if ".eh_frame" in sections else "NO",
+   191	                        "arm_exidx": "YES" if ".ARM.exidx" in sections else "NO",
+   192	                        "arm_extab": "YES" if ".ARM.extab" in sections else "NO",
+   193	                        "dlopen_und": "YES" if any(split_version(name)[0] == "dlopen" for name in und) else "NO",
+   194	                        "build_id": build_id_match.group(1).lower() if build_id_match else "",
+   195	                        "needed_count": str(len(needed)),
+   196	                    })
+   197	                    for soname in needed:
+   198	                        result["needed"].append({"path": relpath, "soname": soname})
+   199	                    for name in und:
+   200	                        base, node, kind = split_version(name)
+   201	                        if "Unwind" not in base:
+   202	                            continue
+   203	                        result["unwind"].append({
+   204	                            "path": relpath,
+   205	                            "symbol_raw": name,
+   206	                            "symbol": base,
+   207	                            "version_node": node,
+   208	                            "version_class": kind,
+   209	                        })
+   210	    shard.parent.mkdir(parents=True, exist_ok=True)
+   211	    temp = pathlib.Path(str(shard) + ".part")
+   212	    with open(temp, "w", encoding="utf-8") as out:
+   213	        json.dump(result, out, ensure_ascii=False, sort_keys=True)
+   214	        out.write("\n")
+   215	    os.replace(temp, shard)
+EXIT_CODE=0
