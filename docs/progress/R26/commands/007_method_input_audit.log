@@ -1,0 +1,79 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc sed\ -n\ \"45\,100p\"\ progress/R22/tools/classify_abi_edges.py\;\ cat\ progress/R26/tables/classification_method.tsv\;\ cat\ progress/R26/tables/public_header_reviews.tsv\;\ cat\ progress/R26/tables/c_only_sample_review.tsv\;\ cat\ progress/R26/tables/blind_spots.tsv 
+    })
+
+probe_keys=sorted({(r["consumer_rpm_sha256"],r["consumer_elf"]) for r in evidence}|{(r["provider_rpm_sha256"],r["provider_elf"]) for r in evidence})
+symbols={}; commands=[]
+for i,(rpm_sha,path) in enumerate(probe_keys,1):
+    local=ROOT/"tmp/R11/extracted"/rpm_sha[:2]/rpm_sha/path.lstrip("/")
+    cmd=["readelf","--dyn-syms","-W",str(local)]
+    if not local.exists():
+        commands.append({"probe_id":i,"rpm_sha256":rpm_sha,"elf_path":path,"local_path":str(local),"command":" ".join(cmd),"exit_code":"NOT_RUN","stderr":"local extracted ELF NOT_FOUND"})
+        symbols[(rpm_sha,path)]=None;continue
+    p=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    commands.append({"probe_id":i,"rpm_sha256":rpm_sha,"elf_path":path,"local_path":str(local),"command":" ".join(cmd),"exit_code":p.returncode,"stderr":p.stderr.replace("\n","\\n")})
+    if p.returncode:
+        symbols[(rpm_sha,path)]=None;continue
+    und=set();defined=set()
+    for line in p.stdout.splitlines():
+        parts=line.split(None,7)
+        if len(parts)!=8 or not parts[0].endswith(":"):continue
+        ndx,name=parts[6],parts[7].strip().split()[0]
+        if name in {"", "0"}:continue
+        name=name.split("@",1)[0]
+        (und if ndx=="UND" else defined).add(name)
+    symbols[(rpm_sha,path)]={"und":und,"defined":defined}
+write("symbol_probe_commands.tsv",list(commands[0]),commands)
+
+classified=[]
+for r in evidence:
+    cs=symbols.get((r["consumer_rpm_sha256"],r["consumer_elf"]))
+    ps=symbols.get((r["provider_rpm_sha256"],r["provider_elf"]))
+    if cs is None or ps is None:
+        cls="NOT_AVAILABLE"; cpp=[]; c=[]
+    else:
+        inter=sorted(cs["und"]&ps["defined"])
+        cpp=[s for s in inter if s.startswith("_Z")]
+        c=[s for s in inter if not s.startswith("_Z")]
+        if cpp: cls="TRUE_CPP_ABI_COUPLING"
+        elif c: cls="PURE_C_INTERFACE"
+        else: cls="OTHER_NO_SYMBOL_INTERSECTION"
+    classified.append({**r,"classification":cls,"cpp_symbol_count":len(cpp),"c_symbol_count":len(c),"cpp_symbols":";".join(cpp),"c_symbols":";".join(c)})
+write("candidate_edge_evidence.tsv",list(classified[0]),classified)
+write("reverse_edge_evidence.tsv",list(classified[0]),[r for r in classified if (r["consumer_source_rpm"],r["provider_source_rpm"]) in reverse_pairs])
+
+by_pair=defaultdict(list)
+for r in classified:by_pair[(r["consumer_source_rpm"],r["provider_source_rpm"])].append(r)
+source=[]
+for pair in sorted(candidate_pairs):
+    rows=by_pair.get(pair,[]); counts=Counter(r["classification"] for r in rows)
+    cpp=sorted({s for r in rows for s in r["cpp_symbols"].split(";") if s})
+    c=sorted({s for r in rows for s in r["c_symbols"].split(";") if s})
+    if counts["TRUE_CPP_ABI_COUPLING"]: cls="TRUE_CPP_ABI_COUPLING"
+    elif counts["NOT_AVAILABLE"] or not rows: cls="NOT_AVAILABLE"
+    elif counts["PURE_C_INTERFACE"]: cls="PURE_C_INTERFACE"
+    else: cls="OTHER_NO_SYMBOL_INTERSECTION"
+    source.append({"consumer_source_rpm":pair[0],"provider_source_rpm":pair[1],"R20_consumer_phase":phase[pair[0]],"R20_provider_phase":phase[pair[1]],"classification":cls,"evidence_DT_NEEDED_rows":len(rows),"true_cpp_evidence_rows":counts["TRUE_CPP_ABI_COUPLING"],"pure_c_evidence_rows":counts["PURE_C_INTERFACE"],"other_evidence_rows":counts["OTHER_NO_SYMBOL_INTERSECTION"],"not_available_rows":counts["NOT_AVAILABLE"],"cpp_symbol_count":len(cpp),"c_symbol_count":len(c),"cpp_symbols":";".join(cpp),"c_symbols":";".join(c)})
+write("source_edge_classification.tsv",list(source[0]),source)
+rev=[r for r in source if (r["consumer_source_rpm"],r["provider_source_rpm"]) in reverse_pairs]
+item	command_or_rule	evidence	limitation
+original_dynamic_symbol_extraction	readelf --dyn-syms -W <ELF>	progress/R22/tools/classify_abi_edges.py	reused; not rerun
+version_normalization	split symbol name at first @	progress/R22/tools/classify_abi_edges.py	weak UND not filtered
+demangle	c++filt < newline-separated frozen symbol list	progress/R26/tools/analyze_r26.py	Rust legacy mangling also decoded
+CXX_SEMANTICS	std:: / ABI tag / RTTI / vtable / thunk / exception / ctor-dtor / namespaced custom class parameter / confirmed public header	semantic_evidence_symbols.tsv	only affirmative rules
+C_ONLY	all referenced symbols unmangled C and no _Z-style match	edge_semantic_classification.tsv	impossible in frozen TRUE_CPP_ABI_COUPLING population
+UNDETERMINED	no affirmative semantic proof, Rust legacy collision, callback/void*/return/header-only blind spot	edge_semantic_classification.tsv; blind_spots.tsv	never guessed into C_ONLY
+consumer_source_rpm	provider_source_rpm	rpm_input	header	symbol	observation	classification_effect
+emulator-kernel-6.18.2.tizen-0.src.rpm	llvm-22.1.8-19.1.src.rpm	tmp/R11/rpms/base_binary/x86_64/llvm-devel-22.1.8-19.1.x86_64.rpm	/usr/include/llvm/Support/raw_ostream.h	llvm::raw_ostream::write	class raw_ostream plus member declaration found	CXX_SEMANTICS
+nnstreamer-2.7.0-0.src.rpm	flatbuffers-24.3.25-1.src.rpm	tmp/R11/rpms/unified_binary/x86_64/flatbuffers-devel-24.3.25-1.x86_64.rpm	/usr/include/flatbuffers/util.h	flatbuffers::ClassicLocale::instance_	class ClassicLocale and static ClassicLocale instance_ found	CXX_SEMANTICS
+pepper-2.0.19-0.src.rpm	gtest-1.15.2-0.src.rpm	tmp/R11/rpms/unified_binary/x86_64/gtest-devel-1.15.2-0.x86_64.rpm	/usr/include/gtest/gtest.h; /usr/include/gmock/gmock.h	testing::UnitTest methods; FLAGS_gtest_death_test_style[abi:cxx11]	class UnitTest and InitGoogleMock declarations found; ABI-tagged flag observed	CXX_SEMANTICS
+capi-system-media-key-0.2.13-6.src.rpm	bundle-0.18.15-0.src.rpm	tmp/R11/rpms/unified_binary/x86_64/bundle-devel-0.18.15-0.x86_64.rpm	/usr/include/bundle.h; /usr/include/bundle_cpp.h; /usr/include/bundle_internal.h	tizen_base::logger	declaration NOT_FOUND in all public headers	UNDETERMINED
+population	population_edge_count	population_edge_denominator	sampling_method	sample_size	review_result	public_header_review	corrections
+C_ONLY_EDGES	0	1191	CENSUS_IF_NONEMPTY; population is empty	0	NOT_APPLICABLE_EMPTY_POPULATION	No C_ONLY edge exists to sample; no edge was silently skipped	0
+blind_spot	measurable_candidate_edges	candidate_provider_count	candidate_consumer_count	edge_denominator	measurement	status
+C callback can throw across boundary	57	16	38	1191	unmangled C symbol name token approximation only	UNDETERMINED; names do not prove registration or thrown exception
+void* carries C++ object ownership	NOT_AVAILABLE	NOT_AVAILABLE	NOT_AVAILABLE	1191	parameter types absent from unmangled dynamic symbol names	UNDETERMINED
+header-only inline/template interface	NOT_AVAILABLE	NOT_AVAILABLE	NOT_AVAILABLE	1191	no cross-package dynamic symbol by definition	OUTSIDE_GRAPH
+non-template function return type omitted by Itanium name	NOT_AVAILABLE	NOT_AVAILABLE	NOT_AVAILABLE	1191	return type generally not encoded	UNDETERMINED
+Rust legacy _ZN prefix false-positive in R22 filter	12	1	12	1191	c++filt output with Rust hash suffix and $u escapes	OBSERVED_AND_CLASSIFIED_UNDETERMINED
+EXIT_CODE=0
