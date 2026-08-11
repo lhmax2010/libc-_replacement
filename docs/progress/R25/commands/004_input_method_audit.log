@@ -1,0 +1,234 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc sed\ -n\ \"1\,120p\"\ progress/R24/METHODOLOGY.md\;\ sed\ -n\ \"1\,80p\"\ progress/R22/R22_migration_report.md\;\ sed\ -n\ \"1\,150p\"\ progress/R23/REPORT.md\;\ cat\ progress/R23/tables/test_framework_buildrequires_summary.tsv\;\ cat\ progress/R19_21/R20/tables/vendor_prebuilt_five.tsv 
+# R24 方法与覆盖边界
+
+## 图与单位
+
+- R22 图节点为 479 个待迁移源码 RPM 身份；另有 4 个厂商源码 RPM 身份单列，交付清单总分母为 483。
+- 有向边 `A -> B` 表示源码包 A 的某个运行时 ELF 通过 `DT_NEEDED` 唯一解析到源码包 B 提供的 ELF，并且消费者 UND 与 provider DEF 动态符号交集至少含一个 `_Z` 开头的 Itanium ABI 修饰符号。
+- R22 在 1,705 条 R20 候选源码边中保留 1,234 条真 C++ ABI 边；剔除 445 条纯 C 接口边和 26 条无动态符号交集边。剔除不是推断：逐边符号依据见 `tables/deleted_candidate_edges.tsv`。
+- 厂商单列边界涉及 12 条真边，故 479 节点迁移图的边分母为 1,222。
+
+## 符号提取原口径
+
+R22 使用 `readelf --dyn-syms -W <ELF>`；解析后以第一个 `@` 为界去掉符号版本后缀再求交。该实现见 `progress/R22/tools/classify_abi_edges.py:49-83`。
+
+- 版本化符号：归一为基础符号名后参与相交。
+- 弱引用：原脚本没有按 Bind 过滤，所有 `Ndx=UND` 条目同口径参与；因此弱 UND 未被排除。
+- 静态库边：未纳入。输入只覆盖运行时 ET_EXEC/ET_DYN 与动态符号。
+- header-only 接口：未单列；只有其影响落到动态符号或 DT_NEEDED 才可被本图观察。
+- `dlopen` 边：未纳入；R22 从 R13 的 `RESOLVED_UNIQUE` DT_NEEDED 解析边取证。
+- 未唯一解析的 DT_NEEDED：13,167/151,403 条未补全，因此不进入本图。
+- 无动态 UND 的布局、内联、pointee/tunnel 耦合：本图不覆盖；旧 aligned census 的 A8/A9 是另一套冻结证据提升规则。
+
+## SCC 与分层
+
+SCC 使用 Tarjan 算法在 479 节点、1,222 边图上重算。对每一阶段的诱导子图，以“当前不再依赖该阶段内其他未分层 provider 的节点”为第 0 层，逐层移除，得到 provider-first 层。若存在非平凡 SCC，应把整个 SCC 作为同批节点；本次实测非平凡 SCC 为 0。
+
+## 118/121/122 的原始口径
+
+该数字来自 aligned-0723 `tier1_production_0001`：单位是生产二进制包 Name，不是 ELF，也不是源码包。其图使用 D2 保留 CPP_ABI 边并加入 A8/A9 证据提升；快照为 Base `tizen-base_20260709.234055` + Unified `tizen-unified_20260723.231947`。R22 第三阶段使用较后的 R11 composite snapshot、源码 RPM 节点、动态 UND/DEF 实交边和拓扑深度分档，二者不是同一对象。
+
+## 只读边界
+
+本任务没有重新扫描仓库、没有读取新 RPM payload、没有构建或安装。所有数字由已落盘 TSV/Markdown 输入重新聚合；既有文档和输入没有修改。
+# R22 第一部分：分阶段迁移清单修正
+
+## 输入、对象与口径
+
+本轮没有重新扫描平台仓。输入文件及 SHA256 在 `inputs/input_identity.tsv`；仓快照、对象形态与时间口径在 `tables/data_sources.tsv` 和 `tables/download_time_ranges.tsv`。阶段清单单位是精确 NEVRA 形态的源码 RPM 身份：适配集合 483/1,450 个仓内源码 RPM 记录；对应二进制 Name 数按源码身份内去重后合计 1,768。图和阶段分析对象均为 R11 下载的发布形态 RPM，不是开发板已安装的运行形态。
+
+R11 运行时图分母为 36,829 个 ET_EXEC/ET_DYN ELF、11,332 个二进制 RPM 记录。151,403 条 DT_NEEDED 边中 138,236 条唯一解析（91.30%），13,167 条不可唯一解析（8.70%）；不可唯一解析边没有推断补全。R22 针对 1,705 条源码包候选边涉及的 9,234 个本地缓存 ELF 执行定向动态符号提取，9,234/9,234 成功；这不是平台仓重扫。
+
+## 逆向边归因
+
+对每条 A→B 候选边，以具体消费者 ELF 的 UND 动态符号与其 DT_NEEDED 实际解析到的 provider ELF 的 DEF 动态符号求交：交集中至少一个符号以 `_Z` 开头，才记真正 C++ ABI 耦合；交集全为非 `_Z` 则记纯 C 接口；无交集单列，不冒充 C++ ABI 边。逐 ELF/DT_NEEDED/符号证据见大表，逐源码边汇总见 `tables/source_edge_classification.tsv`。
+
+- 全部 1,705 条候选源码边：1,234 条真 C++ ABI 耦合，445 条纯 C 接口，26 条没有符号交集，NOT_AVAILABLE 0。
+- R20 的 462 条逆向边：452 条真 C++ ABI 耦合，8 条纯 C 接口误判，2 条没有符号交集，NOT_AVAILABLE 0。完整逐条归因见 `tables/reverse_edge_attribution.tsv`。
+
+## UNKNOWN 归因
+
+R20 的 121/121 个 UNKNOWN 均不是“依赖不可解析、无 ELF或分类文件缺失”，而是同一旧规则缺口：单节点、非插件包只要存在第一阶段之外的 ABI 依赖，就既不满足旧第二阶段条款，也未命中旧第三阶段条款。逐包原理由 `unknown_121_attribution.tsv` 保留；R22 在 SCC 凝聚图上按 provider-first 深度机械分层后，121/121 均获得阶段，保留 UNKNOWN 归属为 0。源码/构建修改需求仍可为 UNKNOWN，未被阶段归属替代。
+
+## 修正规则与结果
+
+1. 从候选图剔除 445 条纯 C 接口边和 26 条无动态符号交集边，仅保留 1,234 条实证 C++ ABI 耦合边。
+2. 厂商预编译对象仍以 5 个二进制 Name / 4 个源码 RPM 身份单列；没有把它们塞进迁移阶段。
+3. 对其余 479 个源码身份重算 SCC。实测所有 SCC 均为单节点，因此 `coupling_components.tsv` 只有表头。
+4. 第一阶段以首批五包和测试框架 gtest 为硬种子，并闭包纳入它们传递依赖的所有 provider SCC，共 13 个源码 RPM。
+5. 剩余 SCC 以 A→B 表示消费者依赖 provider，从 provider 端计算拓扑深度；实测最大深度 5。深度 0–2 为第二阶段（450 个），深度 3–5 为第三阶段（16 个）。该规则确保任何较早阶段都不依赖较晚阶段。
+6. 厂商单列 4 个；三阶段加单列为 483/483。
+
+汇总见 `tables/stage_summary.tsv`，全清单见 `tables/migration_packages_full.tsv`。修正后真 C++ ABI 逆向边为 0/1,234；`tables/corrected_inverse_edges.tsv` 只有表头。多包 SCC 为 0；插件宿主、测试框架、厂商对象和 Chromium 在 `tables/special_cases.tsv` 单列。
+
+## 交叉校验
+
+`tables/cross_checks.tsv` 的 13 项均 PASS：总数 483/483；首批五包全在第一阶段；`libcynara-commons` 与 `security-manager` 均为源码修改 YES；gtest 在第一阶段；阶段间逆向 ABI 边 0；Chromium 正常归入第二阶段且源码/构建修改需求保持 UNKNOWN；旧 121 个阶段 UNKNOWN 全部闭合。
+
+Chromium 使用 R19 实测事实：42/42 个运行时 ELF 动态依赖 libstdc++，libc++ 依赖 0，`std::__1` 命中 0。它没有因 T1 源码解包缺口被排除；只把源码修改需求和构建系统修改需求标 UNKNOWN。
+
+## 483 与 372 的口径差异
+
+372 是 T1 快照中“二进制 RPM 元数据直接依赖 libstdc++”映射并去重得到的源码包集合；371/372 成功解包扫描，Chromium 1 包失败。483 是较后 R11 快照中“至少一个运行时 ELF 含 Itanium 修饰符号或 C++ 运行时 DT_NEEDED”的源码 RPM 身份集合。前者是直接 libstdc++ 依赖驱动的源码语料分母，后者还纳入静态含 C++ 特征、间接形态以及精确 release 身份，因此两数不能互换。本迁移清单以运行时形态定义的 483 为分母；R1 修改标注只在精确源码 RPM 身份匹配时复用，否则保持 UNKNOWN。
+
+本报告不含排期、人日、优先级建议或风险评级。
+# R23：定点算术符号引用扫描与两项补充核查
+
+## 结论摘要
+
+第一部分结论为 `ZERO_REFERENCES_CONFIRMED`，严格限定于 R11 的冻结
+Base/Unified 仓快照：11,332 个二进制包记录构成包级分母，实际逐文件
+检查 36,829/36,829 个运行时 ELF，读取失败 0。armv7l 的 980 个 GCC
+Embedded C 定点算术导出符号中，被任何运行时 ELF 作为未定义动态符号
+引用的符号数、ELF 数、二进制包数均为 0。零命中是完整实测零，不是
+“未查到数据”。修正后的 compiler-rt 精确符号名缺口为 armv7l 6、
+aarch64 25、x86_64 27。
+
+第二部分确认：R11 源码仓内按明确名称目录识别到的测试框架源码包只有
+`gtest-1.15.2-0.src`，它同时产出 gtest 与 gmock，已在 R22 第一阶段；
+因此已识别框架全部落在第一阶段。第三部分已把“板上没有可执行路径”
+更新为被 R22 解决，并保留 R15/R15b 当时的历史结论。
+
+## 1. 输入、快照与计数口径
+
+所有输入及 SHA256 见 `inputs/input_identity.tsv`。仓快照不是一个跨仓单值，
+而是四个 revision + repomd SHA256 组成的复合身份，逐项见
+`tables/input_snapshot_identity.tsv`：Base binary、Unified binary、Base
+source、Unified source 均保留原始 revision 与 SHA256。
+
+本项没有重新访问或扫描平台仓，没有下载、安装或构建。扫描对象是 R11
+已经下载并解包的 ELF 缓存：包级分母为 11,332 个二进制包记录；文件级
+分母为 `runtime_elf=YES` 的 36,829 个 ELF。二者不能互换。源码包单位不
+用于第一部分比率。逐项定义见 `tables/scan_scope_denominators.tsv`。
+
+## 2. 定点算术符号集
+
+符号集不是由本任务凭前缀重建。它取 R17 实际分类为 `FIXED_POINT` 的成员，
+再与 R16 三架构 `libgcc_s.so.1` 实测导出集逐符号相交：980/980 全部回连
+成功，均属于 armv7l；aarch64 与 x86_64 的该家族实测导出数均为 0。
+完整三架构 libgcc_s 导出表见 `tables/libgcc_exports_full.tsv`，980 个成员、
+版本节点和逐条归类依据见 `tables/fixed_point_symbols.tsv`。
+
+## 3. 全平台 UND 引用实测
+
+扫描器逐 ELF 只读解析 ELF section header、`.dynsym` 及其链接的
+`.dynstr`，以动态符号 `st_shndx == SHN_UNDEF` 为 UND 判据，然后与该
+架构的实测符号集做精确名字相交。完整逐 ELF 结果在
+`tables/runtime_elf_scan_results.tsv`，空命中表
+`tables/fixed_point_undefined_references.tsv` 仍保留表头作为“实测零”
+证据。
+
+| 架构/范围 | 运行时 ELF 分母 | 成功检查 | 家族符号数 | 被引用符号 | 引用 ELF | 引用包 | 结论 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| armv7l | 11,453 | 11,453 | 980 | 0 | 0 | 0 | ZERO_REFERENCES_CONFIRMED |
+| aarch64 | 11,531 | 11,531 | 0 | 0 | 0 | 0 | ZERO_REFERENCES_CONFIRMED |
+| x86_64 | 10,946 | 10,946 | 0 | 0 | 0 | 0 | ZERO_REFERENCES_CONFIRMED |
+| 全部 R11 运行时 ELF | 36,829 | 36,829 | 980 | 0 | 0 | 0 | ZERO_REFERENCES_CONFIRMED |
+
+三行主架构之外还有 2,899 个 R11 运行时 ELF（如 noarch/i586/riscv64
+记录），亦被逐文件解析；这些架构没有来自第 2 节的定点家族符号集，
+不把其他架构符号推断移植给它们。
+
+唯一专用解析器不能读取 section table 的对象是 aarch64
+`u-boot-rubikpi3` 的 `/boot/u-boot.mbn`。随后 GNU
+`readelf --dyn-syms -W` 对同一文件退出 0、输出为空，故登记为
+`PASS_READELF_FALLBACK_NO_DYNSYM_OUTPUT`；原始失败与闭合证据分别见
+`tables/elf_parser_fallbacks.tsv`、`commands/016_failed_elf_readelf_fallback.log`。
+最终失败数为 0。
+
+另取首/中/末与全部厂商对象组成 36 个样本，以 GNU readelf 交叉核对
+动态符号数和本家族 UND 集。GNU 输出不打印有名称的第 0 号 null symbol，
+显式归一化这一项后 36/36 `MATCH`，见
+`tables/elfparser_validation_samples.tsv` 与 `commands/019_...log`。
+
+## 4. 厂商预编译与其他非 clang 形态
+
+R13 裁定的五个厂商包名在三架构共对应 18 个运行时 ELF；18/18 解析
+成功，定点家族 UND 均为 0。逐包、逐 ELF、NEVRA、架构与 `.comment`
+证据见 `tables/vendor_prebuilt_elf_scan.tsv`。
+
+全扫描同时从 `.comment` 实测识别出 1,289 个 GCC 标记 ELF，分属 490 个
+二进制包实例、160 个源码 RPM 身份，完整清单见
+`tables/gcc_comment_identified_elfs.tsv`。该证据只能说明编译器生产者
+形态，不能从 `.comment` 证明“第三方/预编译”所有权；除上述五个已裁定
+对象外，所有权均标 `NOT_DETERMINABLE_FROM_ELF_COMMENT`，没有推断补全。
+
+## 5. 回滚兼容盲区与修正后缺口
+
+R11 输入是当前冻结 Base/Unified 仓 RPM，并不包含 OTA 回滚镜像的二进制
+清单。平台 OTA 回滚机制的具体库存状态在现有输入中 `NOT_AVAILABLE`；
+因此本轮的 `ZERO_REFERENCES_CONFIRMED` 不外推到未提供的历史/回滚镜像。
+范围表见 `tables/rollback_coverage.tsv`。
+
+在当前冻结扫描范围内，980 个定点符号可从精确符号名缺口中扣除：
+
+| 架构 | R16/R17 原缺口 | 定点家族 | 实测被引用 | 修正后缺口 |
+|---|---:|---:|---:|---:|
+| armv7l | 986 | 980 | 0 | 6 |
+| aarch64 | 25 | 0 | 0 | 25 |
+| x86_64 | 27 | 0 | 0 | 27 |
+
+armv7l 剩余 6 个是 `__aeabi_uread4`、`__aeabi_uread8`、
+`__aeabi_uwrite4`、`__aeabi_uwrite8`、`__clrsbdi2`、`__clrsbsi2`。
+本报告不评价这些符号，也不做实现建议或工作量估算。
+
+## 6. 测试框架第一阶段核查
+
+R22 第一阶段 13 个源码包的完整名单见
+`tables/phase1_source_packages.tsv`。以源码包名称中的
+`gtest|gmock|googletest|catch2|cppunit|doctest` 为明确检索目录，R11 的
+1,450 个源码包实例只命中 `gtest-1.15.2-0.src`；R22 将其列为
+`PHASE1`，备注为 `test framework`。gmock 不构成独立源码包，而由同一
+gtest 源码包产出。故已识别测试框架源码包 1/1 全在第一阶段，不存在
+需要解释的第二/三阶段框架包。
+
+RPM 文件清单实测显示：`gtest` 运行包提供
+`libgtest.so`、`libgtest_main.so`、`libgmock.so`、`libgmock_main.so`
+及版本文件，属于共享库形态；`gtest-devel` 提供头、CMake 与 pkgconfig
+元数据；未发现静态库或源码 payload。三架构完整 `rpm -qlp` 清单与退出码
+见 `tables/test_framework_payload_files.tsv`、
+`tables/test_framework_rpm_query_commands.tsv`。
+
+R11 source RPM 的 `requires` 元数据作为 BuildRequires 口径：153/1,450 个
+源码包实例引用 gtest/gmock 相关名称；其中第一阶段 4、第二阶段 121、
+第三阶段 10、厂商单列 1、R22 的 483 包范围外 17。第二、三阶段合计 131。
+逐包及具体 relation name 见
+`tables/test_framework_buildrequires_consumers.tsv`。
+
+R11 没有保留或索引全源码树的 `add_subdirectory` 调用，故源码内嵌
+gtest 的包数为 `NOT_AVAILABLE_FULL_SOURCE_CONTENT_NOT_RETAINED`；本任务
+没有为补这个数字而重新展开或重扫平台源码。见
+`tables/vendored_test_framework_status.tsv`。
+
+## 7. 板上阻塞文档状态更新
+
+仓内仍保留 R15 当次会话“无 SSH/SDB 执行载体”和 R15b 当次任务
+“未实际执行探针”的历史事实。为避免被误读为当前阻塞，已在以下策展
+文档增加显式状态更新，不改历史表格、不改既有结论：
+
+- `docs/progress/R15/R15_report.md` 与 `README.md`：标记 R15 状态只适用
+  当次会话，已被 R22 后续实测取代；
+- `docs/progress/R15b/R15b_report.md`：登记 R22 已在六个路径实际运行
+  ARM 静态探针；
+- `docs/progress/R22/R22_board_path_report.md`：明确 `/tmp noexec` 不再
+  构成“无可执行路径”阻塞。
+
+六个可写可执行路径为 `/root`、`/opt/usr`、`/opt/home`、
+`/home/owner`、`/var/tmp`、`/opt/var/tmp`。仍存在的能力边界已同步记录：
+项目当前只有一块已识别 armv7l 板；SDB 曾在 R15 不可达、在 R15b/R22
+可达，未做跨会话连续稳定性监测；板端没有 clang/clang++/gcc/g++。
+逐文件原位置、更新位置和内容摘要见 `tables/documentation_updates.tsv`。
+
+## 8. 证据完整性
+
+`tables/cross_checks.tsv` 的 6 项机械核对全部 PASS。早期五种扫描实现因
+scope	source_package_denominator	buildrequires_framework_source_package_count	phase1_count	phase2_count	phase3_count	vendor_separate_count	not_in_R22_483_scope_count
+ALL_R11_SOURCE_PACKAGE_INSTANCES	1450	153	4	121	10	1	17
+vendor_binary_package	source_rpm	phase_unit_note
+drm-service-core-tizen	drm-service-core-tizen-0.3.9-0.src.rpm	binary package is separately listed; source RPM is excluded from three phase sets
+hal-api-drm-haltests	hal-api-drm-1.0.5-1.src.rpm	binary package is separately listed; source RPM is excluded from three phase sets
+hal-backend-drm-generic	hal-backend-drm-generic-1.0.3-0.src.rpm	binary package is separately listed; source RPM is excluded from three phase sets
+pen-wave	pen-wave-1.4.0-2.src.rpm	binary package is separately listed; source RPM is excluded from three phase sets
+pen-wave-devel	pen-wave-1.4.0-2.src.rpm	binary package is separately listed; source RPM is excluded from three phase sets
+EXIT_CODE=0
