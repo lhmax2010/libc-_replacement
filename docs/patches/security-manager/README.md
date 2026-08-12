@@ -33,18 +33,35 @@ armv7l 候选构建的完整诊断原文：
 
 ## 解决方案
 
-NOT_AVAILABLE：本任务未开发或裁定具体源码修改，且没有可据以证明线程取消语义保持的补丁实测。
+R30 候选以正向判据 `#if defined(__GLIBCXX__)` 隔离 GNU 专有的
+`abi::__forced_unwind` catch。候选 patch 已归档，但因下述语义红项
+仅供取证，**不可提交**。
+
+初始候选在 libc++ 下删除精确 catch 后，pthread_cancel 被 catch-all
+路径吞入并终止；用 libc++abi 的 current-exception-type 识别 foreign
+exception 后重抛，仍以 uncaught foreign exception 终止。诊断变体
+已撤出最终候选。
 
 ## 兼容性
 
-NOT_AVAILABLE：尚无补丁，因此不存在修改后 libstdc++ 与 libc++ 双构建实测。
+- libstdc++：armv7l 基线与候选完整 GBS 构建均执行；逐制品对照见
+  `progress/R30/tables/`。
+- libc++：三架构构建均实际执行；原 `__forced_unwind` 错误消失后，
+  仍有 `dpl/fstream_accessors.h` 的 libstdc++ 私有类型、测试源码的
+  `std::system_error` 构造差异以及 Boost.Test ABI 链接红项。
+- pthread_cancel：GNU 对照通过；libc++ 的 armv7l 与 x86_64 均退出
+  134。因此 stdlib-neutral 行为兼容性未通过。
 
 ## 验证记录
 
 - 已验证：libc++ armv7l keep-going 构建在该头产生多处同根错误；首条完整诊断见上文。
 - 已验证：R1 交叉验证把本包标为 T1_HARD，和 T2 构建失败 MATCH。
-- 未验证：补丁内容、两套标准库回归构建和线程取消运行时语义，均 NOT_AVAILABLE。
+- R30 已复核 44/44 传播记录，其中本头 30 条全部 MATCH。
+- R30 已实测原编译错误消失，但完整 libc++ 构建被上述无关红项阻断。
+- R30 语义矩阵与原文见 `progress/R30/tables/semantic_results.tsv`；
+  结论为 RED_SEMANTIC_VALIDATION。
 
 ## 提交时机
 
-暂不提交：该修改只因 libc++ 迁移需要；待平台 libc++ 上下文建立后依次开发、双标准库验证并提交评审。
+暂不提交：候选未通过 pthread_cancel 语义门禁，且完整 libc++ 包构建
+尚有未裁决红项。人工裁决运行时边界并完成双标准库验证后再评审。

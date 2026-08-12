@@ -1,0 +1,417 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc $'\nset -e\nfor item in "libcynara-commons:codes/libcynara-commons:src/common/exceptions/TryCatch.h" "security-manager:codes/security-manager:src/common/include/utils.h"; do\n  pkg=${item%%:*}; rest=${item#*:}; repo=${rest%%:*}; file=${rest#*:}\n  echo "=== PACKAGE=$pkg REPO=$repo FILE=$file"\n  nl -ba "$repo/$file" | sed -n "35,100p"\n  echo "--- SPEC FILES"\n  find "$repo/packaging" -maxdepth 1 -type f -name "*.spec" -print -exec sed -n "1,100p" {} \\;\n  echo "--- INSTALL REFERENCES"\n  rg -n "TryCatch|utils\\.h|install\\(|install_headers|%files|includedir|include/" "$repo" -g "*.spec" -g "CMakeLists.txt" -g "*.cmake" -g "meson.build" -g "Makefile*" -g "*.in" || true\ndone\n' 
+=== PACKAGE=libcynara-commons REPO=codes/libcynara-commons FILE=src/common/exceptions/TryCatch.h
+    35	#include <new>
+    36	
+    37	#include <exceptions/AccessDeniedException.h>
+    38	#include <exceptions/InvalidProtocolException.h>
+    39	#include <exceptions/NoMemoryException.h>
+    40	#include <log/log.h>
+    41	
+    42	#include <cynara-error.h>
+    43	
+    44	namespace Cynara {
+    45	
+    46	template <class F>
+    47	int tryCatch(F &&f) {
+    48	    try {
+    49	        return std::forward<F>(f)();
+    50	    } catch (const std::bad_alloc &e) {
+    51	        LOGE_NOTHROW("%s", e.what());
+    52	        return CYNARA_API_OUT_OF_MEMORY;
+    53	    } catch (const NoMemoryException &e) {
+    54	        LOGE_NOTHROW("%s", e.what());
+    55	        return CYNARA_API_OUT_OF_MEMORY;
+    56	    } catch (const InvalidProtocolException &e) {
+    57	        LOGE_NOTHROW("%s", e.what());
+    58	        return CYNARA_API_INVALID_PARAM;
+    59	    } catch (const AccessDeniedException &e) {
+    60	        LOGE_NOTHROW("%s", e.what());
+    61	        return CYNARA_API_PERMISSION_DENIED;
+    62	    } catch (const std::exception &e) {
+    63	        LOGE_NOTHROW("%s", e.what());
+    64	        return CYNARA_API_UNKNOWN_ERROR;
+    65	    } catch (const abi::__forced_unwind &) {
+    66	        /**
+    67	         * workaround for pthread_cancel, which cancels thread using this exception
+    68	         * and expects it to be rethrown in every try-catch
+    69	         */
+    70	        LOGD_NOTHROW("We are 'gracefully' stopped by pthread_cancel");
+    71	        throw;
+    72	    } catch (...) {
+    73	        LOGE_NOTHROW("Unexpected exception");
+    74	        return CYNARA_API_UNKNOWN_ERROR;
+    75	    }
+    76	}
+    77	
+    78	} // namespace Cynara
+    79	
+    80	#endif // SRC_COMMON_EXCEPTIONS_TRYCATCH_H_
+--- SPEC FILES
+codes/libcynara-commons/packaging/libcynara-commons.spec
+Name:       libcynara-commons
+Summary:    Cynara - cynara commons library
+Version:    0.26.0
+Release:    1
+Group:      Security/Application Privilege
+License:    Apache-2.0 or MIT
+Source0:    cynara-%{version}.tar.gz
+Source1000:    %{name}-rpmlintrc
+Source1002:    libcynara-client.manifest
+Source1003:    libcynara-admin.manifest
+Source1004:    cynara-commons-tests.manifest
+Source1005:    libcynara-agent.manifest
+Source1006:    libcynara-commons.manifest
+Source1007:    libcynara-creds-commons.manifest
+Source1010:    libcynara-creds-socket.manifest
+Source1011:    libcynara-session.manifest
+Source1012:    cynara-db-migration.manifest
+Source1013:    cyad.manifest
+Source1014:    cynara-db-chsgen.manifest
+Source1015:    libcynara-monitor.manifest
+Source1016:    libcynara-creds-self.manifest
+Source1017:    libcynara-creds-pid.manifest
+Source1018:    libcynara-uid.manifest
+Source1019:    libcynara-uid-creds.manifest
+Requires:      default-ac-domains
+Requires(pre): cynara-db-migration >= %{version}
+%if "%{?dev_wos}" != "1"
+Requires(post):   smack
+BuildRequires: pkgconfig(libsmack)
+%endif
+Requires(postun): cynara-db-migration >= %{version}
+BuildRequires: cmake
+BuildRequires: zip
+Obsoletes:     libcynara-storage
+
+# alternatives: DLOG, JOURNAL, NONE, (otherwise SYSLOG is used)
+# WARNING!
+# when choosing JOURNAL, make sure not to introduce cyclic dependency
+# check if systemd depends on libdbus-policy!
+%if !%{defined log_type}
+%define log_type "DLOG"
+%endif
+
+
+%if %{log_type} == "DLOG"
+BuildRequires: pkgconfig(dlog)
+%endif
+
+%if %{log_type} == "JOURNAL"
+BuildRequires: pkgconfig(libsystemd)
+%endif
+
+%if !%{defined build_type}
+%define build_type RELEASE
+%endif
+
+%if %{?build_type} == "DEBUG"
+
+BuildRequires: libdw-devel
+BuildRequires: pkgconfig(libunwind)
+
+%endif
+
+%if "%{build_type}" == "COVERAGE"
+BuildRequires: lcov
+%global coverage_dir %{_datadir}/cynara-commons-coverage
+%endif
+
+%global project_name cynara
+
+%package -n cynara-devel
+Summary:    Cynara development files
+Requires:   libcynara-admin = %{version}
+Requires:   libcynara-agent = %{version}
+Requires:   libcynara-client = %{version}
+Requires:   libcynara-commons = %{version}
+Requires:   libcynara-creds-commons = %{version}
+Requires:   libcynara-creds-pid = %{version}
+Requires:   libcynara-creds-self = %{version}
+Requires:   libcynara-creds-socket = %{version}
+Requires:   libcynara-session = %{version}
+Requires:   libcynara-uid = %{version}
+Requires:   libcynara-uid-creds = %{version}
+Requires:   libcynara-monitor = %{version}
+Obsoletes:  libcynara-admin-devel
+Obsoletes:  libcynara-agent-devel
+Obsoletes:  libcynara-client-async-devel
+Obsoletes:  libcynara-client-commons-devel
+Obsoletes:  libcynara-client-devel
+Obsoletes:  libcynara-commons-devel
+Obsoletes:  libcynara-creds-commons-devel
+Obsoletes:  libcynara-creds-socket-devel
+Obsoletes:  libcynara-plugin-devel
+Obsoletes:  libcynara-session-devel
+Obsoletes:  libcynara-storage-devel
+
+%description -n cynara-devel
+Cynara development files
+
+%package -n cynara-commons-tests
+--- INSTALL REFERENCES
+codes/libcynara-commons/pkgconfig/cynara-client/cynara-client.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-client/cynara-client.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/pkgconfig/cynara-uid-creds/cynara-uid-creds.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-uid-creds/cynara-uid-creds.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/pkgconfig/cynara-creds-commons/cynara-creds-commons.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-creds-commons/cynara-creds-commons.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/pkgconfig/cynara-agent/cynara-agent.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-agent/cynara-agent.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/pkgconfig/cynara-commons/cynara-commons.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-commons/cynara-commons.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/pkgconfig/cynara-admin/cynara-admin.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-admin/cynara-admin.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/pkgconfig/cynara-client-async/cynara-client-async.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-client-async/cynara-client-async.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/pkgconfig/cynara-creds-pid/cynara-creds-pid.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-creds-pid/cynara-creds-pid.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/pkgconfig/cynara-plugin/cynara-plugin.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-plugin/cynara-plugin.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/pkgconfig/cynara-creds-socket/cynara-creds-socket.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-creds-socket/cynara-creds-socket.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/pkgconfig/cynara-monitor/cynara-monitor.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-monitor/cynara-monitor.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/pkgconfig/cynara-uid/cynara-uid.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-uid/cynara-uid.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/pkgconfig/cynara-creds-self/cynara-creds-self.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-creds-self/cynara-creds-self.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/packaging/libcynara-commons.spec:241:        -DINCLUDE_DIR:PATH=%{_includedir} \
+codes/libcynara-commons/packaging/libcynara-commons.spec:331:%files -n cynara-devel
+codes/libcynara-commons/packaging/libcynara-commons.spec:333:%{_includedir}/cynara/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:334:%{_includedir}/cynara/attributes/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:335:%{_includedir}/cynara/config/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:336:%{_includedir}/cynara/containers/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:337:%{_includedir}/cynara/cpu-priority/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:338:%{_includedir}/cynara/error/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:339:%{_includedir}/cynara/exceptions/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:340:%{_includedir}/cynara/log/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:341:%{_includedir}/cynara/lock/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:342:%{_includedir}/cynara/no_smack/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:343:%{_includedir}/cynara/plugin/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:344:%{_includedir}/cynara/protocol/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:345:%{_includedir}/cynara/request/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:346:%{_includedir}/cynara/response/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:347:%{_includedir}/cynara/storage/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:348:%{_includedir}/cynara/types/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:349:%{_includedir}/cynara/utils/*.h
+codes/libcynara-commons/packaging/libcynara-commons.spec:353:%files -n cynara-commons-tests
+codes/libcynara-commons/packaging/libcynara-commons.spec:360:%files -n libcynara-client
+codes/libcynara-commons/packaging/libcynara-commons.spec:368:%files -n libcynara-admin
+codes/libcynara-commons/packaging/libcynara-commons.spec:373:%files -n libcynara-agent
+codes/libcynara-commons/packaging/libcynara-commons.spec:378:%files -n libcynara-commons
+codes/libcynara-commons/packaging/libcynara-commons.spec:385:%files -n libcynara-creds-commons
+codes/libcynara-commons/packaging/libcynara-commons.spec:391:%files -n libcynara-creds-pid
+codes/libcynara-commons/packaging/libcynara-commons.spec:396:%files -n libcynara-creds-self
+codes/libcynara-commons/packaging/libcynara-commons.spec:401:%files -n libcynara-creds-socket
+codes/libcynara-commons/packaging/libcynara-commons.spec:406:%files -n libcynara-session
+codes/libcynara-commons/packaging/libcynara-commons.spec:411:%files -n libcynara-uid
+codes/libcynara-commons/packaging/libcynara-commons.spec:416:%files -n libcynara-uid-creds
+codes/libcynara-commons/packaging/libcynara-commons.spec:421:%files -n cynara-db-migration
+codes/libcynara-commons/packaging/libcynara-commons.spec:428:%files -n cyad
+codes/libcynara-commons/packaging/libcynara-commons.spec:433:%files -n libcynara-monitor
+codes/libcynara-commons/packaging/libcynara-commons.spec:450:%files -n cynara-commons-coverage
+codes/libcynara-commons/pkgconfig/cynara-session/cynara-session.pc.in:4:includedir=${prefix}/include
+codes/libcynara-commons/pkgconfig/cynara-session/cynara-session.pc.in:11:Cflags: -I${includedir}/cynara
+codes/libcynara-commons/src/include/CMakeLists.txt:26:    ${CYNARA_PATH}/include/cynara-admin.h
+codes/libcynara-commons/src/include/CMakeLists.txt:27:    ${CYNARA_PATH}/include/cynara-admin-types.h
+codes/libcynara-commons/src/include/CMakeLists.txt:28:    ${CYNARA_PATH}/include/cynara-agent.h
+codes/libcynara-commons/src/include/CMakeLists.txt:29:    ${CYNARA_PATH}/include/cynara-client.h
+codes/libcynara-commons/src/include/CMakeLists.txt:30:    ${CYNARA_PATH}/include/cynara-client-async.h
+codes/libcynara-commons/src/include/CMakeLists.txt:31:    ${CYNARA_PATH}/include/cynara-client-plugin.h
+codes/libcynara-commons/src/include/CMakeLists.txt:32:    ${CYNARA_PATH}/include/cynara-creds-commons.h
+codes/libcynara-commons/src/include/CMakeLists.txt:33:    ${CYNARA_PATH}/include/cynara-creds-pid.h
+codes/libcynara-commons/src/include/CMakeLists.txt:34:    ${CYNARA_PATH}/include/cynara-creds-self.h
+codes/libcynara-commons/src/include/CMakeLists.txt:35:    ${CYNARA_PATH}/include/cynara-creds-socket.h
+codes/libcynara-commons/src/include/CMakeLists.txt:36:    ${CYNARA_PATH}/include/cynara-error.h
+codes/libcynara-commons/src/include/CMakeLists.txt:37:    ${CYNARA_PATH}/include/cynara-limits.h
+codes/libcynara-commons/src/include/CMakeLists.txt:38:    ${CYNARA_PATH}/include/cynara-plugin.h
+codes/libcynara-commons/src/include/CMakeLists.txt:39:    ${CYNARA_PATH}/include/cynara-policy-types.h
+codes/libcynara-commons/src/include/CMakeLists.txt:40:    ${CYNARA_PATH}/include/cynara-session.h
+codes/libcynara-commons/src/include/CMakeLists.txt:41:    ${CYNARA_PATH}/include/cynara-uid.h
+codes/libcynara-commons/src/include/CMakeLists.txt:42:    ${CYNARA_PATH}/include/cynara-uid-creds.h
+codes/libcynara-commons/src/include/CMakeLists.txt:43:    ${CYNARA_PATH}/include/cynara-monitor.h
+=== PACKAGE=security-manager REPO=codes/security-manager FILE=src/common/include/utils.h
+    35	#include <exception>
+    36	#include <iostream>
+    37	#include <memory>
+    38	#include <stdexcept>
+    39	#include <string>
+    40	#include <sys/wait.h>
+    41	#include <time.h>
+    42	#include <type_traits>
+    43	#include <unistd.h>
+    44	#include <vector>
+    45	#include <sys/types.h>
+    46	
+    47	#include <security-manager-types.h>
+    48	
+    49	#define SECURITY_MANAGER_API __attribute__((visibility("default")))
+    50	
+    51	namespace SecurityManager {
+    52	
+    53	bool isNumber(const std::string &input);
+    54	bool notNumber(const std::string &input);
+    55	unsigned toNumber(const std::string &input);
+    56	
+    57	template<class... Ts>
+    58	struct overloaded : Ts... { using Ts::operator()...; };
+    59	template<class... Ts>
+    60	overloaded(Ts...) -> overloaded<Ts...>;
+    61	
+    62	/*
+    63	 * Decorator function that performs frequently repeated exception handling in
+    64	 * SS client API functions. Accepts lambda expression as an argument.
+    65	 */
+    66	template <class F>
+    67	int try_catch(F &&f) {
+    68	    try {
+    69	        return std::forward<F>(f)();
+    70	    } catch (abi::__forced_unwind &) {
+    71	        throw;
+    72	    } catch (const Exception &e) {
+    73	        LogError("SecurityManager::Exception " << e.DumpToString());
+    74	        std::cerr << "SecurityManager::Exception " << e.DumpToString() << std::endl;
+    75	    } catch (const std::bad_alloc &e) {
+    76	        LogError("Memory allocation failed: " << e.what());
+    77	        std::cerr << "Memory allocation failed: " << e.what() << std::endl;
+    78	        return SECURITY_MANAGER_ERROR_MEMORY;
+    79	    } catch (const std::system_error &e) {
+    80	        LogError("STD system_error: " <<  e.code() << "-" << e.what());
+    81	        std::cerr << "STD system_error: " <<  e.code() << "-" << e.what() << std::endl;
+    82	    } catch (const std::exception &e) {
+    83	        LogError("STD exception " << e.what());
+    84	        std::cerr << "STD exception " << e.what() << std::endl;
+    85	    } catch (...) {
+    86	        LogError("Unknown exception occurred");
+    87	        std::cerr << "Unknown exception occurred" << std::endl;
+    88	    }
+    89	    return SECURITY_MANAGER_ERROR_UNKNOWN;
+    90	}
+    91	
+    92	time_t monotonicCoarseNow();
+    93	
+    94	// break include chain that triggers -fno-exceptions in rules-loader
+    95	class Credentials;
+    96	// Used for measuring function/method/scope execution time
+    97	class ScopedTimeStamper {
+    98	public:
+    99	    ScopedTimeStamper(const std::string & location, const Credentials & creds);
+   100	    virtual ~ScopedTimeStamper();
+--- SPEC FILES
+codes/security-manager/packaging/security-manager.spec
+%{!?build_type:%global build_type RELEASE}
+
+Name:       security-manager
+Summary:    Security manager and utilities
+Version:    2.4.0
+Release:    0
+Group:      Security/Service
+License:    Apache-2.0
+Source0:    %{name}-%{version}.tar.gz
+Source1:    security-manager.manifest
+Source2:    libsecurity-manager-client.manifest
+Source3:    libsecurity-manager-client-devel.manifest
+Source4:    libnss-security-manager.manifest
+Source5:    security-manager-tests.manifest
+Source6:    security-manager-policy.manifest
+Source7:    security-license-manager.manifest
+Source8:    security-manager-iptables-load.service
+Source9:    security-manager-iptables.rules
+Source10:   security-manager-ip6tables.rules
+Source11:   security-manager-iptables-nosmack.rules
+Source12:   security-manager-ip6tables-nosmack.rules
+Requires:   security-manager-policy
+Requires:   security-license-manager
+Requires:   libnss-security-manager
+Requires:   libcynara-admin >= 0.24.0
+Requires:   libcynara-client >= 0.24.0
+Requires:   libcynara-creds-pid >= 0.24.0
+Requires:   libcynara-creds-socket >= 0.24.0
+Requires:   libcynara-uid >= 0.24.0
+Requires:   libcynara-uid-creds >= 0.24.0
+%if "%{build_type}" == "VALGRIND"
+Requires: valgrind
+%endif
+Requires(post): sqlite3
+BuildRequires: cmake
+BuildRequires: zip
+BuildRequires: pkgconfig(dlog)
+BuildRequires: libattr-devel
+BuildRequires: pkgconfig(capi-system-resource)
+%if "%{?dev_wos}" != "1"
+BuildRequires: pkgconfig(libsmack)
+Requires(post): smack
+%endif
+BuildRequires: pkgconfig(libcap)
+BuildRequires: pkgconfig(libsystemd)
+BuildRequires: pkgconfig(libtzplatform-config)
+BuildRequires: tizen-platform-config-tools
+BuildRequires: pkgconfig(sqlite3)
+BuildRequires: pkgconfig(cynara-admin) >= 0.24.0
+BuildRequires: pkgconfig(cynara-client) >= 0.24.0
+BuildRequires: pkgconfig(cynara-creds-pid) >= 0.24.0
+BuildRequires: pkgconfig(cynara-creds-socket) >= 0.24.0
+BuildRequires: pkgconfig(cynara-uid) >= 0.24.0
+BuildRequires: pkgconfig(cynara-uid-creds) >= 0.24.0
+BuildRequires: pkgconfig(security-privilege-manager)
+BuildRequires: pkgconfig(mount)
+BuildRequires: boost-devel
+BuildRequires: pkgconfig(libsessiond)
+%if "%{build_type}" == "COVERAGE"
+BuildRequires: lcov
+%endif
+%{?systemd_requires}
+BuildRequires: pkgconfig(libacl)
+
+%description
+Tizen security manager and utilities
+
+%package -n libsecurity-manager-client
+Summary:    Security manager (client)
+License:    Apache-2.0
+Group:      Security/Libraries
+Requires:   security-manager = %{version}-%{release}
+Requires(post): /sbin/ldconfig
+Requires(postun): /sbin/ldconfig
+
+%description -n libsecurity-manager-client
+Tizen Security manager client library
+
+%package -n libsecurity-manager-client-devel
+Summary:    Security manager (client-devel)
+License:    Apache-2.0
+Group:      Security/Development
+Requires:   libsecurity-manager-client = %{version}-%{release}
+
+%description -n libsecurity-manager-client-devel
+Development files needed for using the security manager client
+
+%package -n libnss-security-manager
+Summary:    Security Manager NSS library
+License:    MIT
+Group:      Security/Libraries
+Requires(post): /sbin/ldconfig
+Requires(postun): /sbin/ldconfig
+
+%description -n libnss-security-manager
+Tizen Security Manager NSS library
+
+%package policy
+Summary:    Security manager policy
+License:    Apache-2.0
+--- INSTALL REFERENCES
+codes/security-manager/packaging/security-manager.spec:342:%files -n security-manager
+codes/security-manager/packaging/security-manager.spec:373:%files -n libsecurity-manager-client
+codes/security-manager/packaging/security-manager.spec:379:%files -n libsecurity-manager-client-devel
+codes/security-manager/packaging/security-manager.spec:385:%{_includedir}/security-manager/*.h
+codes/security-manager/packaging/security-manager.spec:388:%files -n libnss-security-manager
+codes/security-manager/packaging/security-manager.spec:394:%files -n security-manager-policy
+codes/security-manager/packaging/security-manager.spec:402:%files -n security-manager-policy-iptables
+codes/security-manager/packaging/security-manager.spec:409:%files -n security-manager-tests
+codes/security-manager/packaging/security-manager.spec:429:%files -n security-license-manager
+codes/security-manager/packaging/security-manager.spec:440:%files -n security-manager-coverage
+codes/security-manager/pc/security-manager.pc.in:4:includedir=${prefix}/include
+codes/security-manager/pc/security-manager.pc.in:11:Cflags: -I${includedir}/security-manager
+codes/security-manager/test/CMakeLists.txt:201:    ${PROJECT_SOURCE_DIR}/src/dpl/log/include/dpl/log
+EXIT_CODE=0

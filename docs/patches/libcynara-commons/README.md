@@ -30,18 +30,38 @@ armv7l 候选构建的完整诊断原文：
 
 ## 解决方案
 
-NOT_AVAILABLE：本任务按纪律只建立目录与文档，尚未开发或裁定具体源码修改；不得以未经双标准库构建验证的改写代替方案。
+R30 候选以正向判据 `#if defined(__GLIBCXX__)` 隔离 GNU 专有的
+`abi::__forced_unwind` catch，未知标准库不会被误判为 libstdc++。
+候选 patch 已归档，但因下述语义红项仅供取证，**不可提交**。
+
+初始设计预期 libc++ 的强制展开不会匹配后续 catch-all；armv7l 与
+x86_64 实测否决了该预期。进一步使用
+`abi::__cxa_current_exception_type()` 识别 foreign exception 后重抛，
+两架构仍由 libc++abi 以 uncaught foreign exception 终止。该诊断
+变体已撤出最终候选。
 
 ## 兼容性
 
-NOT_AVAILABLE：尚无补丁，因此不存在“修改后在 libstdc++ 与 libc++ 下均可构建”的实测记录。
+- libstdc++：armv7l 基线与候选完整 GBS 构建均执行；逐制品对照见
+  `progress/R30/tables/`。
+- libc++：三架构均越过原 `__forced_unwind` 编译错误，但完整包随后
+  因 `commandline_options.cpp` 的 nodiscard/Werror 与
+  `commands_dispatcher.cpp` 的 libstdc++ 私有 `_S_badbit` 红停。
+- pthread_cancel：libstdc++ 的 x86_64 原生与 armv7l/QEMU 用例通过；
+  libc++ 的两架构用例均退出 134。故 stdlib-neutral 行为兼容性
+  **未通过**，不能以“编译错误消失”替代。
 
 ## 验证记录
 
 - 已验证：原代码在 libc++ 候选构建中于 10 个本包 TU 报同一错误；安装头还阻断 libcynara-dbus 的 TU，详细逻辑诊断位于既有 bak 只读证据。
 - 已验证：R1 交叉验证把本包标为 T1_HARD，和 T2 构建失败 MATCH。
-- 未验证：补丁内容、libstdc++ 回归构建、libc++ 修复后构建、线程取消运行时语义，均 NOT_AVAILABLE。
+- R30 已验证 44/44 include 传播记录，当前树逐条 MATCH。
+- R30 已验证候选不再产生 `__forced_unwind` 编译诊断，但发现上述
+  两类无关源码红项，完整 libc++ 包构建未成功。
+- R30 语义矩阵与原始输出见 `progress/R30/tables/semantic_results.tsv`
+  及对应命令日志；结论为 RED_SEMANTIC_VALIDATION。
 
 ## 提交时机
 
-暂不提交：该修改只因 libc++ 迁移需要；待平台 libc++ 上下文建立后依次开发、双标准库验证并提交评审。
+暂不提交：候选未通过 pthread_cancel 语义门禁，且完整 libc++ 包构建
+尚有未裁决红项。人工裁决运行时边界并完成双标准库验证后再评审。
