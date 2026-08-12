@@ -1,0 +1,40 @@
+# R29 Autotools 双运行时模板；@@...@@ 必须逐包替换并复核。
+%global __provides_exclude_from ^%{_libdir}/libcxx-pkgconfig/.*$
+
+# 保持既有默认包与 %build/%install 不变；新增下列 BuildRequires。
+BuildRequires: clang
+BuildRequires: libc++-devel
+BuildRequires: libc++abi-devel
+BuildRequires: patchelf
+
+%package -n @@RUNTIME@@-libcxx
+Summary: libc++ build of @@PROJECT@@
+%package libcxx-devel
+Summary: Development files for the libc++ build
+Requires: @@RUNTIME@@-libcxx = %{version}-%{release}
+Requires: libc++-devel
+Provides: pkgconfig(@@PC_MODULE@@-libcxx) = %{version}
+
+%build
+# 先执行原有默认构建；再复制干净源码视图，禁止重用 configure 缓存。
+rm -rf ../@@PROJECT@@-%{version}-libcxx
+cp -a . ../@@PROJECT@@-%{version}-libcxx
+pushd ../@@PROJECT@@-%{version}-libcxx
+CXX=clang++ \
+CXXFLAGS="${CXXFLAGS} -stdlib=libc++" \
+LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
+./configure --prefix=%{_prefix} --libdir=%{_libdir} @@ORIGINAL_CONFIGURE_OPTIONS@@
+%{__make} %{?_smp_mflags}
+popd
+
+%install
+# 原有安装先写 %{buildroot}；变体先写 staging，再逐文件复制。
+rm -rf libcxx-install
+%{__make} -C ../@@PROJECT@@-%{version}-libcxx \
+  DESTDIR="$PWD/libcxx-install" install
+install -m 0755 libcxx-install%{_libdir}/@@LIBFILE@@ \
+  %{buildroot}%{_libdir}/@@LIBFILE_LIBCXX@@
+patchelf --set-soname @@SONAME_LIBCXX@@ %{buildroot}%{_libdir}/@@LIBFILE_LIBCXX@@
+# 头文件 -> %{_includedir}/@@PROJECT@@-libcxx/
+# 静态库 -> %{_libdir}/@@STATIC_NAME@@-libcxx.a
+# .pc -> %{_libdir}/libcxx-pkgconfig/@@PROJECT@@/，并改 Libs/Includedir。

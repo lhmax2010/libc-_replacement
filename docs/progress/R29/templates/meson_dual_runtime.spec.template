@@ -1,0 +1,27 @@
+# R29 Meson 双运行时模板；构建前须检查源根文件名是否遮蔽 libc++ 标准头。
+%global __provides_exclude_from ^%{_libdir}/libcxx-pkgconfig/.*$
+BuildRequires: clang
+BuildRequires: libc++-devel
+BuildRequires: libc++abi-devel
+BuildRequires: patchelf
+
+%build
+# 原构建保持不变；变体使用独立源码视图与 builddir。
+rm -rf ../@@PROJECT@@-%{version}-libcxx
+cp -a . ../@@PROJECT@@-%{version}-libcxx
+pushd ../@@PROJECT@@-%{version}-libcxx
+CXX=clang++ \
+CXXFLAGS="${CXXFLAGS} -stdlib=libc++" \
+LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
+meson setup --prefix %{_prefix} --libdir %{_libdir} \
+  @@ORIGINAL_MESON_OPTIONS@@ builddir-libcxx
+ninja -C builddir-libcxx
+popd
+
+%install
+rm -rf libcxx-install
+DESTDIR="$PWD/libcxx-install" \
+  ninja -C ../@@PROJECT@@-%{version}-libcxx/builddir-libcxx install
+# 共享库、模块目录、头和 .pc 均复制到变体私有路径并改 SONAME。
+# 若源根存在 format/vector/array 等无扩展名工具文件且 Meson 产生 -I..，
+# 必须逐包记录并处理；不得把 lottie-player 的重命名动作机械套用他包。

@@ -1,0 +1,31 @@
+# R29 CMake 双运行时模板；必须审计导出 target 中的所有绝对路径。
+%global __provides_exclude_from ^%{_libdir}/libcxx-pkgconfig/.*$
+BuildRequires: clang
+BuildRequires: libc++-devel
+BuildRequires: libc++abi-devel
+BuildRequires: patchelf
+
+%build
+# 原构建保持不变。
+rm -rf ../@@PROJECT@@-%{version}-libcxx
+cp -a . ../@@PROJECT@@-%{version}-libcxx
+mkdir ../@@PROJECT@@-%{version}-libcxx/build-libcxx
+pushd ../@@PROJECT@@-%{version}-libcxx/build-libcxx
+CXX=clang++ \
+CXXFLAGS="${CXXFLAGS} -stdlib=libc++" \
+LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
+%{cmake} @@ORIGINAL_CMAKE_OPTIONS@@ ..
+%{__make} %{?_smp_mflags}
+popd
+
+%install
+rm -rf libcxx-install
+%{__make} -C ../@@PROJECT@@-%{version}-libcxx/build-libcxx \
+  DESTDIR="$PWD/libcxx-install" install
+# 共享库重命名并 patchelf --set-soname；静态库、头、.pc 均私有化。
+# CMake overlay 固定放入：
+# %{_libdir}/libcxx-prefix/@@PROJECT@@/lib/cmake/@@PACKAGE@@/
+# 必须逐项重写并验证：
+#   IMPORTED_LOCATION[_<CONFIG>] -> @@LIBFILE_LIBCXX@@ / @@STATIC_LIBCXX@@
+#   INTERFACE_INCLUDE_DIRECTORIES -> %{_includedir}/@@PROJECT@@-libcxx
+# 仅复制 config 目录或只设 -I/-L 不足以满足本模板。

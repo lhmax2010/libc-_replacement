@@ -1,0 +1,69 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc $'\nset -e\nrpmspec -P tmp/R29/work/flatbuffers/packaging/flatbuffers.spec >/dev/null\nrpmspec -P tmp/R29/work/lottie-player/packaging/rlottie.spec >/dev/null\ngit -C tmp/R29/work/flatbuffers diff -- packaging/flatbuffers.spec\ngit -C tmp/R29/work/lottie-player diff -- packaging/rlottie.spec\ngit -C tmp/R29/work/flatbuffers add packaging/flatbuffers.spec\ngit -C tmp/R29/work/flatbuffers commit -m "R29: retain explicit libc++abi dependency"\ngit -C tmp/R29/work/lottie-player add packaging/rlottie.spec\ngit -C tmp/R29/work/lottie-player commit -m "R29: isolate meson libc++ source view"\n' 
+diff --git a/packaging/flatbuffers.spec b/packaging/flatbuffers.spec
+index 65d56a6..40c1087 100644
+--- a/packaging/flatbuffers.spec
++++ b/packaging/flatbuffers.spec
+@@ -90,7 +90,7 @@ mkdir ../flatbuffers-24.3.25-libcxx/build-libcxx
+ pushd ../flatbuffers-24.3.25-libcxx/build-libcxx
+ CXX=clang++ \
+ CXXFLAGS="${CXXFLAGS} -fno-lto -stdlib=libc++" \
+-LDFLAGS="${LDFLAGS} -stdlib=libc++ -lc++abi" \
++LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
+ %{cmake} \
+     -DFLATBUFFERS_INSTALL=ON \
+     -DFLATBUFFERS_BUILD_SHAREDLIB=ON \
+diff --git a/packaging/rlottie.spec b/packaging/rlottie.spec
+index 30b63eb..7eb5dc5 100644
+--- a/packaging/rlottie.spec
++++ b/packaging/rlottie.spec
+@@ -76,6 +76,14 @@ Private headers and pkg-config overlay for the libc++ rlottie build.
+ 
+ %build
+ 
++# The upstream development helper named "format" shadows libc++'s <format>
++# when Meson emits -I.. .  Keep the default tree untouched and remove that
++# non-header helper only from the isolated libc++ build copy.
++rm -rf ../lottie-player-0.2.5-libcxx
++cp -a . ../lottie-player-0.2.5-libcxx
++mv ../lottie-player-0.2.5-libcxx/format \
++   ../lottie-player-0.2.5-libcxx/format.command
++
+ export DESTDIR=%{buildroot}
+ 
+ export CXXFLAGS+=" -std=gnu++14"
+@@ -96,9 +104,10 @@ ninja \
+       -C builddir \
+       -j %(echo "`/usr/bin/getconf _NPROCESSORS_ONLN`")
+ 
++pushd ../lottie-player-0.2.5-libcxx
+ CXX=clang++ \
+ CXXFLAGS="${CXXFLAGS} -std=gnu++14 -stdlib=libc++" \
+-LDFLAGS="${LDFLAGS} -stdlib=libc++ -lc++abi" \
++LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
+ meson setup \
+                 --prefix /usr \
+                 --libdir %{_libdir} \
+@@ -107,6 +116,7 @@ meson setup \
+ ninja \
+       -C builddir-libcxx \
+       -j %(echo "`/usr/bin/getconf _NPROCESSORS_ONLN`")
++popd
+ 
+ %install
+ 
+@@ -115,7 +125,8 @@ export DESTDIR=%{buildroot}
+ ninja -C builddir install
+ 
+ rm -rf libcxx-install
+-DESTDIR="$PWD/libcxx-install" ninja -C builddir-libcxx install
++DESTDIR="$PWD/libcxx-install" \
++  ninja -C ../lottie-player-0.2.5-libcxx/builddir-libcxx install
+ install -d %{buildroot}%{_libdir}
+ install -m 0755 libcxx-install%{_libdir}/librlottie.so.0.2 \
+   %{buildroot}%{_libdir}/librlottie-libcxx.so.0.2
+[master 70be312] R29: retain explicit libc++abi dependency
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+[master a4550a9] R29: isolate meson libc++ source view
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+EXIT_CODE=0

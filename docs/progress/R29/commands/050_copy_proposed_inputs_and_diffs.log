@@ -1,0 +1,702 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc $'\nset -e\nmkdir -p progress/R29/proposed/pcre/packaging progress/R29/proposed/flatbuffers/packaging progress/R29/proposed/lottie-player/packaging progress/R29/proposed/consumer/packaging progress/R29/proposed/consumer/source progress/R29/proposed/central-injection\ncp tmp/R29/work/pcre/packaging/pcre.spec progress/R29/proposed/pcre/packaging/\ncp tmp/R29/work/flatbuffers/packaging/flatbuffers.spec progress/R29/proposed/flatbuffers/packaging/\ncp tmp/R29/work/lottie-player/packaging/rlottie.spec progress/R29/proposed/lottie-player/packaging/\ncp tmp/R29/work/consumer/packaging/r29-consumer.spec tmp/R29/work/consumer/packaging/r29-consumer-1.tar.gz progress/R29/proposed/consumer/packaging/\ncp tmp/R29/work/consumer/CMakeLists.txt tmp/R29/work/consumer/pcre.cpp tmp/R29/work/consumer/lottie.cpp tmp/R29/work/consumer/flatbuffers.cpp progress/R29/proposed/consumer/source/\ncp tmp/R29/buildconf-default.conf tmp/R29/buildconf-libcxx.conf tmp/R29/gbs_consumer_default.conf tmp/R29/gbs_consumer_libcxx.conf progress/R29/proposed/central-injection/\nfor repo in pcre flatbuffers lottie-player; do\n  echo DIFF_BEGIN=$repo\n  git -C tmp/R29/work/$repo diff --no-ext-diff --unified=100 $(git -C tmp/R29/work/$repo rev-list --max-parents=0 HEAD) HEAD -- packaging\n  echo DIFF_END=$repo\ndone\nfind progress/R29/proposed -type f -print0 | sort -z | xargs -0 sha256sum\n' 
+DIFF_BEGIN=pcre
+diff --git a/packaging/pcre.spec b/packaging/pcre.spec
+index 151eeec..473eed4 100644
+--- a/packaging/pcre.spec
++++ b/packaging/pcre.spec
+@@ -1,176 +1,287 @@
+ %define keepstatic 1
++%global __provides_exclude_from ^%{_libdir}/libcxx-pkgconfig/.*$
+ Name:           pcre
+ VCS:            platform/upstream/pcre#feba6a19627f5d6e74d551ef2fc8b33af0547780
+ Version:        8.45
+ Release:        1.13
+ License:        BSD-3-Clause
+ Summary:        A library for Perl-compatible regular expressions
+ Url:            ftp://ftp.csx.cam.ac.uk/pub/software/programming/pcre/
+ Group:          System/Libraries
+ Source:         ftp://ftp.csx.cam.ac.uk/pub/software/programming/pcre/%{name}-%{version}.tar.bz2
+ Source2:        baselibs.conf
+ Source10:       add_pie_compile_option.patch
+ Source1001: 	pcre.manifest
+ BuildRequires:  gcc-c++
+ BuildRequires:  libtool
+ BuildRequires:  pkg-config
++BuildRequires:  clang
++BuildRequires:  libc++-devel
++BuildRequires:  libc++abi-devel
++BuildRequires:  patchelf
+ 
+ %description
+ The PCRE library is a set of functions that implement regular
+ expression pattern matching using the same syntax and semantics
+ as Perl 5.
+ 
+ %package        devel
+ Summary:        A library for Perl-compatible regular expressions
+ Group:          System/Libraries
+ Requires:       libpcre = %{version}
+ Requires:       libpcrecpp = %{version}
+ Requires:       libpcreposix = %{version}
+ Requires:       libstdc++-devel
+ 
+ %description devel
+ The PCRE library is a set of functions that implement regular
+ expression pattern matching using the same syntax and semantics
+ as Perl 5.
+ 
+ %package        devel-static
+ Summary:        A library for Perl-compatible regular expressions
+ Group:          System/Libraries
+ Requires:       pcre-devel = %{version}
+ 
+ %description devel-static
+ The PCRE library is a set of functions that implement regular
+ expression pattern matching using the same syntax and semantics
+ as Perl 5.
+ This package contains static versions of the PCRE libraries.
+ 
+ %package -n libpcre
+ Summary:        A library for Perl-compatible regular expressions
+ Group:          System/Libraries
+ Provides:       %{name} = %{version}
+ Obsoletes:      %{name} < %{version}
+ 
+ %description -n libpcre
+ The PCRE library is a set of functions that implement regular
+ expression pattern matching using the same syntax and semantics
+ as Perl 5.
+ 
+ %package -n libpcreposix
+ Summary:        A library for Perl-compatible regular expressions
+ Group:          System/Libraries
+ 
+ %description -n libpcreposix
+ The PCRE library is a set of functions that implement regular
+ expression pattern matching using the same syntax and semantics
+ as Perl 5.
+ 
+ %package -n libpcrecpp
+ Summary:        A library for Perl-compatible regular expressions
+ Group:          System/Libraries
+ 
+ %description -n libpcrecpp
+ The PCRE library is a set of functions that implement regular
+ expression pattern matching using the same syntax and semantics
+ as Perl 5.
+ 
++%package -n libpcrecpp-libcxx
++Summary:        libc++ build of the PCRE C++ wrapper
++Group:          System/Libraries
++Requires:       libpcre = %{version}
++
++%description -n libpcrecpp-libcxx
++The PCRE C++ wrapper built with LLVM libc++, with an isolated SONAME.
++
++%package        libcxx-devel
++Summary:        Development files for the libc++ PCRE C++ wrapper
++Group:          System/Libraries
++Requires:       libpcrecpp-libcxx = %{version}-%{release}
++Requires:       libc++-devel
++Provides:       pkgconfig(libpcrecpp-libcxx) = %{version}
++
++%description libcxx-devel
++Private headers and pkg-config overlay for the libc++ PCRE C++ wrapper.
++
++%package        libcxx-devel-static
++Summary:        Static libc++ PCRE C++ wrapper
++Group:          System/Libraries
++Requires:       pcre-libcxx-devel = %{version}-%{release}
++
++%description libcxx-devel-static
++Static library for the libc++ PCRE C++ wrapper.
++
+ %package doc
+ Summary:        A library for Perl-compatible regular expressions
+ Group:          System/Libraries
+ BuildArch:      noarch
+ 
+ %description doc
+ The PCRE library is a set of functions that implement regular
+ expression pattern matching using the same syntax and semantics
+ as Perl 5.
+ 
+ %package tools
+ Summary:        A library for Perl-compatible regular expressions
+ Group:          System/Libraries
+ 
+ %description tools
+ The PCRE library is a set of functions that implement regular
+ expression pattern matching using the same syntax and semantics
+ as Perl 5.
+ 
+ %prep
+ %setup -q
+ cp %{SOURCE1001} .
+ %{__patch} -p1 < %{SOURCE10}
+ 
+ %build
++rm -rf ../pcre-8.45-libcxx
++cp -a . ../pcre-8.45-libcxx
+ export CFLAGS="${CFLAGS} -fPIC"
+ 
+ # Available JIT archs see sljit/sljitConfig.h
+ autoreconf -fiv
+ %configure \
+ %ifarch %ix86 x86_64 %arm ppc ppc64 mips
+ 	    --enable-jit \
+ %endif
+ 	    --enable-static \
+ 	    --with-link-size=2 \
+ 	    --with-match-limit=10000000 \
+ 	    --enable-newline-is-lf \
+ 	    --enable-utf8 \
+         --enable-unicode-properties
+ make %{?_smp_mflags}
+ 
++pushd ../pcre-8.45-libcxx
++autoreconf -fiv
++CXX=clang++ \
++CXXFLAGS="${CXXFLAGS} -stdlib=libc++" \
++LDFLAGS="${LDFLAGS} -stdlib=libc++ -lc++abi" \
++./configure \
++            --host=%{_host} \
++            --build=%{_build} \
++            --program-prefix= \
++            --disable-dependency-tracking \
++            --prefix=%{_prefix} \
++            --exec-prefix=%{_exec_prefix} \
++            --bindir=%{_bindir} \
++            --sbindir=%{_sbindir} \
++            --sysconfdir=%{_sysconfdir} \
++            --datadir=%{_datadir} \
++            --includedir=%{_includedir} \
++            --libdir=%{_libdir} \
++            --libexecdir=%{_libexecdir} \
++            --localstatedir=%{_localstatedir} \
++            --sharedstatedir=%{_sharedstatedir} \
++            --mandir=%{_mandir} \
++            --infodir=%{_infodir} \
++%ifarch %ix86 x86_64 %arm ppc ppc64 mips
++            --enable-jit \
++%endif
++            --enable-static \
++            --with-link-size=2 \
++            --with-match-limit=10000000 \
++            --enable-newline-is-lf \
++            --enable-utf8 \
++            --enable-unicode-properties
++make %{?_smp_mflags}
++popd
++
+ 
+ # %check
+ # export LANG=POSIX
+ # make check || exit 0
+ 
+ %install
+ %make_install
+ mkdir -p %{buildroot}/%{_defaultdocdir}
+ mv %{buildroot}/usr/share/doc/pcre %{buildroot}/%{_defaultdocdir}/pcre-doc
+ rm -f %{buildroot}%{_libdir}/*.la
+ %{remove_docs}
+ 
++rm -rf libcxx-install
++make -C ../pcre-8.45-libcxx DESTDIR="$PWD/libcxx-install" install
++install -d %{buildroot}%{_libdir}
++install -m 0755 libcxx-install%{_libdir}/libpcrecpp.so.0.0.2 \
++  %{buildroot}%{_libdir}/libpcrecpp-libcxx.so.0.0.2
++patchelf --set-soname libpcrecpp-libcxx.so.0 \
++  %{buildroot}%{_libdir}/libpcrecpp-libcxx.so.0.0.2
++ln -s libpcrecpp-libcxx.so.0.0.2 %{buildroot}%{_libdir}/libpcrecpp-libcxx.so.0
++ln -s libpcrecpp-libcxx.so.0 %{buildroot}%{_libdir}/libpcrecpp-libcxx.so
++install -m 0644 libcxx-install%{_libdir}/libpcrecpp.a \
++  %{buildroot}%{_libdir}/libpcrecpp-libcxx.a
++install -d %{buildroot}%{_includedir}/pcre-libcxx
++install -m 0644 libcxx-install%{_includedir}/*.h \
++  %{buildroot}%{_includedir}/pcre-libcxx/
++install -d %{buildroot}%{_libdir}/libcxx-pkgconfig/pcre
++install -m 0644 libcxx-install%{_libdir}/pkgconfig/libpcrecpp.pc \
++  %{buildroot}%{_libdir}/libcxx-pkgconfig/pcre/libpcrecpp.pc
++sed -i \
++  -e 's|-lpcrecpp|-lpcrecpp-libcxx|' \
++  -e 's|^includedir=.*|includedir=%{_includedir}/pcre-libcxx|' \
++  %{buildroot}%{_libdir}/libcxx-pkgconfig/pcre/libpcrecpp.pc
++
+ %post -n libpcre -p /sbin/ldconfig
+ 
+ %postun -n libpcre -p /sbin/ldconfig
+ 
+ %post -n libpcrecpp -p /sbin/ldconfig
+ 
+ %postun -n libpcrecpp -p /sbin/ldconfig
+ 
++%post -n libpcrecpp-libcxx -p /sbin/ldconfig
++
++%postun -n libpcrecpp-libcxx -p /sbin/ldconfig
++
+ %post -n libpcreposix -p /sbin/ldconfig
+ 
+ %postun -n libpcreposix -p /sbin/ldconfig
+ 
+ %files -n libpcre
+ %manifest %{name}.manifest
+ %license LICENCE
+ %{_libdir}/libpcre.so.*
+ 
+ %files -n libpcrecpp
+ %manifest %{name}.manifest
+ %license LICENCE
+ %{_libdir}/libpcrecpp.so.*
+ 
++%files -n libpcrecpp-libcxx
++%manifest %{name}.manifest
++%license LICENCE
++%{_libdir}/libpcrecpp-libcxx.so.0
++%{_libdir}/libpcrecpp-libcxx.so.0.0.2
++
+ %files -n libpcreposix
+ %manifest %{name}.manifest
+ %license LICENCE
+ %{_libdir}/libpcreposix.so.*
+ 
+ %files tools
+ %manifest %{name}.manifest
+ %license LICENCE
+ %{_bindir}/pcregrep
+ %{_bindir}/pcretest
+ 
+ %files devel
+ %license LICENCE
+ %manifest %{name}.manifest
+ %{_bindir}/pcre-config
+ %{_includedir}/*
+ %{_libdir}/*.so
+ %{_libdir}/pkgconfig/libpcre.pc
+ %{_libdir}/pkgconfig/libpcrecpp.pc
+ %{_libdir}/pkgconfig/libpcreposix.pc
+ 
++%files libcxx-devel
++%license LICENCE
++%manifest %{name}.manifest
++%{_includedir}/pcre-libcxx/
++%{_libdir}/libpcrecpp-libcxx.so
++%{_libdir}/libcxx-pkgconfig/pcre/libpcrecpp.pc
++
+ %files devel-static
+ %license LICENCE
+ %manifest %{name}.manifest
+ %{_libdir}/*.a
+ 
++%files libcxx-devel-static
++%license LICENCE
++%manifest %{name}.manifest
++%{_libdir}/libpcrecpp-libcxx.a
+DIFF_END=pcre
+DIFF_BEGIN=flatbuffers
+diff --git a/packaging/flatbuffers.spec b/packaging/flatbuffers.spec
+index 4829820..4cd39ea 100644
+--- a/packaging/flatbuffers.spec
++++ b/packaging/flatbuffers.spec
+@@ -1,109 +1,199 @@
+ Name:		flatbuffers
++%global __provides_exclude_from ^%{_libdir}/libcxx-pkgconfig/.*$
+ VCS:   platform/upstream/flatbuffers#748aa035ca79aef902589656326a14d0b3ce56e6
+ Summary:	cross platform serialization library
+ Version:	24.3.25
+ Release:	1%{?dist}
+ Group:		Development/Libraries
+ Packager:	Yongjoo Ahn <yongjoo1.ahn@samsung.com>
+ License:	Apache-2.0
+ Source0:	%{name}-%{version}.tar.gz
+ Source1:	%{name}.manifest
+ 
+ BuildRequires:	cmake
+ BuildRequires:	sed
+ BuildRequires:  python3-devel
+ BuildRequires:  python3-setuptools
++BuildRequires:  clang
++BuildRequires:  libc++-devel
++BuildRequires:  libc++abi-devel
++BuildRequires:  patchelf
+ 
+ %description
+ FlatBuffers is a cross platform serialization library architected for maximum
+ memory efficiency. It allows you to directly access serialized data without
+ parsing/unpacking it first, while still having great forwards/backwards
+ compatibility.
+ 
+ %package devel
+ Summary:	Development package to use flatbuffers
+ Group:		Development/Libraries
+ Requires:	%{name} = %{version}-%{release}
+ %description devel
+ This package provides headers and other miscellaneous files required to use flatbuffers.
+ 
++%package libcxx
++Summary:	libc++ build of flatbuffers
++Group:		Development/Libraries
++%description libcxx
++Flatbuffers shared library built with LLVM libc++, with an isolated SONAME.
++
++%package libcxx-devel
++Summary:	Development files for the libc++ flatbuffers build
++Group:		Development/Libraries
++Requires:	%{name}-libcxx = %{version}-%{release}
++Requires:	libc++-devel
++Provides:	pkgconfig(flatbuffers-libcxx) = %{version}
++%description libcxx-devel
++Private headers, static library, pkg-config overlay and CMake config for libc++.
++
+ %package python
+ Summary:	Python subpackage to use flatbuffers
+ Group:		Development/Libraries
+ Requires:	%{name} = %{version}-%{release}
+ Requires:   python3-devel
+ %description python
+ This package provides flatbuffers python API.
+ 
+ %prep
+ %setup -q
+ cp %{SOURCE1} .
+ 
+ %build
++rm -rf ../flatbuffers-24.3.25-libcxx
++cp -a . ../flatbuffers-24.3.25-libcxx
+ export CFLAGS+=" -fno-lto"
+ export CXXFLAGS+=" -fno-lto"
+ pushd python
+ export VERSION="24.3.25"
+ %{_bindir}/python3 setup.py build
+ popd
+ 
+ # flatbuffers build occasionally fails when using -j${BUILD_THREADS} with an error similar to:
+ # /mnt/source/flatbuffers/flatbuffers-1.6.0/samples/sample_binary.cpp:19:17: error: 'MyGame' has not been declared
+ # /mnt/source/flatbuffers/flatbuffers-1.6.0/samples/sample_binary.cpp:19:25: error: 'Sample' is not a namespace-name
+ # ...
+ # Disabling build tests gets rid of this flakiness and makes the compilation faster.
+ %{cmake} \
+     -DFLATBUFFERS_INSTALL=ON \
+     -DFLATBUFFERS_BUILD_SHAREDLIB=ON \
+     -DCMAKE_POSITION_INDEPENDENT_CODE=TRUE \
+     -DFLATBUFFERS_BUILD_TESTS=OFF \
+     -DCMAKE_INSTALL_INCLUDEDIR=%{_includedir} \
+     -DCMAKE_INSTALL_LIBDIR=%{_libdir} \
+     -DCMAKE_INSTALL_BINDIR=%{_bindir} \
+     -DFB_CMAKE_DIR=%{_libdir}/cmake \
+     -DCMAKE_BUILD_TYPE=Release .
+ %{__make} %{?_smp_mflags}
+ 
++mkdir ../flatbuffers-24.3.25-libcxx/build-libcxx
++pushd ../flatbuffers-24.3.25-libcxx/build-libcxx
++CXX=clang++ \
++CXXFLAGS="${CXXFLAGS} -fno-lto -stdlib=libc++" \
++LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
++%{cmake} \
++    -DFLATBUFFERS_INSTALL=ON \
++    -DFLATBUFFERS_BUILD_SHAREDLIB=ON \
++    -DFLATBUFFERS_BUILD_FLATC=OFF \
++    -DCMAKE_POSITION_INDEPENDENT_CODE=TRUE \
++    -DFLATBUFFERS_BUILD_TESTS=OFF \
++    -DCMAKE_INSTALL_INCLUDEDIR=%{_includedir} \
++    -DCMAKE_INSTALL_LIBDIR=%{_libdir} \
++    -DFB_CMAKE_DIR=%{_libdir}/cmake \
++    -DCMAKE_BUILD_TYPE=Release ..
++%{__make} %{?_smp_mflags}
++popd
++
+ %install
+ %{__make} DESTDIR=%{?buildroot:%{buildroot}} install
+ install -D -m 644 packaging/%{name}.pc.in %{buildroot}%{_libdir}/pkgconfig/%{name}.pc
+ sed -i 's#@version@#%{version}#g' %{buildroot}%{_libdir}/pkgconfig/%{name}.pc
+ sed -i 's#@libdir@#%{_libdir}#g' %{buildroot}%{_libdir}/pkgconfig/%{name}.pc
+ sed -i 's#@includedir@#%{_includedir}#g' %{buildroot}%{_libdir}/pkgconfig/%{name}.pc
+ mkdir -p %{buildroot}/%{python3_sitelib}/flatbuffers
+ pushd python
+ export VERSION="24.3.25"
+ %{_bindir}/python3 setup.py install --prefix=%{_prefix} --root=%{buildroot}
+ rm -r %{buildroot}/%{python3_sitelib}/*.egg-info
+ rm -r %{buildroot}/%{python3_sitelib}/flatbuffers/__pycache__
+ popd
+ 
++rm -rf libcxx-install
++%{__make} -C ../flatbuffers-24.3.25-libcxx/build-libcxx \
++  DESTDIR="$PWD/libcxx-install" install
++install -d %{buildroot}%{_libdir}
++install -m 0755 libcxx-install%{_libdir}/libflatbuffers.so.%{version} \
++  %{buildroot}%{_libdir}/libflatbuffers-libcxx.so.%{version}
++patchelf --set-soname libflatbuffers-libcxx.so.%{version} \
++  %{buildroot}%{_libdir}/libflatbuffers-libcxx.so.%{version}
++ln -s libflatbuffers-libcxx.so.%{version} \
++  %{buildroot}%{_libdir}/libflatbuffers-libcxx.so
++install -m 0644 libcxx-install%{_libdir}/libflatbuffers.a \
++  %{buildroot}%{_libdir}/libflatbuffers-libcxx.a
++install -d %{buildroot}%{_includedir}/flatbuffers-libcxx
++cp -a libcxx-install%{_includedir}/flatbuffers \
++  %{buildroot}%{_includedir}/flatbuffers-libcxx/
++install -d %{buildroot}%{_libdir}/libcxx-pkgconfig/flatbuffers
++install -m 0644 libcxx-install%{_libdir}/pkgconfig/flatbuffers.pc \
++  %{buildroot}%{_libdir}/libcxx-pkgconfig/flatbuffers/flatbuffers.pc
++sed -i \
++  -e 's|-lflatbuffers|-lflatbuffers-libcxx|' \
++  -e 's|^includedir=.*|includedir=%{_includedir}/flatbuffers-libcxx|' \
++  %{buildroot}%{_libdir}/libcxx-pkgconfig/flatbuffers/flatbuffers.pc
++install -d %{buildroot}%{_libdir}/libcxx-prefix/flatbuffers/lib/cmake/flatbuffers
++cp -a libcxx-install%{_libdir}/cmake/flatbuffers/. \
++  %{buildroot}%{_libdir}/libcxx-prefix/flatbuffers/lib/cmake/flatbuffers/
++sed -i \
++  -e 's|libflatbuffers\.so|libflatbuffers-libcxx.so|g' \
++  -e 's|%{_libdir}/libflatbuffers\.a|%{_libdir}/libflatbuffers-libcxx.a|g' \
++  -e 's|%{_includedir}|%{_includedir}/flatbuffers-libcxx|g' \
++  -e 's|${_IMPORT_PREFIX}/include|%{_includedir}/flatbuffers-libcxx|g' \
++  -e 's|${_IMPORT_PREFIX}/%{_libdir}|%{_libdir}|g' \
++  %{buildroot}%{_libdir}/libcxx-prefix/flatbuffers/lib/cmake/flatbuffers/*.cmake
++
+ %post -p /sbin/ldconfig
+ 
+ %postun -p /sbin/ldconfig
+ 
++%post libcxx -p /sbin/ldconfig
++
++%postun libcxx -p /sbin/ldconfig
++
+ %files
+ %defattr(-,root,root,-)
+ %manifest %{name}.manifest
+ %license LICENSE
+ %{_libdir}/libflatbuffers.so.*
+ 
++%files libcxx
++%defattr(-,root,root,-)
++%manifest %{name}.manifest
++%license LICENSE
++%{_libdir}/libflatbuffers-libcxx.so.%{version}
++
++%files libcxx-devel
++%defattr(-,root,root,-)
++%{_includedir}/flatbuffers-libcxx/
++%{_libdir}/libflatbuffers-libcxx.a
++%{_libdir}/libflatbuffers-libcxx.so
++%{_libdir}/libcxx-pkgconfig/flatbuffers/flatbuffers.pc
++%{_libdir}/libcxx-prefix/flatbuffers/
++
+ %files devel
+ %defattr(-,root,root,-)
+ %{_bindir}/flatc
+ %{_includedir}/flatbuffers
+ %{_libdir}/libflatbuffers.a
+ %{_libdir}/cmake/flatbuffers/*
+ %{_libdir}/libflatbuffers.so
+ %{_libdir}/pkgconfig/flatbuffers.pc
+ 
+ %files python
+ %defattr(-,root,root,-)
+ %manifest %{name}.manifest
+ %license LICENSE
+ %{python3_sitelib}/flatbuffers/
+ 
+ %changelog
+ * Mon Jan 6 2025 Yongjoo Ahn <yongjoo1.ahn@samsung.com>
+ - Release of 24.3.25+e6463926479bd6b330cbcf673f7e917803fd5831 (sync with TensorFlow Lite v2.18.0)
+-
+DIFF_END=flatbuffers
+DIFF_BEGIN=lottie-player
+diff --git a/packaging/rlottie.spec b/packaging/rlottie.spec
+index 1736975..7eb5dc5 100644
+--- a/packaging/rlottie.spec
++++ b/packaging/rlottie.spec
+@@ -1,94 +1,178 @@
+ Name:       lottie-player
++%global __provides_exclude_from ^%{_libdir}/libcxx-pkgconfig/.*$
+ VCS:        platform/core/uifw/lottie-player#b3a74520e861f09e20a90e75d95215ec619e48f0
+ Summary:    Platform independent standalone library that plays Lottie Animation
+ Version:    0.2.5
+ Release:    1
+ Group:      UI Framework/Services
+ License:    MIT and BSD and MPL-2.0
+ URL:        http://www.tizen.org/
+ Source0:    %{name}-%{version}.tar.gz
+ BuildRequires:  pkgconfig
+ BuildRequires:  meson
+ BuildRequires:  ninja
+ BuildRequires:  pkgconfig(dlog)
++BuildRequires:  clang
++BuildRequires:  libc++-devel
++BuildRequires:  libc++abi-devel
++BuildRequires:  patchelf
+ Requires(post): /sbin/ldconfig
+ Requires(postun): /sbin/ldconfig
+ 
+ %description
+ rlottie is a platform independent standalone c++ library for rendering vector
+ based animations and art in realtime.
+ 
+ Lottie loads and renders animations and vectors exported in the bodymovin JSON
+ format. Bodymovin JSON can be created and exported from After Effects with
+ bodymovin, Sketch with Lottie Sketch Export, and from Haiku.
+ 
+ For the first time, designers can create and ship beautiful animations without
+ an engineer painstakingly recreating it by hand. Since the animation is backed
+ by JSON they are extremely small in size but can be large in complexity!
+ 
+ 
+ %package devel
+ Summary:    Development libraries for rlottie
+ Group:      UI Frameork/Services
+ Requires:   %{name} = %{version}-%{release}
+ 
+ 
+ %description devel
+ rlottie is a platform independent standalone c++ library for rendering vector
+ based animations and art in realtime.
+ 
+ Lottie loads and renders animations and vectors exported in the bodymovin JSON
+ format. Bodymovin JSON can be created and exported from After Effects with
+ bodymovin, Sketch with Lottie Sketch Export, and from Haiku.
+ 
+ For the first time, designers can create and ship beautiful animations without
+ an engineer painstakingly recreating it by hand. Since the animation is backed
+ by JSON they are extremely small in size but can be large in complexity!
+ 
++%package libcxx
++Summary:    libc++ build of rlottie
++Group:      UI Framework/Services
++Requires(post): /sbin/ldconfig
++Requires(postun): /sbin/ldconfig
++
++%description libcxx
++The rlottie shared library built with LLVM libc++, with an isolated SONAME.
++
++%package libcxx-devel
++Summary:    Development files for the libc++ rlottie build
++Group:      UI Framework/Services
++Requires:   %{name}-libcxx = %{version}-%{release}
++Requires:   libc++-devel
++Provides:   pkgconfig(rlottie-libcxx) = %{version}
++
++%description libcxx-devel
++Private headers and pkg-config overlay for the libc++ rlottie build.
++
+ 
+ %prep
+ %setup -q
+ 
+ 
+ %build
+ 
++# The upstream development helper named "format" shadows libc++'s <format>
++# when Meson emits -I.. .  Keep the default tree untouched and remove that
++# non-header helper only from the isolated libc++ build copy.
++rm -rf ../lottie-player-0.2.5-libcxx
++cp -a . ../lottie-player-0.2.5-libcxx
++mv ../lottie-player-0.2.5-libcxx/format \
++   ../lottie-player-0.2.5-libcxx/format.command
++
+ export DESTDIR=%{buildroot}
+ 
+ export CXXFLAGS+=" -std=gnu++14"
+ 
+ %{?_toolchain:
+ %ifarch %arm
+ %if %{toolchain_is clang}
+ CXXFLAGS+=" -fno-integrated-as"
+ %endif
+ %endif
+ }
+ 
+ meson setup \
+                 --prefix /usr \
+                 --libdir %{_libdir} \
+                 builddir 2>&1
+ ninja \
+       -C builddir \
+       -j %(echo "`/usr/bin/getconf _NPROCESSORS_ONLN`")
+ 
++pushd ../lottie-player-0.2.5-libcxx
++CXX=clang++ \
++CXXFLAGS="${CXXFLAGS} -std=gnu++14 -stdlib=libc++" \
++LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
++meson setup \
++                --prefix /usr \
++                --libdir %{_libdir} \
++                -Dmoduledir=%{_libdir}/rlottie-libcxx \
++                builddir-libcxx 2>&1
++ninja \
++      -C builddir-libcxx \
++      -j %(echo "`/usr/bin/getconf _NPROCESSORS_ONLN`")
++popd
++
+ %install
+ 
+ export DESTDIR=%{buildroot}
+ 
+ ninja -C builddir install
+ 
++rm -rf libcxx-install
++DESTDIR="$PWD/libcxx-install" \
++  ninja -C ../lottie-player-0.2.5-libcxx/builddir-libcxx install
++install -d %{buildroot}%{_libdir}
++install -m 0755 libcxx-install%{_libdir}/librlottie.so.0.2 \
++  %{buildroot}%{_libdir}/librlottie-libcxx.so.0.2
++patchelf --set-soname librlottie-libcxx.so.0 \
++  %{buildroot}%{_libdir}/librlottie-libcxx.so.0.2
++ln -s librlottie-libcxx.so.0.2 %{buildroot}%{_libdir}/librlottie-libcxx.so.0
++ln -s librlottie-libcxx.so.0 %{buildroot}%{_libdir}/librlottie-libcxx.so
++install -d %{buildroot}%{_libdir}/rlottie-libcxx
++install -m 0755 libcxx-install%{_libdir}/rlottie-libcxx/librlottie-image-loader.so \
++  %{buildroot}%{_libdir}/rlottie-libcxx/librlottie-image-loader.so
++install -d %{buildroot}%{_includedir}/lottie-player-libcxx
++install -m 0644 libcxx-install%{_includedir}/*.h \
++  %{buildroot}%{_includedir}/lottie-player-libcxx/
++install -d %{buildroot}%{_libdir}/libcxx-pkgconfig/lottie-player
++install -m 0644 libcxx-install%{_libdir}/pkgconfig/rlottie.pc \
++  %{buildroot}%{_libdir}/libcxx-pkgconfig/lottie-player/rlottie.pc
++sed -i \
++  -e 's|-lrlottie|-lrlottie-libcxx|' \
++  -e 's|^includedir=.*|includedir=%{_includedir}/lottie-player-libcxx|' \
++  %{buildroot}%{_libdir}/libcxx-pkgconfig/lottie-player/rlottie.pc
++
+ %files
+ %defattr(-,root,root,-)
+ %{_libdir}/librlottie.so.*
+ %{_libdir}/librlottie-image-loader.so*
+ %manifest packaging/rlottie.manifest
+ %license COPYING licenses/COPYING*
+ 
+ %files devel
+ %defattr(-,root,root,-)
+ %{_includedir}/*.h
+ %{_libdir}/librlottie.so
+ %{_libdir}/librlottie-image-loader.so
+ 
+ %{_libdir}/pkgconfig/rlottie.pc
++
++%files libcxx
++%defattr(-,root,root,-)
++%manifest packaging/rlottie.manifest
++%license COPYING licenses/COPYING*
++%{_libdir}/librlottie-libcxx.so.0
++%{_libdir}/librlottie-libcxx.so.0.2
++%{_libdir}/rlottie-libcxx/librlottie-image-loader.so
++
++%files libcxx-devel
++%defattr(-,root,root,-)
++%{_includedir}/lottie-player-libcxx/
++%{_libdir}/librlottie-libcxx.so
++%{_libdir}/libcxx-pkgconfig/lottie-player/rlottie.pc
+DIFF_END=lottie-player
+9eac0e23968b9bd7dabd463d400f0281d2464815fc2299431052f7b8cfb736a5  progress/R29/proposed/central-injection/buildconf-default.conf
+c0e39a006f1a4edc9fab3f2e07419306eb4eec6d4f286bcb05febc9dfad5cd8a  progress/R29/proposed/central-injection/buildconf-libcxx.conf
+f5f5a949a603a94719ab5e8d343f1cef68d3cb55a2b6b6836ae8ffbddaba2ea5  progress/R29/proposed/central-injection/gbs_consumer_default.conf
+de9cb03372e15eb45480457c60364c375e5df3fb28174fd42f5b92cf94cd56e0  progress/R29/proposed/central-injection/gbs_consumer_libcxx.conf
+4d9e2207f5f39b152da1722d5aeb4f994ba5f5af9fb0fad6ea844301deeff850  progress/R29/proposed/consumer/packaging/r29-consumer-1.tar.gz
+9bf1c6e056fa5e383c1f933647338207f695aa0696d9aea65df0c1387fa165ee  progress/R29/proposed/consumer/packaging/r29-consumer.spec
+b4e6e0e87f30e02ecec85db617e45cf63a749ac54340ed3f8e029a6e3c0aecfa  progress/R29/proposed/consumer/source/CMakeLists.txt
+923a12ebcccfc25d0e2ee51032e0130476114efc72fd71461b9c6a69883cc743  progress/R29/proposed/consumer/source/flatbuffers.cpp
+1a2e1ddca45f71eb3a2454439fef1a6eb4f82deb8ca0bbf987202a15a6044fe9  progress/R29/proposed/consumer/source/lottie.cpp
+361d5acda23498e1efe182ffad9d76d253d6a76274ac7c4a19a9a6e5c6aa717a  progress/R29/proposed/consumer/source/pcre.cpp
+109a24f5a3305725155fa926b2da880b8f5f652bea75902b24289bcdf58d7af5  progress/R29/proposed/flatbuffers/packaging/flatbuffers.spec
+fc2c328c9e09a9acec2686aefc0eed1ff0d999600d47d5b23739faa9662bf4af  progress/R29/proposed/lottie-player/packaging/rlottie.spec
+5b7beabb39535cdb31e342d862e1c70b5a04924f04be17bf72d4dff7390c4912  progress/R29/proposed/pcre/packaging/pcre.spec
+EXIT_CODE=0
