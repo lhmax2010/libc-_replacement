@@ -1,0 +1,160 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc set\ -e\;\ pwd\;\ git\ branch\ --show-current\;\ git\ rev-parse\ HEAD\;\ git\ remote\ -v\;\ git\ status\ --short\ --untracked-files=all\;\ sha256sum\ progress/R30/semantic/pthread_cancel_probe.cpp\ progress/R30/commands/039_build_semantic_libcxx_x86_64.full.log\ progress/R30/commands/041_run_semantic_libcxx_x86_64_native.log\ progress/R30/commands/046_run_semantic_revised_libcxx_x86_64_native.log\;\ sed\ -n\ \"1\,220p\"\ progress/R30/semantic/pthread_cancel_probe.cpp\;\ sed\ -n\ \"1\,8p\"\ progress/R30/commands/039_build_semantic_libcxx_x86_64.full.log\;\ sed\ -n\ \"1\,140p\"\ progress/R30/commands/041_run_semantic_libcxx_x86_64_native.log\;\ sed\ -n\ \"1\,140p\"\ progress/R30/commands/046_run_semantic_revised_libcxx_x86_64_native.log 
+/home/toolchain/development/libc++_replacement
+codex/r5-ehabi-diagnosis
+8b668970dd6b2ec87b83815d435bd95b3a0fc29e
+origin	git@github.com:lhmax2010/libc-_replacement.git (fetch)
+origin	git@github.com:lhmax2010/libc-_replacement.git (push)
+?? README_UNPACK.md
+?? docs/hq/REVISIONS.md
+?? docs/hq/appendix_B_test_methodology.md
+?? docs/hq/reviews/README.md
+?? docs/hq/step0_analysis_rev6.md
+?? docs/plan/README.md
+?? docs/plan/execution_plan_v2.md
+?? docs/plan/progress_report_20260806.md
+?? docs/plan/unwinder_decision_v5_en.md
+?? docs/plan/unwinder_decision_v5_zh.md
+?? gbs_llvm.conf
+0b4af85f5a83a9cae69fdedf96fb9dbf0124f5a09214cf28eaf531e1916a9771  progress/R30/semantic/pthread_cancel_probe.cpp
+acb3d524d3298d1a380d5874e3b5bb970ee8c56c295e49238cea1e29aeda6fd5  progress/R30/commands/039_build_semantic_libcxx_x86_64.full.log
+0fa4ddfc3c0ac71914c489f5ee10082d08b6147dbab52701dc82e2b9d670eb73  progress/R30/commands/041_run_semantic_libcxx_x86_64_native.log
+63ddfd2be0b580ed56baa37761cd016f4a45841ee476243d4df2bbe95aad503b  progress/R30/commands/046_run_semantic_revised_libcxx_x86_64_native.log
+#include <pthread.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+
+#include <cxxabi.h>
+
+static std::atomic<int> started{0};
+static std::atomic<int> destructor_count{0};
+static std::atomic<int> forced_guard_count{0};
+static std::atomic<int> catch_all_count{0};
+static std::atomic<int> returned_count{0};
+
+struct Cleanup {
+    ~Cleanup() {
+        ++destructor_count;
+        std::puts("EVENT destructor");
+    }
+};
+
+static void *worker(void *) {
+    Cleanup cleanup;
+    try {
+        started.store(1);
+        for (;;) {
+            pthread_testcancel();
+            usleep(1000);
+        }
+#if defined(__GLIBCXX__)
+    } catch (const __cxxabiv1::__forced_unwind &) {
+        ++forced_guard_count;
+        std::puts("EVENT forced_guard_rethrow");
+        throw;
+#endif
+    } catch (...) {
+#if defined(_LIBCPP_VERSION)
+        if (__cxxabiv1::__cxa_current_exception_type() == nullptr) {
+            ++forced_guard_count;
+            std::puts("EVENT foreign_guard_rethrow");
+            throw;
+        }
+#endif
+        ++catch_all_count;
+        std::puts("EVENT catch_all");
+    }
+    ++returned_count;
+    std::puts("EVENT worker_returned");
+    return nullptr;
+}
+
+int main() {
+    pthread_t thread{};
+    void *result = nullptr;
+    const int create_rc = pthread_create(&thread, nullptr, worker, nullptr);
+    if (create_rc != 0) {
+        std::printf("RESULT create_rc=%d\n", create_rc);
+        return 10;
+    }
+    while (started.load() == 0) {
+        usleep(1000);
+    }
+    const int cancel_rc = pthread_cancel(thread);
+    const int join_rc = pthread_join(thread, &result);
+    const bool canceled = result == PTHREAD_CANCELED;
+    std::printf(
+        "RESULT cancel_rc=%d join_rc=%d canceled=%d destructor=%d "
+        "forced_guard=%d catch_all=%d returned=%d\n",
+        cancel_rc, join_rc, canceled ? 1 : 0, destructor_count.load(),
+        forced_guard_count.load(), catch_all_count.load(),
+        returned_count.load());
+
+    const bool ok = cancel_rc == 0 && join_rc == 0 && canceled &&
+                    destructor_count.load() == 1 &&
+                    catch_all_count.load() == 0 && returned_count.load() == 0;
+    return ok ? 0 : 20;
+}
+PWD=/home/toolchain/development/libc++_replacement/codes
+COMMAND=gbs -c /home/toolchain/development/libc++_replacement/tmp/R30/gbs-semantic-libcxx-x86_64.conf build -A x86_64 -B /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R30-semantic-libcxx-x86_64-20260812-01 -C --debug --extra-packs libc++-devel\,libc++abi-devel\,libc++\,libc++abi --style git --no-patch-export --packaging-dir packaging --spec r30-pthread-cancel-probe.spec --commit HEAD /home/toolchain/development/libc++_replacement/tmp/R30/semantic-package 
+gbp:debug: ['git', 'rev-parse', '--is-bare-repository']
+gbp:debug: ['git', 'rev-parse', '--git-dir']
+gbp:debug: ['git', 'rev-parse', '--show-toplevel']
+gbs:info: generate repositories ...
+gbs:warning: No local package repository for arch x86_64
+gbs:debug: fetching http://127.0.0.1:18836/x86_64/repodata/repomd.xml => /var/tmp/toolchain-gbs/gbscache5fs538w3/repomd.xml
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc set\ -e\;\ mkdir\ -p\ tmp/R30/semantic-x86-extract\;\ cd\ tmp/R30/semantic-x86-extract\;\ rpm2cpio\ ../../GBS-ROOT/R30-semantic-libcxx-x86_64-20260812-01/local/repos/r30_semantic_libcxx_x86_64/x86_64/RPMS/r30-pthread-cancel-probe-1-1.x86_64.rpm\ \|\ cpio\ -idmu\;\ cd\ ../../..\;\ root=tmp/GBS-ROOT/R30-semantic-libcxx-x86_64-20260812-01/local/BUILD-ROOTS/scratch.x86_64.0\;\ \"\$root/lib64/ld-linux-x86-64.so.2\"\ --library-path\ \"\$root/usr/lib64:\$root/lib64\"\ tmp/R30/semantic-x86-extract/usr/bin/pthread_cancel_probe 
+29 blocks
+FATAL: exception not rethrown
+EXIT_CODE=134
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc set\ -e\;\ rpm=tmp/GBS-ROOT/R30-semantic-revised-libcxx-x86_64-20260812-01/local/repos/r30_semantic_libcxx_x86_64/x86_64/RPMS/r30-pthread-cancel-probe-1-1.x86_64.rpm\;\ run=tmp/R30/semantic-run/revised-libcxx-x86_64\;\ root=tmp/GBS-ROOT/R30-semantic-revised-libcxx-x86_64-20260812-01/local/BUILD-ROOTS/scratch.x86_64.0\;\ mkdir\ -p\ \"\$run\"\;\ \(cd\ \"\$run\"\ \&\&\ rpm2cpio\ \"\$OLDPWD/\$rpm\"\ \|\ cpio\ -idmv\)\;\ sha256sum\ \"\$rpm\"\ \"\$run/usr/bin/pthread_cancel_probe\"\;\ readelf\ -dW\ \"\$run/usr/bin/pthread_cancel_probe\"\;\ readelf\ --dyn-syms\ -W\ \"\$run/usr/bin/pthread_cancel_probe\"\ \|\ c++filt\ \|\ rg\ \"UND.\*\(_Unwind\|__cxa_\)\"\ \|\|\ true\;\ printf\ \"%s\\n\"\ \"RUN_COMMAND=\$root/lib64/ld-linux-x86-64.so.2\ --library-path\ \$root/usr/lib64:\$root/lib64\ \$run/usr/bin/pthread_cancel_probe\"\;\ \"\$root/lib64/ld-linux-x86-64.so.2\"\ --library-path\ \"\$root/usr/lib64:\$root/lib64\"\ \"\$run/usr/bin/pthread_cancel_probe\" 
+./usr/bin/pthread_cancel_probe
+29 blocks
+fc1e8ba2ce25ba7f972a1682d6e353f9a0fa9ace29bf0a0aea100b6bd45294aa  tmp/GBS-ROOT/R30-semantic-revised-libcxx-x86_64-20260812-01/local/repos/r30_semantic_libcxx_x86_64/x86_64/RPMS/r30-pthread-cancel-probe-1-1.x86_64.rpm
+f6871dafe4d5b36aaf9f8161da8215180e4a7ec28e924cd55e52136146203461  tmp/R30/semantic-run/revised-libcxx-x86_64/usr/bin/pthread_cancel_probe
+
+Dynamic section at offset 0x2dc0 contains 28 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libc++abi.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000c (INIT)               0x1000
+ 0x000000000000000d (FINI)               0x1448
+ 0x0000000000000019 (INIT_ARRAY)         0x3db0
+ 0x000000000000001b (INIT_ARRAYSZ)       8 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x3db8
+ 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x378
+ 0x0000000000000005 (STRTAB)             0x580
+ 0x0000000000000006 (SYMTAB)             0x3a0
+ 0x000000000000000a (STRSZ)              410 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000015 (DEBUG)              0x0
+ 0x0000000000000003 (PLTGOT)             0x3fe8
+ 0x0000000000000002 (PLTRELSZ)           312 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x8a0
+ 0x0000000000000007 (RELA)               0x7c8
+ 0x0000000000000008 (RELASZ)             216 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x000000006ffffffb (FLAGS_1)            Flags: PIE
+ 0x000000006ffffffe (VERNEED)            0x748
+ 0x000000006fffffff (VERNEEDNUM)         3
+ 0x000000006ffffff0 (VERSYM)             0x71a
+ 0x000000006ffffff9 (RELACOUNT)          3
+ 0x0000000000000000 (NULL)               0x0
+     9: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND __cxa_begin_catch@LLVM_22 (5)
+    11: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND __cxa_end_catch@LLVM_22 (5)
+    12: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND __cxa_current_exception_type@LLVM_22 (5)
+    15: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND __cxa_rethrow@LLVM_22 (5)
+    18: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND _Unwind_Resume@GCC_3.0 (6)
+    19: 0000000000000000     0 FUNC    WEAK   DEFAULT  UND __cxa_finalize@GLIBC_2.2.5 (4)
+RUN_COMMAND=tmp/GBS-ROOT/R30-semantic-revised-libcxx-x86_64-20260812-01/local/BUILD-ROOTS/scratch.x86_64.0/lib64/ld-linux-x86-64.so.2 --library-path tmp/GBS-ROOT/R30-semantic-revised-libcxx-x86_64-20260812-01/local/BUILD-ROOTS/scratch.x86_64.0/usr/lib64:tmp/GBS-ROOT/R30-semantic-revised-libcxx-x86_64-20260812-01/local/BUILD-ROOTS/scratch.x86_64.0/lib64 tmp/R30/semantic-run/revised-libcxx-x86_64/usr/bin/pthread_cancel_probe
+libc++abi: terminating due to uncaught foreign exception
+EXIT_CODE=134
+EXIT_CODE=0

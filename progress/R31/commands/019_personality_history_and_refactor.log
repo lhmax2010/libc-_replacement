@@ -1,0 +1,425 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc set\ -e\;\ printf\ \"##\ BLAME\ DESIGN\ COMMENT\\n\"\;\ git\ -C\ codes/llvm\ blame\ -L\ 642\,644\ --\ libcxxabi/src/cxa_personality.cpp\;\ printf\ \"##\ BLAME\ IMPLEMENTATION\\n\"\;\ git\ -C\ codes/llvm\ blame\ -L\ 806\,818\ --\ libcxxabi/src/cxa_personality.cpp\;\ printf\ \"##\ 2021\ REFACTOR\ METADATA\\n\"\;\ git\ -C\ codes/llvm\ show\ -s\ --format=fuller\ cfe9ccbddd98b55e49e46bb40877ece6a47a7625\;\ printf\ \"##\ 2021\ REFACTOR\ DIFF\\n\"\;\ git\ -C\ codes/llvm\ show\ --format=\ cfe9ccbddd98b55e49e46bb40877ece6a47a7625\ --\ libcxxabi/src/cxa_personality.cpp\;\ printf\ \"##\ PRE-REFACTOR\ RELEVANT\ BLOCK\\n\"\;\ git\ -C\ codes/llvm\ show\ cfe9ccbddd98b55e49e46bb40877ece6a47a7625\^:libcxxabi/src/cxa_personality.cpp\ \|\ nl\ -ba\ \|\ sed\ -n\ \"760\,900p\"\;\ printf\ \"##\ CURRENT\ UPSTREAM\ TAG\ REF\\n\"\;\ git\ -C\ codes/llvm\ rev-parse\ upstream/22.1.8\;\ git\ -C\ codes/llvm\ rev-parse\ upstream/22.1.8\^\{\}\;\ printf\ \"##\ REFACTOR\ IS\ ANCESTOR\ OF\ UPSTREAM\ 22.1.8\\n\"\;\ git\ -C\ codes/llvm\ merge-base\ --is-ancestor\ cfe9ccbddd98b55e49e46bb40877ece6a47a7625\ upstream/22.1.8\^\{\}\;\ printf\ \"ANCESTOR_EXIT=0\\n\"\;\ printf\ \"##\ CURRENT\ HEAD\\n\"\;\ git\ -C\ codes/llvm\ rev-parse\ HEAD 
+## BLAME DESIGN COMMENT
+c9204f6bedada (Howard Hinnant 2012-01-30 20:16:21 +0000 642)     3.  Scan for cleanups.  If a handler is found and this isn't forced unwind,
+c9204f6bedada (Howard Hinnant 2012-01-30 20:16:21 +0000 643)         then terminate, otherwise ignore the handler and keep looking for cleanup.
+c9204f6bedada (Howard Hinnant 2012-01-30 20:16:21 +0000 644)         If a cleanup is found, return _URC_HANDLER_FOUND, else return _URC_CONTINUE_UNWIND.
+## BLAME IMPLEMENTATION
+c9204f6bedada (Howard Hinnant 2012-01-30 20:16:21 +0000 806)                     if (catchType == 0)
+c9204f6bedada (Howard Hinnant 2012-01-30 20:16:21 +0000 807)                     {
+cfe9ccbddd98b (Fangrui Song   2021-01-21 15:19:22 -0800 808)                         // Found catch (...) catches everything, including
+cfe9ccbddd98b (Fangrui Song   2021-01-21 15:19:22 -0800 809)                         // foreign exceptions. This is search phase, cleanup
+cfe9ccbddd98b (Fangrui Song   2021-01-21 15:19:22 -0800 810)                         // phase with foreign exception, or forced unwinding.
+cfe9ccbddd98b (Fangrui Song   2021-01-21 15:19:22 -0800 811)                         assert(actions & (_UA_SEARCH_PHASE | _UA_HANDLER_FRAME |
+cfe9ccbddd98b (Fangrui Song   2021-01-21 15:19:22 -0800 812)                                           _UA_FORCE_UNWIND));
+cfe9ccbddd98b (Fangrui Song   2021-01-21 15:19:22 -0800 813)                         results.ttypeIndex = ttypeIndex;
+cfe9ccbddd98b (Fangrui Song   2021-01-21 15:19:22 -0800 814)                         results.actionRecord = actionRecord;
+cfe9ccbddd98b (Fangrui Song   2021-01-21 15:19:22 -0800 815)                         results.adjustedPtr =
+cfe9ccbddd98b (Fangrui Song   2021-01-21 15:19:22 -0800 816)                             get_thrown_object_ptr(unwind_exception);
+cfe9ccbddd98b (Fangrui Song   2021-01-21 15:19:22 -0800 817)                         results.reason = _URC_HANDLER_FOUND;
+cfe9ccbddd98b (Fangrui Song   2021-01-21 15:19:22 -0800 818)                         return;
+## 2021 REFACTOR METADATA
+commit cfe9ccbddd98b55e49e46bb40877ece6a47a7625
+Author:     Fangrui Song <i@maskray.me>
+AuthorDate: Thu Jan 21 15:19:22 2021 -0800
+Commit:     Fangrui Song <i@maskray.me>
+CommitDate: Thu Jan 21 15:19:23 2021 -0800
+
+    [libc++abi] Simplify scan_eh_tab
+    
+    1.
+    All `_URC_HANDLER_FOUND` return values need to set `landingPad`
+    and its value does not matter for `_URC_CONTINUE_UNWIND`. So we
+    can always set `landingPad` to unify code.
+    
+    2.
+    For an exception specification (`ttypeIndex < 0`), we can check `_UA_FORCE_UNWIND` first.
+    
+    3.
+    The so-called type 3 search (`actions & _UA_CLEANUP_PHASE && !(actions & _UA_HANDLER_FRAME)`)
+    is actually conceptually wrong.  For a catch handler or an unmatched dynamic
+    exception specification, `_UA_HANDLER_FOUND` should be returned immediately.  It
+    still appeared to work because the `ttypeIndex==0` case would return
+    `_UA_HANDLER_FOUND` at a later time.
+    
+    This patch fixes the conceptual error and simplifies the code by handling type 3
+    the same way as type 2 (which is also what libsupc++ does).
+    The only difference between phase 1 and phase 2 is what to do with a cleanup
+    (`actionEntry==0`, or a `ttypeIndex==0` is found in the action record chain):
+    phase 1 returns `_URC_CONTINUE_UNWIND` while phase 2 returns `_URC_HANDLER_FOUND`.
+    
+    Reviewed By: #libc_abi, compnerd
+    
+    Differential Revision: https://reviews.llvm.org/D93190
+## 2021 REFACTOR DIFF
+diff --git a/libcxxabi/src/cxa_personality.cpp b/libcxxabi/src/cxa_personality.cpp
+index 45639ec03bcd..81aa85165dd3 100644
+--- a/libcxxabi/src/cxa_personality.cpp
++++ b/libcxxabi/src/cxa_personality.cpp
+@@ -684,27 +684,21 @@ static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
+                 return;
+             }
+             landingPad = (uintptr_t)lpStart + landingPad;
++            results.landingPad = landingPad;
+ #else  // __USING_SJLJ_EXCEPTIONS__
+             ++landingPad;
+ #endif  // __USING_SJLJ_EXCEPTIONS__
+             if (actionEntry == 0)
+             {
+                 // Found a cleanup
+-                // If this is a type 1 or type 2 search, there are no handlers
+-                // If this is a type 3 search, you want to install the cleanup.
+-                if ((actions & _UA_CLEANUP_PHASE) && !(actions & _UA_HANDLER_FRAME))
+-                {
+-                    results.ttypeIndex = 0;  // Redundant but clarifying
+-                    results.landingPad = landingPad;
+-                    results.reason = _URC_HANDLER_FOUND;
+-                    return;
+-                }
+-                // No handler here
+-                results.reason = _URC_CONTINUE_UNWIND;
++                results.reason = actions & _UA_SEARCH_PHASE
++                                     ? _URC_CONTINUE_UNWIND
++                                     : _URC_HANDLER_FOUND;
+                 return;
+             }
+             // Convert 1-based byte offset into
+             const uint8_t* action = actionTableStart + (actionEntry - 1);
++            bool hasCleanup = false;
+             // Scan action entries until you find a matching handler, cleanup, or the end of action list
+             while (true)
+             {
+@@ -720,27 +714,17 @@ static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
+                                            native_exception, unwind_exception);
+                     if (catchType == 0)
+                     {
+-                        // Found catch (...) catches everything, including foreign exceptions
+-                        // If this is a type 1 search save state and return _URC_HANDLER_FOUND
+-                        // If this is a type 2 search save state and return _URC_HANDLER_FOUND
+-                        // If this is a type 3 search !_UA_FORCE_UNWIND, we should have found this in phase 1!
+-                        // If this is a type 3 search _UA_FORCE_UNWIND, ignore handler and continue scan
+-                        if ((actions & _UA_SEARCH_PHASE) || (actions & _UA_HANDLER_FRAME))
+-                        {
+-                            // Save state and return _URC_HANDLER_FOUND
+-                            results.ttypeIndex = ttypeIndex;
+-                            results.actionRecord = actionRecord;
+-                            results.landingPad = landingPad;
+-                            results.adjustedPtr = get_thrown_object_ptr(unwind_exception);
+-                            results.reason = _URC_HANDLER_FOUND;
+-                            return;
+-                        }
+-                        else if (!(actions & _UA_FORCE_UNWIND))
+-                        {
+-                            // It looks like the exception table has changed
+-                            //    on us.  Likely stack corruption!
+-                            call_terminate(native_exception, unwind_exception);
+-                        }
++                        // Found catch (...) catches everything, including
++                        // foreign exceptions. This is search phase, cleanup
++                        // phase with foreign exception, or forced unwinding.
++                        assert(actions & (_UA_SEARCH_PHASE | _UA_HANDLER_FRAME |
++                                          _UA_FORCE_UNWIND));
++                        results.ttypeIndex = ttypeIndex;
++                        results.actionRecord = actionRecord;
++                        results.adjustedPtr =
++                            get_thrown_object_ptr(unwind_exception);
++                        results.reason = _URC_HANDLER_FOUND;
++                        return;
+                     }
+                     // Else this is a catch (T) clause and will never
+                     //    catch a foreign exception
+@@ -757,36 +741,25 @@ static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
+                         }
+                         if (catchType->can_catch(excpType, adjustedPtr))
+                         {
+-                            // Found a matching handler
+-                            // If this is a type 1 search save state and return _URC_HANDLER_FOUND
+-                            // If this is a type 3 search and !_UA_FORCE_UNWIND, we should have found this in phase 1!
+-                            // If this is a type 3 search and _UA_FORCE_UNWIND, ignore handler and continue scan
+-                            if (actions & _UA_SEARCH_PHASE)
+-                            {
+-                                // Save state and return _URC_HANDLER_FOUND
+-                                results.ttypeIndex = ttypeIndex;
+-                                results.actionRecord = actionRecord;
+-                                results.landingPad = landingPad;
+-                                results.adjustedPtr = adjustedPtr;
+-                                results.reason = _URC_HANDLER_FOUND;
+-                                return;
+-                            }
+-                            else if (!(actions & _UA_FORCE_UNWIND))
+-                            {
+-                                // It looks like the exception table has changed
+-                                //    on us.  Likely stack corruption!
+-                                call_terminate(native_exception, unwind_exception);
+-                            }
++                            // Found a matching handler. This is either search
++                            // phase or forced unwinding.
++                            assert(actions &
++                                   (_UA_SEARCH_PHASE | _UA_FORCE_UNWIND));
++                            results.ttypeIndex = ttypeIndex;
++                            results.actionRecord = actionRecord;
++                            results.adjustedPtr = adjustedPtr;
++                            results.reason = _URC_HANDLER_FOUND;
++                            return;
+                         }
+                     }
+                     // Scan next action ...
+                 }
+                 else if (ttypeIndex < 0)
+                 {
+-                    // Found an exception spec.  If this is a foreign exception,
+-                    //   it is always caught.
+-                    if (native_exception)
+-                    {
++                    // Found an exception specification.
++                    if (actions & _UA_FORCE_UNWIND) {
++                        // Skip if forced unwinding.
++                    } else if (native_exception) {
+                         // Does the exception spec catch this native exception?
+                         __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+                         void* adjustedPtr = get_thrown_object_ptr(unwind_exception);
+@@ -801,77 +774,38 @@ static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
+                                                      ttypeEncoding, excpType,
+                                                      adjustedPtr, unwind_exception))
+                         {
+-                            // native exception caught by exception spec
+-                            // If this is a type 1 search, save state and return _URC_HANDLER_FOUND
+-                            // If this is a type 3 search !_UA_FORCE_UNWIND, we should have found this in phase 1!
+-                            // If this is a type 3 search _UA_FORCE_UNWIND, ignore handler and continue scan
+-                            if (actions & _UA_SEARCH_PHASE)
+-                            {
+-                                // Save state and return _URC_HANDLER_FOUND
+-                                results.ttypeIndex = ttypeIndex;
+-                                results.actionRecord = actionRecord;
+-                                results.landingPad = landingPad;
+-                                results.adjustedPtr = adjustedPtr;
+-                                results.reason = _URC_HANDLER_FOUND;
+-                                return;
+-                            }
+-                            else if (!(actions & _UA_FORCE_UNWIND))
+-                            {
+-                                // It looks like the exception table has changed
+-                                //    on us.  Likely stack corruption!
+-                                call_terminate(native_exception, unwind_exception);
+-                            }
+-                        }
+-                    }
+-                    else
+-                    {
+-                        // foreign exception caught by exception spec
+-                        // If this is a type 1 search, save state and return _URC_HANDLER_FOUND
+-                        // If this is a type 2 search, save state and return _URC_HANDLER_FOUND
+-                        // If this is a type 3 search !_UA_FORCE_UNWIND, we should have found this in phase 1!
+-                        // If this is a type 3 search _UA_FORCE_UNWIND, ignore handler and continue scan
+-                        if ((actions & _UA_SEARCH_PHASE) || (actions & _UA_HANDLER_FRAME))
+-                        {
+-                            // Save state and return _URC_HANDLER_FOUND
++                            // Native exception caught by exception
++                            // specification.
++                            assert(actions & _UA_SEARCH_PHASE);
+                             results.ttypeIndex = ttypeIndex;
+                             results.actionRecord = actionRecord;
+-                            results.landingPad = landingPad;
+-                            results.adjustedPtr = get_thrown_object_ptr(unwind_exception);
++                            results.adjustedPtr = adjustedPtr;
+                             results.reason = _URC_HANDLER_FOUND;
+                             return;
+                         }
+-                        else if (!(actions & _UA_FORCE_UNWIND))
+-                        {
+-                            // It looks like the exception table has changed
+-                            //    on us.  Likely stack corruption!
+-                            call_terminate(native_exception, unwind_exception);
+-                        }
+-                    }
+-                    // Scan next action ...
+-                }
+-                else  // ttypeIndex == 0
+-                {
+-                    // Found a cleanup
+-                    // If this is a type 1 search, ignore it and continue scan
+-                    // If this is a type 2 search, ignore it and continue scan
+-                    // If this is a type 3 search, save state and return _URC_HANDLER_FOUND
+-                    if ((actions & _UA_CLEANUP_PHASE) && !(actions & _UA_HANDLER_FRAME))
+-                    {
+-                        // Save state and return _URC_HANDLER_FOUND
++                    } else {
++                        // foreign exception caught by exception spec
+                         results.ttypeIndex = ttypeIndex;
+                         results.actionRecord = actionRecord;
+-                        results.landingPad = landingPad;
+-                        results.adjustedPtr = get_thrown_object_ptr(unwind_exception);
++                        results.adjustedPtr =
++                            get_thrown_object_ptr(unwind_exception);
+                         results.reason = _URC_HANDLER_FOUND;
+                         return;
+                     }
++                    // Scan next action ...
++                } else {
++                    hasCleanup = true;
+                 }
+                 const uint8_t* temp = action;
+                 int64_t actionOffset = readSLEB128(&temp);
+                 if (actionOffset == 0)
+                 {
+-                    // End of action list, no matching handler or cleanup found
+-                    results.reason = _URC_CONTINUE_UNWIND;
++                    // End of action list. If this is phase 2 and we have found
++                    // a cleanup (ttypeIndex=0), return _URC_HANDLER_FOUND;
++                    // otherwise return _URC_CONTINUE_UNWIND.
++                    results.reason = hasCleanup && actions & _UA_CLEANUP_PHASE
++                                         ? _URC_HANDLER_FOUND
++                                         : _URC_CONTINUE_UNWIND;
+                     return;
+                 }
+                 // Go to next action
+## PRE-REFACTOR RELEVANT BLOCK
+   760	                            // Found a matching handler
+   761	                            // If this is a type 1 search save state and return _URC_HANDLER_FOUND
+   762	                            // If this is a type 3 search and !_UA_FORCE_UNWIND, we should have found this in phase 1!
+   763	                            // If this is a type 3 search and _UA_FORCE_UNWIND, ignore handler and continue scan
+   764	                            if (actions & _UA_SEARCH_PHASE)
+   765	                            {
+   766	                                // Save state and return _URC_HANDLER_FOUND
+   767	                                results.ttypeIndex = ttypeIndex;
+   768	                                results.actionRecord = actionRecord;
+   769	                                results.landingPad = landingPad;
+   770	                                results.adjustedPtr = adjustedPtr;
+   771	                                results.reason = _URC_HANDLER_FOUND;
+   772	                                return;
+   773	                            }
+   774	                            else if (!(actions & _UA_FORCE_UNWIND))
+   775	                            {
+   776	                                // It looks like the exception table has changed
+   777	                                //    on us.  Likely stack corruption!
+   778	                                call_terminate(native_exception, unwind_exception);
+   779	                            }
+   780	                        }
+   781	                    }
+   782	                    // Scan next action ...
+   783	                }
+   784	                else if (ttypeIndex < 0)
+   785	                {
+   786	                    // Found an exception spec.  If this is a foreign exception,
+   787	                    //   it is always caught.
+   788	                    if (native_exception)
+   789	                    {
+   790	                        // Does the exception spec catch this native exception?
+   791	                        __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+   792	                        void* adjustedPtr = get_thrown_object_ptr(unwind_exception);
+   793	                        const __shim_type_info* excpType =
+   794	                            static_cast<const __shim_type_info*>(exception_header->exceptionType);
+   795	                        if (adjustedPtr == 0 || excpType == 0)
+   796	                        {
+   797	                            // Something very bad happened
+   798	                            call_terminate(native_exception, unwind_exception);
+   799	                        }
+   800	                        if (exception_spec_can_catch(ttypeIndex, classInfo,
+   801	                                                     ttypeEncoding, excpType,
+   802	                                                     adjustedPtr, unwind_exception))
+   803	                        {
+   804	                            // native exception caught by exception spec
+   805	                            // If this is a type 1 search, save state and return _URC_HANDLER_FOUND
+   806	                            // If this is a type 3 search !_UA_FORCE_UNWIND, we should have found this in phase 1!
+   807	                            // If this is a type 3 search _UA_FORCE_UNWIND, ignore handler and continue scan
+   808	                            if (actions & _UA_SEARCH_PHASE)
+   809	                            {
+   810	                                // Save state and return _URC_HANDLER_FOUND
+   811	                                results.ttypeIndex = ttypeIndex;
+   812	                                results.actionRecord = actionRecord;
+   813	                                results.landingPad = landingPad;
+   814	                                results.adjustedPtr = adjustedPtr;
+   815	                                results.reason = _URC_HANDLER_FOUND;
+   816	                                return;
+   817	                            }
+   818	                            else if (!(actions & _UA_FORCE_UNWIND))
+   819	                            {
+   820	                                // It looks like the exception table has changed
+   821	                                //    on us.  Likely stack corruption!
+   822	                                call_terminate(native_exception, unwind_exception);
+   823	                            }
+   824	                        }
+   825	                    }
+   826	                    else
+   827	                    {
+   828	                        // foreign exception caught by exception spec
+   829	                        // If this is a type 1 search, save state and return _URC_HANDLER_FOUND
+   830	                        // If this is a type 2 search, save state and return _URC_HANDLER_FOUND
+   831	                        // If this is a type 3 search !_UA_FORCE_UNWIND, we should have found this in phase 1!
+   832	                        // If this is a type 3 search _UA_FORCE_UNWIND, ignore handler and continue scan
+   833	                        if ((actions & _UA_SEARCH_PHASE) || (actions & _UA_HANDLER_FRAME))
+   834	                        {
+   835	                            // Save state and return _URC_HANDLER_FOUND
+   836	                            results.ttypeIndex = ttypeIndex;
+   837	                            results.actionRecord = actionRecord;
+   838	                            results.landingPad = landingPad;
+   839	                            results.adjustedPtr = get_thrown_object_ptr(unwind_exception);
+   840	                            results.reason = _URC_HANDLER_FOUND;
+   841	                            return;
+   842	                        }
+   843	                        else if (!(actions & _UA_FORCE_UNWIND))
+   844	                        {
+   845	                            // It looks like the exception table has changed
+   846	                            //    on us.  Likely stack corruption!
+   847	                            call_terminate(native_exception, unwind_exception);
+   848	                        }
+   849	                    }
+   850	                    // Scan next action ...
+   851	                }
+   852	                else  // ttypeIndex == 0
+   853	                {
+   854	                    // Found a cleanup
+   855	                    // If this is a type 1 search, ignore it and continue scan
+   856	                    // If this is a type 2 search, ignore it and continue scan
+   857	                    // If this is a type 3 search, save state and return _URC_HANDLER_FOUND
+   858	                    if ((actions & _UA_CLEANUP_PHASE) && !(actions & _UA_HANDLER_FRAME))
+   859	                    {
+   860	                        // Save state and return _URC_HANDLER_FOUND
+   861	                        results.ttypeIndex = ttypeIndex;
+   862	                        results.actionRecord = actionRecord;
+   863	                        results.landingPad = landingPad;
+   864	                        results.adjustedPtr = get_thrown_object_ptr(unwind_exception);
+   865	                        results.reason = _URC_HANDLER_FOUND;
+   866	                        return;
+   867	                    }
+   868	                }
+   869	                const uint8_t* temp = action;
+   870	                int64_t actionOffset = readSLEB128(&temp);
+   871	                if (actionOffset == 0)
+   872	                {
+   873	                    // End of action list, no matching handler or cleanup found
+   874	                    results.reason = _URC_CONTINUE_UNWIND;
+   875	                    return;
+   876	                }
+   877	                // Go to next action
+   878	                action += actionOffset;
+   879	            }  // there is no break out of this loop, only return
+   880	        }
+   881	#ifndef __USING_SJLJ_EXCEPTIONS__
+   882	        else if (ipOffset < start)
+   883	        {
+   884	            // There is no call site for this ip
+   885	            // Something bad has happened.  We should never get here.
+   886	            // Possible stack corruption.
+   887	            call_terminate(native_exception, unwind_exception);
+   888	        }
+   889	#endif  // !__USING_SJLJ_EXCEPTIONS__
+   890	    }  // there might be some tricky cases which break out of this loop
+   891	
+   892	    // It is possible that no eh table entry specify how to handle
+   893	    // this exception. By spec, terminate it immediately.
+   894	    call_terminate(native_exception, unwind_exception);
+   895	}
+   896	
+   897	// public API
+   898	
+   899	/*
+   900	The personality function branches on actions like so:
+## CURRENT UPSTREAM TAG REF
+1334c36cbc5df6b3ec716fb797649e0e0d8cd7c1
+ca7933e47d3a3451d81e72ac174dcb5aa28b59d1
+## REFACTOR IS ANCESTOR OF UPSTREAM 22.1.8
+ANCESTOR_EXIT=0
+## CURRENT HEAD
+5ed6c77278dfa7a470667cf1a137723d3c96fe60
+EXIT_CODE=0

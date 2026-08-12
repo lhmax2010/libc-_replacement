@@ -1,0 +1,186 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc set\ -e\;\ git\ -C\ tmp/R30/semantic-package\ log\ --oneline\ --decorate\ --all\;\ for\ c\ in\ \$\(git\ -C\ tmp/R30/semantic-package\ rev-list\ --reverse\ HEAD\)\;\ do\ printf\ \"=====\ %s\ =====\\n\"\ \"\$c\"\;\ git\ -C\ tmp/R30/semantic-package\ show\ \"\$c:pthread_cancel_probe.cpp\"\ \|\ sha256sum\;\ git\ -C\ tmp/R30/semantic-package\ show\ \"\$c:pthread_cancel_probe.cpp\"\ \|\ sed\ -n\ \"1\,150p\"\;\ done\;\ printf\ \"NOEXCEPT_OCCURRENCES\\n\"\;\ rg\ -n\ \"noexcept\|std::thread\|pthread_create\|pthread_setcanceltype\|pthread_testcancel\|catch\"\ progress/R30/semantic/pthread_cancel_probe.cpp\;\ printf\ \"R30_BUILD_COMMAND\\n\"\;\ rg\ -n\ \"clang\\+\\+.\*pthread_cancel_probe\"\ progress/R30/commands/039_build_semantic_libcxx_x86_64.full.log\;\ printf\ \"R30_EXEC_COMMAND\\n\"\;\ rg\ -n\ \"RUN_COMMAND=\|qemu\|ld-linux\|EXIT_CODE\"\ progress/R30/commands/041_run_semantic_libcxx_x86_64_native.log\;\ printf\ \"HOST_TOOLS\\n\"\;\ uname\ -a\;\ command\ -v\ g++\ \|\|\ true\;\ g++\ --version\ \|\ head\ -2\ \|\|\ true\;\ command\ -v\ clang++\ \|\|\ true\;\ clang++\ --version\ \|\ head\ -3\ \|\|\ true\;\ command\ -v\ gdb\ \|\|\ true\;\ gdb\ --version\ \|\ head\ -2\ \|\|\ true\;\ ulimit\ -c 
+a0ad4e5 (HEAD -> master) R30: distinguish libc++abi foreign forced unwind
+9661e46 R30 pthread cancellation probe
+===== 9661e4639a96dc3a58022025bc33a2c9d1c6f08b =====
+7b9c41e4c6668846c128c1e62a4e870898f356dbdc7c651f3226e161b8d07053  -
+#include <pthread.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+
+#if defined(__GLIBCXX__)
+#include <cxxabi.h>
+#endif
+
+static std::atomic<int> started{0};
+static std::atomic<int> destructor_count{0};
+static std::atomic<int> forced_guard_count{0};
+static std::atomic<int> catch_all_count{0};
+static std::atomic<int> returned_count{0};
+
+struct Cleanup {
+    ~Cleanup() {
+        ++destructor_count;
+        std::puts("EVENT destructor");
+    }
+};
+
+static void *worker(void *) {
+    Cleanup cleanup;
+    try {
+        started.store(1);
+        for (;;) {
+            pthread_testcancel();
+            usleep(1000);
+        }
+#if defined(__GLIBCXX__)
+    } catch (const __cxxabiv1::__forced_unwind &) {
+        ++forced_guard_count;
+        std::puts("EVENT forced_guard_rethrow");
+        throw;
+#endif
+    } catch (...) {
+        ++catch_all_count;
+        std::puts("EVENT catch_all");
+    }
+    ++returned_count;
+    std::puts("EVENT worker_returned");
+    return nullptr;
+}
+
+int main() {
+    pthread_t thread{};
+    void *result = nullptr;
+    const int create_rc = pthread_create(&thread, nullptr, worker, nullptr);
+    if (create_rc != 0) {
+        std::printf("RESULT create_rc=%d\n", create_rc);
+        return 10;
+    }
+    while (started.load() == 0) {
+        usleep(1000);
+    }
+    const int cancel_rc = pthread_cancel(thread);
+    const int join_rc = pthread_join(thread, &result);
+    const bool canceled = result == PTHREAD_CANCELED;
+    std::printf(
+        "RESULT cancel_rc=%d join_rc=%d canceled=%d destructor=%d "
+        "forced_guard=%d catch_all=%d returned=%d\n",
+        cancel_rc, join_rc, canceled ? 1 : 0, destructor_count.load(),
+        forced_guard_count.load(), catch_all_count.load(),
+        returned_count.load());
+
+    const bool ok = cancel_rc == 0 && join_rc == 0 && canceled &&
+                    destructor_count.load() == 1 &&
+                    catch_all_count.load() == 0 && returned_count.load() == 0;
+    return ok ? 0 : 20;
+}
+===== a0ad4e50147fa4d9ee8e7798fbaae7547f74ecc3 =====
+0b4af85f5a83a9cae69fdedf96fb9dbf0124f5a09214cf28eaf531e1916a9771  -
+#include <pthread.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+
+#include <cxxabi.h>
+
+static std::atomic<int> started{0};
+static std::atomic<int> destructor_count{0};
+static std::atomic<int> forced_guard_count{0};
+static std::atomic<int> catch_all_count{0};
+static std::atomic<int> returned_count{0};
+
+struct Cleanup {
+    ~Cleanup() {
+        ++destructor_count;
+        std::puts("EVENT destructor");
+    }
+};
+
+static void *worker(void *) {
+    Cleanup cleanup;
+    try {
+        started.store(1);
+        for (;;) {
+            pthread_testcancel();
+            usleep(1000);
+        }
+#if defined(__GLIBCXX__)
+    } catch (const __cxxabiv1::__forced_unwind &) {
+        ++forced_guard_count;
+        std::puts("EVENT forced_guard_rethrow");
+        throw;
+#endif
+    } catch (...) {
+#if defined(_LIBCPP_VERSION)
+        if (__cxxabiv1::__cxa_current_exception_type() == nullptr) {
+            ++forced_guard_count;
+            std::puts("EVENT foreign_guard_rethrow");
+            throw;
+        }
+#endif
+        ++catch_all_count;
+        std::puts("EVENT catch_all");
+    }
+    ++returned_count;
+    std::puts("EVENT worker_returned");
+    return nullptr;
+}
+
+int main() {
+    pthread_t thread{};
+    void *result = nullptr;
+    const int create_rc = pthread_create(&thread, nullptr, worker, nullptr);
+    if (create_rc != 0) {
+        std::printf("RESULT create_rc=%d\n", create_rc);
+        return 10;
+    }
+    while (started.load() == 0) {
+        usleep(1000);
+    }
+    const int cancel_rc = pthread_cancel(thread);
+    const int join_rc = pthread_join(thread, &result);
+    const bool canceled = result == PTHREAD_CANCELED;
+    std::printf(
+        "RESULT cancel_rc=%d join_rc=%d canceled=%d destructor=%d "
+        "forced_guard=%d catch_all=%d returned=%d\n",
+        cancel_rc, join_rc, canceled ? 1 : 0, destructor_count.load(),
+        forced_guard_count.load(), catch_all_count.load(),
+        returned_count.load());
+
+    const bool ok = cancel_rc == 0 && join_rc == 0 && canceled &&
+                    destructor_count.load() == 1 &&
+                    catch_all_count.load() == 0 && returned_count.load() == 0;
+    return ok ? 0 : 20;
+}
+NOEXCEPT_OCCURRENCES
+13:static std::atomic<int> catch_all_count{0};
+28:            pthread_testcancel();
+32:    } catch (const __cxxabiv1::__forced_unwind &) {
+37:    } catch (...) {
+45:        ++catch_all_count;
+46:        std::puts("EVENT catch_all");
+56:    const int create_rc = pthread_create(&thread, nullptr, worker, nullptr);
+69:        "forced_guard=%d catch_all=%d returned=%d\n",
+71:        forced_guard_count.load(), catch_all_count.load(),
+76:                    catch_all_count.load() == 0 && returned_count.load() == 0;
+R30_BUILD_COMMAND
+555:[   48s] + x86_64-tizen-linux-gnu-clang++ -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument -momit-leaf-frame-pointer -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -fdiagnostics-color=never -m64 -march=nehalem -msse4.2 -mfpmath=sse -fasynchronous-unwind-tables -fno-omit-frame-pointer -g -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument -momit-leaf-frame-pointer -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -fdiagnostics-color=never -m64 -march=nehalem -msse4.2 -mfpmath=sse -fasynchronous-unwind-tables -fno-omit-frame-pointer -g -stdlib=libc++ -std=c++17 -pthread pthread_cancel_probe.cpp -o pthread_cancel_probe -Wl,-z,relro,--as-needed -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed
+R30_EXEC_COMMAND
+2:COMMAND=bash -lc set\ -e\;\ mkdir\ -p\ tmp/R30/semantic-x86-extract\;\ cd\ tmp/R30/semantic-x86-extract\;\ rpm2cpio\ ../../GBS-ROOT/R30-semantic-libcxx-x86_64-20260812-01/local/repos/r30_semantic_libcxx_x86_64/x86_64/RPMS/r30-pthread-cancel-probe-1-1.x86_64.rpm\ \|\ cpio\ -idmu\;\ cd\ ../../..\;\ root=tmp/GBS-ROOT/R30-semantic-libcxx-x86_64-20260812-01/local/BUILD-ROOTS/scratch.x86_64.0\;\ \"\$root/lib64/ld-linux-x86-64.so.2\"\ --library-path\ \"\$root/usr/lib64:\$root/lib64\"\ tmp/R30/semantic-x86-extract/usr/bin/pthread_cancel_probe 
+5:EXIT_CODE=134
+HOST_TOOLS
+Linux toolchain-2026 6.17.0-1030-oem #30-Ubuntu SMP PREEMPT_DYNAMIC Thu Jul 16 15:01:53 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+/usr/bin/g++
+g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Copyright (C) 2023 Free Software Foundation, Inc.
+bash: line 1: clang++: command not found
+/usr/bin/gdb
+GNU gdb (Ubuntu 15.1-1ubuntu1~24.04.1) 15.1
+Copyright (C) 2024 Free Software Foundation, Inc.
+0
+EXIT_CODE=0

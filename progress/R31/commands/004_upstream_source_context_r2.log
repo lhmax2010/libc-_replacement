@@ -1,0 +1,559 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc printf\ \"LIBCXX_PROXY_CONTEXT\\n\"\;\ nl\ -ba\ codes/llvm/libcxx/include/__thread/thread.h\ \|\ sed\ -n\ \"145\,205p\"\;\ printf\ \"PERSONALITY_FORCE_UNWIND_MATCHES\\n\"\;\ rg\ -n\ \"_UA_FORCE_UNWIND\|case\ 3\"\ codes/llvm/libcxxabi/src/cxa_personality.cpp\;\ printf\ \"PERSONALITY_CONTEXT\\n\"\;\ nl\ -ba\ codes/llvm/libcxxabi/src/cxa_personality.cpp\ \|\ sed\ -n\ \"590\,730p\"\;\ printf\ \"THREAD_CC_CANDIDATES\\n\"\;\ rg\ --files\ codes\ /usr/src\ 2\>/dev/null\ \|\ rg\ \"\(\^\|/\)thread\\.cc\$\|libstdc\\+\\+.\*thread\"\ \|\ head\ -100\;\ printf\ \"GNU_FORCED_CONTEXT\\n\"\;\ rg\ -n\ -C\ 12\ \"__forced_unwind\"\ codes/gcc\*\ /usr/include/c++/13\ 2\>/dev/null\ \|\ head\ -240 
+LIBCXX_PROXY_CONTEXT
+   145	  // Since various flags in the output stream can affect how the
+   146	  // thread id is represented (e.g. numpunct or showbase), we
+   147	  // use a temporary stream instead and just output the thread
+   148	  // id representation as a string.
+   149	
+   150	  basic_ostringstream<_CharT, _Traits> __sstr;
+   151	  __sstr.imbue(locale::classic());
+   152	  __sstr << __id.__id_;
+   153	  return __os << __sstr.str();
+   154	}
+   155	#  endif // _LIBCPP_HAS_LOCALIZATION
+   156	
+   157	#  ifndef _LIBCPP_CXX03_LANG
+   158	
+   159	template <class _TSp, class _Fp, class... _Args, size_t... _Indices>
+   160	inline _LIBCPP_HIDE_FROM_ABI void __thread_execute(tuple<_TSp, _Fp, _Args...>& __t, __index_sequence<_Indices...>) {
+   161	  std::__invoke(std::move(std::get<_Indices + 1>(__t))...);
+   162	}
+   163	
+   164	template <class _Fp>
+   165	_LIBCPP_HIDE_FROM_ABI void* __thread_proxy(void* __vp) {
+   166	  // _Fp = tuple< unique_ptr<__thread_struct>, Functor, Args...>
+   167	  unique_ptr<_Fp> __p(static_cast<_Fp*>(__vp));
+   168	  __thread_local_data().set_pointer(std::get<0>(*__p.get()).release());
+   169	  std::__thread_execute(*__p.get(), __make_index_sequence<tuple_size<_Fp>::value - 1>());
+   170	  return nullptr;
+   171	}
+   172	
+   173	#  else // _LIBCPP_CXX03_LANG
+   174	
+   175	template <class _Fp>
+   176	struct __thread_invoke_pair {
+   177	  // This type is used to pass memory for thread local storage and a functor
+   178	  // to a newly created thread because std::pair doesn't work with
+   179	  // std::unique_ptr in C++03.
+   180	  _LIBCPP_HIDE_FROM_ABI __thread_invoke_pair(_Fp& __f) : __tsp_(new __thread_struct), __fn_(__f) {}
+   181	  unique_ptr<__thread_struct> __tsp_;
+   182	  _Fp __fn_;
+   183	};
+   184	
+   185	template <class _Fp>
+   186	_LIBCPP_HIDE_FROM_ABI void* __thread_proxy_cxx03(void* __vp) {
+   187	  unique_ptr<_Fp> __p(static_cast<_Fp*>(__vp));
+   188	  __thread_local_data().set_pointer(__p->__tsp_.release());
+   189	  (__p->__fn_)();
+   190	  return nullptr;
+   191	}
+   192	
+   193	#  endif // _LIBCPP_CXX03_LANG
+   194	
+   195	class _LIBCPP_EXPORTED_FROM_ABI thread {
+   196	  __libcpp_thread_t __t_;
+   197	
+   198	  thread(const thread&);
+   199	  thread& operator=(const thread&);
+   200	
+   201	public:
+   202	  typedef __thread_id id;
+   203	  typedef __libcpp_thread_t native_handle_type;
+   204	
+   205	  _LIBCPP_HIDE_FROM_ABI thread() _NOEXCEPT : __t_(_LIBCPP_NULL_THREAD) {}
+PERSONALITY_FORCE_UNWIND_MATCHES
+665:        if (actions & (_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME | _UA_FORCE_UNWIND))
+675:        if ((actions & _UA_HANDLER_FRAME) && (actions & _UA_FORCE_UNWIND))
+678:            // If _UA_FORCE_UNWIND is set, phase 1 shouldn't have happened.
+812:                                          _UA_FORCE_UNWIND));
+838:                                   (_UA_SEARCH_PHASE | _UA_FORCE_UNWIND));
+851:                    if (actions & _UA_FORCE_UNWIND) {
+930:    If _UA_CLEANUP_PHASE or _UA_HANDLER_FRAME or _UA_FORCE_UNWIND there's
+950:        If _UA_FORCE_UNWIND
+1250:              static_cast<_Unwind_Action>(_UA_CLEANUP_PHASE | _UA_FORCE_UNWIND),
+PERSONALITY_CONTEXT
+   590	                                 //        _URC_HANDLER_FOUND
+   591	};
+   592	
+   593	}  // unnamed namespace
+   594	
+   595	static
+   596	void
+   597	set_registers(_Unwind_Exception* unwind_exception, _Unwind_Context* context,
+   598	              const scan_results& results)
+   599	{
+   600	#if defined(__USING_SJLJ_EXCEPTIONS__) || defined(__WASM_EXCEPTIONS__)
+   601	#define __builtin_eh_return_data_regno(regno) regno
+   602	#elif defined(__ibmxl__)
+   603	// IBM xlclang++ compiler does not support __builtin_eh_return_data_regno.
+   604	#define __builtin_eh_return_data_regno(regno) regno + 3
+   605	#endif
+   606	  _Unwind_SetGR(context, __builtin_eh_return_data_regno(0),
+   607	                reinterpret_cast<uintptr_t>(unwind_exception));
+   608	  _Unwind_SetGR(context, __builtin_eh_return_data_regno(1),
+   609	                static_cast<uintptr_t>(results.ttypeIndex));
+   610	#if __has_feature(ptrauth_calls)
+   611	  auto stackPointer = _Unwind_GetGR(context, UNW_REG_SP);
+   612	  // We manually re-sign the IP as the __ptrauth qualifiers cannot
+   613	  // express the required relationship with the destination address
+   614	  const auto existingDiscriminator =
+   615	      ptrauth_blend_discriminator(&results.landingPad,
+   616	                                  __ptrauth_scan_results_landingpad_disc);
+   617	  unw_word_t newIP /* opaque __ptrauth(ptrauth_key_return_address, stackPointer, 0) */ =
+   618	      (unw_word_t)ptrauth_auth_and_resign(*(void* const*)&results.landingPad,
+   619	                                          __ptrauth_scan_results_landingpad_key,
+   620	                                          existingDiscriminator,
+   621	                                          ptrauth_key_return_address,
+   622	                                          stackPointer);
+   623	  _Unwind_SetIP(context, newIP);
+   624	#else
+   625	  _Unwind_SetIP(context, results.landingPad);
+   626	#endif
+   627	}
+   628	
+   629	/*
+   630	    There are 3 types of scans needed:
+   631	
+   632	    1.  Scan for handler with native or foreign exception.  If handler found,
+   633	        save state and return _URC_HANDLER_FOUND, else return _URC_CONTINUE_UNWIND.
+   634	        May also report an error on invalid input.
+   635	        May terminate for invalid exception table.
+   636	        _UA_SEARCH_PHASE
+   637	
+   638	    2.  Scan for handler with foreign exception.  Must return _URC_HANDLER_FOUND,
+   639	        or call terminate.
+   640	        _UA_CLEANUP_PHASE && _UA_HANDLER_FRAME && !native_exception
+   641	
+   642	    3.  Scan for cleanups.  If a handler is found and this isn't forced unwind,
+   643	        then terminate, otherwise ignore the handler and keep looking for cleanup.
+   644	        If a cleanup is found, return _URC_HANDLER_FOUND, else return _URC_CONTINUE_UNWIND.
+   645	        May also report an error on invalid input.
+   646	        May terminate for invalid exception table.
+   647	        _UA_CLEANUP_PHASE && !_UA_HANDLER_FRAME
+   648	*/
+   649	
+   650	static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
+   651	                        bool native_exception,
+   652	                        _Unwind_Exception *unwind_exception,
+   653	                        _Unwind_Context *context) {
+   654	    // Initialize results to found nothing but an error
+   655	    results.ttypeIndex = 0;
+   656	    results.actionRecord = 0;
+   657	    results.languageSpecificData = 0;
+   658	    results.landingPad = 0;
+   659	    results.adjustedPtr = 0;
+   660	    results.reason = _URC_FATAL_PHASE1_ERROR;
+   661	    // Check for consistent actions
+   662	    if (actions & _UA_SEARCH_PHASE)
+   663	    {
+   664	        // Do Phase 1
+   665	        if (actions & (_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME | _UA_FORCE_UNWIND))
+   666	        {
+   667	            // None of these flags should be set during Phase 1
+   668	            //   Client error
+   669	            results.reason = _URC_FATAL_PHASE1_ERROR;
+   670	            return;
+   671	        }
+   672	    }
+   673	    else if (actions & _UA_CLEANUP_PHASE)
+   674	    {
+   675	        if ((actions & _UA_HANDLER_FRAME) && (actions & _UA_FORCE_UNWIND))
+   676	        {
+   677	            // _UA_HANDLER_FRAME should only be set if phase 1 found a handler.
+   678	            // If _UA_FORCE_UNWIND is set, phase 1 shouldn't have happened.
+   679	            //    Client error
+   680	            results.reason = _URC_FATAL_PHASE2_ERROR;
+   681	            return;
+   682	        }
+   683	    }
+   684	    else // Neither _UA_SEARCH_PHASE nor _UA_CLEANUP_PHASE is set
+   685	    {
+   686	        // One of these should be set.
+   687	        //   Client error
+   688	        results.reason = _URC_FATAL_PHASE1_ERROR;
+   689	        return;
+   690	    }
+   691	    // Start scan by getting exception table address.
+   692	    const uint8_t *lsda = (const uint8_t *)_Unwind_GetLanguageSpecificData(context);
+   693	    if (lsda == 0)
+   694	    {
+   695	        // There is no exception table
+   696	        results.reason = _URC_CONTINUE_UNWIND;
+   697	        return;
+   698	    }
+   699	    results.languageSpecificData = lsda;
+   700	#if defined(_AIX)
+   701	    uintptr_t base = _Unwind_GetDataRelBase(context);
+   702	#else
+   703	    uintptr_t base = 0;
+   704	#endif
+   705	    // Get the current instruction pointer and offset it before next
+   706	    // instruction in the current frame which threw the exception.
+   707	    uintptr_t ip = _Unwind_GetIP(context) - 1;
+   708	    // Get beginning current frame's code (as defined by the
+   709	    // emitted dwarf code)
+   710	    uintptr_t funcStart = _Unwind_GetRegionStart(context);
+   711	#if defined(__USING_SJLJ_EXCEPTIONS__) || defined(__WASM_EXCEPTIONS__)
+   712	    if (ip == uintptr_t(-1))
+   713	    {
+   714	        // no action
+   715	        results.reason = _URC_CONTINUE_UNWIND;
+   716	        return;
+   717	    }
+   718	    else if (ip == 0)
+   719	        call_terminate(native_exception, unwind_exception);
+   720	    // ip is 1-based index into call site table
+   721	#else  // !__USING_SJLJ_EXCEPTIONS__ && !__WASM_EXCEPTIONS__
+   722	    uintptr_t ipOffset = ip - funcStart;
+   723	#endif // !__USING_SJLJ_EXCEPTIONS__ && !__WASM_EXCEPTIONS__
+   724	    const uint8_t* classInfo = NULL;
+   725	    // Note: See JITDwarfEmitter::EmitExceptionTable(...) for corresponding
+   726	    //       dwarf emission
+   727	    // Parse LSDA header.
+   728	    uint8_t lpStartEncoding = *lsda++;
+   729	    const uint8_t* lpStart = lpStartEncoding == DW_EH_PE_omit
+   730	                                 ? (const uint8_t*)funcStart
+THREAD_CC_CANDIDATES
+codes/gcc/libstdc++-v3/src/c++11/thread.cc
+codes/gcc/libstdc++-v3/src/c++11/compatibility-thread-c++0x.cc
+codes/gcc/libstdc++-v3/testsuite/performance/30_threads/future/polling.cc
+codes/gcc/libstdc++-v3/testsuite/util/thread/all.h
+codes/gcc/libstdc++-v3/include/bits/std_thread.h
+codes/gcc/libstdc++-v3/include/bits/this_thread_sleep.h
+codes/gcc/libstdc++-v3/include/std/thread
+codes/gcc/libstdc++-v3/libsupc++/atexit_thread.cc
+codes/gcc/libstdc++-v3/testsuite/18_support/bad_exception/23591_thread-1.c
+codes/gcc/libstdc++-v3/testsuite/18_support/pthread_guard.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/69106.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/uses_allocator.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/60966.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/requirements/lwg3466.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/requirements/explicit_instantiation.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/cons/alloc.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/cons/1.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/cons/alloc_min.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/cons/move_assign.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/cons/move.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/cons/alloc2.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/cons/assign_neg.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/cons/copy_neg.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/members/set_value.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/members/set_exception_neg.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/members/set_exception2.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/members/set_value2.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/members/set_exception.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/members/get_future.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/members/at_thread_exit.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/members/swap.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/members/set_value3.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/members/at_thread_exit2.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/promise/members/get_future2.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/dest/destructor_locked.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/requirements/typedefs.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/requirements/standard_layout.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/try_lock/1.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/try_lock/2.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/lock/1.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/unlock/1.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/unlock/2.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/cons/1.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/cons/assign_neg.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/cons/copy_neg.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/native_handle/1.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/recursive_mutex/native_handle/typesizes.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/requirements/lwg3458.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/requirements/explicit_instantiation.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/cons/assign.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/cons/move_assign.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/cons/move.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/cons/default.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/cons/copy.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/cons/constexpr.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/members/get2.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/members/wait_for.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/members/clock_neg.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/members/45133.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/members/wait_until.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/members/valid.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/members/get.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/shared_future/members/wait.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/headers/mutex/types_std_c++0x.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/headers/mutex/std_c++0x_neg.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/headers/stop_token/synopsis.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/headers/thread/types_std_c++20.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/headers/thread/types_std_c++0x.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/headers/thread/std_c++0x_neg.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/headers/future/types_std_c++0x.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/headers/future/std_c++0x_neg.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/headers/condition_variable/types_std_c++0x.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/headers/condition_variable/std_c++0x_neg.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/semaphore/1.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/semaphore/least_max_value_neg.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/semaphore/100806.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/semaphore/2.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/semaphore/try_acquire_for.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/semaphore/try_acquire_posix.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/semaphore/try_acquire_until.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/semaphore/try_acquire.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/sync.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/106695.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/42819.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/launch.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/54297.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/49668.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/async.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/69724.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/forced_unwind.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/any.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/84532.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/lwg2021.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/except.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/latch/1.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/latch/3.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/latch/2.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/mutex/dest/destructor_locked.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/mutex/requirements/typedefs.cc
+codes/gcc/libstdc++-v3/testsuite/30_threads/mutex/requirements/standard_layout.cc
+GNU_FORCED_CONTEXT
+/usr/include/c++/13/future-1399-
+/usr/include/c++/13/future-1400-  /// @cond undocumented
+/usr/include/c++/13/future-1401-  template<typename _Ptr_type, typename _Fn, typename _Res>
+/usr/include/c++/13/future-1402-    struct __future_base::_Task_setter
+/usr/include/c++/13/future-1403-    {
+/usr/include/c++/13/future-1404-      // Invoke the function and provide the result to the caller.
+/usr/include/c++/13/future-1405-      _Ptr_type operator()() const
+/usr/include/c++/13/future-1406-      {
+/usr/include/c++/13/future-1407-	__try
+/usr/include/c++/13/future-1408-	  {
+/usr/include/c++/13/future-1409-	    (*_M_result)->_M_set((*_M_fn)());
+/usr/include/c++/13/future-1410-	  }
+/usr/include/c++/13/future:1411:	__catch(const __cxxabiv1::__forced_unwind&)
+/usr/include/c++/13/future-1412-	  {
+/usr/include/c++/13/future-1413-	    __throw_exception_again; // will cause broken_promise
+/usr/include/c++/13/future-1414-	  }
+/usr/include/c++/13/future-1415-	__catch(...)
+/usr/include/c++/13/future-1416-	  {
+/usr/include/c++/13/future-1417-	    (*_M_result)->_M_error = current_exception();
+/usr/include/c++/13/future-1418-	  }
+/usr/include/c++/13/future-1419-	return std::move(*_M_result);
+/usr/include/c++/13/future-1420-      }
+/usr/include/c++/13/future-1421-      _Ptr_type*	_M_result;
+/usr/include/c++/13/future-1422-      _Fn*		_M_fn;
+/usr/include/c++/13/future-1423-    };
+/usr/include/c++/13/future-1424-
+/usr/include/c++/13/future-1425-  template<typename _Ptr_type, typename _Fn>
+/usr/include/c++/13/future-1426-    struct __future_base::_Task_setter<_Ptr_type, _Fn, void>
+/usr/include/c++/13/future-1427-    {
+/usr/include/c++/13/future-1428-      _Ptr_type operator()() const
+/usr/include/c++/13/future-1429-      {
+/usr/include/c++/13/future-1430-	__try
+/usr/include/c++/13/future-1431-	  {
+/usr/include/c++/13/future-1432-	    (*_M_fn)();
+/usr/include/c++/13/future-1433-	  }
+/usr/include/c++/13/future:1434:	__catch(const __cxxabiv1::__forced_unwind&)
+/usr/include/c++/13/future-1435-	  {
+/usr/include/c++/13/future-1436-	    __throw_exception_again; // will cause broken_promise
+/usr/include/c++/13/future-1437-	  }
+/usr/include/c++/13/future-1438-	__catch(...)
+/usr/include/c++/13/future-1439-	  {
+/usr/include/c++/13/future-1440-	    (*_M_result)->_M_error = current_exception();
+/usr/include/c++/13/future-1441-	  }
+/usr/include/c++/13/future-1442-	return std::move(*_M_result);
+/usr/include/c++/13/future-1443-      }
+/usr/include/c++/13/future-1444-      _Ptr_type*	_M_result;
+/usr/include/c++/13/future-1445-      _Fn*		_M_fn;
+/usr/include/c++/13/future-1446-    };
+--
+/usr/include/c++/13/future-1764-	if (_M_thread.joinable())
+/usr/include/c++/13/future-1765-	  _M_thread.join();
+/usr/include/c++/13/future-1766-      }
+/usr/include/c++/13/future-1767-
+/usr/include/c++/13/future-1768-    private:
+/usr/include/c++/13/future-1769-      void
+/usr/include/c++/13/future-1770-      _M_run()
+/usr/include/c++/13/future-1771-      {
+/usr/include/c++/13/future-1772-	__try
+/usr/include/c++/13/future-1773-	  {
+/usr/include/c++/13/future-1774-	    _M_set_result(_S_task_setter(_M_result, _M_fn));
+/usr/include/c++/13/future-1775-	  }
+/usr/include/c++/13/future:1776:	__catch (const __cxxabiv1::__forced_unwind&)
+/usr/include/c++/13/future-1777-	  {
+/usr/include/c++/13/future-1778-	    // make the shared state ready on thread cancellation
+/usr/include/c++/13/future-1779-	    if (static_cast<bool>(_M_result))
+/usr/include/c++/13/future-1780-	      this->_M_break_promise(std::move(_M_result));
+/usr/include/c++/13/future-1781-	    __throw_exception_again;
+/usr/include/c++/13/future-1782-	  }
+/usr/include/c++/13/future-1783-      }
+/usr/include/c++/13/future-1784-
+/usr/include/c++/13/future-1785-      typedef __future_base::_Ptr<_Result<_Res>> _Ptr_type;
+/usr/include/c++/13/future-1786-      _Ptr_type _M_result;
+/usr/include/c++/13/future-1787-      _BoundFn _M_fn;
+/usr/include/c++/13/future-1788-    };
+--
+/usr/include/c++/13/condition_variable-256-      struct _Unlock
+/usr/include/c++/13/condition_variable-257-      {
+/usr/include/c++/13/condition_variable-258-	explicit _Unlock(_Lock& __lk) : _M_lock(__lk) { __lk.unlock(); }
+/usr/include/c++/13/condition_variable-259-
+/usr/include/c++/13/condition_variable-260-#pragma GCC diagnostic push
+/usr/include/c++/13/condition_variable-261-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+/usr/include/c++/13/condition_variable-262-	~_Unlock() noexcept(false)
+/usr/include/c++/13/condition_variable-263-	{
+/usr/include/c++/13/condition_variable-264-	  if (uncaught_exception())
+/usr/include/c++/13/condition_variable-265-	    {
+/usr/include/c++/13/condition_variable-266-	      __try
+/usr/include/c++/13/condition_variable-267-	      { _M_lock.lock(); }
+/usr/include/c++/13/condition_variable:268:	      __catch(const __cxxabiv1::__forced_unwind&)
+/usr/include/c++/13/condition_variable-269-	      { __throw_exception_again; }
+/usr/include/c++/13/condition_variable-270-	      __catch(...)
+/usr/include/c++/13/condition_variable-271-	      { }
+/usr/include/c++/13/condition_variable-272-	    }
+/usr/include/c++/13/condition_variable-273-	  else
+/usr/include/c++/13/condition_variable-274-	    _M_lock.lock();
+/usr/include/c++/13/condition_variable-275-	}
+/usr/include/c++/13/condition_variable-276-#pragma GCC diagnostic pop
+/usr/include/c++/13/condition_variable-277-
+/usr/include/c++/13/condition_variable-278-	_Unlock(const _Unlock&) = delete;
+/usr/include/c++/13/condition_variable-279-	_Unlock& operator=(const _Unlock&) = delete;
+/usr/include/c++/13/condition_variable-280-
+--
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-243-		      else if (_Traits::
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-244-			       eq_int_type(__is.rdbuf()->sputbackc(__c2),
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-245-					   __eof))
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-246-			{
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-247-			  __state |= __ios_base::failbit;
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-248-			  break;
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-249-			}
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-250-		      else
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-251-			break;
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-252-		    }
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-253-		}
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-254-	    }
+/usr/include/c++/13/tr2/dynamic_bitset.tcc:255:	  __catch(__cxxabiv1::__forced_unwind&)
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-256-	    {
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-257-	      __is._M_setstate(__ios_base::badbit);
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-258-	      __throw_exception_again;
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-259-	    }
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-260-	  __catch(...)
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-261-	    { __is._M_setstate(__ios_base::badbit); }
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-262-	}
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-263-
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-264-      __x.resize(__tmp.size());
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-265-
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-266-      if (__tmp.empty() && __x.size())
+/usr/include/c++/13/tr2/dynamic_bitset.tcc-267-	__state |= __ios_base::failbit;
+--
+/usr/include/c++/13/experimental/executor-1722-	explicit
+/usr/include/c++/13/experimental/executor-1723-	__use_future_ch(__use_future_ct<_Func, std::allocator<_Tp>>&& __token)
+/usr/include/c++/13/experimental/executor-1724-	: _M_f{ std::move(__token._M_f) }
+/usr/include/c++/13/experimental/executor-1725-	{ }
+/usr/include/c++/13/experimental/executor-1726-
+/usr/include/c++/13/experimental/executor-1727-      void
+/usr/include/c++/13/experimental/executor-1728-      operator()(_Args&&... __args)
+/usr/include/c++/13/experimental/executor-1729-      {
+/usr/include/c++/13/experimental/executor-1730-	__try
+/usr/include/c++/13/experimental/executor-1731-	  {
+/usr/include/c++/13/experimental/executor-1732-	    _M_promise.set_value(_M_f(std::forward<_Args>(__args)...));
+/usr/include/c++/13/experimental/executor-1733-	  }
+/usr/include/c++/13/experimental/executor:1734:	__catch(__cxxabiv1::__forced_unwind&)
+/usr/include/c++/13/experimental/executor-1735-	  {
+/usr/include/c++/13/experimental/executor-1736-	    __throw_exception_again;
+/usr/include/c++/13/experimental/executor-1737-	  }
+/usr/include/c++/13/experimental/executor-1738-	__catch(...)
+/usr/include/c++/13/experimental/executor-1739-	  {
+/usr/include/c++/13/experimental/executor-1740-	    _M_promise.set_exception(std::current_exception());
+/usr/include/c++/13/experimental/executor-1741-	  }
+/usr/include/c++/13/experimental/executor-1742-      }
+/usr/include/c++/13/experimental/executor-1743-
+/usr/include/c++/13/experimental/executor-1744-      using __result = result_of_t<_Func(decay_t<_Args>...)>;
+/usr/include/c++/13/experimental/executor-1745-
+/usr/include/c++/13/experimental/executor-1746-      future<__result> get_future() { return _M_promise.get_future(); }
+--
+/usr/include/c++/13/experimental/executor-1782-      __use_future_ex(const _Handler& __h, _Executor __ex)
+/usr/include/c++/13/experimental/executor-1783-      : _M_t(__h._M_promise, __ex)
+/usr/include/c++/13/experimental/executor-1784-      { }
+/usr/include/c++/13/experimental/executor-1785-
+/usr/include/c++/13/experimental/executor-1786-      template<typename _Fn, typename _Alloc>
+/usr/include/c++/13/experimental/executor-1787-	void
+/usr/include/c++/13/experimental/executor-1788-	dispatch(_Fn&& __fn)
+/usr/include/c++/13/experimental/executor-1789-	{
+/usr/include/c++/13/experimental/executor-1790-	  __try
+/usr/include/c++/13/experimental/executor-1791-	    {
+/usr/include/c++/13/experimental/executor-1792-	      std::get<1>(_M_t).dispatch(std::forward<_Fn>(__fn));
+/usr/include/c++/13/experimental/executor-1793-	    }
+/usr/include/c++/13/experimental/executor:1794:	  __catch(__cxxabiv1::__forced_unwind&)
+/usr/include/c++/13/experimental/executor-1795-	    {
+/usr/include/c++/13/experimental/executor-1796-	      __throw_exception_again;
+/usr/include/c++/13/experimental/executor-1797-	    }
+/usr/include/c++/13/experimental/executor-1798-	  __catch(...)
+/usr/include/c++/13/experimental/executor-1799-	    {
+/usr/include/c++/13/experimental/executor-1800-	      std::get<0>(_M_t).set_exception(std::current_exception());
+/usr/include/c++/13/experimental/executor-1801-	    }
+/usr/include/c++/13/experimental/executor-1802-	}
+/usr/include/c++/13/experimental/executor-1803-
+/usr/include/c++/13/experimental/executor-1804-      template<typename _Fn, typename _Alloc>
+/usr/include/c++/13/experimental/executor-1805-	void
+/usr/include/c++/13/experimental/executor-1806-	post(_Fn&& __fn)
+/usr/include/c++/13/experimental/executor-1807-	{
+/usr/include/c++/13/experimental/executor-1808-	  __try
+/usr/include/c++/13/experimental/executor-1809-	    {
+/usr/include/c++/13/experimental/executor-1810-	      std::get<1>(_M_t).post(std::forward<_Fn>(__fn));
+/usr/include/c++/13/experimental/executor-1811-	    }
+/usr/include/c++/13/experimental/executor:1812:	  __catch(__cxxabiv1::__forced_unwind&)
+/usr/include/c++/13/experimental/executor-1813-	    {
+/usr/include/c++/13/experimental/executor-1814-	      __throw_exception_again;
+/usr/include/c++/13/experimental/executor-1815-	    }
+/usr/include/c++/13/experimental/executor-1816-	  __catch(...)
+/usr/include/c++/13/experimental/executor-1817-	    {
+/usr/include/c++/13/experimental/executor-1818-	      std::get<0>(_M_t).set_exception(std::current_exception());
+/usr/include/c++/13/experimental/executor-1819-	    }
+/usr/include/c++/13/experimental/executor-1820-	}
+/usr/include/c++/13/experimental/executor-1821-
+/usr/include/c++/13/experimental/executor-1822-      template<typename _Fn, typename _Alloc>
+/usr/include/c++/13/experimental/executor-1823-	void
+/usr/include/c++/13/experimental/executor-1824-	defer(_Fn&& __fn)
+/usr/include/c++/13/experimental/executor-1825-	{
+/usr/include/c++/13/experimental/executor-1826-	  __try
+/usr/include/c++/13/experimental/executor-1827-	    {
+/usr/include/c++/13/experimental/executor-1828-	      std::get<1>(_M_t).defer(std::forward<_Fn>(__fn));
+/usr/include/c++/13/experimental/executor-1829-	    }
+/usr/include/c++/13/experimental/executor:1830:	  __catch(__cxxabiv1::__forced_unwind&)
+/usr/include/c++/13/experimental/executor-1831-	    {
+/usr/include/c++/13/experimental/executor-1832-	      __throw_exception_again;
+/usr/include/c++/13/experimental/executor-1833-	    }
+/usr/include/c++/13/experimental/executor-1834-	  __catch(...)
+/usr/include/c++/13/experimental/executor-1835-	    {
+/usr/include/c++/13/experimental/executor-1836-	      std::get<0>(_M_t).set_exception(std::current_exception());
+/usr/include/c++/13/experimental/executor-1837-	    }
+/usr/include/c++/13/experimental/executor-1838-	}
+/usr/include/c++/13/experimental/executor-1839-
+/usr/include/c++/13/experimental/executor-1840-    private:
+/usr/include/c++/13/experimental/executor-1841-      tuple<promise<_Result>&, _Executor> _M_t;
+/usr/include/c++/13/experimental/executor-1842-    };
+--
+/usr/include/c++/13/bits/ostream.tcc-69-	    ios_base::iostate __err = ios_base::goodbit;
+/usr/include/c++/13/bits/ostream.tcc-70-	    __try
+/usr/include/c++/13/bits/ostream.tcc-71-	      {
+/usr/include/c++/13/bits/ostream.tcc-72-#ifndef _GLIBCXX_LONG_DOUBLE_ALT128_COMPAT
+/usr/include/c++/13/bits/ostream.tcc-73-		const __num_put_type& __np = __check_facet(this->_M_num_put);
+/usr/include/c++/13/bits/ostream.tcc-74-#else
+/usr/include/c++/13/bits/ostream.tcc-75-		const __num_put_type& __np
+/usr/include/c++/13/bits/ostream.tcc-76-		  = use_facet<__num_put_type>(this->_M_ios_locale);
+/usr/include/c++/13/bits/ostream.tcc-77-#endif
+/usr/include/c++/13/bits/ostream.tcc-78-		if (__np.put(*this, *this, this->fill(), __v).failed())
+/usr/include/c++/13/bits/ostream.tcc-79-		  __err |= ios_base::badbit;
+/usr/include/c++/13/bits/ostream.tcc-80-	      }
+/usr/include/c++/13/bits/ostream.tcc:81:	    __catch(__cxxabiv1::__forced_unwind&)
+/usr/include/c++/13/bits/ostream.tcc-82-	      {
+/usr/include/c++/13/bits/ostream.tcc-83-		this->_M_setstate(ios_base::badbit);		
+/usr/include/c++/13/bits/ostream.tcc-84-		__throw_exception_again;
+/usr/include/c++/13/bits/ostream.tcc-85-	      }
+/usr/include/c++/13/bits/ostream.tcc-86-	    __catch(...)
+/usr/include/c++/13/bits/ostream.tcc-87-	      { this->_M_setstate(ios_base::badbit); }
+/usr/include/c++/13/bits/ostream.tcc-88-	    if (__err)
+/usr/include/c++/13/bits/ostream.tcc-89-	      this->setstate(__err);
+/usr/include/c++/13/bits/ostream.tcc-90-	  }
+/usr/include/c++/13/bits/ostream.tcc-91-	return *this;
+/usr/include/c++/13/bits/ostream.tcc-92-      }
+/usr/include/c++/13/bits/ostream.tcc-93-
+EXIT_CODE=0

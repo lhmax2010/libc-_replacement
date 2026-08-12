@@ -1,0 +1,165 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc set\ -e\;\ nl\ -ba\ codes/llvm/libcxxabi/src/cxa_personality.cpp\ \|\ sed\ -n\ \"780\,880p\"\;\ nl\ -ba\ codes/gcc/libstdc++-v3/src/c++11/thread.cc\ \|\ sed\ -n\ \"120\,180p\"\;\ rg\ -n\ -C\ 20\ \"__forced_unwind\"\ codes/gcc/libstdc++-v3/src/c++11/thread.cc\ codes/gcc/libstdc++-v3/src/c++11/compatibility-thread-c++0x.cc\;\ printf\ \"FILE_SHA256\\n\"\;\ sha256sum\ codes/llvm/libcxxabi/src/cxa_personality.cpp\ codes/llvm/libcxx/include/__thread/thread.h\ codes/gcc/libstdc++-v3/src/c++11/thread.cc 
+   780	            ++landingPad;
+   781	#endif // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   782	            results.landingPad = landingPad;
+   783	            if (actionEntry == 0)
+   784	            {
+   785	                // Found a cleanup
+   786	                results.reason = (actions & _UA_SEARCH_PHASE) ? _URC_CONTINUE_UNWIND : _URC_HANDLER_FOUND;
+   787	                return;
+   788	            }
+   789	            // Convert 1-based byte offset into
+   790	            const uint8_t* action = actionTableStart + (actionEntry - 1);
+   791	            bool hasCleanup = false;
+   792	            // Scan action entries until you find a matching handler, cleanup, or the end of action list
+   793	            while (true)
+   794	            {
+   795	                const uint8_t* actionRecord = action;
+   796	                int64_t ttypeIndex = readSLEB128(&action);
+   797	                if (ttypeIndex > 0)
+   798	                {
+   799	                    // Found a catch, does it actually catch?
+   800	                    // First check for catch (...)
+   801	                    const __shim_type_info* catchType =
+   802	                        get_shim_type_info(static_cast<uint64_t>(ttypeIndex),
+   803	                                           classInfo, ttypeEncoding,
+   804	                                           native_exception, unwind_exception,
+   805	                                           base);
+   806	                    if (catchType == 0)
+   807	                    {
+   808	                        // Found catch (...) catches everything, including
+   809	                        // foreign exceptions. This is search phase, cleanup
+   810	                        // phase with foreign exception, or forced unwinding.
+   811	                        assert(actions & (_UA_SEARCH_PHASE | _UA_HANDLER_FRAME |
+   812	                                          _UA_FORCE_UNWIND));
+   813	                        results.ttypeIndex = ttypeIndex;
+   814	                        results.actionRecord = actionRecord;
+   815	                        results.adjustedPtr =
+   816	                            get_thrown_object_ptr(unwind_exception);
+   817	                        results.reason = _URC_HANDLER_FOUND;
+   818	                        return;
+   819	                    }
+   820	                    // Else this is a catch (T) clause and will never
+   821	                    //    catch a foreign exception
+   822	                    else if (native_exception)
+   823	                    {
+   824	                        __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+   825	                        void* adjustedPtr = get_thrown_object_ptr(unwind_exception);
+   826	                        const __shim_type_info* excpType =
+   827	                            static_cast<const __shim_type_info*>(exception_header->exceptionType);
+   828	                        if (adjustedPtr == 0 || excpType == 0)
+   829	                        {
+   830	                            // Something very bad happened
+   831	                            call_terminate(native_exception, unwind_exception);
+   832	                        }
+   833	                        if (catchType->can_catch(excpType, adjustedPtr))
+   834	                        {
+   835	                            // Found a matching handler. This is either search
+   836	                            // phase or forced unwinding.
+   837	                            assert(actions &
+   838	                                   (_UA_SEARCH_PHASE | _UA_FORCE_UNWIND));
+   839	                            results.ttypeIndex = ttypeIndex;
+   840	                            results.actionRecord = actionRecord;
+   841	                            results.adjustedPtr = adjustedPtr;
+   842	                            results.reason = _URC_HANDLER_FOUND;
+   843	                            return;
+   844	                        }
+   845	                    }
+   846	                    // Scan next action ...
+   847	                }
+   848	                else if (ttypeIndex < 0)
+   849	                {
+   850	                    // Found an exception specification.
+   851	                    if (actions & _UA_FORCE_UNWIND) {
+   852	                        // Skip if forced unwinding.
+   853	                    } else if (native_exception) {
+   854	                        // Does the exception spec catch this native exception?
+   855	                        __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+   856	                        void* adjustedPtr = get_thrown_object_ptr(unwind_exception);
+   857	                        const __shim_type_info* excpType =
+   858	                            static_cast<const __shim_type_info*>(exception_header->exceptionType);
+   859	                        if (adjustedPtr == 0 || excpType == 0)
+   860	                        {
+   861	                            // Something very bad happened
+   862	                            call_terminate(native_exception, unwind_exception);
+   863	                        }
+   864	                        if (exception_spec_can_catch(ttypeIndex, classInfo,
+   865	                                                     ttypeEncoding, excpType,
+   866	                                                     adjustedPtr,
+   867	                                                     unwind_exception, base))
+   868	                        {
+   869	                            // Native exception caught by exception
+   870	                            // specification.
+   871	                            assert(actions & _UA_SEARCH_PHASE);
+   872	                            results.ttypeIndex = ttypeIndex;
+   873	                            results.actionRecord = actionRecord;
+   874	                            results.adjustedPtr = adjustedPtr;
+   875	                            results.reason = _URC_HANDLER_FOUND;
+   876	                            return;
+   877	                        }
+   878	                    } else {
+   879	                        // foreign exception caught by exception spec
+   880	                        results.ttypeIndex = ttypeIndex;
+   120	    }
+   121	#endif
+   122	  } // extern "C"
+   123	
+   124	_GLIBCXX_BEGIN_NAMESPACE_VERSION
+   125	
+   126	  thread::_State::~_State() = default;
+   127	
+   128	  void
+   129	  thread::join()
+   130	  {
+   131	    int __e = EINVAL;
+   132	
+   133	    if (_M_id != id())
+   134	      __e = __gthread_join(_M_id._M_thread, 0);
+   135	
+   136	    if (__e)
+   137	      __throw_system_error(__e);
+   138	
+   139	    _M_id = id();
+   140	  }
+   141	
+   142	  void
+   143	  thread::detach()
+   144	  {
+   145	    int __e = EINVAL;
+   146	
+   147	    if (_M_id != id())
+   148	      __e = __gthread_detach(_M_id._M_thread);
+   149	
+   150	    if (__e)
+   151	      __throw_system_error(__e);
+   152	
+   153	    _M_id = id();
+   154	  }
+   155	
+   156	  void
+   157	  thread::_M_start_thread(_State_ptr state, void (*depend)())
+   158	  {
+   159	    // Make sure it's not optimized out, not even with LTO.
+   160	    asm ("" : : "rm" (depend));
+   161	
+   162	    if (!__gthread_active_p())
+   163	      {
+   164	#if __cpp_exceptions
+   165		throw system_error(make_error_code(errc::operation_not_permitted),
+   166				   "Enable multithreading to use std::thread");
+   167	#else
+   168		__builtin_abort();
+   169	#endif
+   170	      }
+   171	
+   172	    const int err = __gthread_create(&_M_id._M_thread,
+   173					     &execute_native_thread_routine,
+   174					     state.get());
+   175	    if (err)
+   176	      __throw_system_error(err);
+   177	    state.release();
+   178	  }
+   179	
+   180	#if _GLIBCXX_THREAD_ABI_COMPAT
+EXIT_CODE=1
