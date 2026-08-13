@@ -1,0 +1,194 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -c sed\ -n\ \"1\,180p\"\ progress/T1/scan_corpus.py\;\ sha256sum\ progress/T1/scan_corpus.py\ progress/T1/corpus_hits.tsv\ progress/R1/package_three_tiers.tsv\;\ rg\ -n\ \"_S_badbit\|__filebuf_type\|boost_unit_test_framework\|std::__1\"\ progress/T1/scan_corpus.py\ progress/T1/corpus_hits.tsv\ progress/R1/package_three_tiers.tsv 
+#!/usr/bin/env python3
+"""只读扫描成功解包的 T1 源码包，并生成可机器复核的逐命中与覆盖率表。"""
+
+from __future__ import annotations
+
+import csv
+import json
+import re
+import subprocess
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+
+WORKSPACE = Path("/home/toolchain/development/libc++_replacement")
+TASK = WORKSPACE / "progress/T1"
+EXTRACTED = WORKSPACE / "tmp/corpus/extracted"
+
+# certain_needs_change 是保守的机械分类，不包含 ABI 通用名称或 pthread 取消 API。
+PATTERNS = [
+    ("__forced_unwind", re.compile(r"__forced_unwind"), False,
+     "异常展开内部类型；仅作风险命中"),
+    ("__cxxabiv1", re.compile(r"__cxxabiv1"), False,
+     "Itanium C++ ABI 命名空间；非 libstdc++ 独占"),
+    ("abi::", re.compile(r"\babi::"), False,
+     "ABI 命名空间别名可能由多种运行时提供"),
+    ("<cxxabi.h>", re.compile(r"<cxxabi\.h>"), False,
+     "Itanium C++ ABI 头；非 libstdc++ 独占"),
+    ("__gnu_cxx", re.compile(r"__gnu_cxx"), True,
+     "GNU libstdc++ 专有命名空间"),
+    ("#include <ext/", re.compile(r"#\s*include\s*<ext/"), True,
+     "GNU libstdc++ 扩展头"),
+    ("#include <bits/", re.compile(r"#\s*include\s*<bits/"), True,
+     "实现私有 bits 头"),
+    ("__GLIBCXX__", re.compile(r"__GLIBCXX__"), True,
+     "libstdc++ 版本宏"),
+    ("_GLIBCXX_", re.compile(r"_GLIBCXX_"), True,
+     "libstdc++ 实现宏"),
+    ("std::__cxx11", re.compile(r"std::__cxx11"), True,
+     "libstdc++ 双 ABI 内联命名空间"),
+    ("-lstdc++", re.compile(r"-lstdc\+\+"), True,
+     "显式链接 libstdc++"),
+    ("build-system libstdc++", re.compile(r"libstdc\+\+", re.IGNORECASE), True,
+     "构建系统文件显式引用 libstdc++"),
+    ("pthread_cancel", re.compile(r"pthread_cancel"), False,
+     "POSIX 取消 API；仅作行为风险命中"),
+    ("pthread_setcancelstate", re.compile(r"pthread_setcancelstate"), False,
+     "POSIX 取消 API；仅作行为风险命中"),
+    ("pthread_testcancel", re.compile(r"pthread_testcancel"), False,
+     "POSIX 取消 API；仅作行为风险命中"),
+]
+
+UNION = (
+    r"__forced_unwind|__cxxabiv1|\babi::|<cxxabi\.h>|__gnu_cxx|"
+    r"#\s*include\s*<ext/|#\s*include\s*<bits/|__GLIBCXX__|_GLIBCXX_|"
+    r"std::__cxx11|-lstdc\+\+|libstdc\+\+|pthread_cancel|"
+    r"pthread_setcancelstate|pthread_testcancel"
+)
+
+
+def is_build_system_file(relative: str) -> bool:
+    path = Path(relative)
+    name = path.name.lower()
+    suffix = path.suffix.lower()
+    exact = {
+        "cmakelists.txt", "makefile", "gnumakefile", "meson.build",
+        "meson_options.txt", "sconstruct", "sconscript", "wscript",
+        "build", "workspace", "build.gradle", "settings.gradle",
+    }
+    if name in exact:
+        return True
+    if (name.startswith("makefile.") or name.startswith("configure") or
+            name.startswith("build.") or name.startswith("workspace.")):
+        return True
+    return suffix in {
+        ".cmake", ".mk", ".am", ".ac", ".spec", ".pro", ".pri",
+        ".gyp", ".gypi", ".gn", ".ninja", ".bazel",
+    }
+
+
+def clean_context(text: str) -> str:
+    return text.rstrip("\r\n").replace("\t", "\\t")
+
+
+def scan_one(source_rpm: str, error_dir: Path):
+    root = EXTRACTED / source_rpm
+    command = [
+        "rg", "--json", "--line-number", "--context", "1", "--hidden",
+        "--no-ignore", "--color", "never",
+        "--glob", "!payload/*.tar", "--glob", "!payload/*.tar.*",
+        "--glob", "!payload/*.tgz", "--glob", "!payload/*.tbz*",
+        "--glob", "!payload/*.txz", "--glob", "!payload/*.zip",
+        "--glob", "!payload/*.7z", "--glob", "!payload/*.crate",
+        "--glob", "!payload/*.gz", "--glob", "!payload/*.bz2",
+        "--glob", "!payload/*.xz", "--glob", "!payload/*.zst",
+        "--glob", "!payload/*.lzma", "-e", UNION, ".",
+    ]
+    proc = subprocess.Popen(
+        command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    lines: dict[tuple[str, int], str] = {}
+    matches: set[tuple[str, int]] = set()
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        event = json.loads(raw)
+        if event.get("type") not in {"match", "context"}:
+            continue
+        data = event["data"]
+        path = data["path"].get("text")
+        line_number = data.get("line_number")
+        text = data["lines"].get("text")
+        if path is None or line_number is None or text is None:
+            continue
+        relative = path[2:] if path.startswith("./") else path
+        lines[(relative, line_number)] = clean_context(text)
+        if event["type"] == "match":
+            matches.add((relative, line_number))
+    assert proc.stderr is not None
+    stderr = proc.stderr.read()
+    return_code = proc.wait()
+    (error_dir / f"{source_rpm}.stderr").write_text(stderr, encoding="utf-8")
+
+    rows = []
+    for relative, line_number in sorted(matches):
+        current = lines[(relative, line_number)]
+        build_file = is_build_system_file(relative)
+        for pattern_name, regex, certain, _reason in PATTERNS:
+            if pattern_name == "build-system libstdc++" and not build_file:
+                continue
+            if regex.search(current):
+                rows.append({
+                    "source_rpm": source_rpm,
+                    "pattern": pattern_name,
+                    "certain_needs_change": "YES" if certain else "NO",
+                    "file": relative,
+                    "line": line_number,
+                    "file_line": f"{relative}:{line_number}",
+                    "context_before": lines.get((relative, line_number - 1), ""),
+                    "context_match": current,
+                    "context_after": lines.get((relative, line_number + 1), ""),
+                })
+    return return_code, stderr, rows
+
+
+def write_tsv(path: Path, fieldnames: list[str], rows) -> None:
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(
+            stream, fieldnames=fieldnames, delimiter="\t",
+            lineterminator="\n", extrasaction="ignore",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def main() -> int:
+    extraction_path = TASK / "extraction_results.tsv"
+    extraction_rows = list(csv.DictReader(
+        extraction_path.open(encoding="utf-8"), delimiter="\t"
+    ))
+    expected = len(extraction_rows)
+    successful = sorted(
+        row["source_rpm"] for row in extraction_rows
+        if row["status"] == "EXTRACTED_OK"
+    )
+    extraction_failures = [
+        row for row in extraction_rows if row["status"] != "EXTRACTED_OK"
+    ]
+
+    error_dir = TASK / "scan_stderr"
+    error_dir.mkdir(exist_ok=True)
+    all_hits = []
+    scan_status = []
+    summary_counts = defaultdict(lambda: defaultdict(int))
+    scanned = []
+    scan_failures = []
+
+    for index, source_rpm in enumerate(successful, 1):
+        print(f"SCAN {index}/{len(successful)} {source_rpm}", flush=True)
+        return_code, stderr, rows = scan_one(source_rpm, error_dir)
+8c5a5c90829d9117cca3b98af16b0c315877ed70c4e760b89f84f889588c5902  progress/T1/scan_corpus.py
+cd2a91832f5a548b4e762c9cc42c4349c50d4f82e559058760f1cf6f83a6c7c2  progress/T1/corpus_hits.tsv
+dfaa1e683fb7a6b684e762febfbadc5284870f4501a35e995557df6df748e56b  progress/R1/package_three_tiers.tsv
+progress/T1/corpus_hits.tsv:111474:llvm-22.1.8-18.1.src.rpm	std::__cxx11	YES	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/clang/docs/UsersManual.rst	3681	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/clang/docs/UsersManual.rst:3681		  # std:: might be std::__1:: in libc++ or std::__cxx11:: in libstdc++	  name 3std St3__1
+progress/T1/corpus_hits.tsv:113472:llvm-22.1.8-18.1.src.rpm	std::__cxx11	YES	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/docs/CommandGuide/llvm-cxxmap.rst	93	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/docs/CommandGuide/llvm-cxxmap.rst:93		  # std:: might be std::__1:: in libc++ or std::__cxx11:: in libstdc++	  name St St3__1
+progress/T1/corpus_hits.tsv:114424:llvm-22.1.8-18.1.src.rpm	std::__cxx11	YES	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/unittests/ProfileData/ItaniumManglingCanonicalizerTest.cpp	84	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/unittests/ProfileData/ItaniumManglingCanonicalizerTest.cpp:84	      {	        // std::__1::char_traits == std::__cxx11::char_traits	        // (Note that this is unused and should make no difference,
+progress/T1/corpus_hits.tsv:114425:llvm-22.1.8-18.1.src.rpm	std::__cxx11	YES	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/unittests/ProfileData/ItaniumManglingCanonicalizerTest.cpp	103	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/unittests/ProfileData/ItaniumManglingCanonicalizerTest.cpp:103	        //   std::__1::allocator<char>> ==	        // std::__cxx11::basic_string<	        //   char,
+progress/T1/corpus_hits.tsv:114426:llvm-22.1.8-18.1.src.rpm	std::__cxx11	YES	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/unittests/ProfileData/ItaniumManglingCanonicalizerTest.cpp	131	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/unittests/ProfileData/ItaniumManglingCanonicalizerTest.cpp:131	      {	        // std::__1 == std::__cxx11	"        {FragmentKind::Name, ""St3__1"", ""St7__cxx11""},"
+progress/T1/corpus_hits.tsv:114427:llvm-22.1.8-18.1.src.rpm	std::__cxx11	YES	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/unittests/ProfileData/ItaniumManglingCanonicalizerTest.cpp	137	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/unittests/ProfileData/ItaniumManglingCanonicalizerTest.cpp:137	"        {FragmentKind::Name, ""St6vector"", ""NSt3__16vectorE""},"	        // std::__cxx11::char_traits == std::char_traits	        // (This indirectly means that std::__1::char_traits == std::char_traits,
+progress/T1/corpus_hits.tsv:114428:llvm-22.1.8-18.1.src.rpm	std::__cxx11	YES	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/unittests/ProfileData/ItaniumManglingCanonicalizerTest.cpp	139	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/unittests/ProfileData/ItaniumManglingCanonicalizerTest.cpp:139	        // (This indirectly means that std::__1::char_traits == std::char_traits,	        // due to the std::__cxx11 == std::__1 equivalence, which is what we rely	        // on below.)
+progress/T1/corpus_hits.tsv:114429:llvm-22.1.8-18.1.src.rpm	std::__cxx11	YES	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/unittests/ProfileData/ItaniumManglingCanonicalizerTest.cpp	165	unpacked/llvm-22.1.8.tar.gz/llvm-22.1.8/llvm/unittests/ProfileData/ItaniumManglingCanonicalizerTest.cpp:165	"        {FragmentKind::Name, ""St3__1"", ""St""},"	        // std::__1 == std::__cxx11	"        {FragmentKind::Name, ""St3__1"", ""St7__cxx11""},"
+EXIT_CODE=0
