@@ -1,0 +1,230 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc $'\nset -e\nprintf "=== GCC libgcc unwind.inc forced setup and resume ===\\n"\nnl -ba codes/gcc/libgcc/unwind.inc | sed -n "120,275p"\nprintf "=== GCC symbol versions/export ===\\n"\nrg -n "_Unwind_Resume_or_Rethrow" codes/gcc/libgcc/*.ver codes/gcc/libgcc/config 2>/dev/null | head -n 100 || true\nprintf "=== platform codes/gcc target definitions ===\\n"\nrg -n "_LIBUNWIND_STD_ABI" codes/gcc --glob "!libstdc++-v3/config/os/hpux/os_defines.h" --glob "!libstdc++-v3/ChangeLog-2003" --glob "!libstdc++-v3/libsupc++/eh_throw.cc" --glob "!libgo/runtime/go-unwind.c" || true\nprintf "=== R33 compiler predefines ===\\n"\ncompiler=progress/R33/tools/tizen-clang++\n"$compiler" -dM -E -x c++ /dev/null | LC_ALL=C sort | rg "LIBUNWIND|USING_SJLJ|__ia64__|__x86_64__|TIZEN" || true\nprintf "=== R33 CMake cache unwinder ===\\n"\nrg -n "LIBCXXABI_USE_LLVM_UNWINDER|LIBCXXABI_ENABLE_STATIC_UNWINDER|CMAKE_CXX_COMPILER:FILEPATH|CMAKE_SYSTEM_PROCESSOR" tmp/R33/build-s1-r3/CMakeCache.txt\nprintf "=== platform libgcc_s dynsym/version Resume_or_Rethrow ===\\n"\nroot=$(find tmp/GBS-ROOT -path "*scratch.x86_64.0/usr/lib64/libgcc_s.so.1" -print -quit 2>/dev/null || true)\nprintf "LIBGCC_PATH=%s\\n" "$root"\nif [ -n "$root" ]; then readelf --dyn-syms -W "$root" | rg "_Unwind_Resume_or_Rethrow"; readelf --version-info -W "$root" | rg "GCC_3.3|GCC_3.0" | head -n 50; fi\n' 
+=== GCC libgcc unwind.inc forced setup and resume ===
+   120		  if (code == _URC_HANDLER_FOUND)
+   121		    break;
+   122		  else if (code != _URC_CONTINUE_UNWIND)
+   123		    return _URC_FATAL_PHASE1_ERROR;
+   124		}
+   125	
+   126	      /* Update cur_context to describe the same frame as fs.  */
+   127	      uw_update_context (&cur_context, &fs);
+   128	    }
+   129	
+   130	  /* Indicate to _Unwind_Resume and associated subroutines that this
+   131	     is not a forced unwind.  Further, note where we found a handler.  */
+   132	  exc->private_1 = 0;
+   133	  exc->private_2 = uw_identify_context (&cur_context);
+   134	
+   135	  cur_context = this_context;
+   136	  code = _Unwind_RaiseException_Phase2 (exc, &cur_context, &frames);
+   137	  if (code != _URC_INSTALL_CONTEXT)
+   138	    return code;
+   139	
+   140	  uw_install_context (&this_context, &cur_context, frames);
+   141	}
+   142	
+   143	
+   144	/* Subroutine of _Unwind_ForcedUnwind also invoked from _Unwind_Resume.  */
+   145	
+   146	static _Unwind_Reason_Code
+   147	_Unwind_ForcedUnwind_Phase2 (struct _Unwind_Exception *exc,
+   148				     struct _Unwind_Context *context,
+   149				     unsigned long *frames_p)
+   150	{
+   151	  _Unwind_Stop_Fn stop = (_Unwind_Stop_Fn) (_Unwind_Ptr) exc->private_1;
+   152	  void *stop_argument = (void *) (_Unwind_Ptr) exc->private_2;
+   153	  _Unwind_Reason_Code code, stop_code;
+   154	  unsigned long frames = 1;
+   155	
+   156	  while (1)
+   157	    {
+   158	      _Unwind_FrameState fs;
+   159	      int action;
+   160	
+   161	      /* Set up fs to describe the FDE for the caller of cur_context.  */
+   162	      code = uw_frame_state_for (context, &fs);
+   163	      if (code != _URC_NO_REASON && code != _URC_END_OF_STACK
+   164		  && code != _URC_NORMAL_STOP)
+   165		return _URC_FATAL_PHASE2_ERROR;
+   166	
+   167	      /* Unwind successful.  */
+   168	      action = _UA_FORCE_UNWIND | _UA_CLEANUP_PHASE;
+   169	      if (code == _URC_END_OF_STACK || code == _URC_NORMAL_STOP)
+   170		action |= _UA_END_OF_STACK;
+   171	      stop_code = (*stop) (1, action, exc->exception_class, exc,
+   172				   context, stop_argument);
+   173	      if (stop_code != _URC_NO_REASON)
+   174		return _URC_FATAL_PHASE2_ERROR;
+   175	
+   176	      /* Stop didn't want to do anything.  Invoke the personality
+   177		 handler, if applicable, to run cleanups.  */
+   178	      if (code == _URC_END_OF_STACK)
+   179		break;
+   180		
+   181	      if (fs.personality)
+   182		{
+   183		  code = (*fs.personality) (1, _UA_FORCE_UNWIND | _UA_CLEANUP_PHASE,
+   184					    exc->exception_class, exc, context);
+   185		  if (code == _URC_INSTALL_CONTEXT)
+   186		    break;
+   187		  if (code != _URC_CONTINUE_UNWIND) 
+   188		    return _URC_FATAL_PHASE2_ERROR;
+   189		}
+   190	
+   191	      /* Update cur_context to describe the same frame as fs, and discard
+   192		 the previous context if necessary.  */
+   193	      uw_advance_context (context, &fs);
+   194	      _Unwind_Frames_Increment (exc, context, frames);
+   195	    }
+   196	
+   197	  *frames_p = frames;
+   198	  return code;
+   199	}
+   200	
+   201	
+   202	/* Raise an exception for forced unwinding.  */
+   203	
+   204	_Unwind_Reason_Code LIBGCC2_UNWIND_ATTRIBUTE
+   205	_Unwind_ForcedUnwind (struct _Unwind_Exception *exc,
+   206			      _Unwind_Stop_Fn stop, void * stop_argument)
+   207	{
+   208	  struct _Unwind_Context this_context, cur_context;
+   209	  _Unwind_Reason_Code code;
+   210	  unsigned long frames;
+   211	
+   212	  uw_init_context (&this_context);
+   213	  cur_context = this_context;
+   214	
+   215	  exc->private_1 = (_Unwind_Ptr) stop;
+   216	  exc->private_2 = (_Unwind_Ptr) stop_argument;
+   217	
+   218	  code = _Unwind_ForcedUnwind_Phase2 (exc, &cur_context, &frames);
+   219	  if (code != _URC_INSTALL_CONTEXT)
+   220	    return code;
+   221	
+   222	  uw_install_context (&this_context, &cur_context, frames);
+   223	}
+   224	
+   225	
+   226	/* Resume propagation of an existing exception.  This is used after
+   227	   e.g. executing cleanup code, and not to implement rethrowing.  */
+   228	
+   229	void LIBGCC2_UNWIND_ATTRIBUTE
+   230	_Unwind_Resume (struct _Unwind_Exception *exc)
+   231	{
+   232	  struct _Unwind_Context this_context, cur_context;
+   233	  _Unwind_Reason_Code code;
+   234	  unsigned long frames;
+   235	
+   236	  uw_init_context (&this_context);
+   237	  cur_context = this_context;
+   238	
+   239	  /* Choose between continuing to process _Unwind_RaiseException
+   240	     or _Unwind_ForcedUnwind.  */
+   241	  if (exc->private_1 == 0)
+   242	    code = _Unwind_RaiseException_Phase2 (exc, &cur_context, &frames);
+   243	  else
+   244	    code = _Unwind_ForcedUnwind_Phase2 (exc, &cur_context, &frames);
+   245	
+   246	  gcc_assert (code == _URC_INSTALL_CONTEXT);
+   247	
+   248	  uw_install_context (&this_context, &cur_context, frames);
+   249	}
+   250	
+   251	
+   252	/* Resume propagation of an FORCE_UNWIND exception, or to rethrow
+   253	   a normal exception that was handled.  */
+   254	
+   255	_Unwind_Reason_Code LIBGCC2_UNWIND_ATTRIBUTE
+   256	_Unwind_Resume_or_Rethrow (struct _Unwind_Exception *exc)
+   257	{
+   258	  struct _Unwind_Context this_context, cur_context;
+   259	  _Unwind_Reason_Code code;
+   260	  unsigned long frames;
+   261	
+   262	  /* Choose between continuing to process _Unwind_RaiseException
+   263	     or _Unwind_ForcedUnwind.  */
+   264	  if (exc->private_1 == 0)
+   265	    return _Unwind_RaiseException (exc);
+   266	
+   267	  uw_init_context (&this_context);
+   268	  cur_context = this_context;
+   269	
+   270	  code = _Unwind_ForcedUnwind_Phase2 (exc, &cur_context, &frames);
+   271	
+   272	  gcc_assert (code == _URC_INSTALL_CONTEXT);
+   273	
+   274	  uw_install_context (&this_context, &cur_context, frames);
+   275	}
+=== GCC symbol versions/export ===
+codes/gcc/libgcc/config/xtensa/unwind-dw2-xtensa.c:536:alias (_Unwind_Resume_or_Rethrow);
+codes/gcc/libgcc/config/c6x/libunwind.S:131:UNWIND_WRAPPER _Unwind_Resume_or_Rethrow B4 2
+codes/gcc/libgcc/config/darwin-unwind.ver:18:__Unwind_Resume_or_Rethrow
+codes/gcc/libgcc/config/arm/libunwind.S:358:UNWIND_WRAPPER _Unwind_Resume_or_Rethrow 1
+codes/gcc/libgcc/config/libgcc-libsystem.ver:26: _Unwind_Resume_or_Rethrow
+codes/gcc/libgcc/config/ia64/unwind-ia64.c:2464:alias (_Unwind_Resume_or_Rethrow);
+=== platform codes/gcc target definitions ===
+codes/gcc/libgo/runtime/go-unwind.c:69:#if defined(_LIBUNWIND_STD_ABI)
+codes/gcc/libstdc++-v3/ChangeLog-2003:4906:	* config/os/hpux/os_defines.h: Define _LIBUNWIND_STD_ABI if we are
+codes/gcc/libstdc++-v3/ChangeLog-2003:4909:	_LIBUNWIND_STD_ABI is set.
+codes/gcc/libstdc++-v3/config/os/hpux/os_defines.h:93:#define _LIBUNWIND_STD_ABI 1
+codes/gcc/libstdc++-v3/libsupc++/eh_throw.cc:126:#if defined(_LIBUNWIND_STD_ABI)
+=== R33 compiler predefines ===
+#define __x86_64__ 1
+=== R33 CMake cache unwinder ===
+380:LIBCXXABI_ENABLE_STATIC_UNWINDER:BOOL=OFF
+472:LIBCXXABI_USE_LLVM_UNWINDER:BOOL=OFF
+=== platform libgcc_s dynsym/version Resume_or_Rethrow ===
+LIBGCC_PATH=tmp/GBS-ROOT/R29-consumer-libcxx-x86_64-20260812-02/local/BUILD-ROOTS/scratch.x86_64.0/usr/lib64/libgcc_s.so.1
+   155: 0000000000022a00   220 FUNC    GLOBAL DEFAULT   15 _Unwind_Resume_or_Rethrow@@GCC_3.3
+  01c:   2 (GCC_3.0)      10 (GCC_14.0.0)    e (GCC_12.0.0)    a (GCC_4.3.0)  
+  020:   2 (GCC_3.0)       a (GCC_4.3.0)     8 (GCC_4.0.0)    10 (GCC_14.0.0) 
+  024:   2 (GCC_3.0)       8 (GCC_4.0.0)     2 (GCC_3.0)       6 (GCC_3.4.2)  
+  028:   2 (GCC_3.0)       5 (GCC_3.4)       e (GCC_12.0.0)    9 (GCC_4.2.0)  
+  02c:   2 (GCC_3.0)       a (GCC_4.3.0)     2 (GCC_3.0)       9 (GCC_4.2.0)  
+  030:   2 (GCC_3.0)      10 (GCC_14.0.0)    4 (GCC_3.3.1)    10 (GCC_14.0.0) 
+  034:   a (GCC_4.3.0)     2 (GCC_3.0)      10 (GCC_14.0.0)    5 (GCC_3.4)    
+  03c:   2 (GCC_3.0)       2 (GCC_3.0)       a (GCC_4.3.0)     e (GCC_12.0.0) 
+  040:   f (GCC_13.0.0)    7 (GCC_3.4.4)     2 (GCC_3.0)      10 (GCC_14.0.0) 
+  044:   2 (GCC_3.0)       2 (GCC_3.0)       a (GCC_4.3.0)     2 (GCC_3.0)    
+  04c:   2 (GCC_3.0)       e (GCC_12.0.0)   10 (GCC_14.0.0)    a (GCC_4.3.0)  
+  050:   2 (GCC_3.0)       f (GCC_13.0.0)    2 (GCC_3.0)       e (GCC_12.0.0) 
+  054:   a (GCC_4.3.0)     b (GCC_4.7.0)     f (GCC_13.0.0)    2 (GCC_3.0)    
+  058:   2 (GCC_3.0)       5 (GCC_3.4)       2 (GCC_3.0)      10 (GCC_14.0.0) 
+  05c:   a (GCC_4.3.0)     8h(GCC_4.0.0)     ch(GCC_4.8.0)     2 (GCC_3.0)    
+  064:   2 (GCC_3.0)       e (GCC_12.0.0)    2 (GCC_3.0)       d (GCC_7.0.0)  
+  068:   2 (GCC_3.0)      10 (GCC_14.0.0)    4 (GCC_3.3.1)     e (GCC_12.0.0) 
+  06c:   2 (GCC_3.0)       2 (GCC_3.0)       b (GCC_4.7.0)     e (GCC_12.0.0) 
+  070:   a (GCC_4.3.0)     2 (GCC_3.0)       a (GCC_4.3.0)     2h(GCC_3.0)    
+  074:   d (GCC_7.0.0)     2h(GCC_3.0)       a (GCC_4.3.0)     2 (GCC_3.0)    
+  07c:   a (GCC_4.3.0)     a (GCC_4.3.0)    10 (GCC_14.0.0)    2 (GCC_3.0)    
+  080:   a (GCC_4.3.0)     8h(GCC_4.0.0)     a (GCC_4.3.0)     2 (GCC_3.0)    
+  084:   a (GCC_4.3.0)     8h(GCC_4.0.0)     2 (GCC_3.0)       e (GCC_12.0.0) 
+  088:  10 (GCC_14.0.0)    2 (GCC_3.0)       2 (GCC_3.0)       a (GCC_4.3.0)  
+  08c:   2 (GCC_3.0)       2 (GCC_3.0)       2 (GCC_3.0)       3 (GCC_3.3)    
+  090:  10 (GCC_14.0.0)    2 (GCC_3.0)       2 (GCC_3.0)       9 (GCC_4.2.0)  
+  094:   2 (GCC_3.0)       8 (GCC_4.0.0)     2 (GCC_3.0)       a (GCC_4.3.0)  
+  098:   8 (GCC_4.0.0)     2 (GCC_3.0)       5 (GCC_3.4)       3 (GCC_3.3)    
+  09c:   2 (GCC_3.0)       a (GCC_4.3.0)     a (GCC_4.3.0)     a (GCC_4.3.0)  
+  0a0:   2 (GCC_3.0)       2 (GCC_3.0)       5 (GCC_3.4)       7 (GCC_3.4.4)  
+  0a4:   8 (GCC_4.0.0)     2 (GCC_3.0)       2 (GCC_3.0)       f (GCC_13.0.0) 
+  0a8:   2 (GCC_3.0)       a (GCC_4.3.0)     2 (GCC_3.0)       2 (GCC_3.0)    
+  0ac:   2 (GCC_3.0)       7 (GCC_3.4.4)     9 (GCC_4.2.0)    10 (GCC_14.0.0) 
+  0b0:   3 (GCC_3.3)       5 (GCC_3.4)       2 (GCC_3.0)       e (GCC_12.0.0) 
+  0b8:  10 (GCC_14.0.0)    5 (GCC_3.4)       7 (GCC_3.4.4)     2 (GCC_3.0)    
+  0bc:   3 (GCC_3.3)       a (GCC_4.3.0)     7 (GCC_3.4.4)     a (GCC_4.3.0)  
+  0c0:   3 (GCC_3.3)       b (GCC_4.7.0)     2 (GCC_3.0)       a (GCC_4.3.0)  
+  0c4:   f (GCC_13.0.0)    e (GCC_12.0.0)   10 (GCC_14.0.0)    2 (GCC_3.0)    
+  0cc:   8 (GCC_4.0.0)     2 (GCC_3.0)       e (GCC_12.0.0)    2 (GCC_3.0)    
+  0d0:   2 (GCC_3.0)       2 (GCC_3.0)       2 (GCC_3.0)       6 (GCC_3.4.2)  
+  0d4:   c (GCC_4.8.0)     a (GCC_4.3.0)     7 (GCC_3.4.4)     2h(GCC_3.0)    
+  0d8:   a (GCC_4.3.0)     9 (GCC_4.2.0)     2 (GCC_3.0)       e (GCC_12.0.0) 
+  0e0:   2 (GCC_3.0)    
+  0x001c: Rev: 1  Flags: none  Index: 2  Cnt: 1  Name: GCC_3.0
+  0x0038: Rev: 1  Flags: none  Index: 3  Cnt: 2  Name: GCC_3.3
+  0x0054: Parent 1: GCC_3.0
+  0x005c: Rev: 1  Flags: none  Index: 4  Cnt: 2  Name: GCC_3.3.1
+  0x0078: Parent 1: GCC_3.3
+  0x009c: Parent 1: GCC_3.3.1
+EXIT_CODE=0

@@ -1,0 +1,89 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc $'\nset -e\nset +e\ngit diff --no-index -- codes/llvm/libcxxabi tmp/R34B/llvm-exp/libcxxabi > progress/R34B/patches/s1_complete_vs_platform.diff\nrc_all=$?\ngit diff --no-index -- tmp/R33/llvm-exp/libcxxabi/src/cxa_exception.cpp tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp > progress/R34B/patches/r34b_cxa_rethrow_only.diff\nrc_new=$?\nset -e\nprintf "FULL_DIFF_EXIT=%s\\nRETHROW_DIFF_EXIT=%s\\n" "$rc_all" "$rc_new"\n[ "$rc_all" -eq 1 ]\n[ "$rc_new" -eq 1 ]\nprintf "=== complete changed files ===\\n"\ngit diff --no-index --name-only -- codes/llvm/libcxxabi tmp/R34B/llvm-exp/libcxxabi || true\nprintf "=== R34B-only diff ===\\n"\ncat progress/R34B/patches/r34b_cxa_rethrow_only.diff\nprintf "=== hashes after change ===\\n"\nsha256sum tmp/R34B/llvm-exp/libcxxabi/include/cxxabi.h tmp/R34B/llvm-exp/libcxxabi/src/cxa_personality.cpp tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp progress/R34B/patches/s1_complete_vs_platform.diff progress/R34B/patches/r34b_cxa_rethrow_only.diff\nprintf "=== changed context ===\\n"\nnl -ba tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp | sed -n "615,670p"\n' 
+FULL_DIFF_EXIT=1
+RETHROW_DIFF_EXIT=1
+=== complete changed files ===
+tmp/R34B/llvm-exp/libcxxabi/include/cxxabi.h
+tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp
+tmp/R34B/llvm-exp/libcxxabi/src/cxa_personality.cpp
+=== R34B-only diff ===
+diff --git a/tmp/R33/llvm-exp/libcxxabi/src/cxa_exception.cpp b/tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp
+index 5d7edae..c7d135e 100644
+--- a/tmp/R33/llvm-exp/libcxxabi/src/cxa_exception.cpp
++++ b/tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp
+@@ -294,7 +294,10 @@ __cxa_throw(void *thrown_object, std::type_info *tinfo, void (_LIBCXXABI_DTOR_FU
+ #ifdef __USING_SJLJ_EXCEPTIONS__
+     _Unwind_SjLj_RaiseException(&exception_header->unwindHeader);
+ #else
+-    _Unwind_RaiseException(&exception_header->unwindHeader);
++    if (native_exception)
++        _Unwind_RaiseException(&exception_header->unwindHeader);
++    else
++        _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
+ #endif
+     //  This only happens when there is no handler, or some unexpected unwinding
+     //     error happens.
+=== hashes after change ===
+2d606e6ec1a2670c5818e571ab446319f86ef260f7e3dc3c685bd579fd5c337a  tmp/R34B/llvm-exp/libcxxabi/include/cxxabi.h
+6d62a6c163be52a6306cd11b9200ec860a1f62ef76d9654a9de08c3a588e42d9  tmp/R34B/llvm-exp/libcxxabi/src/cxa_personality.cpp
+95f5a9e80054ca15652312f97b13ebc097a8ef012a1bc68f97be734a8709aea4  tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp
+8b78d9166ff0e76da46b1d834cb43161452562f5ac67105a638e8bd9a13e7129  progress/R34B/patches/s1_complete_vs_platform.diff
+e9d75acb0c421edcd51a4044be5cbc267f76bb856cbd169813701465a13a156f  progress/R34B/patches/r34b_cxa_rethrow_only.diff
+=== changed context ===
+   615	    return exception_header->exceptionType;
+   616	}
+   617	
+   618	// 2.5.4 Rethrowing Exceptions
+   619	/*  This routine can rethrow native or foreign exceptions.
+   620	If the exception is native:
+   621	* marks the exception object on top of the caughtExceptions stack
+   622	  (in an implementation-defined way) as being rethrown.
+   623	* If the caughtExceptions stack is empty, it calls terminate()
+   624	  (see [C++FDIS] [except.throw], 15.1.8).
+   625	* It then calls _Unwind_RaiseException which should not return
+   626	   (terminate if it does).
+   627	  Note:  exception_header may be masquerading as a __cxa_dependent_exception
+   628	         and that's ok.
+   629	*/
+   630	void __cxa_rethrow() {
+   631	    __cxa_eh_globals* globals = __cxa_get_globals();
+   632	    __cxa_exception* exception_header = globals->caughtExceptions;
+   633	    if (NULL == exception_header)
+   634	        std::terminate();      // throw; called outside of a exception handler
+   635	    bool native_exception = __isOurExceptionClass(&exception_header->unwindHeader);
+   636	    if (native_exception)
+   637	    {
+   638	        //  Mark the exception as being rethrown (reverse the effects of __cxa_begin_catch)
+   639	        exception_header->handlerCount = -exception_header->handlerCount;
+   640	        globals->uncaughtExceptions += 1;
+   641	        //  __cxa_end_catch will remove this exception from the caughtExceptions stack if necessary
+   642	    }
+   643	    else  // this is a foreign exception
+   644	    {
+   645	        // The only way to communicate to __cxa_end_catch that we've rethrown
+   646	        //   a foreign exception, so don't delete us, is to pop the stack here
+   647	        //   which must be empty afterwards.  Then __cxa_end_catch will do
+   648	        //   nothing
+   649	        globals->caughtExceptions = 0;
+   650	    }
+   651	#ifdef __USING_SJLJ_EXCEPTIONS__
+   652	    _Unwind_SjLj_RaiseException(&exception_header->unwindHeader);
+   653	#else
+   654	    _Unwind_RaiseException(&exception_header->unwindHeader);
+   655	#endif
+   656	
+   657	    //  If we get here, some kind of unwinding error has occurred.
+   658	    //  There is some weird code generation bug happening with
+   659	    //     Apple clang version 4.0 (tags/Apple/clang-418.0.2) (based on LLVM 3.1svn)
+   660	    //     If we call failed_throw here.  Turns up with -O2 or higher, and -Os.
+   661	    __cxa_begin_catch(&exception_header->unwindHeader);
+   662	    if (native_exception)
+   663	        std::__terminate(exception_header->terminateHandler);
+   664	    // Foreign exception: can't get exception_header->terminateHandler
+   665	    std::terminate();
+   666	}
+   667	
+   668	/*
+   669	    If thrown_object is not null, atomically increment the referenceCount field
+   670	    of the __cxa_exception header associated with the thrown object referred to
+EXIT_CODE=0

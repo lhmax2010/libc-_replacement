@@ -1,0 +1,67 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc $'\nset -e\nprintf "=== project HEAD ===\\n"; git rev-parse HEAD\nprintf "=== codes/llvm identity ===\\n"; git -C codes/llvm branch --show-current; git -C codes/llvm rev-parse HEAD; git -C codes/llvm status --porcelain\nprintf "=== upstream tag ===\\n"; git -C codes/llvm rev-parse upstream/22.1.8; git -C codes/llvm rev-parse upstream/22.1.8^{}\nprintf "=== numeric version ===\\n"; rg -n "LLVM_VERSION_(MAJOR|MINOR|PATCH)" codes/llvm/cmake/Modules/LLVMVersion.cmake\nprintf "=== baseline and experiment SHA256 ===\\n"; sha256sum codes/llvm/libcxxabi/include/cxxabi.h codes/llvm/libcxxabi/src/cxa_personality.cpp codes/llvm/libcxxabi/src/cxa_exception.cpp tmp/R33/llvm-exp/libcxxabi/include/cxxabi.h tmp/R33/llvm-exp/libcxxabi/src/cxa_personality.cpp tmp/R33/llvm-exp/libcxxabi/src/cxa_exception.cpp\nprintf "=== pre-R34B experiment diff names ===\\n"; diff -qr codes/llvm/libcxxabi tmp/R33/llvm-exp/libcxxabi || true\nprintf "=== existing S1 diff ===\\n"; diff -u codes/llvm/libcxxabi/include/cxxabi.h tmp/R33/llvm-exp/libcxxabi/include/cxxabi.h || true; diff -u codes/llvm/libcxxabi/src/cxa_personality.cpp tmp/R33/llvm-exp/libcxxabi/src/cxa_personality.cpp || true; diff -u codes/llvm/libcxxabi/src/cxa_exception.cpp tmp/R33/llvm-exp/libcxxabi/src/cxa_exception.cpp || true\n' 
+=== project HEAD ===
+5265a756cd29422d9623debaa51596ccb6d6c11e
+=== codes/llvm identity ===
+tizen_base
+5ed6c77278dfa7a470667cf1a137723d3c96fe60
+=== upstream tag ===
+1334c36cbc5df6b3ec716fb797649e0e0d8cd7c1
+ca7933e47d3a3451d81e72ac174dcb5aa28b59d1
+=== numeric version ===
+3:if(NOT DEFINED LLVM_VERSION_MAJOR)
+4:  set(LLVM_VERSION_MAJOR 22)
+6:if(NOT DEFINED LLVM_VERSION_MINOR)
+7:  set(LLVM_VERSION_MINOR 1)
+9:if(NOT DEFINED LLVM_VERSION_PATCH)
+10:  set(LLVM_VERSION_PATCH 8)
+=== baseline and experiment SHA256 ===
+3c2ca8786f9419e1151a5fe92b8dbdcdadf0bde3011e7154d60b172b67ff4ebc  codes/llvm/libcxxabi/include/cxxabi.h
+55e136184adbaeee078a339afde2d6da103f4af7cb7c5c31926f2911127eff03  codes/llvm/libcxxabi/src/cxa_personality.cpp
+1feb758c547d8ddc2f4f3a08fe9fde586bba55649dd30e13191659d807093e19  codes/llvm/libcxxabi/src/cxa_exception.cpp
+2d606e6ec1a2670c5818e571ab446319f86ef260f7e3dc3c685bd579fd5c337a  tmp/R33/llvm-exp/libcxxabi/include/cxxabi.h
+6d62a6c163be52a6306cd11b9200ec860a1f62ef76d9654a9de08c3a588e42d9  tmp/R33/llvm-exp/libcxxabi/src/cxa_personality.cpp
+1feb758c547d8ddc2f4f3a08fe9fde586bba55649dd30e13191659d807093e19  tmp/R33/llvm-exp/libcxxabi/src/cxa_exception.cpp
+=== pre-R34B experiment diff names ===
+Files codes/llvm/libcxxabi/include/cxxabi.h and tmp/R33/llvm-exp/libcxxabi/include/cxxabi.h differ
+Files codes/llvm/libcxxabi/src/cxa_personality.cpp and tmp/R33/llvm-exp/libcxxabi/src/cxa_personality.cpp differ
+=== existing S1 diff ===
+--- codes/llvm/libcxxabi/include/cxxabi.h	2026-08-05 11:41:57.984830359 +0800
++++ tmp/R33/llvm-exp/libcxxabi/include/cxxabi.h	2026-08-13 22:29:58.003731425 +0800
+@@ -37,6 +37,9 @@
+ // runtime routines use C calling conventions, but are in __cxxabiv1 namespace
+ namespace __cxxabiv1 {
+ 
++// R33 experiment only: a type token used to match forced unwinding.
++class _LIBCXXABI_TYPE_VIS __forced_unwind {};
++
+ struct __cxa_exception;
+ 
+ extern "C"  {
+--- codes/llvm/libcxxabi/src/cxa_personality.cpp	2026-08-05 12:51:38.754063247 +0800
++++ tmp/R33/llvm-exp/libcxxabi/src/cxa_personality.cpp	2026-08-13 22:29:58.003731425 +0800
+@@ -819,6 +819,23 @@
+                     }
+                     // Else this is a catch (T) clause and will never
+                     //    catch a foreign exception
++                    else if (!native_exception &&
++                             (actions & _UA_FORCE_UNWIND))
++                    {
++                        void* adjustedPtr =
++                            get_thrown_object_ptr(unwind_exception);
++                        const __shim_type_info* forcedType =
++                            static_cast<const __shim_type_info*>(
++                                &typeid(__cxxabiv1::__forced_unwind));
++                        if (catchType->can_catch(forcedType, adjustedPtr))
++                        {
++                            results.ttypeIndex = ttypeIndex;
++                            results.actionRecord = actionRecord;
++                            results.adjustedPtr = adjustedPtr;
++                            results.reason = _URC_HANDLER_FOUND;
++                            return;
++                        }
++                    }
+                     else if (native_exception)
+                     {
+                         __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+EXIT_CODE=0

@@ -1,0 +1,49 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc $'\nset -e\nmv progress/R34B/patches/s1_complete_vs_platform.diff progress/R34B/patches/rejected_attempt1_s1_complete_vs_platform.diff\nmv progress/R34B/patches/r34b_cxa_rethrow_only.diff progress/R34B/patches/rejected_attempt1_wrong_cxa_throw.diff\nset +e\ngit diff --no-index -- codes/llvm/libcxxabi tmp/R34B/llvm-exp/libcxxabi > progress/R34B/patches/s1_complete_vs_platform.diff\nrc_all=$?\ngit diff --no-index -- tmp/R33/llvm-exp/libcxxabi/src/cxa_exception.cpp tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp > progress/R34B/patches/r34b_cxa_rethrow_only.diff\nrc_new=$?\nset -e\nprintf "FULL_DIFF_EXIT=%s\\nRETHROW_DIFF_EXIT=%s\\n" "$rc_all" "$rc_new"\n[ "$rc_all" -eq 1 ]\n[ "$rc_new" -eq 1 ]\nprintf "=== changed files ===\\n"\ngit diff --no-index --name-only -- codes/llvm/libcxxabi tmp/R34B/llvm-exp/libcxxabi || true\nprintf "=== R34B-only diff ===\\n"\ncat progress/R34B/patches/r34b_cxa_rethrow_only.diff\nprintf "=== assert __cxa_throw unchanged ===\\n"\ncmp -s <(sed -n "276,305p" tmp/R33/llvm-exp/libcxxabi/src/cxa_exception.cpp) <(sed -n "276,305p" tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp)\nprintf "CXX_THROW_UNCHANGED=YES\\n"\nprintf "=== assert target lines ===\\n"\nsed -n "648,660p" tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp\nrg -n "_Unwind_Resume_or_Rethrow" tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp\ncount=$(rg -c "_Unwind_Resume_or_Rethrow" tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp)\n[ "$count" -eq 1 ]\nprintf "RESUME_OR_RETHROW_COUNT=%s\\n" "$count"\nsha256sum tmp/R34B/llvm-exp/libcxxabi/include/cxxabi.h tmp/R34B/llvm-exp/libcxxabi/src/cxa_personality.cpp tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp progress/R34B/patches/s1_complete_vs_platform.diff progress/R34B/patches/r34b_cxa_rethrow_only.diff\n' 
+FULL_DIFF_EXIT=1
+RETHROW_DIFF_EXIT=1
+=== changed files ===
+tmp/R34B/llvm-exp/libcxxabi/include/cxxabi.h
+tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp
+tmp/R34B/llvm-exp/libcxxabi/src/cxa_personality.cpp
+=== R34B-only diff ===
+diff --git a/tmp/R33/llvm-exp/libcxxabi/src/cxa_exception.cpp b/tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp
+index 5d7edae..0a346f3 100644
+--- a/tmp/R33/llvm-exp/libcxxabi/src/cxa_exception.cpp
++++ b/tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp
+@@ -648,7 +648,10 @@ void __cxa_rethrow() {
+ #ifdef __USING_SJLJ_EXCEPTIONS__
+     _Unwind_SjLj_RaiseException(&exception_header->unwindHeader);
+ #else
+-    _Unwind_RaiseException(&exception_header->unwindHeader);
++    if (native_exception)
++        _Unwind_RaiseException(&exception_header->unwindHeader);
++    else
++        _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
+ #endif
+ 
+     //  If we get here, some kind of unwinding error has occurred.
+=== assert __cxa_throw unchanged ===
+CXX_THROW_UNCHANGED=YES
+=== assert target lines ===
+#ifdef __USING_SJLJ_EXCEPTIONS__
+    _Unwind_SjLj_RaiseException(&exception_header->unwindHeader);
+#else
+    if (native_exception)
+        _Unwind_RaiseException(&exception_header->unwindHeader);
+    else
+        _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
+#endif
+
+    //  If we get here, some kind of unwinding error has occurred.
+    //  There is some weird code generation bug happening with
+    //     Apple clang version 4.0 (tags/Apple/clang-418.0.2) (based on LLVM 3.1svn)
+    //     If we call failed_throw here.  Turns up with -O2 or higher, and -Os.
+654:        _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
+RESUME_OR_RETHROW_COUNT=1
+2d606e6ec1a2670c5818e571ab446319f86ef260f7e3dc3c685bd579fd5c337a  tmp/R34B/llvm-exp/libcxxabi/include/cxxabi.h
+6d62a6c163be52a6306cd11b9200ec860a1f62ef76d9654a9de08c3a588e42d9  tmp/R34B/llvm-exp/libcxxabi/src/cxa_personality.cpp
+9a6fe9e23c951cbace745362d0886cd5edac7d7ce8701959d89ae39138522b05  tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp
+dc66f56942ecdb95a9d51369d26a063cab56da2f40559f5eb6a53e568036231c  progress/R34B/patches/s1_complete_vs_platform.diff
+90f95c6e65bc24f97f80b32e0583189d5e92c58097d3bfc91dfd165496251dc7  progress/R34B/patches/r34b_cxa_rethrow_only.diff
+EXIT_CODE=0

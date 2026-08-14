@@ -1,0 +1,298 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc $'\nset -e\nprintf "=== libstdc++ HPUX definition ===\\n"\nnl -ba codes/gcc/libstdc++-v3/config/os/hpux/os_defines.h | sed -n "70,105p"\nprintf "=== libstdc++ changelog rationale ===\\n"\nnl -ba codes/gcc/libstdc++-v3/ChangeLog-2003 | sed -n "4888,4920p"\nprintf "=== libstdc++ rethrow use ===\\n"\nnl -ba codes/gcc/libstdc++-v3/libsupc++/eh_throw.cc | sed -n "95,145p"\nprintf "=== libgo use ===\\n"\nnl -ba codes/gcc/libgo/runtime/go-unwind.c | sed -n "50,85p"\nprintf "=== GCC implementation search ===\\n"\nrg -n "_Unwind_Resume_or_Rethrow|private_1" codes/gcc/libgcc --glob "*.c" --glob "*.h" --glob "*.inc" --glob "*.cc" | head -n 300\nprintf "=== LLVM libunwind implementation ===\\n"\nnl -ba codes/llvm/libunwind/src/UnwindLevel1-gcc-ext.c | sed -n "1,90p"\nprintf "=== LLVM declaration ===\\n"\nnl -ba codes/llvm/libunwind/include/unwind.h | sed -n "85,115p"\n' 
+=== libstdc++ HPUX definition ===
+    70	#else
+    71	  __extension__ long long strtoll (const char *, char **, int)
+    72	    __asm  ("strtol");
+    73	  __extension__ unsigned long long strtoull (const char *, char **, int)
+    74	    __asm  ("strtoul");
+    75	#endif
+    76	  }
+    77	} // namespace std
+    78	#endif // __cplusplus
+    79	
+    80	#define _GLIBCXX_USE_LONG_LONG 1
+    81	
+    82	// HPUX on IA64 requires vtable to be 64 bit aligned even at 32 bit
+    83	// mode.  We need to pad the vtable structure to achieve this.
+    84	#if !defined(_LP64) && defined (__ia64__)
+    85	#define _GLIBCXX_VTABLE_PADDING 8
+    86	typedef long int __padding_type;
+    87	#endif
+    88	
+    89	// GCC on IA64 HP-UX uses the HP-UX system unwind library,
+    90	// it does not have the _Unwind_Resume_or_Rethrow entry point
+    91	// because that is not part of the standard IA64 Unwind ABI.
+    92	#if defined (__ia64__)
+    93	#define _LIBUNWIND_STD_ABI 1
+    94	#endif
+    95	
+    96	/* Don't use pragma weak in gthread headers.  HP-UX rejects programs
+    97	   with unsatisfied external references even if all of those references
+    98	   are weak; gthread relies on such unsatisfied references being resolved
+    99	   to null pointers when weak symbol support is on.  */
+   100	#define _GLIBCXX_GTHREAD_USE_WEAK 0
+   101	
+   102	// No support for referencing weak symbols without a definition.
+   103	#define _GLIBCXX_USE_WEAK_REF 0
+   104	
+   105	// The strtold function is obsolete and not C99 conformant on PA HP-UX.
+=== libstdc++ changelog rationale ===
+  4888		check for __ilen > 0.
+  4889	
+  4890	2003-05-29  Sylvain Pion  <Sylvain.Pion@mpi-sb.mpg.de>
+  4891	
+  4892		PR libstdc++/10783
+  4893		* include/bits/stl_iterator.h (class __normal_iterator):
+  4894		Don't inherit from iterator, add missing typedefs.
+  4895	
+  4896	2003-05-29  Paolo Carlini <pcarlini@unitus.it>
+  4897	
+  4898		* testsuite/24_iterators/reverse_iterator.cc: Split up, as follows.
+  4899		* testsuite/24_iterators/reverse_iterator/1.cc: New.
+  4900		* testsuite/24_iterators/reverse_iterator/2.cc: New.
+  4901		* testsuite/24_iterators/reverse_iterator/3.cc: New, from
+  4902		PR libstdc++/10783.
+  4903	
+  4904	2003-05-27  Steve Ellcey  <sje@cup.hp.com>
+  4905	
+  4906		* config/os/hpux/os_defines.h: Define _LIBUNWIND_STD_ABI if we are
+  4907		on IA64 HP-UX.
+  4908		* libsupc++/eh_throw.cc: Don't call _Unwind_Resume_or_Rethrow if
+  4909		_LIBUNWIND_STD_ABI is set.
+  4910	
+  4911	2003-05-26  Brendan Kehoe  <brendan@zen.org>
+  4912	
+  4913		* include/bits/locale_facets.tcc (do_get): Honor $22.2.6.3.3/8 and
+  4914		make sure the number of digits required after the decimal-point
+  4915		(if any) is exactly the value returned by frac_digits().
+  4916		* testsuite/22_locale/money_get/get/char/9.cc: New.
+  4917		* testsuite/22_locale/money_get/get/wchar_t/9.cc: New.
+  4918	
+  4919	2003-05-27  Jonathan Wakely  <redi@gcc.gnu.org>
+  4920	
+=== libstdc++ rethrow use ===
+    95	
+    96	  // Some sort of unwinding error.  Note that terminate is a handler.
+    97	  __cxa_begin_catch (&header->exc.unwindHeader);
+    98	  std::terminate ();
+    99	}
+   100	
+   101	extern "C" void
+   102	__cxxabiv1::__cxa_rethrow ()
+   103	{
+   104	  __cxa_eh_globals *globals = __cxa_get_globals ();
+   105	  __cxa_exception *header = globals->caughtExceptions;
+   106	
+   107	  globals->uncaughtExceptions += 1;
+   108	
+   109	  // Watch for luser rethrowing with no active exception.
+   110	  if (header)
+   111	    {
+   112	      // Tell __cxa_end_catch this is a rethrow.
+   113	      if (!__is_gxx_exception_class(header->unwindHeader.exception_class))
+   114		globals->caughtExceptions = 0;
+   115	      else
+   116		{
+   117		  header->handlerCount = -header->handlerCount;
+   118		  // Only notify probe for C++ exceptions.
+   119		  PROBE2 (rethrow, __get_object_from_ambiguous_exception(header),
+   120			  header->exceptionType);
+   121		}
+   122	
+   123	#ifdef __USING_SJLJ_EXCEPTIONS__
+   124	      _Unwind_SjLj_Resume_or_Rethrow (&header->unwindHeader);
+   125	#else
+   126	#if defined(_LIBUNWIND_STD_ABI)
+   127	      _Unwind_RaiseException (&header->unwindHeader);
+   128	#else
+   129	      _Unwind_Resume_or_Rethrow (&header->unwindHeader);
+   130	#endif
+   131	#endif
+   132	  
+   133	      // Some sort of unwinding error.  Note that terminate is a handler.
+   134	      __cxa_begin_catch (&header->unwindHeader);
+   135	    }
+   136	  std::terminate ();
+   137	}
+=== libgo use ===
+    50	    << 8 | (_Unwind_Exception_Class) '\0')
+    51	   << 8 | (_Unwind_Exception_Class) '\0');
+    52	#endif
+    53	
+    54	/* Rethrow an exception.  */
+    55	
+    56	void rethrowException (void) __asm__(GOSYM_PREFIX "runtime.rethrowException");
+    57	
+    58	void
+    59	rethrowException ()
+    60	{
+    61	  struct _Unwind_Exception *hdr;
+    62	  _Unwind_Reason_Code reason;
+    63	
+    64	  hdr = (struct _Unwind_Exception *) runtime_g()->exception;
+    65	
+    66	#ifdef __USING_SJLJ_EXCEPTIONS__
+    67	  reason = _Unwind_SjLj_Resume_or_Rethrow (hdr);
+    68	#else
+    69	#if defined(_LIBUNWIND_STD_ABI)
+    70	  reason = _Unwind_RaiseException (hdr);
+    71	#else
+    72	  reason = _Unwind_Resume_or_Rethrow (hdr);
+    73	#endif
+    74	#endif
+    75	
+    76	  /* Rethrowing the exception should not return.  */
+    77	  runtime_printf ("failed to rethrow unwind exception (reason=%d)\n", reason);
+    78	  abort();
+    79	}
+    80	
+    81	/* Return the size of the type that holds an exception header, so that
+    82	   it can be allocated by Go code.  */
+    83	
+    84	uintptr unwindExceptionSize(void)
+    85	  __asm__ (GOSYM_PREFIX "runtime.unwindExceptionSize");
+=== GCC implementation search ===
+codes/gcc/libgcc/unwind-seh.c:395:_Unwind_Resume_or_Rethrow (struct _Unwind_Exception *exc)
+codes/gcc/libgcc/unwind.inc:132:  exc->private_1 = 0;
+codes/gcc/libgcc/unwind.inc:151:  _Unwind_Stop_Fn stop = (_Unwind_Stop_Fn) (_Unwind_Ptr) exc->private_1;
+codes/gcc/libgcc/unwind.inc:215:  exc->private_1 = (_Unwind_Ptr) stop;
+codes/gcc/libgcc/unwind.inc:241:  if (exc->private_1 == 0)
+codes/gcc/libgcc/unwind.inc:256:_Unwind_Resume_or_Rethrow (struct _Unwind_Exception *exc)
+codes/gcc/libgcc/unwind.inc:264:  if (exc->private_1 == 0)
+codes/gcc/libgcc/unwind-generic.h:99:  _Unwind_Word private_1;
+codes/gcc/libgcc/unwind-generic.h:155:_Unwind_Resume_or_Rethrow (struct _Unwind_Exception *);
+codes/gcc/libgcc/unwind-arm-common.inc:711:__gnu_Unwind_Resume_or_Rethrow (_Unwind_Control_Block *, phase2_vrs *);
+codes/gcc/libgcc/unwind-arm-common.inc:714:__gnu_Unwind_Resume_or_Rethrow (_Unwind_Control_Block * ucbp,
+codes/gcc/libgcc/unwind-dw2.c:1487:alias (_Unwind_Resume_or_Rethrow);
+codes/gcc/libgcc/unwind-compat.c:179:extern _Unwind_Reason_Code __libunwind_Unwind_Resume_or_Rethrow
+codes/gcc/libgcc/unwind-compat.c:183:_Unwind_Resume_or_Rethrow (struct _Unwind_Exception *exc)
+codes/gcc/libgcc/unwind-compat.c:185:  return __libunwind_Unwind_Resume_or_Rethrow (exc);
+codes/gcc/libgcc/unwind-compat.c:187:symver (_Unwind_Resume_or_Rethrow, GCC_3.3);
+codes/gcc/libgcc/unwind-sjlj.c:323:#define _Unwind_Resume_or_Rethrow	_Unwind_SjLj_Resume_or_Rethrow
+codes/gcc/libgcc/config/xtensa/unwind-dw2-xtensa.c:536:alias (_Unwind_Resume_or_Rethrow);
+codes/gcc/libgcc/config/ia64/unwind-ia64.c:2464:alias (_Unwind_Resume_or_Rethrow);
+=== LLVM libunwind implementation ===
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//
+     8	//  Implements gcc extensions to the C++ ABI Exception Handling Level 1.
+     9	//
+    10	//===----------------------------------------------------------------------===//
+    11	
+    12	#include <inttypes.h>
+    13	#include <stdbool.h>
+    14	#include <stdint.h>
+    15	#include <stdio.h>
+    16	#include <stdlib.h>
+    17	#include <string.h>
+    18	
+    19	#include "config.h"
+    20	#include "libunwind_ext.h"
+    21	#include "libunwind.h"
+    22	#include "Unwind-EHABI.h"
+    23	#include "unwind.h"
+    24	
+    25	#if defined(_AIX)
+    26	#include <sys/debug.h>
+    27	#endif
+    28	
+    29	#if defined(_LIBUNWIND_BUILD_ZERO_COST_APIS)
+    30	
+    31	#if defined(_LIBUNWIND_SUPPORT_SEH_UNWIND)
+    32	#define PRIVATE_1 private_[0]
+    33	#elif defined(_LIBUNWIND_ARM_EHABI)
+    34	#define PRIVATE_1 unwinder_cache.reserved1
+    35	#else
+    36	#define PRIVATE_1 private_1
+    37	#endif
+    38	
+    39	///  Called by __cxa_rethrow().
+    40	_LIBUNWIND_EXPORT _Unwind_Reason_Code
+    41	_Unwind_Resume_or_Rethrow(_Unwind_Exception *exception_object) {
+    42	  _LIBUNWIND_TRACE_API(
+    43	      "_Unwind_Resume_or_Rethrow(ex_obj=%p), private_1=%" PRIdPTR,
+    44	      (void *)exception_object, (intptr_t)exception_object->PRIVATE_1);
+    45	
+    46	  // If this is non-forced and a stopping place was found, then this is a
+    47	  // re-throw.
+    48	  // Call _Unwind_RaiseException() as if this was a new exception
+    49	  if (exception_object->PRIVATE_1 == 0) {
+    50	    return _Unwind_RaiseException(exception_object);
+    51	    // Will return if there is no catch clause, so that __cxa_rethrow can call
+    52	    // std::terminate().
+    53	  }
+    54	
+    55	  // Call through to _Unwind_Resume() which distinguishes between forced and
+    56	  // regular exceptions.
+    57	  _Unwind_Resume(exception_object);
+    58	  _LIBUNWIND_ABORT("_Unwind_Resume_or_Rethrow() called _Unwind_RaiseException()"
+    59	                   " which unexpectedly returned");
+    60	}
+    61	
+    62	/// Called by personality handler during phase 2 to get base address for data
+    63	/// relative encodings.
+    64	_LIBUNWIND_EXPORT uintptr_t
+    65	_Unwind_GetDataRelBase(struct _Unwind_Context *context) {
+    66	  _LIBUNWIND_TRACE_API("_Unwind_GetDataRelBase(context=%p)", (void *)context);
+    67	#if defined(_AIX)
+    68	  return unw_get_data_rel_base((unw_cursor_t *)context);
+    69	#else
+    70	  (void)context;
+    71	  _LIBUNWIND_ABORT("_Unwind_GetDataRelBase() not implemented");
+    72	#endif
+    73	}
+    74	
+    75	/// Called by personality handler during phase 2 to get base address for text
+    76	/// relative encodings.
+    77	_LIBUNWIND_EXPORT uintptr_t
+    78	_Unwind_GetTextRelBase(struct _Unwind_Context *context) {
+    79	  (void)context;
+    80	  _LIBUNWIND_TRACE_API("_Unwind_GetTextRelBase(context=%p)", (void *)context);
+    81	  _LIBUNWIND_ABORT("_Unwind_GetTextRelBase() not implemented");
+    82	}
+    83	
+    84	
+    85	/// Scans unwind information to find the function that contains the
+    86	/// specified code address "pc".
+    87	_LIBUNWIND_EXPORT void *_Unwind_FindEnclosingFunction(void *pc) {
+    88	  _LIBUNWIND_TRACE_API("_Unwind_FindEnclosingFunction(pc=%p)", pc);
+    89	#if defined(_AIX)
+    90	  if (pc == NULL)
+=== LLVM declaration ===
+    85	    _Unwind_ForcedUnwind(_Unwind_Exception *exception_object,
+    86	                         _Unwind_Stop_Fn stop, void *stop_parameter);
+    87	#endif
+    88	
+    89	#ifdef __USING_SJLJ_EXCEPTIONS__
+    90	typedef struct _Unwind_FunctionContext *_Unwind_FunctionContext_t;
+    91	extern void _Unwind_SjLj_Register(_Unwind_FunctionContext_t fc);
+    92	extern void _Unwind_SjLj_Unregister(_Unwind_FunctionContext_t fc);
+    93	#endif
+    94	
+    95	//
+    96	// The following are semi-supported extensions to the C++ ABI
+    97	//
+    98	
+    99	//
+   100	//  called by __cxa_rethrow().
+   101	//
+   102	#ifdef __USING_SJLJ_EXCEPTIONS__
+   103	extern _Unwind_Reason_Code
+   104	    _Unwind_SjLj_Resume_or_Rethrow(_Unwind_Exception *exception_object);
+   105	#else
+   106	extern _Unwind_Reason_Code
+   107	    _Unwind_Resume_or_Rethrow(_Unwind_Exception *exception_object);
+   108	#endif
+   109	
+   110	// _Unwind_Backtrace() is a gcc extension that walks the stack and calls the
+   111	// _Unwind_Trace_Fn once per frame until it reaches the bottom of the stack
+   112	// or the _Unwind_Trace_Fn function returns something other than _URC_NO_REASON.
+   113	typedef _Unwind_Reason_Code (*_Unwind_Trace_Fn)(struct _Unwind_Context *,
+   114	                                                void *);
+   115	extern _Unwind_Reason_Code _Unwind_Backtrace(_Unwind_Trace_Fn, void *);
+EXIT_CODE=0
