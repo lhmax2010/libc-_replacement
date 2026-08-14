@@ -1,0 +1,119 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND= bash -lc $'\nset -euo pipefail\n: > progress/R40/patches/diagnostic.diff\nfor rel in libcxxabi/include/cxxabi.h libcxxabi/src/cxa_exception.cpp libcxxabi/src/cxa_personality.cpp; do diff -u --label "baseline/$rel" --label "diagnostic/$rel" "tmp/R34B/llvm-exp/$rel" "tmp/R40/source-diagnostic/$rel" >> progress/R40/patches/diagnostic.diff || rc=$?; if [ "${rc:-0}" -gt 1 ]; then exit "$rc"; fi; rc=0; done\nsed -n "1,360p" progress/R40/patches/diagnostic.diff\nsha256sum progress/R40/patches/diagnostic.diff tmp/R40/source-diagnostic/libcxxabi/src/cxa_exception.cpp tmp/R40/source-diagnostic/libcxxabi/src/cxa_personality.cpp\n'
+--- baseline/libcxxabi/src/cxa_exception.cpp
++++ diagnostic/libcxxabi/src/cxa_exception.cpp
+@@ -13,6 +13,7 @@
+ #include "cxxabi.h"
+ 
+ #include <exception>        // for std::terminate
++#include <stdio.h>          // R40 observation-only state logging
+ #include <string.h>         // for memset
+ #include "cxa_exception.h"
+ #include "cxa_handlers.h"
+@@ -639,6 +640,22 @@
+     }
+     else  // this is a foreign exception
+     {
++        // R40 observation only: report the unwinder's forced-unwind state at
++        // the exact point where a foreign exception is rethrown.  This does
++        // not mutate the exception object or select a different control path.
++#if defined(_LIBCXXABI_ARM_EHABI)
++        fprintf(stderr,
++                "R40_RETHROW_STATE arch=armv7l reserved1=0x%lx reserved4=0x%lx unwind=%p\n",
++                static_cast<unsigned long>(exception_header->unwindHeader.unwinder_cache.reserved1),
++                static_cast<unsigned long>(exception_header->unwindHeader.unwinder_cache.reserved4),
++                static_cast<void*>(&exception_header->unwindHeader));
++#else
++        fprintf(stderr,
++                "R40_RETHROW_STATE arch=x86_64 private_1=0x%lx private_2=0x%lx unwind=%p\n",
++                static_cast<unsigned long>(exception_header->unwindHeader.private_1),
++                static_cast<unsigned long>(exception_header->unwindHeader.private_2),
++                static_cast<void*>(&exception_header->unwindHeader));
++#endif
+         // The only way to communicate to __cxa_end_catch that we've rethrown
+         //   a foreign exception, so don't delete us, is to pop the stack here
+         //   which must be empty afterwards.  Then __cxa_end_catch will do
+@@ -651,7 +668,14 @@
+     if (native_exception)
+         _Unwind_RaiseException(&exception_header->unwindHeader);
+     else
+-        _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
++    {
++        _Unwind_Reason_Code r40_rethrow_result =
++            _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
++        fprintf(stderr,
++                "R40_RESUME_OR_RETHROW_RETURN reason=%d unwind=%p\n",
++                static_cast<int>(r40_rethrow_result),
++                static_cast<void*>(&exception_header->unwindHeader));
++    }
+ #endif
+ 
+     //  If we get here, some kind of unwinding error has occurred.
+--- baseline/libcxxabi/src/cxa_personality.cpp
++++ diagnostic/libcxxabi/src/cxa_personality.cpp
+@@ -12,6 +12,7 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include <assert.h>
++#include <stdio.h> // R40 observation-only EHABI state logging
+ #include <stdlib.h>
+ #include <string.h>
+ #include <typeinfo>
+@@ -1196,6 +1197,7 @@
+         return _URC_FATAL_PHASE1_ERROR;
+ 
+     bool native_exception = __isOurExceptionClass(unwind_exception);
++    _Unwind_State r40_raw_state = state;
+ 
+ #if !defined(_LIBUNWIND_VERSION)
+     // Copy the address of _Unwind_Control_Block to r12 so that
+@@ -1234,6 +1236,17 @@
+         // will call this personality function with (_US_FORCE_UNWIND |
+         // _US_UNWIND_FRAME_STARTING).
+ 
++        // R40 observation only: report the EHABI barrier decision inputs.
++        fprintf(stderr,
++                "R40_EHABI_START raw_state=0x%x masked_state=0x%x force=%d native=%d barrier_sp=0x%lx current_sp=0x%lx unwind=%p\n",
++                static_cast<unsigned>(r40_raw_state),
++                static_cast<unsigned>(state),
++                static_cast<int>(is_force_unwinding),
++                static_cast<int>(native_exception),
++                static_cast<unsigned long>(unwind_exception->barrier_cache.sp),
++                static_cast<unsigned long>(_Unwind_GetGR(context, REG_SP)),
++                static_cast<void*>(unwind_exception));
++
+         // Phase 2 search
+         if (unwind_exception->barrier_cache.sp == _Unwind_GetGR(context, REG_SP))
+         {
+@@ -1249,8 +1262,14 @@
+                 // Search for the catching handler again for the foreign exception.
+                 scan_eh_tab(results, static_cast<_Unwind_Action>(_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME),
+                             native_exception, unwind_exception, context);
+-                if (results.reason != _URC_HANDLER_FOUND)  // phase1 search should guarantee to find one
++                if (results.reason != _URC_HANDLER_FOUND) { // phase1 search should guarantee to find one
++                    fprintf(stderr,
++                            "R40_EHABI_TERMINATE barrier_equal=1 force=%d reason=%d unwind=%p\n",
++                            static_cast<int>(is_force_unwinding),
++                            static_cast<int>(results.reason),
++                            static_cast<void*>(unwind_exception));
+                     call_terminate(native_exception, unwind_exception);
++                }
+             }
+ 
+             // Install the context for the catching handler
+@@ -1269,6 +1288,11 @@
+         else
+           scan_eh_tab(results, _UA_CLEANUP_PHASE, native_exception,
+                       unwind_exception, context);
++        fprintf(stderr,
++                "R40_EHABI_SCAN force=%d reason=%d barrier_equal=0 unwind=%p\n",
++                static_cast<int>(is_force_unwinding),
++                static_cast<int>(results.reason),
++                static_cast<void*>(unwind_exception));
+         if (results.reason == _URC_HANDLER_FOUND)
+         {
+             // Found a non-catching handler
+b1cebd04d855204ae616c6e9a793c6e27c92fed6c6c3f9887575f355670bb8c4  progress/R40/patches/diagnostic.diff
+90a8a4073c5cf6b879cd7bbaae8f0abdbba0453ba7ea88f509ae87acfeb3636a  tmp/R40/source-diagnostic/libcxxabi/src/cxa_exception.cpp
+3608ef33884dffc7d75a5bcd3f4fe2147d07e94431ca861a054f485f9710f3a6  tmp/R40/source-diagnostic/libcxxabi/src/cxa_personality.cpp
+EXIT_CODE=0

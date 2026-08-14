@@ -1,0 +1,54 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND= bash -lc $'\ndiff -u --label baseline/libcxxabi/src/cxa_exception.cpp --label diagnostic/libcxxabi/src/cxa_exception.cpp tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp tmp/R40/source-diagnostic/libcxxabi/src/cxa_exception.cpp > progress/R40/patches/diagnostic.diff || rc=$?; test "${rc:-0}" -eq 1; sed -n "1,240p" progress/R40/patches/diagnostic.diff; sha256sum progress/R40/patches/diagnostic.diff tmp/R40/source-diagnostic/libcxxabi/src/cxa_exception.cpp\n'
+--- baseline/libcxxabi/src/cxa_exception.cpp
++++ diagnostic/libcxxabi/src/cxa_exception.cpp
+@@ -13,6 +13,7 @@
+ #include "cxxabi.h"
+ 
+ #include <exception>        // for std::terminate
++#include <stdio.h>          // R40 observation-only state logging
+ #include <string.h>         // for memset
+ #include "cxa_exception.h"
+ #include "cxa_handlers.h"
+@@ -639,6 +640,22 @@
+     }
+     else  // this is a foreign exception
+     {
++        // R40 observation only: report the unwinder's forced-unwind state at
++        // the exact point where a foreign exception is rethrown.  This does
++        // not mutate the exception object or select a different control path.
++#if defined(_LIBCXXABI_ARM_EHABI)
++        fprintf(stderr,
++                "R40_RETHROW_STATE arch=armv7l reserved1=0x%lx reserved4=0x%lx unwind=%p\n",
++                static_cast<unsigned long>(exception_header->unwindHeader.unwinder_cache.reserved1),
++                static_cast<unsigned long>(exception_header->unwindHeader.unwinder_cache.reserved4),
++                static_cast<void*>(&exception_header->unwindHeader));
++#else
++        fprintf(stderr,
++                "R40_RETHROW_STATE arch=x86_64 private_1=0x%lx private_2=0x%lx unwind=%p\n",
++                static_cast<unsigned long>(exception_header->unwindHeader.private_1),
++                static_cast<unsigned long>(exception_header->unwindHeader.private_2),
++                static_cast<void*>(&exception_header->unwindHeader));
++#endif
+         // The only way to communicate to __cxa_end_catch that we've rethrown
+         //   a foreign exception, so don't delete us, is to pop the stack here
+         //   which must be empty afterwards.  Then __cxa_end_catch will do
+@@ -651,7 +668,14 @@
+     if (native_exception)
+         _Unwind_RaiseException(&exception_header->unwindHeader);
+     else
+-        _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
++    {
++        _Unwind_Reason_Code r40_rethrow_result =
++            _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
++        fprintf(stderr,
++                "R40_RESUME_OR_RETHROW_RETURN reason=%d unwind=%p\n",
++                static_cast<int>(r40_rethrow_result),
++                static_cast<void*>(&exception_header->unwindHeader));
++    }
+ #endif
+ 
+     //  If we get here, some kind of unwinding error has occurred.
+1e0493bd4e59d38f14201e84bba847f9a6eae49eb1abfdce817ab619e80fa85d  progress/R40/patches/diagnostic.diff
+90a8a4073c5cf6b879cd7bbaae8f0abdbba0453ba7ea88f509ae87acfeb3636a  tmp/R40/source-diagnostic/libcxxabi/src/cxa_exception.cpp
+EXIT_CODE=0
