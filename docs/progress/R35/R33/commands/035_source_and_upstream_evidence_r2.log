@@ -1,0 +1,1785 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=progress/R33/tools/collect_source_evidence.sh 
+=== libc++abi personality scan and foreign/native selection ===
+   630	    There are 3 types of scans needed:
+   631	
+   632	    1.  Scan for handler with native or foreign exception.  If handler found,
+   633	        save state and return _URC_HANDLER_FOUND, else return _URC_CONTINUE_UNWIND.
+   634	        May also report an error on invalid input.
+   635	        May terminate for invalid exception table.
+   636	        _UA_SEARCH_PHASE
+   637	
+   638	    2.  Scan for handler with foreign exception.  Must return _URC_HANDLER_FOUND,
+   639	        or call terminate.
+   640	        _UA_CLEANUP_PHASE && _UA_HANDLER_FRAME && !native_exception
+   641	
+   642	    3.  Scan for cleanups.  If a handler is found and this isn't forced unwind,
+   643	        then terminate, otherwise ignore the handler and keep looking for cleanup.
+   644	        If a cleanup is found, return _URC_HANDLER_FOUND, else return _URC_CONTINUE_UNWIND.
+   645	        May also report an error on invalid input.
+   646	        May terminate for invalid exception table.
+   647	        _UA_CLEANUP_PHASE && !_UA_HANDLER_FRAME
+   648	*/
+   649	
+   650	static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
+   651	                        bool native_exception,
+   652	                        _Unwind_Exception *unwind_exception,
+   653	                        _Unwind_Context *context) {
+   654	    // Initialize results to found nothing but an error
+   655	    results.ttypeIndex = 0;
+   656	    results.actionRecord = 0;
+   657	    results.languageSpecificData = 0;
+   658	    results.landingPad = 0;
+   659	    results.adjustedPtr = 0;
+   660	    results.reason = _URC_FATAL_PHASE1_ERROR;
+   661	    // Check for consistent actions
+   662	    if (actions & _UA_SEARCH_PHASE)
+   663	    {
+   664	        // Do Phase 1
+   665	        if (actions & (_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME | _UA_FORCE_UNWIND))
+   666	        {
+   667	            // None of these flags should be set during Phase 1
+   668	            //   Client error
+   669	            results.reason = _URC_FATAL_PHASE1_ERROR;
+   670	            return;
+   671	        }
+   672	    }
+   673	    else if (actions & _UA_CLEANUP_PHASE)
+   674	    {
+   675	        if ((actions & _UA_HANDLER_FRAME) && (actions & _UA_FORCE_UNWIND))
+   676	        {
+   677	            // _UA_HANDLER_FRAME should only be set if phase 1 found a handler.
+   678	            // If _UA_FORCE_UNWIND is set, phase 1 shouldn't have happened.
+   679	            //    Client error
+   680	            results.reason = _URC_FATAL_PHASE2_ERROR;
+   681	            return;
+   682	        }
+   683	    }
+   684	    else // Neither _UA_SEARCH_PHASE nor _UA_CLEANUP_PHASE is set
+   685	    {
+   686	        // One of these should be set.
+   687	        //   Client error
+   688	        results.reason = _URC_FATAL_PHASE1_ERROR;
+   689	        return;
+   690	    }
+   691	    // Start scan by getting exception table address.
+   692	    const uint8_t *lsda = (const uint8_t *)_Unwind_GetLanguageSpecificData(context);
+   693	    if (lsda == 0)
+   694	    {
+   695	        // There is no exception table
+   696	        results.reason = _URC_CONTINUE_UNWIND;
+   697	        return;
+   698	    }
+   699	    results.languageSpecificData = lsda;
+   700	#if defined(_AIX)
+   701	    uintptr_t base = _Unwind_GetDataRelBase(context);
+   702	#else
+   703	    uintptr_t base = 0;
+   704	#endif
+   705	    // Get the current instruction pointer and offset it before next
+   706	    // instruction in the current frame which threw the exception.
+   707	    uintptr_t ip = _Unwind_GetIP(context) - 1;
+   708	    // Get beginning current frame's code (as defined by the
+   709	    // emitted dwarf code)
+   710	    uintptr_t funcStart = _Unwind_GetRegionStart(context);
+   711	#if defined(__USING_SJLJ_EXCEPTIONS__) || defined(__WASM_EXCEPTIONS__)
+   712	    if (ip == uintptr_t(-1))
+   713	    {
+   714	        // no action
+   715	        results.reason = _URC_CONTINUE_UNWIND;
+   716	        return;
+   717	    }
+   718	    else if (ip == 0)
+   719	        call_terminate(native_exception, unwind_exception);
+   720	    // ip is 1-based index into call site table
+   721	#else  // !__USING_SJLJ_EXCEPTIONS__ && !__WASM_EXCEPTIONS__
+   722	    uintptr_t ipOffset = ip - funcStart;
+   723	#endif // !__USING_SJLJ_EXCEPTIONS__ && !__WASM_EXCEPTIONS__
+   724	    const uint8_t* classInfo = NULL;
+   725	    // Note: See JITDwarfEmitter::EmitExceptionTable(...) for corresponding
+   726	    //       dwarf emission
+   727	    // Parse LSDA header.
+   728	    uint8_t lpStartEncoding = *lsda++;
+   729	    const uint8_t* lpStart = lpStartEncoding == DW_EH_PE_omit
+   730	                                 ? (const uint8_t*)funcStart
+   731	                                 : (const uint8_t*)readEncodedPointer(&lsda, lpStartEncoding, base);
+   732	    uint8_t ttypeEncoding = *lsda++;
+   733	    if (ttypeEncoding != DW_EH_PE_omit)
+   734	    {
+   735	        // Calculate type info locations in emitted dwarf code which
+   736	        // were flagged by type info arguments to llvm.eh.selector
+   737	        // intrinsic
+   738	        uintptr_t classInfoOffset = readULEB128(&lsda);
+   739	        classInfo = lsda + classInfoOffset;
+   740	    }
+   741	    // Walk call-site table looking for range that
+   742	    // includes current PC.
+   743	    uint8_t callSiteEncoding = *lsda++;
+   744	#if defined(__USING_SJLJ_EXCEPTIONS__) || defined(__WASM_EXCEPTIONS__)
+   745	    (void)callSiteEncoding;  // When using SjLj/Wasm exceptions, callSiteEncoding is never used
+   746	#endif
+   747	    uint32_t callSiteTableLength = static_cast<uint32_t>(readULEB128(&lsda));
+   748	    const uint8_t* callSiteTableStart = lsda;
+   749	    const uint8_t* callSiteTableEnd = callSiteTableStart + callSiteTableLength;
+   750	    const uint8_t* actionTableStart = callSiteTableEnd;
+   751	    const uint8_t* callSitePtr = callSiteTableStart;
+   752	    while (callSitePtr < callSiteTableEnd)
+   753	    {
+   754	        // There is one entry per call site.
+   755	#if !defined(__USING_SJLJ_EXCEPTIONS__) && !defined(__WASM_EXCEPTIONS__)
+   756	        // The call sites are non-overlapping in [start, start+length)
+   757	        // The call sites are ordered in increasing value of start
+   758	        uintptr_t start = readEncodedPointer(&callSitePtr, callSiteEncoding);
+   759	        uintptr_t length = readEncodedPointer(&callSitePtr, callSiteEncoding);
+   760	        landing_pad_t landingPad = readEncodedPointer(&callSitePtr, callSiteEncoding);
+   761	        uintptr_t actionEntry = readULEB128(&callSitePtr);
+   762	        if ((start <= ipOffset) && (ipOffset < (start + length)))
+   763	#else  // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   764	        // ip is 1-based index into this table
+   765	        landing_pad_t landingPad = readULEB128(&callSitePtr);
+   766	        uintptr_t actionEntry = readULEB128(&callSitePtr);
+   767	        if (--ip == 0)
+   768	#endif // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   769	        {
+   770	            // Found the call site containing ip.
+   771	#if !defined(__USING_SJLJ_EXCEPTIONS__) && !defined(__WASM_EXCEPTIONS__)
+   772	            if (landingPad == 0)
+   773	            {
+   774	                // No handler here
+   775	                results.reason = _URC_CONTINUE_UNWIND;
+   776	                return;
+   777	            }
+   778	            landingPad = (uintptr_t)lpStart + landingPad;
+   779	#else  // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   780	            ++landingPad;
+   781	#endif // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   782	            results.landingPad = landingPad;
+   783	            if (actionEntry == 0)
+   784	            {
+   785	                // Found a cleanup
+   786	                results.reason = (actions & _UA_SEARCH_PHASE) ? _URC_CONTINUE_UNWIND : _URC_HANDLER_FOUND;
+   787	                return;
+   788	            }
+   789	            // Convert 1-based byte offset into
+   790	            const uint8_t* action = actionTableStart + (actionEntry - 1);
+   791	            bool hasCleanup = false;
+   792	            // Scan action entries until you find a matching handler, cleanup, or the end of action list
+   793	            while (true)
+   794	            {
+   795	                const uint8_t* actionRecord = action;
+   796	                int64_t ttypeIndex = readSLEB128(&action);
+   797	                if (ttypeIndex > 0)
+   798	                {
+   799	                    // Found a catch, does it actually catch?
+   800	                    // First check for catch (...)
+   801	                    const __shim_type_info* catchType =
+   802	                        get_shim_type_info(static_cast<uint64_t>(ttypeIndex),
+   803	                                           classInfo, ttypeEncoding,
+   804	                                           native_exception, unwind_exception,
+   805	                                           base);
+   806	                    if (catchType == 0)
+   807	                    {
+   808	                        // Found catch (...) catches everything, including
+   809	                        // foreign exceptions. This is search phase, cleanup
+   810	                        // phase with foreign exception, or forced unwinding.
+   811	                        assert(actions & (_UA_SEARCH_PHASE | _UA_HANDLER_FRAME |
+   812	                                          _UA_FORCE_UNWIND));
+   813	                        results.ttypeIndex = ttypeIndex;
+   814	                        results.actionRecord = actionRecord;
+   815	                        results.adjustedPtr =
+   816	                            get_thrown_object_ptr(unwind_exception);
+   817	                        results.reason = _URC_HANDLER_FOUND;
+   818	                        return;
+   819	                    }
+   820	                    // Else this is a catch (T) clause and will never
+   821	                    //    catch a foreign exception
+   822	                    else if (native_exception)
+   823	                    {
+   824	                        __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+   825	                        void* adjustedPtr = get_thrown_object_ptr(unwind_exception);
+   826	                        const __shim_type_info* excpType =
+   827	                            static_cast<const __shim_type_info*>(exception_header->exceptionType);
+   828	                        if (adjustedPtr == 0 || excpType == 0)
+   829	                        {
+   830	                            // Something very bad happened
+   831	                            call_terminate(native_exception, unwind_exception);
+   832	                        }
+   833	                        if (catchType->can_catch(excpType, adjustedPtr))
+   834	                        {
+   835	                            // Found a matching handler. This is either search
+   836	                            // phase or forced unwinding.
+   837	                            assert(actions &
+   838	                                   (_UA_SEARCH_PHASE | _UA_FORCE_UNWIND));
+   839	                            results.ttypeIndex = ttypeIndex;
+   840	                            results.actionRecord = actionRecord;
+   841	                            results.adjustedPtr = adjustedPtr;
+   842	                            results.reason = _URC_HANDLER_FOUND;
+   843	                            return;
+   844	                        }
+   845	                    }
+   846	                    // Scan next action ...
+   847	                }
+   848	                else if (ttypeIndex < 0)
+   849	                {
+   850	                    // Found an exception specification.
+   851	                    if (actions & _UA_FORCE_UNWIND) {
+   852	                        // Skip if forced unwinding.
+   853	                    } else if (native_exception) {
+   854	                        // Does the exception spec catch this native exception?
+   855	                        __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+   856	                        void* adjustedPtr = get_thrown_object_ptr(unwind_exception);
+   857	                        const __shim_type_info* excpType =
+   858	                            static_cast<const __shim_type_info*>(exception_header->exceptionType);
+   859	                        if (adjustedPtr == 0 || excpType == 0)
+   860	                        {
+   861	                            // Something very bad happened
+   862	                            call_terminate(native_exception, unwind_exception);
+   863	                        }
+   864	                        if (exception_spec_can_catch(ttypeIndex, classInfo,
+   865	                                                     ttypeEncoding, excpType,
+   866	                                                     adjustedPtr,
+   867	                                                     unwind_exception, base))
+   868	                        {
+   869	                            // Native exception caught by exception
+   870	                            // specification.
+   871	                            assert(actions & _UA_SEARCH_PHASE);
+   872	                            results.ttypeIndex = ttypeIndex;
+   873	                            results.actionRecord = actionRecord;
+   874	                            results.adjustedPtr = adjustedPtr;
+   875	                            results.reason = _URC_HANDLER_FOUND;
+  1028	_LIBCXXABI_FUNC_VIS _Unwind_Reason_Code
+  1029	#ifdef __USING_SJLJ_EXCEPTIONS__
+  1030	__gxx_personality_sj0
+  1031	#elif defined(__MVS__)
+  1032	__zos_cxx_personality_v2
+  1033	#else
+  1034	__gxx_personality_v0
+  1035	#endif
+  1036	#endif
+  1037	                    (int version, _Unwind_Action actions, uint64_t exceptionClass,
+  1038	                     _Unwind_Exception* unwind_exception, _Unwind_Context* context)
+  1039	{
+  1040	    if (version != 1 || unwind_exception == 0 || context == 0)
+  1041	        return _URC_FATAL_PHASE1_ERROR;
+  1042	
+  1043	    bool native_exception = (exceptionClass     & get_vendor_and_language) ==
+  1044	                            (kOurExceptionClass & get_vendor_and_language);
+  1045	    scan_results results;
+  1046	    // Process a catch handler for a native exception first.
+  1047	    if (actions == (_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME) &&
+  1048	        native_exception) {
+  1049	        // Reload the results from the phase 1 cache.
+  1050	        __cxa_exception* exception_header =
+  1051	            (__cxa_exception*)(unwind_exception + 1) - 1;
+  1052	        results.ttypeIndex = exception_header->handlerSwitchValue;
+  1053	        results.actionRecord = exception_header->actionRecord;
+  1054	        results.languageSpecificData = exception_header->languageSpecificData;
+  1055	        set_landing_pad(results, exception_header->catchTemp);
+  1056	        results.adjustedPtr = exception_header->adjustedPtr;
+  1057	
+  1058	        // Jump to the handler.
+  1059	        set_registers(unwind_exception, context, results);
+  1060	        // Cache base for calculating the address of ttype in
+  1061	        // __cxa_call_unexpected.
+  1062	        if (results.ttypeIndex < 0) {
+  1063	#if defined(_AIX)
+  1064	          exception_header->catchTemp = (void *)_Unwind_GetDataRelBase(context);
+  1065	#else
+  1066	          exception_header->catchTemp = 0;
+  1067	#endif
+  1068	        }
+  1069	        return _URC_INSTALL_CONTEXT;
+  1070	    }
+  1071	
+  1072	    // In other cases we need to scan LSDA.
+  1073	    scan_eh_tab(results, actions, native_exception, unwind_exception, context);
+  1074	    if (results.reason == _URC_CONTINUE_UNWIND ||
+  1075	        results.reason == _URC_FATAL_PHASE1_ERROR)
+  1076	        return results.reason;
+  1077	
+  1078	    if (actions & _UA_SEARCH_PHASE)
+  1079	    {
+  1080	        // Phase 1 search:  All we're looking for in phase 1 is a handler that
+  1081	        //   halts unwinding
+  1082	        assert(results.reason == _URC_HANDLER_FOUND);
+  1083	        if (native_exception) {
+  1084	            // For a native exception, cache the LSDA result.
+  1085	            __cxa_exception* exc = (__cxa_exception*)(unwind_exception + 1) - 1;
+  1086	            exc->handlerSwitchValue = static_cast<int>(results.ttypeIndex);
+  1087	            exc->actionRecord = results.actionRecord;
+  1088	            exc->languageSpecificData = results.languageSpecificData;
+  1089	            get_landing_pad(exc->catchTemp, results);
+  1090	            exc->adjustedPtr = results.adjustedPtr;
+  1091	#ifdef __WASM_EXCEPTIONS__
+  1092	            // Wasm only uses a single phase (_UA_SEARCH_PHASE), so save the
+  1093	            // results here.
+  1094	            set_registers(unwind_exception, context, results);
+  1095	#endif
+=== libc++abi begin-catch, current type, and rethrow ===
+   430	* Returns the adjusted pointer to the exception object, which is stored in
+   431	  the __cxa_exception by the personality routine.
+   432	
+   433	If the exception is foreign, this means it did not originate from one of throw
+   434	routines.  The foreign exception does not necessarily have a __cxa_exception
+   435	header.  However we can catch it here with a catch (...), or with a call
+   436	to terminate or unexpected during unwinding.
+   437	* Do not try to increment the exception's handler count, we don't know where
+   438	  it is.
+   439	* Push the exception on the stack of currently-caught exceptions only if the
+   440	  stack is empty.  The foreign exception has no way to link to the current
+   441	  top of stack.  If the stack is not empty, call terminate.  Even with an
+   442	  empty stack, this is hacked in by pushing a pointer to an imaginary
+   443	  __cxa_exception block in front of the foreign exception.  It would be better
+   444	  if the __cxa_eh_globals structure had a stack of _Unwind_Exception, but it
+   445	  doesn't.  It has a stack of __cxa_exception (which has a next* in it).
+   446	* Do not decrement the uncaught_exception count because we didn't increment it
+   447	  in __cxa_throw (or one of our rethrow functions).
+   448	* If we haven't terminated, assume the exception object is just past the
+   449	  _Unwind_Exception and return a pointer to that.
+   450	*/
+   451	void*
+   452	__cxa_begin_catch(void* unwind_arg) throw()
+   453	{
+   454	    _Unwind_Exception* unwind_exception = static_cast<_Unwind_Exception*>(unwind_arg);
+   455	    bool native_exception = __isOurExceptionClass(unwind_exception);
+   456	    __cxa_eh_globals* globals = __cxa_get_globals();
+   457	    // exception_header is a hackish offset from a foreign exception, but it
+   458	    //   works as long as we're careful not to try to access any __cxa_exception
+   459	    //   parts.
+   460	    __cxa_exception* exception_header =
+   461	            cxa_exception_from_exception_unwind_exception
+   462	            (
+   463	                static_cast<_Unwind_Exception*>(unwind_exception)
+   464	            );
+   465	
+   466	#if defined(__MVS__)
+   467	    // Remove the exception object from the linked list of exceptions that the z/OS unwinder
+   468	    // maintains before adding it to the libc++abi list of caught exceptions.
+   469	    // The libc++abi will manage the lifetime of the exception from this point forward.
+   470	    _UnwindZOS_PopException();
+   471	#endif
+   472	
+   473	    if (native_exception)
+   474	    {
+   475	        // Increment the handler count, removing the flag about being rethrown
+   476	        exception_header->handlerCount = exception_header->handlerCount < 0 ?
+   477	            -exception_header->handlerCount + 1 : exception_header->handlerCount + 1;
+   478	        //  place the exception on the top of the stack if it's not already
+   479	        //    there by a previous rethrow
+   480	        if (exception_header != globals->caughtExceptions)
+   481	        {
+   482	            exception_header->nextException = globals->caughtExceptions;
+   483	            globals->caughtExceptions = exception_header;
+   484	        }
+   485	        globals->uncaughtExceptions -= 1;   // Not atomically, since globals are thread-local
+   486	#if defined(_LIBCXXABI_ARM_EHABI)
+   487	        return reinterpret_cast<void*>(exception_header->unwindHeader.barrier_cache.bitpattern[0]);
+   488	#else
+   489	        return exception_header->adjustedPtr;
+   490	#endif
+   491	    }
+   492	    // Else this is a foreign exception
+   493	    // If the caughtExceptions stack is not empty, terminate
+   494	    if (globals->caughtExceptions != 0)
+   495	        std::terminate();
+   496	    // Push the foreign exception on to the stack
+   497	    globals->caughtExceptions = exception_header;
+   498	    return unwind_exception + 1;
+   499	}
+   500	
+   590	        }
+   591	    }
+   592	}
+   593	
+   594	void __cxa_call_terminate(void* unwind_arg) throw() {
+   595	  __cxa_begin_catch(unwind_arg);
+   596	  std::terminate();
+   597	}
+   598	
+   599	// Note:  exception_header may be masquerading as a __cxa_dependent_exception
+   600	//        and that's ok.  exceptionType is there too.
+   601	//        However watch out for foreign exceptions.  Return null for them.
+   602	std::type_info *__cxa_current_exception_type() {
+   603	//  get the current exception
+   604	    __cxa_eh_globals *globals = __cxa_get_globals_fast();
+   605	    if (NULL == globals)
+   606	        return NULL;     //  If there have never been any exceptions, there are none now.
+   607	    __cxa_exception *exception_header = globals->caughtExceptions;
+   608	    if (NULL == exception_header)
+   609	        return NULL;        //  No current exception
+   610	    if (!__isOurExceptionClass(&exception_header->unwindHeader))
+   611	        return NULL;
+   612	    return exception_header->exceptionType;
+   613	}
+   614	
+   615	// 2.5.4 Rethrowing Exceptions
+   616	/*  This routine can rethrow native or foreign exceptions.
+   617	If the exception is native:
+   618	* marks the exception object on top of the caughtExceptions stack
+   619	  (in an implementation-defined way) as being rethrown.
+   620	* If the caughtExceptions stack is empty, it calls terminate()
+   621	  (see [C++FDIS] [except.throw], 15.1.8).
+   622	* It then calls _Unwind_RaiseException which should not return
+   623	   (terminate if it does).
+   624	  Note:  exception_header may be masquerading as a __cxa_dependent_exception
+   625	         and that's ok.
+   626	*/
+   627	void __cxa_rethrow() {
+   628	    __cxa_eh_globals* globals = __cxa_get_globals();
+   629	    __cxa_exception* exception_header = globals->caughtExceptions;
+   630	    if (NULL == exception_header)
+   631	        std::terminate();      // throw; called outside of a exception handler
+   632	    bool native_exception = __isOurExceptionClass(&exception_header->unwindHeader);
+   633	    if (native_exception)
+   634	    {
+   635	        //  Mark the exception as being rethrown (reverse the effects of __cxa_begin_catch)
+   636	        exception_header->handlerCount = -exception_header->handlerCount;
+   637	        globals->uncaughtExceptions += 1;
+   638	        //  __cxa_end_catch will remove this exception from the caughtExceptions stack if necessary
+   639	    }
+   640	    else  // this is a foreign exception
+   641	    {
+   642	        // The only way to communicate to __cxa_end_catch that we've rethrown
+   643	        //   a foreign exception, so don't delete us, is to pop the stack here
+   644	        //   which must be empty afterwards.  Then __cxa_end_catch will do
+   645	        //   nothing
+   646	        globals->caughtExceptions = 0;
+   647	    }
+   648	#ifdef __USING_SJLJ_EXCEPTIONS__
+   649	    _Unwind_SjLj_RaiseException(&exception_header->unwindHeader);
+   650	#else
+   651	    _Unwind_RaiseException(&exception_header->unwindHeader);
+   652	#endif
+   653	
+   654	    //  If we get here, some kind of unwinding error has occurred.
+   655	    //  There is some weird code generation bug happening with
+   656	    //     Apple clang version 4.0 (tags/Apple/clang-418.0.2) (based on LLVM 3.1svn)
+   657	    //     If we call failed_throw here.  Turns up with -O2 or higher, and -Os.
+   658	    __cxa_begin_catch(&exception_header->unwindHeader);
+   659	    if (native_exception)
+   660	        std::__terminate(exception_header->terminateHandler);
+   661	    // Foreign exception: can't get exception_header->terminateHandler
+   662	    std::terminate();
+   663	}
+   664	
+   665	/*
+=== libc++abi public ABI header current state ===
+    45	extern _LIBCXXABI_FUNC_VIS void *
+    46	__cxa_allocate_exception(size_t thrown_size) _LIBCXXABI_NOEXCEPT;
+    47	extern _LIBCXXABI_FUNC_VIS void
+    48	__cxa_free_exception(void *thrown_exception) _LIBCXXABI_NOEXCEPT;
+    49	// This function is an LLVM extension, which mirrors the same extension in libsupc++ and libcxxrt
+    50	extern _LIBCXXABI_FUNC_VIS __cxa_exception*
+    51	#ifdef __wasm__
+    52	// In Wasm, a destructor returns its argument
+    53	__cxa_init_primary_exception(void* object, std::type_info* tinfo, void*(_LIBCXXABI_DTOR_FUNC* dest)(void*)) _LIBCXXABI_NOEXCEPT;
+    54	#else
+    55	__cxa_init_primary_exception(void* object, std::type_info* tinfo, void(_LIBCXXABI_DTOR_FUNC* dest)(void*)) _LIBCXXABI_NOEXCEPT;
+    56	#endif
+    57	
+    58	// 2.4.3 Throwing the Exception Object
+    59	extern _LIBCXXABI_FUNC_VIS _LIBCXXABI_NORETURN void
+    60	__cxa_throw(void *thrown_exception, std::type_info *tinfo,
+    61	#ifdef __wasm__
+    62	            void *(_LIBCXXABI_DTOR_FUNC *dest)(void *));
+    63	#else
+    64	            void (_LIBCXXABI_DTOR_FUNC *dest)(void *));
+    65	#endif
+    66	
+    67	// 2.5.3 Exception Handlers
+    68	extern _LIBCXXABI_FUNC_VIS void *
+    69	__cxa_get_exception_ptr(void *exceptionObject) _LIBCXXABI_NOEXCEPT;
+    70	extern _LIBCXXABI_FUNC_VIS void *
+    71	__cxa_begin_catch(void *exceptionObject) _LIBCXXABI_NOEXCEPT;
+    72	extern _LIBCXXABI_FUNC_VIS void __cxa_end_catch();
+    73	#if defined(_LIBCXXABI_ARM_EHABI)
+    74	extern _LIBCXXABI_FUNC_VIS bool
+    75	__cxa_begin_cleanup(void *exceptionObject) _LIBCXXABI_NOEXCEPT;
+    76	extern _LIBCXXABI_FUNC_VIS void __cxa_end_cleanup();
+    77	#endif
+    78	extern _LIBCXXABI_FUNC_VIS std::type_info *__cxa_current_exception_type();
+    79	
+    80	// GNU extension
+    81	// Calls `terminate` with the current exception being caught. This function is used by GCC when a `noexcept` function
+    82	// throws an exception inside a try/catch block and doesn't catch it.
+    83	extern _LIBCXXABI_FUNC_VIS _LIBCXXABI_NORETURN void __cxa_call_terminate(void*) _LIBCXXABI_NOEXCEPT;
+    84	
+    85	// 2.5.4 Rethrowing Exceptions
+    86	extern _LIBCXXABI_FUNC_VIS _LIBCXXABI_NORETURN void __cxa_rethrow();
+    87	
+    88	// 2.6 Auxiliary Runtime APIs
+    89	extern _LIBCXXABI_FUNC_VIS _LIBCXXABI_NORETURN void __cxa_bad_cast(void);
+    90	extern _LIBCXXABI_FUNC_VIS _LIBCXXABI_NORETURN void __cxa_bad_typeid(void);
+    91	extern _LIBCXXABI_FUNC_VIS _LIBCXXABI_NORETURN void
+    92	__cxa_throw_bad_array_new_length(void);
+    93	
+    94	// 3.2.6 Pure Virtual Function API
+    95	extern _LIBCXXABI_FUNC_VIS _LIBCXXABI_NORETURN void __cxa_pure_virtual(void);
+    96	
+    97	// 3.2.7 Deleted Virtual Function API
+    98	extern _LIBCXXABI_FUNC_VIS _LIBCXXABI_NORETURN void __cxa_deleted_virtual(void);
+    99	
+   100	// 3.3.2 One-time Construction API
+   101	#if defined(_LIBCXXABI_GUARD_ABI_ARM)
+   102	extern _LIBCXXABI_FUNC_VIS _LIBCXXABI_ALWAYS_COLD int __cxa_guard_acquire(uint32_t *);
+   103	extern _LIBCXXABI_FUNC_VIS _LIBCXXABI_ALWAYS_COLD void __cxa_guard_release(uint32_t *);
+   104	extern _LIBCXXABI_FUNC_VIS _LIBCXXABI_ALWAYS_COLD void __cxa_guard_abort(uint32_t *);
+   105	#else
+=== libstdc++ personality mapping ===
+   535	  else if (action_record == 0)
+   536	    {
+   537	      // If ip is present, has a non-null landing pad, and a null
+   538	      // action table offset, then there are only cleanups present.
+   539	      // Cleanups use a zero switch value, as set above.
+   540	      found_type = found_cleanup;
+   541	    }
+   542	  else
+   543	    {
+   544	      // Otherwise we have a catch handler or exception specification.
+   545	
+   546	      _sleb128_t ar_filter, ar_disp;
+   547	      const std::type_info* catch_type;
+   548	      _throw_typet* throw_type;
+   549	      bool saw_cleanup = false;
+   550	      bool saw_handler = false;
+   551	
+   552	#ifdef __ARM_EABI_UNWINDER__
+   553	      // ??? How does this work - more importantly, how does it interact with
+   554	      // dependent exceptions?
+   555	      throw_type = ue_header;
+   556	      if (actions & _UA_FORCE_UNWIND)
+   557		{
+   558		  __GXX_INIT_FORCED_UNWIND_CLASS(ue_header->exception_class);
+   559		}
+   560	      else if (!foreign_exception)
+   561		thrown_ptr = __get_object_from_ue (ue_header);
+   562	#else
+   563	#if __cpp_rtti
+   564	      // During forced unwinding, match a magic exception type.
+   565	      if (actions & _UA_FORCE_UNWIND)
+   566		{
+   567		  throw_type = &typeid(abi::__forced_unwind);
+   568		}
+   569	      // With a foreign exception class, there's no exception type.
+   570	      // ??? What to do about GNU Java and GNU Ada exceptions?
+   571	      else if (foreign_exception)
+   572		{
+   573		  throw_type = &typeid(abi::__foreign_exception);
+   574		}
+   575	      else
+   576	#endif
+   577	        {
+   578	          thrown_ptr = __get_object_from_ue (ue_header);
+   579	          throw_type = __get_exception_header_from_obj
+   580	            (thrown_ptr)->exceptionType;
+   581	        }
+   582	#endif
+   583	
+   584	      while (1)
+   585		{
+   586		  p = action_record;
+   587		  p = read_sleb128 (p, &ar_filter);
+   588		  read_sleb128 (p, &ar_disp);
+   589	
+   590		  if (ar_filter == 0)
+   591		    {
+   592		      // Zero filter values are cleanups.
+   593		      saw_cleanup = true;
+   594		    }
+   595		  else if (actions == _UA_CLEANUP_PHASE)
+   596		    // We checked the handlers in the search phase; if one of them
+   597		    // matched, actions would also have _UA_HANDLER_FRAME set.
+   598		    ;
+   599		  else if (ar_filter > 0)
+   600		    {
+   601		      // Positive filter values are handlers.
+   602		      catch_type = get_ttype_entry (&info, ar_filter);
+   603	
+   604		      // Null catch type is a catch-all handler; we can catch foreign
+   605		      // exceptions with this.  Otherwise we must match types.
+   606		      if (! catch_type
+   607			  || (throw_type
+   608			      && get_adjusted_ptr (catch_type, throw_type,
+   609						   &thrown_ptr)))
+   610			{
+   611			  saw_handler = true;
+   612			  break;
+   613			}
+   614		    }
+   615		  else
+   616		    {
+   617		      // Negative filter values are exception specifications.
+   618		      // ??? How do foreign exceptions fit in?  As far as I can
+   619		      // see we can't match because there's no __cxa_exception
+   620		      // object to stuff bits in for __cxa_call_unexpected to use.
+   621		      // Allow them iff the exception spec is non-empty.  I.e.
+   622		      // a throw() specification results in __unexpected.
+   623		      if ((throw_type
+   624			   && !(actions & _UA_FORCE_UNWIND)
+   625			   && !foreign_exception)
+=== libstdc++ type token ===
+    35	
+    36	#pragma GCC visibility push(default)
+    37	
+    38	#ifdef __cplusplus
+    39	namespace __cxxabiv1
+    40	{  
+    41	  /** 
+    42	   *  @brief Thrown as part of forced unwinding.
+    43	   *  @ingroup exceptions
+    44	   *
+    45	   *  A magic placeholder class that can be caught by reference to
+    46	   *  recognize forced unwinding.
+    47	   */
+    48	  class __forced_unwind
+    49	  {
+    50	    virtual ~__forced_unwind() throw();
+    51	
+    52	    // Prevent catch by value.
+    53	    virtual void __pure_dummy() = 0; 
+    54	  };
+    55	}
+    56	#endif // __cplusplus
+    57	
+    58	#pragma GCC visibility pop
+    59	
+    60	#endif // __CXXABI_FORCED_H 
+=== libstdc++ rethrow ===
+    95	
+    96	  // Some sort of unwinding error.  Note that terminate is a handler.
+    97	  __cxa_begin_catch (&header->exc.unwindHeader);
+    98	  std::terminate ();
+    99	}
+   100	
+   101	extern "C" void
+   102	__cxxabiv1::__cxa_rethrow ()
+   103	{
+   104	  __cxa_eh_globals *globals = __cxa_get_globals ();
+   105	  __cxa_exception *header = globals->caughtExceptions;
+   106	
+   107	  globals->uncaughtExceptions += 1;
+   108	
+   109	  // Watch for luser rethrowing with no active exception.
+   110	  if (header)
+   111	    {
+   112	      // Tell __cxa_end_catch this is a rethrow.
+   113	      if (!__is_gxx_exception_class(header->unwindHeader.exception_class))
+   114		globals->caughtExceptions = 0;
+   115	      else
+   116		{
+   117		  header->handlerCount = -header->handlerCount;
+   118		  // Only notify probe for C++ exceptions.
+   119		  PROBE2 (rethrow, __get_object_from_ambiguous_exception(header),
+   120			  header->exceptionType);
+   121		}
+   122	
+   123	#ifdef __USING_SJLJ_EXCEPTIONS__
+   124	      _Unwind_SjLj_Resume_or_Rethrow (&header->unwindHeader);
+   125	#else
+   126	#if defined(_LIBUNWIND_STD_ABI)
+   127	      _Unwind_RaiseException (&header->unwindHeader);
+   128	#else
+   129	      _Unwind_Resume_or_Rethrow (&header->unwindHeader);
+   130	#endif
+   131	#endif
+   132	  
+   133	      // Some sort of unwinding error.  Note that terminate is a handler.
+   134	      __cxa_begin_catch (&header->unwindHeader);
+   135	    }
+   136	  std::terminate ();
+   137	}
+=== libstdc++ current-exception-type ===
+    25	
+    26	#include <typeinfo>
+    27	#include <cxxabi.h>
+    28	#include "unwind-cxx.h"
+    29	
+    30	namespace __cxxabiv1
+    31	{
+    32	
+    33	// Returns the type_info for the currently handled exception [15.3/8], or
+    34	// null if there is none.
+    35	extern "C"
+    36	std::type_info *__cxa_current_exception_type () _GLIBCXX_NOTHROW
+    37	{
+    38	  __cxa_eh_globals *globals = __cxa_get_globals ();
+    39	  __cxa_exception *header = globals->caughtExceptions;
+    40	  if (header)
+    41	    {
+    42	      if (__is_dependent_exception (header->unwindHeader.exception_class))
+    43	        {
+    44	          __cxa_dependent_exception *de =
+    45	            __get_dependent_exception_from_ue (&header->unwindHeader);
+    46	          header = __get_exception_header_from_obj (de->primaryException);
+    47	        }
+    48	      return header->exceptionType;
+    49	    }
+    50	  else
+    51	    return 0;
+    52	}
+    53	
+    54	} // namespace __cxxabiv1
+=== local llvm history searches ===
+HEAD:libcxxabi/test/forced_unwind3.pass.cpp:10:// what pthread_cancel does.
+HEAD:libcxxabi/test/forced_unwind4.pass.cpp:12:// pthread_cancel in case of glibc calls _Unwind_ForcedUnwind from a signal on
+HEAD:libcxxabi/test/forced_unwind4.pass.cpp:18:// Android/Bionic does not support pthread_cancel.
+HEAD:libcxxabi/test/forced_unwind4.pass.cpp:54:  pthread_cancel(child_thread);
+=== experimental diff stats and content ===
+--- /home/toolchain/development/libc++_replacement/codes/llvm/libcxxabi/include/cxxabi.h	2026-08-05 11:41:57.984830359 +0800
++++ /home/toolchain/development/libc++_replacement/tmp/R33/llvm-exp/libcxxabi/include/cxxabi.h	2026-08-13 22:29:58.003731425 +0800
+@@ -37,6 +37,9 @@
+ // runtime routines use C calling conventions, but are in __cxxabiv1 namespace
+ namespace __cxxabiv1 {
+ 
++// R33 experiment only: a type token used to match forced unwinding.
++class _LIBCXXABI_TYPE_VIS __forced_unwind {};
++
+ struct __cxa_exception;
+ 
+ extern "C"  {
+--- /home/toolchain/development/libc++_replacement/codes/llvm/libcxxabi/src/cxa_personality.cpp	2026-08-05 12:51:38.754063247 +0800
++++ /home/toolchain/development/libc++_replacement/tmp/R33/llvm-exp/libcxxabi/src/cxa_personality.cpp	2026-08-13 22:29:58.003731425 +0800
+@@ -819,6 +819,23 @@
+                     }
+                     // Else this is a catch (T) clause and will never
+                     //    catch a foreign exception
++                    else if (!native_exception &&
++                             (actions & _UA_FORCE_UNWIND))
++                    {
++                        void* adjustedPtr =
++                            get_thrown_object_ptr(unwind_exception);
++                        const __shim_type_info* forcedType =
++                            static_cast<const __shim_type_info*>(
++                                &typeid(__cxxabiv1::__forced_unwind));
++                        if (catchType->can_catch(forcedType, adjustedPtr))
++                        {
++                            results.ttypeIndex = ttypeIndex;
++                            results.actionRecord = actionRecord;
++                            results.adjustedPtr = adjustedPtr;
++                            results.reason = _URC_HANDLER_FOUND;
++                            return;
++                        }
++                    }
+                     else if (native_exception)
+                     {
+                         __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+=== symbol surface original vs experiment ===
+    59: 000000000002a550  1765 FUNC    GLOBAL DEFAULT   12 __gxx_personality_v0@@LLVM_22
+    67: 0000000000030a74    32 OBJECT  WEAK   DEFAULT   15 _ZTSN10__cxxabiv115__forced_unwindE@@LLVM_22
+    68: 000000000003bcf8    16 OBJECT  WEAK   DEFAULT   22 _ZTIN10__cxxabiv115__forced_unwindE@@LLVM_22
+    96: 000000000002a260   251 FUNC    GLOBAL DEFAULT   12 __cxa_rethrow_primary_exception@@LLVM_22
+   231: 000000000002a130   177 FUNC    GLOBAL DEFAULT   12 __cxa_rethrow@@LLVM_22
+=== Itanium ABI sections relevant to forced/foreign and current type ===
+239-This external agent, not each personality routine,
+240-knows when to stop unwinding.
+241-The fact that a personality routine is not given a choice about
+242:whether unwinding will proceed is indicated by the _UA_FORCE_UNWIND flag.
+243-
+244-</ul>
+245-
+--
+596-    This is not the destination frame.
+597-    The unwind runtime will call
+598-    the frame's personality routine with the
+599:    <code>_UA_FORCE_UNWIND</code> and <code>_UA_CLEANUP_PHASE</code> flags
+600-    set in <code>actions</code>,
+601-    and then unwind to the next frame
+602-    and call the <code>stop</code> function again.
+--
+928-    static const _Unwind_Action _UA_SEARCH_PHASE = 1;
+929-    static const _Unwind_Action _UA_CLEANUP_PHASE = 2;
+930-    static const _Unwind_Action _UA_HANDLER_FRAME = 4;
+931:    static const _Unwind_Action _UA_FORCE_UNWIND = 8;
+932-</pre></code>
+933-
+934-<dl>
+--
+963-i.e. it must handle the exception in this frame in phase 2.
+964-
+965-<p>
+966:<dt><code> _UA_FORCE_UNWIND </code>
+967-<dd> During phase 2,
+968-indicates that no language is allowed to "catch" the exception.
+969-This flag is set while unwinding the stack
+--
+1064-
+1065-<p>
+1066-A runtime is not allowed to catch an
+1067:exception if the <code>_UA_FORCE_UNWIND</code> flag was passed to 
+1068-the personality routine.
+1069-
+1070-<p>
+--
+1073-Example: Foreign Exceptions in C++.
+1074-In C++, foreign exceptions can be caught by a catch(...) statement.
+1075-They can also be caught as if they were of a
+1076:<code>__foreign_exception</code> class, defined in &lt;exception>.
+1077:The <code>__foreign_exception</code> may have subclasses,
+1078-such as <code>__java_exception</code> and <code>__ada_exception</code>,
+1079-if the runtime is capable of identifying some of the foreign languages.
+1080-</i>
+--
+1085-<ul>
+1086-<p>
+1087-<li>
+1088:A <code>__foreign_exception</code> catch argument is accessed in any way
+1089-(including taking its address).
+1090-
+1091-<p>
+1092-<li>
+1093:A <code>__foreign_exception</code> is active at the same time as
+1094-another exception
+1095-(either there is a nested exception while catching the foreign exception,
+1096-or the foreign exception was itself nested).
+--
+1811-<code>type_info</code> for EH type matching, a user can access this
+1812-information by calling:
+1813-<code><pre>
+1814:	std::type_info *__cxa_current_exception_type ();
+1815-</pre></code>
+1816-which returns the type of the first caught exception, or null if there are
+1817-no caught exceptions.  This routine is optional; a conforming ABI 
+--
+2303-
+2304-<p>
+2305-<font color="blue">[011126]</font>
+2306:Add __cxa_current_exception_type.
+2307-
+2308-<p>
+2309-<font color="blue">[010731]</font>
+=== LLVM GitHub issue search: forced unwind ===
+{
+  "total_count": 6,
+  "incomplete_results": false,
+  "items": [
+    {
+      "url": "https://api.github.com/repos/llvm/llvm-project/issues/53849",
+      "repository_url": "https://api.github.com/repos/llvm/llvm-project",
+      "labels_url": "https://api.github.com/repos/llvm/llvm-project/issues/53849/labels{/name}",
+      "comments_url": "https://api.github.com/repos/llvm/llvm-project/issues/53849/comments",
+      "events_url": "https://api.github.com/repos/llvm/llvm-project/issues/53849/events",
+      "html_url": "https://github.com/llvm/llvm-project/issues/53849",
+      "id": 1138628335,
+      "node_id": "I_kwDOBITxeM5D3hbv",
+      "number": 53849,
+      "title": "forced_unwind tests failing on armv7-linux",
+      "user": {
+        "login": "rovka",
+        "id": 9715473,
+        "node_id": "MDQ6VXNlcjk3MTU0NzM=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/9715473?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/rovka",
+        "html_url": "https://github.com/rovka",
+        "followers_url": "https://api.github.com/users/rovka/followers",
+        "following_url": "https://api.github.com/users/rovka/following{/other_user}",
+        "gists_url": "https://api.github.com/users/rovka/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/rovka/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/rovka/subscriptions",
+        "organizations_url": "https://api.github.com/users/rovka/orgs",
+        "repos_url": "https://api.github.com/users/rovka/repos",
+        "events_url": "https://api.github.com/users/rovka/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/rovka/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "labels": [
+        {
+          "id": 1958966385,
+          "node_id": "MDU6TGFiZWwxOTU4OTY2Mzg1",
+          "url": "https://api.github.com/repos/llvm/llvm-project/labels/libc++abi",
+          "name": "libc++abi",
+          "color": "ef7f69",
+          "default": false,
+          "description": "libc++abi C++ Runtime Library. Not libc++."
+        },
+        {
+          "id": 1958972268,
+          "node_id": "MDU6TGFiZWwxOTU4OTcyMjY4",
+          "url": "https://api.github.com/repos/llvm/llvm-project/labels/backend:ARM",
+          "name": "backend:ARM",
+          "color": "1dd617",
+          "default": false,
+          "description": ""
+        }
+      ],
+      "state": "open",
+      "locked": false,
+      "assignees": [
+
+      ],
+      "milestone": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/milestones/9",
+        "html_url": "https://github.com/llvm/llvm-project/milestone/9",
+        "labels_url": "https://api.github.com/repos/llvm/llvm-project/milestones/9/labels",
+        "id": 8020938,
+        "node_id": "MI_kwDOBITxeM4AemPK",
+        "number": 9,
+        "title": "LLVM 14.0.5 Release",
+        "description": "branch: release/14.x",
+        "creator": {
+          "login": "tstellar",
+          "id": 143300,
+          "node_id": "MDQ6VXNlcjE0MzMwMA==",
+          "avatar_url": "https://avatars.githubusercontent.com/u/143300?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/tstellar",
+          "html_url": "https://github.com/tstellar",
+          "followers_url": "https://api.github.com/users/tstellar/followers",
+          "following_url": "https://api.github.com/users/tstellar/following{/other_user}",
+          "gists_url": "https://api.github.com/users/tstellar/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/tstellar/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/tstellar/subscriptions",
+          "organizations_url": "https://api.github.com/users/tstellar/orgs",
+          "repos_url": "https://api.github.com/users/tstellar/repos",
+          "events_url": "https://api.github.com/users/tstellar/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/tstellar/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "open_issues": 6,
+        "closed_issues": 32,
+        "state": "closed",
+        "created_at": "2022-05-26T07:35:07Z",
+        "updated_at": "2026-05-21T07:15:17Z",
+        "due_on": "2022-06-07T00:00:00Z",
+        "closed_at": "2022-06-21T22:51:47Z"
+      },
+      "comments": 2,
+      "created_at": "2022-02-15T12:31:12Z",
+      "updated_at": "2022-05-26T07:36:35Z",
+      "closed_at": null,
+      "assignee": null,
+      "author_association": "CONTRIBUTOR",
+      "issue_field_values": [
+
+      ],
+      "type": null,
+      "active_lock_reason": null,
+      "sub_issues_summary": {
+        "total": 0,
+        "completed": 0,
+        "percent_completed": 0
+      },
+      "issue_dependencies_summary": {
+        "blocked_by": 0,
+        "total_blocked_by": 0,
+        "blocking": 0,
+        "total_blocking": 0
+      },
+      "body": "'libc++abi :: forced_unwind1.pass.cpp' and 'libc++abi :: forced_unwind2.pass.cpp' are failing on armv7 with:\r\n```\r\n/home/tcwg-buildslave/workspace/tcwg-llvm-release/tcwg-tk1_32-build/rc1/llvm-project/libcxxabi/test/forced_unwind1.pass.cpp:41:42: error: typedef '_Unwind_Exception' cannot be referenced with a struct specifier\r\n                                  struct _Unwind_Exception*,\r\n                                         ^\r\n/home/tcwg-buildslave/workspace/tcwg-llvm-release/tcwg-tk1_32-build/rc1/Phase3/Release/llvmCore-14.0.0-rc1.obj/lib/clang/14.0.0/include/unwind.h:67:38: note: declared here\r\ntypedef struct _Unwind_Control_Block _Unwind_Exception; /* Alias */\r\n                                     ^\r\n/home/tcwg-buildslave/workspace/tcwg-llvm-release/tcwg-tk1_32-build/rc1/llvm-project/libcxxabi/test/forced_unwind1.pass.cpp:49:49: error: typedef '_Unwind_Exception' cannot be referenced with a struct specifier\r\nstatic void cleanup(_Unwind_Reason_Code, struct _Unwind_Exception* exc) {\r\n                                                ^\r\n/home/tcwg-buildslave/workspace/tcwg-llvm-release/tcwg-tk1_32-build/rc1/Phase3/Release/llvmCore-14.0.0-rc1.obj/lib/clang/14.0.0/include/unwind.h:67:38: note: declared here\r\ntypedef struct _Unwind_Control_Block _Unwind_Exception; /* Alias */\r\n                                     ^\r\n2 errors generated.\r\n```\r\n\r\nThis might be fixed by backporting [this commit](https://github.com/llvm/llvm-project/commit/a4fa667dee6012e350bd405ee7a759a53738b279), but I haven't tested.",
+      "reactions": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/issues/53849/reactions",
+        "total_count": 0,
+        "+1": 0,
+        "-1": 0,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/llvm/llvm-project/issues/53849/timeline",
+      "performed_via_github_app": null,
+      "state_reason": null,
+      "pinned_comment": null,
+      "score": 1.0
+    },
+    {
+      "url": "https://api.github.com/repos/llvm/llvm-project/issues/180513",
+      "repository_url": "https://api.github.com/repos/llvm/llvm-project",
+      "labels_url": "https://api.github.com/repos/llvm/llvm-project/issues/180513/labels{/name}",
+      "comments_url": "https://api.github.com/repos/llvm/llvm-project/issues/180513/comments",
+      "events_url": "https://api.github.com/repos/llvm/llvm-project/issues/180513/events",
+      "html_url": "https://github.com/llvm/llvm-project/pull/180513",
+      "id": 3916217966,
+      "node_id": "PR_kwDOBITxeM7CeWEs",
+      "number": 180513,
+      "title": "[libunwind] Fix building with EXCEPTION_DISPOSITION as enum",
+      "user": {
+        "login": "mstorsjo",
+        "id": 69727,
+        "node_id": "MDQ6VXNlcjY5NzI3",
+        "avatar_url": "https://avatars.githubusercontent.com/u/69727?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/mstorsjo",
+        "html_url": "https://github.com/mstorsjo",
+        "followers_url": "https://api.github.com/users/mstorsjo/followers",
+        "following_url": "https://api.github.com/users/mstorsjo/following{/other_user}",
+        "gists_url": "https://api.github.com/users/mstorsjo/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/mstorsjo/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/mstorsjo/subscriptions",
+        "organizations_url": "https://api.github.com/users/mstorsjo/orgs",
+        "repos_url": "https://api.github.com/users/mstorsjo/repos",
+        "events_url": "https://api.github.com/users/mstorsjo/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/mstorsjo/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "labels": [
+        {
+          "id": 1958970156,
+          "node_id": "MDU6TGFiZWwxOTU4OTcwMTU2",
+          "url": "https://api.github.com/repos/llvm/llvm-project/labels/libunwind",
+          "name": "libunwind",
+          "color": "ed5c4b",
+          "default": false,
+          "description": ""
+        }
+      ],
+      "state": "closed",
+      "locked": false,
+      "assignees": [
+
+      ],
+      "milestone": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/milestones/29",
+        "html_url": "https://github.com/llvm/llvm-project/milestone/29",
+        "labels_url": "https://api.github.com/repos/llvm/llvm-project/milestones/29/labels",
+        "id": 14415180,
+        "node_id": "MI_kwDOBITxeM4A2_VM",
+        "number": 29,
+        "title": "LLVM 22.x Release",
+        "description": "branch: release/22.x",
+        "creator": {
+          "login": "EugeneZelenko",
+          "id": 9355329,
+          "node_id": "MDQ6VXNlcjkzNTUzMjk=",
+          "avatar_url": "https://avatars.githubusercontent.com/u/9355329?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/EugeneZelenko",
+          "html_url": "https://github.com/EugeneZelenko",
+          "followers_url": "https://api.github.com/users/EugeneZelenko/followers",
+          "following_url": "https://api.github.com/users/EugeneZelenko/following{/other_user}",
+          "gists_url": "https://api.github.com/users/EugeneZelenko/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/EugeneZelenko/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/EugeneZelenko/subscriptions",
+          "organizations_url": "https://api.github.com/users/EugeneZelenko/orgs",
+          "repos_url": "https://api.github.com/users/EugeneZelenko/repos",
+          "events_url": "https://api.github.com/users/EugeneZelenko/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/EugeneZelenko/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "open_issues": 0,
+        "closed_issues": 788,
+        "state": "closed",
+        "created_at": "2025-12-23T20:28:20Z",
+        "updated_at": "2026-07-06T14:48:12Z",
+        "due_on": null,
+        "closed_at": "2026-07-06T13:40:20Z"
+      },
+      "comments": 5,
+      "created_at": "2026-02-09T12:47:39Z",
+      "updated_at": "2026-02-12T13:09:34Z",
+      "closed_at": "2026-02-11T22:31:09Z",
+      "assignee": null,
+      "author_association": "MEMBER",
+      "issue_field_values": [
+
+      ],
+      "type": null,
+      "active_lock_reason": null,
+      "draft": false,
+      "pull_request": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/pulls/180513",
+        "html_url": "https://github.com/llvm/llvm-project/pull/180513",
+        "diff_url": "https://github.com/llvm/llvm-project/pull/180513.diff",
+        "patch_url": "https://github.com/llvm/llvm-project/pull/180513.patch",
+        "merged_at": "2026-02-11T22:31:09Z"
+      },
+      "body": "On Windows, libunwind is normally only built in mingw mode; it's not relevant for MSVC targets. (Attempting to build it is entirely blocked in CMake, see [1]).\r\n\r\nIn mingw headers, the type EXCEPTION_DISPOSITION is defined as an int while it is an enum in the MSVC vcruntime headers.\r\n\r\nHowever, in addition to the canonical enum members, we also use a value which has no assigned enum member. In older mingw-w64 headers, there was a define for this value, 4, with the name ExceptionExecuteHandler, but that was removed in [2]. The libunwind code reference this value just by the literal value 4, with a comment referencing it as ExceptionExecuteHandler.\r\n\r\nThis extra enum value isn't passed to the outside Microsoft runtime, but is only used to pass values from one part of libunwind to another; this handling is necessary for the forced_unwind{1-3}.pass.cpp tests to succeed.\r\n\r\nIf the mingw-w64 headers would define EXCEPTION_DISPOSITION as an enum, just like the MSVC vcruntime headers, then we'd run into build errors and warnings like this:\r\n\r\n    llvm-project/libunwind/src/Unwind-seh.cpp:166:14: error: cannot initialize return object of type 'EXCEPTION_DISPOSITION' (aka 'enum _EXCEPTION_DISPOSITION') with an rvalue of type 'int'\r\n      166 |       return 4 /* ExceptionExecuteHandler in mingw */;\r\n          |              ^\r\n    llvm-project/libunwind/src/Unwind-seh.cpp:185:14: error: cannot initialize return object of type 'EXCEPTION_DISPOSITION' (aka 'enum _EXCEPTION_DISPOSITION') with an rvalue of type 'int'\r\n      185 |       return 4 /* ExceptionExecuteHandler in mingw */;\r\n          |              ^\r\n    llvm-project/libunwind/src/Unwind-seh.cpp:272:8: warning: case value not in enumerated type 'EXCEPTION_DISPOSITION' (aka 'enum _EXCEPTION_DISPOSITION') [-Wswitch]\r\n      272 |   case 4 /*ExceptionExecuteHandler*/:\r\n          |        ^\r\n\r\nFix these cases by adding explicit casts between EXCEPTION_DISPOSITION and int.\r\n\r\nA (partial) similar change was proposed in [3], but the author never followed up on the discussion, and the PR was later closed.\r\n\r\n[1] b0b546d44777eb1fa25995384876bd14a006a929\r\n[2] https://github.com/mingw-w64/mingw-w64/commit/2de6703961c0d519046b841f7b392a040e1e5b55\r\n[3] https://github.com/llvm/llvm-project/pull/159293",
+      "reactions": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/issues/180513/reactions",
+        "total_count": 0,
+        "+1": 0,
+        "-1": 0,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/llvm/llvm-project/issues/180513/timeline",
+      "performed_via_github_app": null,
+      "state_reason": null,
+      "score": 1.0
+    },
+    {
+      "url": "https://api.github.com/repos/llvm/llvm-project/issues/137951",
+      "repository_url": "https://api.github.com/repos/llvm/llvm-project",
+      "labels_url": "https://api.github.com/repos/llvm/llvm-project/issues/137951/labels{/name}",
+      "comments_url": "https://api.github.com/repos/llvm/llvm-project/issues/137951/comments",
+      "events_url": "https://api.github.com/repos/llvm/llvm-project/issues/137951/events",
+      "html_url": "https://github.com/llvm/llvm-project/pull/137951",
+      "id": 3030904843,
+      "node_id": "PR_kwDOBITxeM6Ue_MT",
+      "number": 137951,
+      "title": "[libunwind] [SEH] Set NonVolatileRegisters before calling a personality function",
+      "user": {
+        "login": "mstorsjo",
+        "id": 69727,
+        "node_id": "MDQ6VXNlcjY5NzI3",
+        "avatar_url": "https://avatars.githubusercontent.com/u/69727?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/mstorsjo",
+        "html_url": "https://github.com/mstorsjo",
+        "followers_url": "https://api.github.com/users/mstorsjo/followers",
+        "following_url": "https://api.github.com/users/mstorsjo/following{/other_user}",
+        "gists_url": "https://api.github.com/users/mstorsjo/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/mstorsjo/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/mstorsjo/subscriptions",
+        "organizations_url": "https://api.github.com/users/mstorsjo/orgs",
+        "repos_url": "https://api.github.com/users/mstorsjo/repos",
+        "events_url": "https://api.github.com/users/mstorsjo/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/mstorsjo/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "labels": [
+        {
+          "id": 1958970156,
+          "node_id": "MDU6TGFiZWwxOTU4OTcwMTU2",
+          "url": "https://api.github.com/repos/llvm/llvm-project/labels/libunwind",
+          "name": "libunwind",
+          "color": "ed5c4b",
+          "default": false,
+          "description": ""
+        }
+      ],
+      "state": "closed",
+      "locked": false,
+      "assignees": [
+
+      ],
+      "milestone": null,
+      "comments": 3,
+      "created_at": "2025-04-30T10:49:44Z",
+      "updated_at": "2025-05-09T13:05:01Z",
+      "closed_at": "2025-05-09T13:04:58Z",
+      "assignee": null,
+      "author_association": "MEMBER",
+      "issue_field_values": [
+
+      ],
+      "type": null,
+      "active_lock_reason": null,
+      "draft": false,
+      "pull_request": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/pulls/137951",
+        "html_url": "https://github.com/llvm/llvm-project/pull/137951",
+        "diff_url": "https://github.com/llvm/llvm-project/pull/137951.diff",
+        "patch_url": "https://github.com/llvm/llvm-project/pull/137951.patch",
+        "merged_at": "2025-05-09T13:04:58Z"
+      },
+      "body": "The CRT __C_specific_handler function uses this for restoring registers before calling the filter function.\r\n\r\nThis fixes the libunwind/libcxxabi forced unwind testcases on ARM and AArch64.",
+      "reactions": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/issues/137951/reactions",
+        "total_count": 0,
+        "+1": 0,
+        "-1": 0,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/llvm/llvm-project/issues/137951/timeline",
+      "performed_via_github_app": null,
+      "state_reason": null,
+      "score": 1.0
+    },
+    {
+      "url": "https://api.github.com/repos/llvm/llvm-project/issues/137949",
+      "repository_url": "https://api.github.com/repos/llvm/llvm-project",
+      "labels_url": "https://api.github.com/repos/llvm/llvm-project/issues/137949/labels{/name}",
+      "comments_url": "https://api.github.com/repos/llvm/llvm-project/issues/137949/comments",
+      "events_url": "https://api.github.com/repos/llvm/llvm-project/issues/137949/events",
+      "html_url": "https://github.com/llvm/llvm-project/pull/137949",
+      "id": 3030897867,
+      "node_id": "PR_kwDOBITxeM6Ue9pa",
+      "number": 137949,
+      "title": "[libunwind] [SEH] Implement parsing of aarch64 pdata/xdata",
+      "user": {
+        "login": "mstorsjo",
+        "id": 69727,
+        "node_id": "MDQ6VXNlcjY5NzI3",
+        "avatar_url": "https://avatars.githubusercontent.com/u/69727?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/mstorsjo",
+        "html_url": "https://github.com/mstorsjo",
+        "followers_url": "https://api.github.com/users/mstorsjo/followers",
+        "following_url": "https://api.github.com/users/mstorsjo/following{/other_user}",
+        "gists_url": "https://api.github.com/users/mstorsjo/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/mstorsjo/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/mstorsjo/subscriptions",
+        "organizations_url": "https://api.github.com/users/mstorsjo/orgs",
+        "repos_url": "https://api.github.com/users/mstorsjo/repos",
+        "events_url": "https://api.github.com/users/mstorsjo/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/mstorsjo/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "labels": [
+        {
+          "id": 1958970156,
+          "node_id": "MDU6TGFiZWwxOTU4OTcwMTU2",
+          "url": "https://api.github.com/repos/llvm/llvm-project/labels/libunwind",
+          "name": "libunwind",
+          "color": "ed5c4b",
+          "default": false,
+          "description": ""
+        }
+      ],
+      "state": "closed",
+      "locked": false,
+      "assignees": [
+
+      ],
+      "milestone": null,
+      "comments": 7,
+      "created_at": "2025-04-30T10:46:40Z",
+      "updated_at": "2025-05-09T11:18:30Z",
+      "closed_at": "2025-05-09T08:08:39Z",
+      "assignee": null,
+      "author_association": "MEMBER",
+      "issue_field_values": [
+
+      ],
+      "type": null,
+      "active_lock_reason": null,
+      "draft": false,
+      "pull_request": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/pulls/137949",
+        "html_url": "https://github.com/llvm/llvm-project/pull/137949",
+        "diff_url": "https://github.com/llvm/llvm-project/pull/137949.diff",
+        "patch_url": "https://github.com/llvm/llvm-project/pull/137949.patch",
+        "merged_at": "2025-05-09T08:08:39Z"
+      },
+      "body": "This is needed for forced unwind, for some testcases in libunwind/libcxxabi.\r\n\r\nThis adds an aarch64 case for extracting the LanguageHandler and HandlerData fields from unwind info, in UnwindCursor::getInfoFromSEH, corresponding to the existing case for x86_64.\r\n\r\nThis uses the struct IMAGE_ARM64_RUNTIME_FUNCTION_ENTRY_XDATA; this only became available in WinSDK 10.0.19041.0 and mingw-w64 v11.0 (or a mingw-w64 git snapshot after April 2023).\r\n\r\n(This is only a build-time requirement though; the format for the unwind data has been fixed since the start of Windows 10 on ARM64, so this doesn't impose any runtime requirement.)",
+      "reactions": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/issues/137949/reactions",
+        "total_count": 0,
+        "+1": 0,
+        "-1": 0,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/llvm/llvm-project/issues/137949/timeline",
+      "performed_via_github_app": null,
+      "state_reason": null,
+      "score": 1.0
+    },
+    {
+      "url": "https://api.github.com/repos/llvm/llvm-project/issues/40741",
+      "repository_url": "https://api.github.com/repos/llvm/llvm-project",
+      "labels_url": "https://api.github.com/repos/llvm/llvm-project/issues/40741/labels{/name}",
+      "comments_url": "https://api.github.com/repos/llvm/llvm-project/issues/40741/comments",
+      "events_url": "https://api.github.com/repos/llvm/llvm-project/issues/40741/events",
+      "html_url": "https://github.com/llvm/llvm-project/issues/40741",
+      "id": 1076961641,
+      "node_id": "MDU6SXNzdWUxMDc2OTYxNjQx",
+      "number": 40741,
+      "title": "libc++abi should report forced unwinding on thread termination.",
+      "user": {
+        "login": "llvmbot",
+        "id": 60944935,
+        "node_id": "MDQ6VXNlcjYwOTQ0OTM1",
+        "avatar_url": "https://avatars.githubusercontent.com/u/60944935?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/llvmbot",
+        "html_url": "https://github.com/llvmbot",
+        "followers_url": "https://api.github.com/users/llvmbot/followers",
+        "following_url": "https://api.github.com/users/llvmbot/following{/other_user}",
+        "gists_url": "https://api.github.com/users/llvmbot/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/llvmbot/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/llvmbot/subscriptions",
+        "organizations_url": "https://api.github.com/users/llvmbot/orgs",
+        "repos_url": "https://api.github.com/users/llvmbot/repos",
+        "events_url": "https://api.github.com/users/llvmbot/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/llvmbot/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "labels": [
+        {
+          "id": 1958966385,
+          "node_id": "MDU6TGFiZWwxOTU4OTY2Mzg1",
+          "url": "https://api.github.com/repos/llvm/llvm-project/labels/libc++abi",
+          "name": "libc++abi",
+          "color": "ef7f69",
+          "default": false,
+          "description": "libc++abi C++ Runtime Library. Not libc++."
+        },
+        {
+          "id": 3603955242,
+          "node_id": "LA_kwDOBITxeM7Wz_4q",
+          "url": "https://api.github.com/repos/llvm/llvm-project/labels/bugzilla",
+          "name": "bugzilla",
+          "color": "29A8A3",
+          "default": false,
+          "description": "Issues migrated from bugzilla"
+        }
+      ],
+      "state": "closed",
+      "locked": false,
+      "assignees": [
+
+      ],
+      "milestone": null,
+      "comments": 1,
+      "created_at": "2019-04-05T16:56:47Z",
+      "updated_at": "2022-05-23T16:00:21Z",
+      "closed_at": "2022-05-23T15:57:16Z",
+      "assignee": null,
+      "author_association": "MEMBER",
+      "issue_field_values": [
+
+      ],
+      "type": null,
+      "active_lock_reason": null,
+      "sub_issues_summary": {
+        "total": 0,
+        "completed": 0,
+        "percent_completed": 0
+      },
+      "issue_dependencies_summary": {
+        "blocked_by": 0,
+        "total_blocked_by": 0,
+        "blocking": 0,
+        "total_blocking": 0
+      },
+      "body": "|  |  |\n| --- | --- |\n| Bugzilla Link | [41396](https://llvm.org/bz41396) |\n| Version | 7.0 |\n| OS | All |\n| Reporter | LLVM Bugzilla Contributor |\n| CC | @mclow |\n\n## Extended Description \nlibstdc++ throws an exception when forced unwinding occurs, for example by a call to pthread_exit.\n\nThis allows the library to detect and avoid certain classes of bugs. For example, libc++ hangs forever on this test, libstdc++ reports the promise as broken.\n\n#include <future>\n#include <stdexcept>\n#include <pthread.h>\n#include <cassert>\n​\nvoid f() { pthread_exit(nullptr); }\n​\nint main()\n{\n auto fut = std::async(std::launch::async, f);\n try\n {\n  fut.get();\n  throw std::logic_error(\"Unreachable\");\n }\n catch (const std::future_error& e)\n {\n  assert( e.code() == std::future_errc::broken_promise );\n }\n}",
+      "reactions": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/issues/40741/reactions",
+        "total_count": 0,
+        "+1": 0,
+        "-1": 0,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/llvm/llvm-project/issues/40741/timeline",
+      "performed_via_github_app": null,
+      "state_reason": "completed",
+      "pinned_comment": null,
+      "score": 1.0
+    },
+    {
+      "url": "https://api.github.com/repos/llvm/llvm-project/issues/9767",
+      "repository_url": "https://api.github.com/repos/llvm/llvm-project",
+      "labels_url": "https://api.github.com/repos/llvm/llvm-project/issues/9767/labels{/name}",
+      "comments_url": "https://api.github.com/repos/llvm/llvm-project/issues/9767/comments",
+      "events_url": "https://api.github.com/repos/llvm/llvm-project/issues/9767/events",
+      "html_url": "https://github.com/llvm/llvm-project/issues/9767",
+      "id": 1071007601,
+      "node_id": "MDU6SXNzdWUxMDcxMDA3NjAx",
+      "number": 9767,
+      "title": "open source project ITK, when built with clang, has many failing unit tests",
+      "user": {
+        "login": "seanm",
+        "id": 117260,
+        "node_id": "MDQ6VXNlcjExNzI2MA==",
+        "avatar_url": "https://avatars.githubusercontent.com/u/117260?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/seanm",
+        "html_url": "https://github.com/seanm",
+        "followers_url": "https://api.github.com/users/seanm/followers",
+        "following_url": "https://api.github.com/users/seanm/following{/other_user}",
+        "gists_url": "https://api.github.com/users/seanm/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/seanm/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/seanm/subscriptions",
+        "organizations_url": "https://api.github.com/users/seanm/orgs",
+        "repos_url": "https://api.github.com/users/seanm/repos",
+        "events_url": "https://api.github.com/users/seanm/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/seanm/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "labels": [
+        {
+          "id": 496169787,
+          "node_id": "MDU6TGFiZWw0OTYxNjk3ODc=",
+          "url": "https://api.github.com/repos/llvm/llvm-project/labels/invalid",
+          "name": "invalid",
+          "color": "cccccc",
+          "default": true,
+          "description": "Resolved as invalid, i.e. not a bug"
+        },
+        {
+          "id": 3603955242,
+          "node_id": "LA_kwDOBITxeM7Wz_4q",
+          "url": "https://api.github.com/repos/llvm/llvm-project/labels/bugzilla",
+          "name": "bugzilla",
+          "color": "29A8A3",
+          "default": false,
+          "description": "Issues migrated from bugzilla"
+        }
+      ],
+      "state": "closed",
+      "locked": false,
+      "assignees": [
+        {
+          "login": "rjmccall",
+          "id": 793869,
+          "node_id": "MDQ6VXNlcjc5Mzg2OQ==",
+          "avatar_url": "https://avatars.githubusercontent.com/u/793869?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/rjmccall",
+          "html_url": "https://github.com/rjmccall",
+          "followers_url": "https://api.github.com/users/rjmccall/followers",
+          "following_url": "https://api.github.com/users/rjmccall/following{/other_user}",
+          "gists_url": "https://api.github.com/users/rjmccall/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/rjmccall/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/rjmccall/subscriptions",
+          "organizations_url": "https://api.github.com/users/rjmccall/orgs",
+          "repos_url": "https://api.github.com/users/rjmccall/repos",
+          "events_url": "https://api.github.com/users/rjmccall/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/rjmccall/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        }
+      ],
+      "milestone": null,
+      "comments": 19,
+      "created_at": "2011-03-03T23:24:59Z",
+      "updated_at": "2021-12-03T22:08:36Z",
+      "closed_at": "2018-11-07T08:22:22Z",
+      "assignee": null,
+      "author_association": "NONE",
+      "issue_field_values": [
+
+      ],
+      "type": null,
+      "active_lock_reason": null,
+      "sub_issues_summary": {
+        "total": 0,
+        "completed": 0,
+        "percent_completed": 0
+      },
+      "issue_dependencies_summary": {
+        "blocked_by": 0,
+        "total_blocked_by": 0,
+        "blocking": 0,
+        "total_blocking": 0
+      },
+      "body": "|  |  |\n| --- | --- |\n| Bugzilla Link | [9395](https://llvm.org/bz9395) |\n| Resolution | INVALID |\n| Resolved on | Nov 07, 2018 00:22 |\n| Version | 3.0 |\n| OS | MacOS X |\n| Depends On | llvm/llvm-project#8470  |\n\n## Extended Description \nThe cross platform open source C++ project ITK is now buildable by clang-- after recent changes to both clang and ITK. Everything now builds and links.  But about half of the unit tests crash when run.\n\nI suspect a clang bug because ITK has very rigorous testing and this problem occurs nowhere else (gcc, icc, Visual Studio, etc.) It is compiled nightly by many OS/compiler combinations, and results are gathered on a dashboard:\n\nhttp://www.cdash.org/CDash/index.php?project=Insight\n\nThe backtrace always shows one or more threads in _Unwind_Resume_or_Rethrow, and one of those threads is the one that's crashed. ex:\n\nThread 3 Crashed:\n0   libSystem.B.dylib             \t0x00007fff84fab35a unwind_phase2_forced + 122\n1   libSystem.B.dylib             \t0x00007fff84edec4d _Unwind_Resume + 61\n2   libSystem.B.dylib             \t0x00007fff84ee2aab _Unwind_Resume_or_Rethrow + 27\n3   IOCxxTests                    \t0x000000010015ae59 itk::ImageSource<itk::Image<unsigned char, 3u> >::ThreaderCallback(void*) + 345 (itkImageSource.txx:312)\n4   IOCxxTests                    \t0x0000000100f5ed14 itk::MultiThreader::SingleMethodProxy(void*) + 36\n5   libSystem.B.dylib             \t0x00007fff84ea94f6 _pthread_start + 331\n6   libSystem.B.dylib             \t0x00007fff84ea93a9 thread_start + 13\n\nI brought this up on cfe-dev, and John McCall says 'it is probably at least related to llvm/llvm-project#8470 , if not necessarily a dupe.'\n\nTo repro, you need to build ITK. For which you need git and CMake.  Basically:\n\ngit clone git://itk.org/ITK.git\ncd ITK\ngit submodule update --init\ncd ..\nmkdir ITK-bin\ncd ITK-bin\ncmake ../ITK\nmake\nctest -R .\n\nThen it will start running tests and soon enough one will crash.",
+      "reactions": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/issues/9767/reactions",
+        "total_count": 0,
+        "+1": 0,
+        "-1": 0,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/llvm/llvm-project/issues/9767/timeline",
+      "performed_via_github_app": null,
+      "state_reason": "completed",
+      "pinned_comment": null,
+      "score": 1.0
+    }
+  ],
+  "search_type": "lexical"
+}
+
+=== LLVM GitHub issue search: forced_unwind ===
+{
+  "total_count": 2,
+  "incomplete_results": false,
+  "items": [
+    {
+      "url": "https://api.github.com/repos/llvm/llvm-project/issues/53849",
+      "repository_url": "https://api.github.com/repos/llvm/llvm-project",
+      "labels_url": "https://api.github.com/repos/llvm/llvm-project/issues/53849/labels{/name}",
+      "comments_url": "https://api.github.com/repos/llvm/llvm-project/issues/53849/comments",
+      "events_url": "https://api.github.com/repos/llvm/llvm-project/issues/53849/events",
+      "html_url": "https://github.com/llvm/llvm-project/issues/53849",
+      "id": 1138628335,
+      "node_id": "I_kwDOBITxeM5D3hbv",
+      "number": 53849,
+      "title": "forced_unwind tests failing on armv7-linux",
+      "user": {
+        "login": "rovka",
+        "id": 9715473,
+        "node_id": "MDQ6VXNlcjk3MTU0NzM=",
+        "avatar_url": "https://avatars.githubusercontent.com/u/9715473?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/rovka",
+        "html_url": "https://github.com/rovka",
+        "followers_url": "https://api.github.com/users/rovka/followers",
+        "following_url": "https://api.github.com/users/rovka/following{/other_user}",
+        "gists_url": "https://api.github.com/users/rovka/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/rovka/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/rovka/subscriptions",
+        "organizations_url": "https://api.github.com/users/rovka/orgs",
+        "repos_url": "https://api.github.com/users/rovka/repos",
+        "events_url": "https://api.github.com/users/rovka/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/rovka/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "labels": [
+        {
+          "id": 1958966385,
+          "node_id": "MDU6TGFiZWwxOTU4OTY2Mzg1",
+          "url": "https://api.github.com/repos/llvm/llvm-project/labels/libc++abi",
+          "name": "libc++abi",
+          "color": "ef7f69",
+          "default": false,
+          "description": "libc++abi C++ Runtime Library. Not libc++."
+        },
+        {
+          "id": 1958972268,
+          "node_id": "MDU6TGFiZWwxOTU4OTcyMjY4",
+          "url": "https://api.github.com/repos/llvm/llvm-project/labels/backend:ARM",
+          "name": "backend:ARM",
+          "color": "1dd617",
+          "default": false,
+          "description": ""
+        }
+      ],
+      "state": "open",
+      "locked": false,
+      "assignees": [
+
+      ],
+      "milestone": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/milestones/9",
+        "html_url": "https://github.com/llvm/llvm-project/milestone/9",
+        "labels_url": "https://api.github.com/repos/llvm/llvm-project/milestones/9/labels",
+        "id": 8020938,
+        "node_id": "MI_kwDOBITxeM4AemPK",
+        "number": 9,
+        "title": "LLVM 14.0.5 Release",
+        "description": "branch: release/14.x",
+        "creator": {
+          "login": "tstellar",
+          "id": 143300,
+          "node_id": "MDQ6VXNlcjE0MzMwMA==",
+          "avatar_url": "https://avatars.githubusercontent.com/u/143300?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/tstellar",
+          "html_url": "https://github.com/tstellar",
+          "followers_url": "https://api.github.com/users/tstellar/followers",
+          "following_url": "https://api.github.com/users/tstellar/following{/other_user}",
+          "gists_url": "https://api.github.com/users/tstellar/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/tstellar/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/tstellar/subscriptions",
+          "organizations_url": "https://api.github.com/users/tstellar/orgs",
+          "repos_url": "https://api.github.com/users/tstellar/repos",
+          "events_url": "https://api.github.com/users/tstellar/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/tstellar/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "open_issues": 6,
+        "closed_issues": 32,
+        "state": "closed",
+        "created_at": "2022-05-26T07:35:07Z",
+        "updated_at": "2026-05-21T07:15:17Z",
+        "due_on": "2022-06-07T00:00:00Z",
+        "closed_at": "2022-06-21T22:51:47Z"
+      },
+      "comments": 2,
+      "created_at": "2022-02-15T12:31:12Z",
+      "updated_at": "2022-05-26T07:36:35Z",
+      "closed_at": null,
+      "assignee": null,
+      "author_association": "CONTRIBUTOR",
+      "issue_field_values": [
+
+      ],
+      "type": null,
+      "active_lock_reason": null,
+      "sub_issues_summary": {
+        "total": 0,
+        "completed": 0,
+        "percent_completed": 0
+      },
+      "issue_dependencies_summary": {
+        "blocked_by": 0,
+        "total_blocked_by": 0,
+        "blocking": 0,
+        "total_blocking": 0
+      },
+      "body": "'libc++abi :: forced_unwind1.pass.cpp' and 'libc++abi :: forced_unwind2.pass.cpp' are failing on armv7 with:\r\n```\r\n/home/tcwg-buildslave/workspace/tcwg-llvm-release/tcwg-tk1_32-build/rc1/llvm-project/libcxxabi/test/forced_unwind1.pass.cpp:41:42: error: typedef '_Unwind_Exception' cannot be referenced with a struct specifier\r\n                                  struct _Unwind_Exception*,\r\n                                         ^\r\n/home/tcwg-buildslave/workspace/tcwg-llvm-release/tcwg-tk1_32-build/rc1/Phase3/Release/llvmCore-14.0.0-rc1.obj/lib/clang/14.0.0/include/unwind.h:67:38: note: declared here\r\ntypedef struct _Unwind_Control_Block _Unwind_Exception; /* Alias */\r\n                                     ^\r\n/home/tcwg-buildslave/workspace/tcwg-llvm-release/tcwg-tk1_32-build/rc1/llvm-project/libcxxabi/test/forced_unwind1.pass.cpp:49:49: error: typedef '_Unwind_Exception' cannot be referenced with a struct specifier\r\nstatic void cleanup(_Unwind_Reason_Code, struct _Unwind_Exception* exc) {\r\n                                                ^\r\n/home/tcwg-buildslave/workspace/tcwg-llvm-release/tcwg-tk1_32-build/rc1/Phase3/Release/llvmCore-14.0.0-rc1.obj/lib/clang/14.0.0/include/unwind.h:67:38: note: declared here\r\ntypedef struct _Unwind_Control_Block _Unwind_Exception; /* Alias */\r\n                                     ^\r\n2 errors generated.\r\n```\r\n\r\nThis might be fixed by backporting [this commit](https://github.com/llvm/llvm-project/commit/a4fa667dee6012e350bd405ee7a759a53738b279), but I haven't tested.",
+      "reactions": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/issues/53849/reactions",
+        "total_count": 0,
+        "+1": 0,
+        "-1": 0,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/llvm/llvm-project/issues/53849/timeline",
+      "performed_via_github_app": null,
+      "state_reason": null,
+      "pinned_comment": null,
+      "score": 1.0
+    },
+    {
+      "url": "https://api.github.com/repos/llvm/llvm-project/issues/180513",
+      "repository_url": "https://api.github.com/repos/llvm/llvm-project",
+      "labels_url": "https://api.github.com/repos/llvm/llvm-project/issues/180513/labels{/name}",
+      "comments_url": "https://api.github.com/repos/llvm/llvm-project/issues/180513/comments",
+      "events_url": "https://api.github.com/repos/llvm/llvm-project/issues/180513/events",
+      "html_url": "https://github.com/llvm/llvm-project/pull/180513",
+      "id": 3916217966,
+      "node_id": "PR_kwDOBITxeM7CeWEs",
+      "number": 180513,
+      "title": "[libunwind] Fix building with EXCEPTION_DISPOSITION as enum",
+      "user": {
+        "login": "mstorsjo",
+        "id": 69727,
+        "node_id": "MDQ6VXNlcjY5NzI3",
+        "avatar_url": "https://avatars.githubusercontent.com/u/69727?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/mstorsjo",
+        "html_url": "https://github.com/mstorsjo",
+        "followers_url": "https://api.github.com/users/mstorsjo/followers",
+        "following_url": "https://api.github.com/users/mstorsjo/following{/other_user}",
+        "gists_url": "https://api.github.com/users/mstorsjo/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/mstorsjo/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/mstorsjo/subscriptions",
+        "organizations_url": "https://api.github.com/users/mstorsjo/orgs",
+        "repos_url": "https://api.github.com/users/mstorsjo/repos",
+        "events_url": "https://api.github.com/users/mstorsjo/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/mstorsjo/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "labels": [
+        {
+          "id": 1958970156,
+          "node_id": "MDU6TGFiZWwxOTU4OTcwMTU2",
+          "url": "https://api.github.com/repos/llvm/llvm-project/labels/libunwind",
+          "name": "libunwind",
+          "color": "ed5c4b",
+          "default": false,
+          "description": ""
+        }
+      ],
+      "state": "closed",
+      "locked": false,
+      "assignees": [
+
+      ],
+      "milestone": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/milestones/29",
+        "html_url": "https://github.com/llvm/llvm-project/milestone/29",
+        "labels_url": "https://api.github.com/repos/llvm/llvm-project/milestones/29/labels",
+        "id": 14415180,
+        "node_id": "MI_kwDOBITxeM4A2_VM",
+        "number": 29,
+        "title": "LLVM 22.x Release",
+        "description": "branch: release/22.x",
+        "creator": {
+          "login": "EugeneZelenko",
+          "id": 9355329,
+          "node_id": "MDQ6VXNlcjkzNTUzMjk=",
+          "avatar_url": "https://avatars.githubusercontent.com/u/9355329?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/EugeneZelenko",
+          "html_url": "https://github.com/EugeneZelenko",
+          "followers_url": "https://api.github.com/users/EugeneZelenko/followers",
+          "following_url": "https://api.github.com/users/EugeneZelenko/following{/other_user}",
+          "gists_url": "https://api.github.com/users/EugeneZelenko/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/EugeneZelenko/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/EugeneZelenko/subscriptions",
+          "organizations_url": "https://api.github.com/users/EugeneZelenko/orgs",
+          "repos_url": "https://api.github.com/users/EugeneZelenko/repos",
+          "events_url": "https://api.github.com/users/EugeneZelenko/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/EugeneZelenko/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "open_issues": 0,
+        "closed_issues": 788,
+        "state": "closed",
+        "created_at": "2025-12-23T20:28:20Z",
+        "updated_at": "2026-07-06T14:48:12Z",
+        "due_on": null,
+        "closed_at": "2026-07-06T13:40:20Z"
+      },
+      "comments": 5,
+      "created_at": "2026-02-09T12:47:39Z",
+      "updated_at": "2026-02-12T13:09:34Z",
+      "closed_at": "2026-02-11T22:31:09Z",
+      "assignee": null,
+      "author_association": "MEMBER",
+      "issue_field_values": [
+
+      ],
+      "type": null,
+      "active_lock_reason": null,
+      "draft": false,
+      "pull_request": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/pulls/180513",
+        "html_url": "https://github.com/llvm/llvm-project/pull/180513",
+        "diff_url": "https://github.com/llvm/llvm-project/pull/180513.diff",
+        "patch_url": "https://github.com/llvm/llvm-project/pull/180513.patch",
+        "merged_at": "2026-02-11T22:31:09Z"
+      },
+      "body": "On Windows, libunwind is normally only built in mingw mode; it's not relevant for MSVC targets. (Attempting to build it is entirely blocked in CMake, see [1]).\r\n\r\nIn mingw headers, the type EXCEPTION_DISPOSITION is defined as an int while it is an enum in the MSVC vcruntime headers.\r\n\r\nHowever, in addition to the canonical enum members, we also use a value which has no assigned enum member. In older mingw-w64 headers, there was a define for this value, 4, with the name ExceptionExecuteHandler, but that was removed in [2]. The libunwind code reference this value just by the literal value 4, with a comment referencing it as ExceptionExecuteHandler.\r\n\r\nThis extra enum value isn't passed to the outside Microsoft runtime, but is only used to pass values from one part of libunwind to another; this handling is necessary for the forced_unwind{1-3}.pass.cpp tests to succeed.\r\n\r\nIf the mingw-w64 headers would define EXCEPTION_DISPOSITION as an enum, just like the MSVC vcruntime headers, then we'd run into build errors and warnings like this:\r\n\r\n    llvm-project/libunwind/src/Unwind-seh.cpp:166:14: error: cannot initialize return object of type 'EXCEPTION_DISPOSITION' (aka 'enum _EXCEPTION_DISPOSITION') with an rvalue of type 'int'\r\n      166 |       return 4 /* ExceptionExecuteHandler in mingw */;\r\n          |              ^\r\n    llvm-project/libunwind/src/Unwind-seh.cpp:185:14: error: cannot initialize return object of type 'EXCEPTION_DISPOSITION' (aka 'enum _EXCEPTION_DISPOSITION') with an rvalue of type 'int'\r\n      185 |       return 4 /* ExceptionExecuteHandler in mingw */;\r\n          |              ^\r\n    llvm-project/libunwind/src/Unwind-seh.cpp:272:8: warning: case value not in enumerated type 'EXCEPTION_DISPOSITION' (aka 'enum _EXCEPTION_DISPOSITION') [-Wswitch]\r\n      272 |   case 4 /*ExceptionExecuteHandler*/:\r\n          |        ^\r\n\r\nFix these cases by adding explicit casts between EXCEPTION_DISPOSITION and int.\r\n\r\nA (partial) similar change was proposed in [3], but the author never followed up on the discussion, and the PR was later closed.\r\n\r\n[1] b0b546d44777eb1fa25995384876bd14a006a929\r\n[2] https://github.com/mingw-w64/mingw-w64/commit/2de6703961c0d519046b841f7b392a040e1e5b55\r\n[3] https://github.com/llvm/llvm-project/pull/159293",
+      "reactions": {
+        "url": "https://api.github.com/repos/llvm/llvm-project/issues/180513/reactions",
+        "total_count": 0,
+        "+1": 0,
+        "-1": 0,
+        "laugh": 0,
+        "hooray": 0,
+        "confused": 0,
+        "heart": 0,
+        "rocket": 0,
+        "eyes": 0
+      },
+      "timeline_url": "https://api.github.com/repos/llvm/llvm-project/issues/180513/timeline",
+      "performed_via_github_app": null,
+      "state_reason": null,
+      "score": 1.0
+    }
+  ],
+  "search_type": "lexical"
+}
+
+=== LLVM GitHub issue search: pthread_cancel libcxxabi ===
+{
+  "total_count": 0,
+  "incomplete_results": false,
+  "items": [
+
+  ],
+  "search_type": "lexical"
+}
+EXIT_CODE=0
