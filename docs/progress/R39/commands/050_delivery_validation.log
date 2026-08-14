@@ -1,0 +1,23 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND= bash -lc $'\nset -euo pipefail\nprintf "== CODE_INDEX ==\\n"\nwc -l progress/R39/CODE_INDEX.tsv\nawk -F "\\t" \'NF != 4 {print NR ":" NF ":" $0; bad=1} END {exit bad}\' progress/R39/CODE_INDEX.tsv\nprintf "CODE_INDEX_COLUMNS_OK\\n"\nprintf "== TSV column validation ==\\n"\nfor f in progress/R39/object_identity.tsv progress/R39/linkage_comparison.tsv progress/R39/typeinfo_symbols.tsv progress/R39/runtime_binding.tsv progress/R39/attempts_and_validity.tsv progress/R39/cleanup.tsv; do\n  n=$(awk -F "\\t" \'NR==1 {print NF}\' "$f")\n  awk -F "\\t" -v n="$n" \'NF != n {print FILENAME ":" NR ":" NF ":" $0; bad=1} END {exit bad}\' "$f"\n  printf "%s columns=%s OK\\n" "$f" "$n"\ndone\nprintf "== R39 script curation identity ==\\n"\ndiff -ru progress/R39/tools progress/R39/code/r39\nprintf "R39_CODE_COPY_MATCH\\n"\nprintf "== required report conclusions ==\\n"\nrg -n "SETUP_DIFFERENCE|映射生效、forced handler 命中、卡在重抛|NOT_REQUIRED_AFTER_DECISIVE_CONTROL|NOT_OBSERVED" progress/R39/R39_report.md\nprintf "== file size ceiling ==\\n"\nfind progress/R39 -type f -size +5M -printf "%p\\\\t%s\\\\n"\ncount=$(find progress/R39 -type f -size +5M | wc -l)\nprintf "FILES_OVER_5M=%s\\n" "$count"\ntest "$count" -eq 0\n'
+== CODE_INDEX ==
+32 progress/R39/CODE_INDEX.tsv
+CODE_INDEX_COLUMNS_OK
+== TSV column validation ==
+progress/R39/object_identity.tsv columns=6 OK
+progress/R39/linkage_comparison.tsv columns=12 OK
+progress/R39/typeinfo_symbols.tsv columns=6 OK
+progress/R39/runtime_binding.tsv columns=5 OK
+progress/R39/attempts_and_validity.tsv columns=4 OK
+progress/R39/cleanup.tsv columns=3 OK
+== R39 script curation identity ==
+R39_CODE_COPY_MATCH
+== required report conclusions ==
+5:结论为 **SETUP_DIFFERENCE**。
+13:因此，R38 的“映射未生效”不是 ARM 映射随机失效；它是测试件没有导出 typeinfo、导致运行时类型身份未统一的实验搭建差异。消除该差异后，armv7l 的实测形态回到 R36：**映射生效、forced handler 命中、卡在重抛**。本任务不实现重抛修法。
+52:2. 用 R38 同一 `libc++.a` 仅重链为测试用动态 `libc++.so.1` 后，等价测试件成功生成，DT_NEEDED 同时含 `libc++.so.1` 与同一实验 `libc++abi.so.1`（`commands/033_relink_dynamic_generated_v2.log:7-100`）。运行时 typeinfo 已绑定到主程序，但临时共享库含板上加载器不接受的 ARM relocation `0x03`，在进入 `main` 前退出 127；cancel、handler 与重抛均为 `NOT_OBSERVED`（`commands/038_board_dynamic_binding_observation.log:2175-2190,2270-2272`）。
+54:因此“动态 libc++ 格”的行为结论为 `NOT_OBSERVED`，没有拿装载前绑定替代业务行为。
+62:状态：`NOT_REQUIRED_AFTER_DECISIVE_CONTROL`。
+== file size ceiling ==
+FILES_OVER_5M=0
+EXIT_CODE=0
