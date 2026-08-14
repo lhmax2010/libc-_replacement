@@ -1,0 +1,93 @@
+SOURCE=codes/gcc/libstdc++-v3/libsupc++/eh_personality.cc
+RANGE=535-625
+   535	  else if (action_record == 0)
+   536	    {
+   537	      // If ip is present, has a non-null landing pad, and a null
+   538	      // action table offset, then there are only cleanups present.
+   539	      // Cleanups use a zero switch value, as set above.
+   540	      found_type = found_cleanup;
+   541	    }
+   542	  else
+   543	    {
+   544	      // Otherwise we have a catch handler or exception specification.
+   545	
+   546	      _sleb128_t ar_filter, ar_disp;
+   547	      const std::type_info* catch_type;
+   548	      _throw_typet* throw_type;
+   549	      bool saw_cleanup = false;
+   550	      bool saw_handler = false;
+   551	
+   552	#ifdef __ARM_EABI_UNWINDER__
+   553	      // ??? How does this work - more importantly, how does it interact with
+   554	      // dependent exceptions?
+   555	      throw_type = ue_header;
+   556	      if (actions & _UA_FORCE_UNWIND)
+   557		{
+   558		  __GXX_INIT_FORCED_UNWIND_CLASS(ue_header->exception_class);
+   559		}
+   560	      else if (!foreign_exception)
+   561		thrown_ptr = __get_object_from_ue (ue_header);
+   562	#else
+   563	#if __cpp_rtti
+   564	      // During forced unwinding, match a magic exception type.
+   565	      if (actions & _UA_FORCE_UNWIND)
+   566		{
+   567		  throw_type = &typeid(abi::__forced_unwind);
+   568		}
+   569	      // With a foreign exception class, there's no exception type.
+   570	      // ??? What to do about GNU Java and GNU Ada exceptions?
+   571	      else if (foreign_exception)
+   572		{
+   573		  throw_type = &typeid(abi::__foreign_exception);
+   574		}
+   575	      else
+   576	#endif
+   577	        {
+   578	          thrown_ptr = __get_object_from_ue (ue_header);
+   579	          throw_type = __get_exception_header_from_obj
+   580	            (thrown_ptr)->exceptionType;
+   581	        }
+   582	#endif
+   583	
+   584	      while (1)
+   585		{
+   586		  p = action_record;
+   587		  p = read_sleb128 (p, &ar_filter);
+   588		  read_sleb128 (p, &ar_disp);
+   589	
+   590		  if (ar_filter == 0)
+   591		    {
+   592		      // Zero filter values are cleanups.
+   593		      saw_cleanup = true;
+   594		    }
+   595		  else if (actions == _UA_CLEANUP_PHASE)
+   596		    // We checked the handlers in the search phase; if one of them
+   597		    // matched, actions would also have _UA_HANDLER_FRAME set.
+   598		    ;
+   599		  else if (ar_filter > 0)
+   600		    {
+   601		      // Positive filter values are handlers.
+   602		      catch_type = get_ttype_entry (&info, ar_filter);
+   603	
+   604		      // Null catch type is a catch-all handler; we can catch foreign
+   605		      // exceptions with this.  Otherwise we must match types.
+   606		      if (! catch_type
+   607			  || (throw_type
+   608			      && get_adjusted_ptr (catch_type, throw_type,
+   609						   &thrown_ptr)))
+   610			{
+   611			  saw_handler = true;
+   612			  break;
+   613			}
+   614		    }
+   615		  else
+   616		    {
+   617		      // Negative filter values are exception specifications.
+   618		      // ??? How do foreign exceptions fit in?  As far as I can
+   619		      // see we can't match because there's no __cxa_exception
+   620		      // object to stuff bits in for __cxa_call_unexpected to use.
+   621		      // Allow them iff the exception spec is non-empty.  I.e.
+   622		      // a throw() specification results in __unexpected.
+   623		      if ((throw_type
+   624			   && !(actions & _UA_FORCE_UNWIND)
+   625			   && !foreign_exception)

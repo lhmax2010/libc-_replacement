@@ -1,0 +1,140 @@
+SOURCE=codes/llvm/libcxxabi/src/cxa_exception.cpp
+RANGES=430-500,599-665
+   430	* Returns the adjusted pointer to the exception object, which is stored in
+   431	  the __cxa_exception by the personality routine.
+   432	
+   433	If the exception is foreign, this means it did not originate from one of throw
+   434	routines.  The foreign exception does not necessarily have a __cxa_exception
+   435	header.  However we can catch it here with a catch (...), or with a call
+   436	to terminate or unexpected during unwinding.
+   437	* Do not try to increment the exception's handler count, we don't know where
+   438	  it is.
+   439	* Push the exception on the stack of currently-caught exceptions only if the
+   440	  stack is empty.  The foreign exception has no way to link to the current
+   441	  top of stack.  If the stack is not empty, call terminate.  Even with an
+   442	  empty stack, this is hacked in by pushing a pointer to an imaginary
+   443	  __cxa_exception block in front of the foreign exception.  It would be better
+   444	  if the __cxa_eh_globals structure had a stack of _Unwind_Exception, but it
+   445	  doesn't.  It has a stack of __cxa_exception (which has a next* in it).
+   446	* Do not decrement the uncaught_exception count because we didn't increment it
+   447	  in __cxa_throw (or one of our rethrow functions).
+   448	* If we haven't terminated, assume the exception object is just past the
+   449	  _Unwind_Exception and return a pointer to that.
+   450	*/
+   451	void*
+   452	__cxa_begin_catch(void* unwind_arg) throw()
+   453	{
+   454	    _Unwind_Exception* unwind_exception = static_cast<_Unwind_Exception*>(unwind_arg);
+   455	    bool native_exception = __isOurExceptionClass(unwind_exception);
+   456	    __cxa_eh_globals* globals = __cxa_get_globals();
+   457	    // exception_header is a hackish offset from a foreign exception, but it
+   458	    //   works as long as we're careful not to try to access any __cxa_exception
+   459	    //   parts.
+   460	    __cxa_exception* exception_header =
+   461	            cxa_exception_from_exception_unwind_exception
+   462	            (
+   463	                static_cast<_Unwind_Exception*>(unwind_exception)
+   464	            );
+   465	
+   466	#if defined(__MVS__)
+   467	    // Remove the exception object from the linked list of exceptions that the z/OS unwinder
+   468	    // maintains before adding it to the libc++abi list of caught exceptions.
+   469	    // The libc++abi will manage the lifetime of the exception from this point forward.
+   470	    _UnwindZOS_PopException();
+   471	#endif
+   472	
+   473	    if (native_exception)
+   474	    {
+   475	        // Increment the handler count, removing the flag about being rethrown
+   476	        exception_header->handlerCount = exception_header->handlerCount < 0 ?
+   477	            -exception_header->handlerCount + 1 : exception_header->handlerCount + 1;
+   478	        //  place the exception on the top of the stack if it's not already
+   479	        //    there by a previous rethrow
+   480	        if (exception_header != globals->caughtExceptions)
+   481	        {
+   482	            exception_header->nextException = globals->caughtExceptions;
+   483	            globals->caughtExceptions = exception_header;
+   484	        }
+   485	        globals->uncaughtExceptions -= 1;   // Not atomically, since globals are thread-local
+   486	#if defined(_LIBCXXABI_ARM_EHABI)
+   487	        return reinterpret_cast<void*>(exception_header->unwindHeader.barrier_cache.bitpattern[0]);
+   488	#else
+   489	        return exception_header->adjustedPtr;
+   490	#endif
+   491	    }
+   492	    // Else this is a foreign exception
+   493	    // If the caughtExceptions stack is not empty, terminate
+   494	    if (globals->caughtExceptions != 0)
+   495	        std::terminate();
+   496	    // Push the foreign exception on to the stack
+   497	    globals->caughtExceptions = exception_header;
+   498	    return unwind_exception + 1;
+   499	}
+   500	
+   599	// Note:  exception_header may be masquerading as a __cxa_dependent_exception
+   600	//        and that's ok.  exceptionType is there too.
+   601	//        However watch out for foreign exceptions.  Return null for them.
+   602	std::type_info *__cxa_current_exception_type() {
+   603	//  get the current exception
+   604	    __cxa_eh_globals *globals = __cxa_get_globals_fast();
+   605	    if (NULL == globals)
+   606	        return NULL;     //  If there have never been any exceptions, there are none now.
+   607	    __cxa_exception *exception_header = globals->caughtExceptions;
+   608	    if (NULL == exception_header)
+   609	        return NULL;        //  No current exception
+   610	    if (!__isOurExceptionClass(&exception_header->unwindHeader))
+   611	        return NULL;
+   612	    return exception_header->exceptionType;
+   613	}
+   614	
+   615	// 2.5.4 Rethrowing Exceptions
+   616	/*  This routine can rethrow native or foreign exceptions.
+   617	If the exception is native:
+   618	* marks the exception object on top of the caughtExceptions stack
+   619	  (in an implementation-defined way) as being rethrown.
+   620	* If the caughtExceptions stack is empty, it calls terminate()
+   621	  (see [C++FDIS] [except.throw], 15.1.8).
+   622	* It then calls _Unwind_RaiseException which should not return
+   623	   (terminate if it does).
+   624	  Note:  exception_header may be masquerading as a __cxa_dependent_exception
+   625	         and that's ok.
+   626	*/
+   627	void __cxa_rethrow() {
+   628	    __cxa_eh_globals* globals = __cxa_get_globals();
+   629	    __cxa_exception* exception_header = globals->caughtExceptions;
+   630	    if (NULL == exception_header)
+   631	        std::terminate();      // throw; called outside of a exception handler
+   632	    bool native_exception = __isOurExceptionClass(&exception_header->unwindHeader);
+   633	    if (native_exception)
+   634	    {
+   635	        //  Mark the exception as being rethrown (reverse the effects of __cxa_begin_catch)
+   636	        exception_header->handlerCount = -exception_header->handlerCount;
+   637	        globals->uncaughtExceptions += 1;
+   638	        //  __cxa_end_catch will remove this exception from the caughtExceptions stack if necessary
+   639	    }
+   640	    else  // this is a foreign exception
+   641	    {
+   642	        // The only way to communicate to __cxa_end_catch that we've rethrown
+   643	        //   a foreign exception, so don't delete us, is to pop the stack here
+   644	        //   which must be empty afterwards.  Then __cxa_end_catch will do
+   645	        //   nothing
+   646	        globals->caughtExceptions = 0;
+   647	    }
+   648	#ifdef __USING_SJLJ_EXCEPTIONS__
+   649	    _Unwind_SjLj_RaiseException(&exception_header->unwindHeader);
+   650	#else
+   651	    _Unwind_RaiseException(&exception_header->unwindHeader);
+   652	#endif
+   653	
+   654	    //  If we get here, some kind of unwinding error has occurred.
+   655	    //  There is some weird code generation bug happening with
+   656	    //     Apple clang version 4.0 (tags/Apple/clang-418.0.2) (based on LLVM 3.1svn)
+   657	    //     If we call failed_throw here.  Turns up with -O2 or higher, and -Os.
+   658	    __cxa_begin_catch(&exception_header->unwindHeader);
+   659	    if (native_exception)
+   660	        std::__terminate(exception_header->terminateHandler);
+   661	    // Foreign exception: can't get exception_header->terminateHandler
+   662	    std::terminate();
+   663	}
+   664	
+   665	/*

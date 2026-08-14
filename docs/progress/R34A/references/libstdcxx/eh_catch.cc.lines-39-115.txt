@@ -1,0 +1,79 @@
+SOURCE=codes/gcc/libstdc++-v3/libsupc++/eh_catch.cc
+RANGE=39-115
+    39	extern "C" void *
+    40	__cxxabiv1::__cxa_begin_catch (void *exc_obj_in) _GLIBCXX_NOTHROW
+    41	{
+    42	  _Unwind_Exception *exceptionObject
+    43	    = reinterpret_cast <_Unwind_Exception *>(exc_obj_in);
+    44	  __cxa_eh_globals *globals = __cxa_get_globals ();
+    45	  __cxa_exception *prev = globals->caughtExceptions;
+    46	  __cxa_exception *header = __get_exception_header_from_ue (exceptionObject);
+    47	  void* objectp;
+    48	
+    49	  // Foreign exceptions can't be stacked here.  If the exception stack is
+    50	  // empty, then fine.  Otherwise we really have no choice but to terminate.
+    51	  // Note that this use of "header" is a lie.  It's fine so long as we only
+    52	  // examine header->unwindHeader though.
+    53	  if (!__is_gxx_exception_class(header->unwindHeader.exception_class))
+    54	    {
+    55	      if (prev != 0)
+    56		std::terminate ();
+    57	
+    58	      // Remember for end_catch and rethrow.
+    59	      globals->caughtExceptions = header;
+    60	
+    61	      // ??? No sensible value to return; we don't know what the 
+    62	      // object is, much less where it is in relation to the header.
+    63	      return 0;
+    64	    }
+    65	
+    66	  int count = header->handlerCount;
+    67	  // Count is less than zero if this exception was rethrown from an
+    68	  // immediately enclosing region.
+    69	  if (count < 0)
+    70	    count = -count + 1;
+    71	  else
+    72	    count += 1;
+    73	  header->handlerCount = count;
+    74	  globals->uncaughtExceptions -= 1;
+    75	
+    76	  if (header != prev)
+    77	    {
+    78	      header->nextException = prev;
+    79	      globals->caughtExceptions = header;
+    80	    }
+    81	
+    82	  objectp = __gxx_caught_object(exceptionObject);
+    83	
+    84	  PROBE2 (catch, objectp, header->exceptionType);
+    85	
+    86	#ifdef __ARM_EABI_UNWINDER__
+    87	  _Unwind_Complete(exceptionObject);
+    88	#endif
+    89	  return objectp;
+    90	}
+    91	
+    92	
+    93	extern "C" void
+    94	__cxxabiv1::__cxa_end_catch ()
+    95	{
+    96	  __cxa_eh_globals *globals = __cxa_get_globals_fast ();
+    97	  __cxa_exception *header = globals->caughtExceptions;
+    98	
+    99	  // A rethrow of a foreign exception will be removed from the
+   100	  // the exception stack immediately by __cxa_rethrow.
+   101	  if (!header)
+   102	    return;
+   103	
+   104	  // A foreign exception couldn't have been stacked (see above),
+   105	  // so by definition processing must be complete.
+   106	  if (!__is_gxx_exception_class(header->unwindHeader.exception_class))
+   107	    {
+   108	      globals->caughtExceptions = 0;
+   109	      _Unwind_DeleteException (&header->unwindHeader);
+   110	      return;
+   111	    }
+   112	
+   113	  int count = header->handlerCount;
+   114	  if (count < 0)
+   115	    {
