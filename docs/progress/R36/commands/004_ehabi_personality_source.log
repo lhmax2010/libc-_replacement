@@ -1,0 +1,858 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND= bash -lc set\ -o\ pipefail\;\ src=tmp/R34B/llvm-exp/libcxxabi/src/cxa_personality.cpp\;\ printf\ \"PREPROCESSOR_AND_FUNCTION_INDEX\\n\"\;\ rg\ -n\ \"_LIBCXXABI_ARM_EHABI\|scan_eh_tab\|__gxx_personality_v0\|__cxa_begin_cleanup\|__cxa_type_match\|_Unwind_VRS_\|_UA_FORCE_UNWIND\"\ \"\$src\"\;\ printf\ \"FILE_CONTEXT_1_180\\n\"\;\ nl\ -ba\ \"\$src\"\ \|\ sed\ -n\ \"1\,180p\"\;\ printf\ \"SCAN_CONTEXT_650_880\\n\"\;\ nl\ -ba\ \"\$src\"\ \|\ sed\ -n\ \"650\,880p\"\;\ printf\ \"EHABI_CONTEXT_880_1185\\n\"\;\ nl\ -ba\ \"\$src\"\ \|\ sed\ -n\ \"880\,1185p\"\;\ printf\ \"RETHROW_CONTEXT\\n\"\;\ nl\ -ba\ tmp/R34B/llvm-exp/libcxxabi/src/cxa_exception.cpp\ \|\ sed\ -n\ \"580\,685p\"
+PREPROCESSOR_AND_FUNCTION_INDEX
+387:#if defined(_LIBCXXABI_ARM_EHABI)
+428:#else // !defined(_LIBCXXABI_ARM_EHABI)
+465:#endif // !defined(_LIBCXXABI_ARM_EHABI)
+476:#if defined(_LIBCXXABI_ARM_EHABI)
+650:static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
+665:        if (actions & (_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME | _UA_FORCE_UNWIND))
+675:        if ((actions & _UA_HANDLER_FRAME) && (actions & _UA_FORCE_UNWIND))
+678:            // If _UA_FORCE_UNWIND is set, phase 1 shouldn't have happened.
+812:                                          _UA_FORCE_UNWIND));
+823:                             (actions & _UA_FORCE_UNWIND))
+855:                                   (_UA_SEARCH_PHASE | _UA_FORCE_UNWIND));
+868:                    if (actions & _UA_FORCE_UNWIND) {
+947:    If _UA_CLEANUP_PHASE or _UA_HANDLER_FRAME or _UA_FORCE_UNWIND there's
+967:        If _UA_FORCE_UNWIND
+988:#if !defined(_LIBCXXABI_ARM_EHABI)
+1051:__gxx_personality_v0
+1090:    scan_eh_tab(results, actions, native_exception, unwind_exception, context);
+1191:__gxx_personality_v0(_Unwind_State state,
+1218:        scan_eh_tab(results, _UA_SEARCH_PHASE, native_exception, unwind_exception, context);
+1250:                scan_eh_tab(results, static_cast<_Unwind_Action>(_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME),
+1265:          scan_eh_tab(
+1267:              static_cast<_Unwind_Action>(_UA_CLEANUP_PHASE | _UA_FORCE_UNWIND),
+1270:          scan_eh_tab(results, _UA_CLEANUP_PHASE, native_exception,
+1279:            __cxa_begin_cleanup(unwind_exception);
+1324:#if defined(_LIBCXXABI_ARM_EHABI)
+1436:// __gxx_personality_v0().
+1440:    __attribute__((__alias__("__gxx_personality_v0")));
+FILE_CONTEXT_1_180
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//
+     8	//  This file implements the "Exception Handling APIs"
+     9	//  https://itanium-cxx-abi.github.io/cxx-abi/abi-eh.html
+    10	//  http://www.intel.com/design/itanium/downloads/245358.htm
+    11	//
+    12	//===----------------------------------------------------------------------===//
+    13	
+    14	#include <assert.h>
+    15	#include <stdlib.h>
+    16	#include <string.h>
+    17	#include <typeinfo>
+    18	
+    19	#include "__cxxabi_config.h"
+    20	#include "cxa_exception.h"
+    21	#include "cxa_handlers.h"
+    22	#include "private_typeinfo.h"
+    23	
+    24	#if __has_feature(ptrauth_calls)
+    25	
+    26	// CXXABI depends on defintions in libunwind as pointer auth couples the
+    27	// definitions
+    28	#  include "libunwind.h"
+    29	
+    30	// The actual value of the discriminators listed below is not important.
+    31	// The derivation of the constants is only being included for the purpose
+    32	// of maintaining a record of how they were originally produced.
+    33	
+    34	// ptrauth_string_discriminator("scan_results::languageSpecificData") == 0xE50D)
+    35	#  define __ptrauth_scan_results_lsd __ptrauth(ptrauth_key_process_dependent_code, 1, 0xE50D)
+    36	
+    37	// ptrauth_string_discriminator("scan_results::actionRecord") == 0x9823
+    38	#  define __ptrauth_scan_results_action_record __ptrauth(ptrauth_key_process_dependent_code, 1, 0x9823)
+    39	
+    40	// scan result is broken up as we have a manual re-sign that requires each component
+    41	#  define __ptrauth_scan_results_landingpad_key ptrauth_key_process_dependent_code
+    42	// ptrauth_string_discriminator("scan_results::landingPad") == 0xD27C
+    43	#  define __ptrauth_scan_results_landingpad_disc 0xD27C
+    44	#  define __ptrauth_scan_results_landingpad                                                                            \
+    45	    __ptrauth(__ptrauth_scan_results_landingpad_key, 1, __ptrauth_scan_results_landingpad_disc)
+    46	
+    47	// `__ptrauth_restricted_intptr` is a feature of apple clang that predates
+    48	// support for direct application of `__ptrauth` to integer types. This
+    49	// guard is necessary to support compilation with those compiler.
+    50	#  if __has_extension(ptrauth_restricted_intptr_qualifier)
+    51	#    define __ptrauth_scan_results_landingpad_intptr                                                                   \
+    52	      __ptrauth_restricted_intptr(__ptrauth_scan_results_landingpad_key, 1, __ptrauth_scan_results_landingpad_disc)
+    53	#  else
+    54	#    define __ptrauth_scan_results_landingpad_intptr                                                                   \
+    55	      __ptrauth(__ptrauth_scan_results_landingpad_key, 1, __ptrauth_scan_results_landingpad_disc)
+    56	#  endif
+    57	
+    58	#else
+    59	#  define __ptrauth_scan_results_lsd
+    60	#  define __ptrauth_scan_results_action_record
+    61	#  define __ptrauth_scan_results_landingpad
+    62	#  define __ptrauth_scan_results_landingpad_intptr
+    63	#endif
+    64	
+    65	// The functions defined in this file are magic functions called only by the compiler.
+    66	#ifdef __clang__
+    67	#  pragma clang diagnostic ignored "-Wmissing-prototypes"
+    68	#endif
+    69	
+    70	// TODO: This is a temporary workaround for libc++abi to recognize that it's being
+    71	// built against LLVM's libunwind. LLVM's libunwind started reporting _LIBUNWIND_VERSION
+    72	// in LLVM 15 -- we can remove this workaround after shipping LLVM 17. Once we remove
+    73	// this workaround, it won't be possible to build libc++abi against libunwind headers
+    74	// from LLVM 14 and before anymore.
+    75	#if defined(____LIBUNWIND_CONFIG_H__) && !defined(_LIBUNWIND_VERSION)
+    76	#   define _LIBUNWIND_VERSION
+    77	#endif
+    78	
+    79	#if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
+    80	#include <windows.h>
+    81	#include <winnt.h>
+    82	
+    83	extern "C" EXCEPTION_DISPOSITION _GCC_specific_handler(PEXCEPTION_RECORD,
+    84	                                                       void *, PCONTEXT,
+    85	                                                       PDISPATCHER_CONTEXT,
+    86	                                                       _Unwind_Personality_Fn);
+    87	#endif
+    88	
+    89	/*
+    90	    Exception Header Layout:
+    91	
+    92	+---------------------------+-----------------------------+---------------+
+    93	| __cxa_exception           | _Unwind_Exception CLNGC++\0 | thrown object |
+    94	+---------------------------+-----------------------------+---------------+
+    95	                                                          ^
+    96	                                                          |
+    97	  +-------------------------------------------------------+
+    98	  |
+    99	+---------------------------+-----------------------------+
+   100	| __cxa_dependent_exception | _Unwind_Exception CLNGC++\1 |
+   101	+---------------------------+-----------------------------+
+   102	
+   103	    Exception Handling Table Layout:
+   104	
+   105	+-----------------+--------+
+   106	| lpStartEncoding | (char) |
+   107	+---------+-------+--------+---------------+-----------------------+
+   108	| lpStart | (encoded with lpStartEncoding) | defaults to funcStart |
+   109	+---------+-----+--------+-----------------+---------------+-------+
+   110	| ttypeEncoding | (char) | Encoding of the type_info table |
+   111	+---------------+-+------+----+----------------------------+----------------+
+   112	| classInfoOffset | (ULEB128) | Offset to type_info table, defaults to null |
+   113	+-----------------++--------+-+----------------------------+----------------+
+   114	| callSiteEncoding | (char) | Encoding for Call Site Table |
+   115	+------------------+--+-----+-----+------------------------+--------------------------+
+   116	| callSiteTableLength | (ULEB128) | Call Site Table length, used to find Action table |
+   117	+---------------------+-----------+---------------------------------------------------+
+   118	#if !defined(__USING_SJLJ_EXCEPTIONS__) && !defined(__WASM_EXCEPTIONS__)
+   119	+---------------------+-----------+------------------------------------------------+
+   120	| Beginning of Call Site Table            The current ip lies within the           |
+   121	| ...                                     (start, length) range of one of these    |
+   122	|                                         call sites. There may be action needed.  |
+   123	| +-------------+---------------------------------+------------------------------+ |
+   124	| | start       | (encoded with callSiteEncoding) | offset relative to funcStart | |
+   125	| | length      | (encoded with callSiteEncoding) | length of code fragment      | |
+   126	| | landingPad  | (encoded with callSiteEncoding) | offset relative to lpStart   | |
+   127	| | actionEntry | (ULEB128)                       | Action Table Index 1-based   | |
+   128	| |             |                                 | actionEntry == 0 -> cleanup  | |
+   129	| +-------------+---------------------------------+------------------------------+ |
+   130	| ...                                                                              |
+   131	+----------------------------------------------------------------------------------+
+   132	#else  // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   133	+---------------------+-----------+------------------------------------------------+
+   134	| Beginning of Call Site Table            The current ip is a 1-based index into   |
+   135	| ...                                     this table.  Or it is -1 meaning no      |
+   136	|                                         action is needed.  Or it is 0 meaning    |
+   137	|                                         terminate.                               |
+   138	| +-------------+---------------------------------+------------------------------+ |
+   139	| | landingPad  | (ULEB128)                       | offset relative to lpStart   | |
+   140	| | actionEntry | (ULEB128)                       | Action Table Index 1-based   | |
+   141	| |             |                                 | actionEntry == 0 -> cleanup  | |
+   142	| +-------------+---------------------------------+------------------------------+ |
+   143	| ...                                                                              |
+   144	+----------------------------------------------------------------------------------+
+   145	#endif // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   146	+---------------------------------------------------------------------+
+   147	| Beginning of Action Table       ttypeIndex == 0 : cleanup           |
+   148	| ...                             ttypeIndex  > 0 : catch             |
+   149	|                                 ttypeIndex  < 0 : exception spec    |
+   150	| +--------------+-----------+--------------------------------------+ |
+   151	| | ttypeIndex   | (SLEB128) | Index into type_info Table (1-based) | |
+   152	| | actionOffset | (SLEB128) | Offset into next Action Table entry  | |
+   153	| +--------------+-----------+--------------------------------------+ |
+   154	| ...                                                                 |
+   155	+---------------------------------------------------------------------+-----------------+
+   156	| type_info Table, but classInfoOffset does *not* point here!                           |
+   157	| +----------------+------------------------------------------------+-----------------+ |
+   158	| | Nth type_info* | Encoded with ttypeEncoding, 0 means catch(...) | ttypeIndex == N | |
+   159	| +----------------+------------------------------------------------+-----------------+ |
+   160	| ...                                                                                   |
+   161	| +----------------+------------------------------------------------+-----------------+ |
+   162	| | 1st type_info* | Encoded with ttypeEncoding, 0 means catch(...) | ttypeIndex == 1 | |
+   163	| +----------------+------------------------------------------------+-----------------+ |
+   164	| +---------------------------------------+-----------+------------------------------+  |
+   165	| | 1st ttypeIndex for 1st exception spec | (ULEB128) | classInfoOffset points here! |  |
+   166	| | ...                                   | (ULEB128) |                              |  |
+   167	| | Mth ttypeIndex for 1st exception spec | (ULEB128) |                              |  |
+   168	| | 0                                     | (ULEB128) |                              |  |
+   169	| +---------------------------------------+------------------------------------------+  |
+   170	| ...                                                                                   |
+   171	| +---------------------------------------+------------------------------------------+  |
+   172	| | 0                                     | (ULEB128) | throw()                      |  |
+   173	| +---------------------------------------+------------------------------------------+  |
+   174	| ...                                                                                   |
+   175	| +---------------------------------------+------------------------------------------+  |
+   176	| | 1st ttypeIndex for Nth exception spec | (ULEB128) |                              |  |
+   177	| | ...                                   | (ULEB128) |                              |  |
+   178	| | Mth ttypeIndex for Nth exception spec | (ULEB128) |                              |  |
+   179	| | 0                                     | (ULEB128) |                              |  |
+   180	| +---------------------------------------+------------------------------------------+  |
+SCAN_CONTEXT_650_880
+   650	static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
+   651	                        bool native_exception,
+   652	                        _Unwind_Exception *unwind_exception,
+   653	                        _Unwind_Context *context) {
+   654	    // Initialize results to found nothing but an error
+   655	    results.ttypeIndex = 0;
+   656	    results.actionRecord = 0;
+   657	    results.languageSpecificData = 0;
+   658	    results.landingPad = 0;
+   659	    results.adjustedPtr = 0;
+   660	    results.reason = _URC_FATAL_PHASE1_ERROR;
+   661	    // Check for consistent actions
+   662	    if (actions & _UA_SEARCH_PHASE)
+   663	    {
+   664	        // Do Phase 1
+   665	        if (actions & (_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME | _UA_FORCE_UNWIND))
+   666	        {
+   667	            // None of these flags should be set during Phase 1
+   668	            //   Client error
+   669	            results.reason = _URC_FATAL_PHASE1_ERROR;
+   670	            return;
+   671	        }
+   672	    }
+   673	    else if (actions & _UA_CLEANUP_PHASE)
+   674	    {
+   675	        if ((actions & _UA_HANDLER_FRAME) && (actions & _UA_FORCE_UNWIND))
+   676	        {
+   677	            // _UA_HANDLER_FRAME should only be set if phase 1 found a handler.
+   678	            // If _UA_FORCE_UNWIND is set, phase 1 shouldn't have happened.
+   679	            //    Client error
+   680	            results.reason = _URC_FATAL_PHASE2_ERROR;
+   681	            return;
+   682	        }
+   683	    }
+   684	    else // Neither _UA_SEARCH_PHASE nor _UA_CLEANUP_PHASE is set
+   685	    {
+   686	        // One of these should be set.
+   687	        //   Client error
+   688	        results.reason = _URC_FATAL_PHASE1_ERROR;
+   689	        return;
+   690	    }
+   691	    // Start scan by getting exception table address.
+   692	    const uint8_t *lsda = (const uint8_t *)_Unwind_GetLanguageSpecificData(context);
+   693	    if (lsda == 0)
+   694	    {
+   695	        // There is no exception table
+   696	        results.reason = _URC_CONTINUE_UNWIND;
+   697	        return;
+   698	    }
+   699	    results.languageSpecificData = lsda;
+   700	#if defined(_AIX)
+   701	    uintptr_t base = _Unwind_GetDataRelBase(context);
+   702	#else
+   703	    uintptr_t base = 0;
+   704	#endif
+   705	    // Get the current instruction pointer and offset it before next
+   706	    // instruction in the current frame which threw the exception.
+   707	    uintptr_t ip = _Unwind_GetIP(context) - 1;
+   708	    // Get beginning current frame's code (as defined by the
+   709	    // emitted dwarf code)
+   710	    uintptr_t funcStart = _Unwind_GetRegionStart(context);
+   711	#if defined(__USING_SJLJ_EXCEPTIONS__) || defined(__WASM_EXCEPTIONS__)
+   712	    if (ip == uintptr_t(-1))
+   713	    {
+   714	        // no action
+   715	        results.reason = _URC_CONTINUE_UNWIND;
+   716	        return;
+   717	    }
+   718	    else if (ip == 0)
+   719	        call_terminate(native_exception, unwind_exception);
+   720	    // ip is 1-based index into call site table
+   721	#else  // !__USING_SJLJ_EXCEPTIONS__ && !__WASM_EXCEPTIONS__
+   722	    uintptr_t ipOffset = ip - funcStart;
+   723	#endif // !__USING_SJLJ_EXCEPTIONS__ && !__WASM_EXCEPTIONS__
+   724	    const uint8_t* classInfo = NULL;
+   725	    // Note: See JITDwarfEmitter::EmitExceptionTable(...) for corresponding
+   726	    //       dwarf emission
+   727	    // Parse LSDA header.
+   728	    uint8_t lpStartEncoding = *lsda++;
+   729	    const uint8_t* lpStart = lpStartEncoding == DW_EH_PE_omit
+   730	                                 ? (const uint8_t*)funcStart
+   731	                                 : (const uint8_t*)readEncodedPointer(&lsda, lpStartEncoding, base);
+   732	    uint8_t ttypeEncoding = *lsda++;
+   733	    if (ttypeEncoding != DW_EH_PE_omit)
+   734	    {
+   735	        // Calculate type info locations in emitted dwarf code which
+   736	        // were flagged by type info arguments to llvm.eh.selector
+   737	        // intrinsic
+   738	        uintptr_t classInfoOffset = readULEB128(&lsda);
+   739	        classInfo = lsda + classInfoOffset;
+   740	    }
+   741	    // Walk call-site table looking for range that
+   742	    // includes current PC.
+   743	    uint8_t callSiteEncoding = *lsda++;
+   744	#if defined(__USING_SJLJ_EXCEPTIONS__) || defined(__WASM_EXCEPTIONS__)
+   745	    (void)callSiteEncoding;  // When using SjLj/Wasm exceptions, callSiteEncoding is never used
+   746	#endif
+   747	    uint32_t callSiteTableLength = static_cast<uint32_t>(readULEB128(&lsda));
+   748	    const uint8_t* callSiteTableStart = lsda;
+   749	    const uint8_t* callSiteTableEnd = callSiteTableStart + callSiteTableLength;
+   750	    const uint8_t* actionTableStart = callSiteTableEnd;
+   751	    const uint8_t* callSitePtr = callSiteTableStart;
+   752	    while (callSitePtr < callSiteTableEnd)
+   753	    {
+   754	        // There is one entry per call site.
+   755	#if !defined(__USING_SJLJ_EXCEPTIONS__) && !defined(__WASM_EXCEPTIONS__)
+   756	        // The call sites are non-overlapping in [start, start+length)
+   757	        // The call sites are ordered in increasing value of start
+   758	        uintptr_t start = readEncodedPointer(&callSitePtr, callSiteEncoding);
+   759	        uintptr_t length = readEncodedPointer(&callSitePtr, callSiteEncoding);
+   760	        landing_pad_t landingPad = readEncodedPointer(&callSitePtr, callSiteEncoding);
+   761	        uintptr_t actionEntry = readULEB128(&callSitePtr);
+   762	        if ((start <= ipOffset) && (ipOffset < (start + length)))
+   763	#else  // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   764	        // ip is 1-based index into this table
+   765	        landing_pad_t landingPad = readULEB128(&callSitePtr);
+   766	        uintptr_t actionEntry = readULEB128(&callSitePtr);
+   767	        if (--ip == 0)
+   768	#endif // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   769	        {
+   770	            // Found the call site containing ip.
+   771	#if !defined(__USING_SJLJ_EXCEPTIONS__) && !defined(__WASM_EXCEPTIONS__)
+   772	            if (landingPad == 0)
+   773	            {
+   774	                // No handler here
+   775	                results.reason = _URC_CONTINUE_UNWIND;
+   776	                return;
+   777	            }
+   778	            landingPad = (uintptr_t)lpStart + landingPad;
+   779	#else  // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   780	            ++landingPad;
+   781	#endif // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   782	            results.landingPad = landingPad;
+   783	            if (actionEntry == 0)
+   784	            {
+   785	                // Found a cleanup
+   786	                results.reason = (actions & _UA_SEARCH_PHASE) ? _URC_CONTINUE_UNWIND : _URC_HANDLER_FOUND;
+   787	                return;
+   788	            }
+   789	            // Convert 1-based byte offset into
+   790	            const uint8_t* action = actionTableStart + (actionEntry - 1);
+   791	            bool hasCleanup = false;
+   792	            // Scan action entries until you find a matching handler, cleanup, or the end of action list
+   793	            while (true)
+   794	            {
+   795	                const uint8_t* actionRecord = action;
+   796	                int64_t ttypeIndex = readSLEB128(&action);
+   797	                if (ttypeIndex > 0)
+   798	                {
+   799	                    // Found a catch, does it actually catch?
+   800	                    // First check for catch (...)
+   801	                    const __shim_type_info* catchType =
+   802	                        get_shim_type_info(static_cast<uint64_t>(ttypeIndex),
+   803	                                           classInfo, ttypeEncoding,
+   804	                                           native_exception, unwind_exception,
+   805	                                           base);
+   806	                    if (catchType == 0)
+   807	                    {
+   808	                        // Found catch (...) catches everything, including
+   809	                        // foreign exceptions. This is search phase, cleanup
+   810	                        // phase with foreign exception, or forced unwinding.
+   811	                        assert(actions & (_UA_SEARCH_PHASE | _UA_HANDLER_FRAME |
+   812	                                          _UA_FORCE_UNWIND));
+   813	                        results.ttypeIndex = ttypeIndex;
+   814	                        results.actionRecord = actionRecord;
+   815	                        results.adjustedPtr =
+   816	                            get_thrown_object_ptr(unwind_exception);
+   817	                        results.reason = _URC_HANDLER_FOUND;
+   818	                        return;
+   819	                    }
+   820	                    // Else this is a catch (T) clause and will never
+   821	                    //    catch a foreign exception
+   822	                    else if (!native_exception &&
+   823	                             (actions & _UA_FORCE_UNWIND))
+   824	                    {
+   825	                        void* adjustedPtr =
+   826	                            get_thrown_object_ptr(unwind_exception);
+   827	                        const __shim_type_info* forcedType =
+   828	                            static_cast<const __shim_type_info*>(
+   829	                                &typeid(__cxxabiv1::__forced_unwind));
+   830	                        if (catchType->can_catch(forcedType, adjustedPtr))
+   831	                        {
+   832	                            results.ttypeIndex = ttypeIndex;
+   833	                            results.actionRecord = actionRecord;
+   834	                            results.adjustedPtr = adjustedPtr;
+   835	                            results.reason = _URC_HANDLER_FOUND;
+   836	                            return;
+   837	                        }
+   838	                    }
+   839	                    else if (native_exception)
+   840	                    {
+   841	                        __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+   842	                        void* adjustedPtr = get_thrown_object_ptr(unwind_exception);
+   843	                        const __shim_type_info* excpType =
+   844	                            static_cast<const __shim_type_info*>(exception_header->exceptionType);
+   845	                        if (adjustedPtr == 0 || excpType == 0)
+   846	                        {
+   847	                            // Something very bad happened
+   848	                            call_terminate(native_exception, unwind_exception);
+   849	                        }
+   850	                        if (catchType->can_catch(excpType, adjustedPtr))
+   851	                        {
+   852	                            // Found a matching handler. This is either search
+   853	                            // phase or forced unwinding.
+   854	                            assert(actions &
+   855	                                   (_UA_SEARCH_PHASE | _UA_FORCE_UNWIND));
+   856	                            results.ttypeIndex = ttypeIndex;
+   857	                            results.actionRecord = actionRecord;
+   858	                            results.adjustedPtr = adjustedPtr;
+   859	                            results.reason = _URC_HANDLER_FOUND;
+   860	                            return;
+   861	                        }
+   862	                    }
+   863	                    // Scan next action ...
+   864	                }
+   865	                else if (ttypeIndex < 0)
+   866	                {
+   867	                    // Found an exception specification.
+   868	                    if (actions & _UA_FORCE_UNWIND) {
+   869	                        // Skip if forced unwinding.
+   870	                    } else if (native_exception) {
+   871	                        // Does the exception spec catch this native exception?
+   872	                        __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+   873	                        void* adjustedPtr = get_thrown_object_ptr(unwind_exception);
+   874	                        const __shim_type_info* excpType =
+   875	                            static_cast<const __shim_type_info*>(exception_header->exceptionType);
+   876	                        if (adjustedPtr == 0 || excpType == 0)
+   877	                        {
+   878	                            // Something very bad happened
+   879	                            call_terminate(native_exception, unwind_exception);
+   880	                        }
+EHABI_CONTEXT_880_1185
+   880	                        }
+   881	                        if (exception_spec_can_catch(ttypeIndex, classInfo,
+   882	                                                     ttypeEncoding, excpType,
+   883	                                                     adjustedPtr,
+   884	                                                     unwind_exception, base))
+   885	                        {
+   886	                            // Native exception caught by exception
+   887	                            // specification.
+   888	                            assert(actions & _UA_SEARCH_PHASE);
+   889	                            results.ttypeIndex = ttypeIndex;
+   890	                            results.actionRecord = actionRecord;
+   891	                            results.adjustedPtr = adjustedPtr;
+   892	                            results.reason = _URC_HANDLER_FOUND;
+   893	                            return;
+   894	                        }
+   895	                    } else {
+   896	                        // foreign exception caught by exception spec
+   897	                        results.ttypeIndex = ttypeIndex;
+   898	                        results.actionRecord = actionRecord;
+   899	                        results.adjustedPtr =
+   900	                            get_thrown_object_ptr(unwind_exception);
+   901	                        results.reason = _URC_HANDLER_FOUND;
+   902	                        return;
+   903	                    }
+   904	                    // Scan next action ...
+   905	                } else {
+   906	                    hasCleanup = true;
+   907	                }
+   908	                const uint8_t* temp = action;
+   909	                int64_t actionOffset = readSLEB128(&temp);
+   910	                if (actionOffset == 0)
+   911	                {
+   912	                    // End of action list. If this is phase 2 and we have found
+   913	                    // a cleanup (ttypeIndex=0), return _URC_HANDLER_FOUND;
+   914	                    // otherwise return _URC_CONTINUE_UNWIND.
+   915	                    results.reason = hasCleanup && actions & _UA_CLEANUP_PHASE
+   916	                                         ? _URC_HANDLER_FOUND
+   917	                                         : _URC_CONTINUE_UNWIND;
+   918	                    return;
+   919	                }
+   920	                // Go to next action
+   921	                action += actionOffset;
+   922	            }  // there is no break out of this loop, only return
+   923	        }
+   924	#if !defined(__USING_SJLJ_EXCEPTIONS__) && !defined(__WASM_EXCEPTIONS__)
+   925	        else if (ipOffset < start)
+   926	        {
+   927	            // There is no call site for this ip
+   928	            // Something bad has happened.  We should never get here.
+   929	            // Possible stack corruption.
+   930	            call_terminate(native_exception, unwind_exception);
+   931	        }
+   932	#endif // !__USING_SJLJ_EXCEPTIONS__ && !__WASM_EXCEPTIONS__
+   933	    }  // there might be some tricky cases which break out of this loop
+   934	
+   935	    // It is possible that no eh table entry specify how to handle
+   936	    // this exception. By spec, terminate it immediately.
+   937	    call_terminate(native_exception, unwind_exception);
+   938	}
+   939	
+   940	// public API
+   941	
+   942	/*
+   943	The personality function branches on actions like so:
+   944	
+   945	_UA_SEARCH_PHASE
+   946	
+   947	    If _UA_CLEANUP_PHASE or _UA_HANDLER_FRAME or _UA_FORCE_UNWIND there's
+   948	      an error from above, return _URC_FATAL_PHASE1_ERROR.
+   949	
+   950	    Scan for anything that could stop unwinding:
+   951	
+   952	       1.  A catch clause that will catch this exception
+   953	           (will never catch foreign).
+   954	       2.  A catch (...) (will always catch foreign).
+   955	       3.  An exception spec that will catch this exception
+   956	           (will always catch foreign).
+   957	    If a handler is found
+   958	        If not foreign
+   959	            Save state in header
+   960	        return _URC_HANDLER_FOUND
+   961	    Else a handler not found
+   962	        return _URC_CONTINUE_UNWIND
+   963	
+   964	_UA_CLEANUP_PHASE
+   965	
+   966	    If _UA_HANDLER_FRAME
+   967	        If _UA_FORCE_UNWIND
+   968	            How did this happen?  return _URC_FATAL_PHASE2_ERROR
+   969	        If foreign
+   970	            Do _UA_SEARCH_PHASE to recover state
+   971	        else
+   972	            Recover state from header
+   973	        Transfer control to landing pad.  return _URC_INSTALL_CONTEXT
+   974	
+   975	    Else
+   976	
+   977	        This branch handles both normal C++ non-catching handlers (cleanups)
+   978	          and forced unwinding.
+   979	        Scan for anything that can not stop unwinding:
+   980	
+   981	            1.  A cleanup.
+   982	
+   983	        If a cleanup is found
+   984	            transfer control to it. return _URC_INSTALL_CONTEXT
+   985	        Else a cleanup is not found: return _URC_CONTINUE_UNWIND
+   986	*/
+   987	
+   988	#if !defined(_LIBCXXABI_ARM_EHABI)
+   989	
+   990	// We use these helper functions to work around the behavior of casting between
+   991	// integers (even those that are authenticated) and authenticated pointers.
+   992	// Because the schemas being used are address discriminated we cannot use a
+   993	// trivial value union to coerce the types so instead we perform the re-signing
+   994	// manually.
+   995	using __cxa_catch_temp_type = decltype(__cxa_exception::catchTemp);
+   996	static inline void set_landing_pad(scan_results& results,
+   997	                                   const __cxa_catch_temp_type& source) {
+   998	#if __has_feature(ptrauth_calls)
+   999	  const uintptr_t sourceDiscriminator =
+  1000	      ptrauth_blend_discriminator(&source, __ptrauth_cxxabi_catch_temp_disc);
+  1001	  const uintptr_t targetDiscriminator =
+  1002	      ptrauth_blend_discriminator(&results.landingPad,
+  1003	                                  __ptrauth_scan_results_landingpad_disc);
+  1004	  uintptr_t reauthenticatedLandingPad =
+  1005	      (uintptr_t)ptrauth_auth_and_resign(*reinterpret_cast<void* const*>(&source),
+  1006	                                         __ptrauth_cxxabi_catch_temp_key,
+  1007	                                         sourceDiscriminator,
+  1008	                                         __ptrauth_scan_results_landingpad_key,
+  1009	                                         targetDiscriminator);
+  1010	  memmove(reinterpret_cast<void *>(&results.landingPad),
+  1011	          reinterpret_cast<void *>(&reauthenticatedLandingPad),
+  1012	          sizeof(reauthenticatedLandingPad));
+  1013	#else
+  1014	  results.landingPad = reinterpret_cast<landing_pad_t>(source);
+  1015	#endif
+  1016	}
+  1017	
+  1018	static inline void get_landing_pad(__cxa_catch_temp_type &dest,
+  1019	                                   const scan_results &results) {
+  1020	#if __has_feature(ptrauth_calls)
+  1021	  const uintptr_t sourceDiscriminator =
+  1022	      ptrauth_blend_discriminator(&results.landingPad,
+  1023	                                  __ptrauth_scan_results_landingpad_disc);
+  1024	  const uintptr_t targetDiscriminator =
+  1025	      ptrauth_blend_discriminator(&dest, __ptrauth_cxxabi_catch_temp_disc);
+  1026	  uintptr_t reauthenticatedPointer =
+  1027	      (uintptr_t)ptrauth_auth_and_resign(*reinterpret_cast<void* const*>(&results.landingPad),
+  1028	                                         __ptrauth_scan_results_landingpad_key,
+  1029	                                         sourceDiscriminator,
+  1030	                                         __ptrauth_cxxabi_catch_temp_key,
+  1031	                                         targetDiscriminator);
+  1032	  memmove(reinterpret_cast<void *>(&dest),
+  1033	          reinterpret_cast<void *>(&reauthenticatedPointer),
+  1034	          sizeof(reauthenticatedPointer));
+  1035	#else
+  1036	  dest = reinterpret_cast<__cxa_catch_temp_type>(results.landingPad);
+  1037	#endif
+  1038	}
+  1039	
+  1040	#ifdef __WASM_EXCEPTIONS__
+  1041	_Unwind_Reason_Code __gxx_personality_wasm0
+  1042	#elif defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
+  1043	static _Unwind_Reason_Code __gxx_personality_imp
+  1044	#else
+  1045	_LIBCXXABI_FUNC_VIS _Unwind_Reason_Code
+  1046	#ifdef __USING_SJLJ_EXCEPTIONS__
+  1047	__gxx_personality_sj0
+  1048	#elif defined(__MVS__)
+  1049	__zos_cxx_personality_v2
+  1050	#else
+  1051	__gxx_personality_v0
+  1052	#endif
+  1053	#endif
+  1054	                    (int version, _Unwind_Action actions, uint64_t exceptionClass,
+  1055	                     _Unwind_Exception* unwind_exception, _Unwind_Context* context)
+  1056	{
+  1057	    if (version != 1 || unwind_exception == 0 || context == 0)
+  1058	        return _URC_FATAL_PHASE1_ERROR;
+  1059	
+  1060	    bool native_exception = (exceptionClass     & get_vendor_and_language) ==
+  1061	                            (kOurExceptionClass & get_vendor_and_language);
+  1062	    scan_results results;
+  1063	    // Process a catch handler for a native exception first.
+  1064	    if (actions == (_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME) &&
+  1065	        native_exception) {
+  1066	        // Reload the results from the phase 1 cache.
+  1067	        __cxa_exception* exception_header =
+  1068	            (__cxa_exception*)(unwind_exception + 1) - 1;
+  1069	        results.ttypeIndex = exception_header->handlerSwitchValue;
+  1070	        results.actionRecord = exception_header->actionRecord;
+  1071	        results.languageSpecificData = exception_header->languageSpecificData;
+  1072	        set_landing_pad(results, exception_header->catchTemp);
+  1073	        results.adjustedPtr = exception_header->adjustedPtr;
+  1074	
+  1075	        // Jump to the handler.
+  1076	        set_registers(unwind_exception, context, results);
+  1077	        // Cache base for calculating the address of ttype in
+  1078	        // __cxa_call_unexpected.
+  1079	        if (results.ttypeIndex < 0) {
+  1080	#if defined(_AIX)
+  1081	          exception_header->catchTemp = (void *)_Unwind_GetDataRelBase(context);
+  1082	#else
+  1083	          exception_header->catchTemp = 0;
+  1084	#endif
+  1085	        }
+  1086	        return _URC_INSTALL_CONTEXT;
+  1087	    }
+  1088	
+  1089	    // In other cases we need to scan LSDA.
+  1090	    scan_eh_tab(results, actions, native_exception, unwind_exception, context);
+  1091	    if (results.reason == _URC_CONTINUE_UNWIND ||
+  1092	        results.reason == _URC_FATAL_PHASE1_ERROR)
+  1093	        return results.reason;
+  1094	
+  1095	    if (actions & _UA_SEARCH_PHASE)
+  1096	    {
+  1097	        // Phase 1 search:  All we're looking for in phase 1 is a handler that
+  1098	        //   halts unwinding
+  1099	        assert(results.reason == _URC_HANDLER_FOUND);
+  1100	        if (native_exception) {
+  1101	            // For a native exception, cache the LSDA result.
+  1102	            __cxa_exception* exc = (__cxa_exception*)(unwind_exception + 1) - 1;
+  1103	            exc->handlerSwitchValue = static_cast<int>(results.ttypeIndex);
+  1104	            exc->actionRecord = results.actionRecord;
+  1105	            exc->languageSpecificData = results.languageSpecificData;
+  1106	            get_landing_pad(exc->catchTemp, results);
+  1107	            exc->adjustedPtr = results.adjustedPtr;
+  1108	#ifdef __WASM_EXCEPTIONS__
+  1109	            // Wasm only uses a single phase (_UA_SEARCH_PHASE), so save the
+  1110	            // results here.
+  1111	            set_registers(unwind_exception, context, results);
+  1112	#endif
+  1113	        }
+  1114	        return _URC_HANDLER_FOUND;
+  1115	    }
+  1116	
+  1117	    assert(actions & _UA_CLEANUP_PHASE);
+  1118	    assert(results.reason == _URC_HANDLER_FOUND);
+  1119	    set_registers(unwind_exception, context, results);
+  1120	    // Cache base for calculating the address of ttype in __cxa_call_unexpected.
+  1121	    if (results.ttypeIndex < 0) {
+  1122	      __cxa_exception* exception_header =
+  1123	            (__cxa_exception*)(unwind_exception + 1) - 1;
+  1124	#if defined(_AIX)
+  1125	      exception_header->catchTemp = (void *)_Unwind_GetDataRelBase(context);
+  1126	#else
+  1127	      exception_header->catchTemp = 0;
+  1128	#endif
+  1129	    }
+  1130	    return _URC_INSTALL_CONTEXT;
+  1131	}
+  1132	
+  1133	#if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
+  1134	extern "C" _LIBCXXABI_FUNC_VIS EXCEPTION_DISPOSITION
+  1135	__gxx_personality_seh0(PEXCEPTION_RECORD ms_exc, void *this_frame,
+  1136	                       PCONTEXT ms_orig_context, PDISPATCHER_CONTEXT ms_disp)
+  1137	{
+  1138	  return _GCC_specific_handler(ms_exc, this_frame, ms_orig_context, ms_disp,
+  1139	                               __gxx_personality_imp);
+  1140	}
+  1141	#endif
+  1142	
+  1143	#else
+  1144	
+  1145	extern "C" _Unwind_Reason_Code __gnu_unwind_frame(_Unwind_Exception*, _Unwind_Context*);
+  1146	
+  1147	// Helper function to unwind one frame.
+  1148	// ARM EHABI 7.3 and 7.4: If the personality function returns _URC_CONTINUE_UNWIND, the
+  1149	// personality routine should update the virtual register set (VRS) according to the
+  1150	// corresponding frame unwinding instructions (ARM EHABI 9.3.)
+  1151	static _Unwind_Reason_Code continue_unwind(_Unwind_Exception* unwind_exception,
+  1152	                                           _Unwind_Context* context)
+  1153	{
+  1154	  switch (__gnu_unwind_frame(unwind_exception, context)) {
+  1155	  case _URC_OK:
+  1156	    return _URC_CONTINUE_UNWIND;
+  1157	  case _URC_END_OF_STACK:
+  1158	    return _URC_END_OF_STACK;
+  1159	  default:
+  1160	    return _URC_FAILURE;
+  1161	  }
+  1162	}
+  1163	
+  1164	// ARM register names
+  1165	#if !defined(_LIBUNWIND_VERSION)
+  1166	static const uint32_t REG_UCB = 12;  // Register to save _Unwind_Control_Block
+  1167	#endif
+  1168	static const uint32_t REG_SP = 13;
+  1169	
+  1170	static void save_results_to_barrier_cache(_Unwind_Exception* unwind_exception,
+  1171	                                          const scan_results& results)
+  1172	{
+  1173	    unwind_exception->barrier_cache.bitpattern[0] = (uint32_t)results.adjustedPtr;
+  1174	    unwind_exception->barrier_cache.bitpattern[1] = (uint32_t)results.actionRecord;
+  1175	    unwind_exception->barrier_cache.bitpattern[2] = (uint32_t)results.languageSpecificData;
+  1176	    unwind_exception->barrier_cache.bitpattern[3] = (uint32_t)results.landingPad;
+  1177	    unwind_exception->barrier_cache.bitpattern[4] = (uint32_t)results.ttypeIndex;
+  1178	}
+  1179	
+  1180	static void load_results_from_barrier_cache(scan_results& results,
+  1181	                                            const _Unwind_Exception* unwind_exception)
+  1182	{
+  1183	    results.adjustedPtr = (void*)unwind_exception->barrier_cache.bitpattern[0];
+  1184	    results.actionRecord = (const uint8_t*)unwind_exception->barrier_cache.bitpattern[1];
+  1185	    results.languageSpecificData = (const uint8_t*)unwind_exception->barrier_cache.bitpattern[2];
+RETHROW_CONTEXT
+   580	        }
+   581	        else
+   582	        {
+   583	            // The foreign exception has not been rethrown.  Pop the stack
+   584	            //    and delete it.  If there are nested catch's and they try
+   585	            //    to touch a foreign exception in any way, that is undefined
+   586	            //     behavior.  They likely can't since the only way to catch
+   587	            //     a foreign exception is with catch (...)!
+   588	            _Unwind_DeleteException(&globals->caughtExceptions->unwindHeader);
+   589	            globals->caughtExceptions = 0;
+   590	        }
+   591	    }
+   592	}
+   593	
+   594	void __cxa_call_terminate(void* unwind_arg) throw() {
+   595	  __cxa_begin_catch(unwind_arg);
+   596	  std::terminate();
+   597	}
+   598	
+   599	// Note:  exception_header may be masquerading as a __cxa_dependent_exception
+   600	//        and that's ok.  exceptionType is there too.
+   601	//        However watch out for foreign exceptions.  Return null for them.
+   602	std::type_info *__cxa_current_exception_type() {
+   603	//  get the current exception
+   604	    __cxa_eh_globals *globals = __cxa_get_globals_fast();
+   605	    if (NULL == globals)
+   606	        return NULL;     //  If there have never been any exceptions, there are none now.
+   607	    __cxa_exception *exception_header = globals->caughtExceptions;
+   608	    if (NULL == exception_header)
+   609	        return NULL;        //  No current exception
+   610	    if (!__isOurExceptionClass(&exception_header->unwindHeader))
+   611	        return NULL;
+   612	    return exception_header->exceptionType;
+   613	}
+   614	
+   615	// 2.5.4 Rethrowing Exceptions
+   616	/*  This routine can rethrow native or foreign exceptions.
+   617	If the exception is native:
+   618	* marks the exception object on top of the caughtExceptions stack
+   619	  (in an implementation-defined way) as being rethrown.
+   620	* If the caughtExceptions stack is empty, it calls terminate()
+   621	  (see [C++FDIS] [except.throw], 15.1.8).
+   622	* It then calls _Unwind_RaiseException which should not return
+   623	   (terminate if it does).
+   624	  Note:  exception_header may be masquerading as a __cxa_dependent_exception
+   625	         and that's ok.
+   626	*/
+   627	void __cxa_rethrow() {
+   628	    __cxa_eh_globals* globals = __cxa_get_globals();
+   629	    __cxa_exception* exception_header = globals->caughtExceptions;
+   630	    if (NULL == exception_header)
+   631	        std::terminate();      // throw; called outside of a exception handler
+   632	    bool native_exception = __isOurExceptionClass(&exception_header->unwindHeader);
+   633	    if (native_exception)
+   634	    {
+   635	        //  Mark the exception as being rethrown (reverse the effects of __cxa_begin_catch)
+   636	        exception_header->handlerCount = -exception_header->handlerCount;
+   637	        globals->uncaughtExceptions += 1;
+   638	        //  __cxa_end_catch will remove this exception from the caughtExceptions stack if necessary
+   639	    }
+   640	    else  // this is a foreign exception
+   641	    {
+   642	        // The only way to communicate to __cxa_end_catch that we've rethrown
+   643	        //   a foreign exception, so don't delete us, is to pop the stack here
+   644	        //   which must be empty afterwards.  Then __cxa_end_catch will do
+   645	        //   nothing
+   646	        globals->caughtExceptions = 0;
+   647	    }
+   648	#ifdef __USING_SJLJ_EXCEPTIONS__
+   649	    _Unwind_SjLj_RaiseException(&exception_header->unwindHeader);
+   650	#else
+   651	    if (native_exception)
+   652	        _Unwind_RaiseException(&exception_header->unwindHeader);
+   653	    else
+   654	        _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
+   655	#endif
+   656	
+   657	    //  If we get here, some kind of unwinding error has occurred.
+   658	    //  There is some weird code generation bug happening with
+   659	    //     Apple clang version 4.0 (tags/Apple/clang-418.0.2) (based on LLVM 3.1svn)
+   660	    //     If we call failed_throw here.  Turns up with -O2 or higher, and -Os.
+   661	    __cxa_begin_catch(&exception_header->unwindHeader);
+   662	    if (native_exception)
+   663	        std::__terminate(exception_header->terminateHandler);
+   664	    // Foreign exception: can't get exception_header->terminateHandler
+   665	    std::terminate();
+   666	}
+   667	
+   668	/*
+   669	    If thrown_object is not null, atomically increment the referenceCount field
+   670	    of the __cxa_exception header associated with the thrown object referred to
+   671	    by thrown_object.
+   672	
+   673	    Requires:  If thrown_object is not NULL, it is a native exception.
+   674	*/
+   675	void
+   676	__cxa_increment_exception_refcount(void *thrown_object) throw() {
+   677	    if (thrown_object != NULL )
+   678	    {
+   679	        __cxa_exception* exception_header = cxa_exception_from_thrown_object(thrown_object);
+   680	        std::__libcpp_atomic_add(&exception_header->referenceCount, size_t(1));
+   681	    }
+   682	}
+   683	
+   684	/*
+   685	    If thrown_object is not null, atomically decrement the referenceCount field
+EXIT_CODE=0
