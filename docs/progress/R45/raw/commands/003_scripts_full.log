@@ -1,0 +1,667 @@
+COMMAND: sed -n on R42/R43b/R44b build and matrix scripts
+
+===== progress/R42/tools/configure_variant.sh =====
+     1	#!/bin/bash
+     2	set -u
+     3	
+     4	arch=$1
+     5	build_dir=$2
+     6	trace=$3
+     7	source_dir=/home/toolchain/development/libc++_replacement/tmp/R42/source-patched
+     8	common=(
+     9	  -G Ninja -S "$source_dir/runtimes" -B "$build_dir"
+    10	  -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    11	  '-DLLVM_ENABLE_RUNTIMES=libcxx;libcxxabi'
+    12	  -DLLVM_INCLUDE_TESTS=OFF
+    13	  -DLIBCXX_ENABLE_SHARED=OFF
+    14	  -DLIBCXX_ENABLE_STATIC=OFF
+    15	  -DLIBCXX_INSTALL_SHARED_LIBRARY=OFF
+    16	  -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF
+    17	  -DLIBCXX_INCLUDE_TESTS=OFF
+    18	  -DLIBCXX_INCLUDE_BENCHMARKS=OFF
+    19	  -DLIBCXXABI_ENABLE_SHARED=ON
+    20	  -DLIBCXXABI_ENABLE_STATIC=OFF
+    21	  -DLIBCXXABI_INSTALL_SHARED_LIBRARY=ON
+    22	  -DLIBCXXABI_INSTALL_STATIC_LIBRARY=OFF
+    23	  -DLIBCXXABI_USE_COMPILER_RT=OFF
+    24	  -DLIBCXXABI_USE_LLVM_UNWINDER=OFF
+    25	  -DLIBCXXABI_ENABLE_STATIC_UNWINDER=OFF
+    26	  -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=OFF
+    27	  -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=OFF
+    28	  -DLIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS=ON
+    29	  -DLIBCXXABI_INCLUDE_TESTS=OFF
+    30	)
+    31	
+    32	trace_flag=
+    33	if [ "$trace" = on ]; then
+    34	  trace_flag=' -DLIBCXXABI_R42_TRACE=1'
+    35	elif [ "$trace" != off ]; then
+    36	  printf 'invalid trace mode: %s\n' "$trace" >&2
+    37	  exit 2
+    38	fi
+    39	
+    40	if [ "$arch" = x86_64 ]; then
+    41	  cc=/home/toolchain/development/libc++_replacement/progress/R33/tools/tizen-clang
+    42	  cxx=/home/toolchain/development/libc++_replacement/progress/R33/tools/tizen-clang++
+    43	  target=x86_64-tizen-linux-gnu
+    44	  arch_flags="--rtlib=libgcc${trace_flag}"
+    45	  extra=()
+    46	elif [ "$arch" = armv7l ]; then
+    47	  cc=/home/toolchain/development/libc++_replacement/progress/R36/tools/armv7l-clang
+    48	  cxx=/home/toolchain/development/libc++_replacement/progress/R36/tools/armv7l-clang++
+    49	  target=armv7l-tizen-linux-gnueabi
+    50	  arch_flags="--rtlib=libgcc -march=armv7-a -mfpu=neon -mfloat-abi=softfp -mthumb${trace_flag}"
+    51	  extra=(-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=armv7l -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY)
+    52	else
+    53	  printf 'unsupported arch: %s\n' "$arch" >&2
+    54	  exit 2
+    55	fi
+    56	
+    57	cmd=(env CMAKE_BUILD_PARALLEL_LEVEL=2 LLVM_PARALLEL_LINK_JOBS=1
+    58	  nice -n 15 ionice -c 3 cmake "${common[@]}" "${extra[@]}"
+    59	  -DCMAKE_C_COMPILER="$cc" -DCMAKE_CXX_COMPILER="$cxx" -DCMAKE_ASM_COMPILER="$cc"
+    60	  -DCMAKE_C_COMPILER_TARGET="$target" -DCMAKE_CXX_COMPILER_TARGET="$target"
+    61	  -DCMAKE_ASM_COMPILER_TARGET="$target" -DLLVM_DEFAULT_TARGET_TRIPLE="$target"
+    62	  -DCMAKE_C_FLAGS="$arch_flags" -DCMAKE_CXX_FLAGS="$arch_flags"
+    63	  -DCMAKE_SHARED_LINKER_FLAGS=--rtlib=libgcc -DCMAKE_EXE_LINKER_FLAGS=--rtlib=libgcc)
+    64	printf 'CONFIGURE_COMMAND='
+    65	printf '%q ' "${cmd[@]}"
+    66	printf '\n'
+    67	"${cmd[@]}"
+    68	rc=$?
+    69	printf 'CONFIGURE_EXIT_CODE=%d\n' "$rc"
+    70	exit "$rc"
+
+===== progress/R42/tools/build_with_monitor.sh =====
+     1	#!/bin/bash
+     2	set -u
+     3	
+     4	label=$1
+     5	shift
+     6	sample_log=/home/toolchain/development/libc++_replacement/progress/R42/resources/${label}_samples.log
+     7	printf 'BUILD_COMMAND='
+     8	printf '%q ' "$@"
+     9	printf '\n'
+    10	env CMAKE_BUILD_PARALLEL_LEVEL=2 LLVM_PARALLEL_LINK_JOBS=1 \
+    11	  nice -n 15 ionice -c 3 "$@" -j2 &
+    12	build_pid=$!
+    13	printf 'BUILD_PID=%d\n' "$build_pid"
+    14	while kill -0 "$build_pid" 2>/dev/null; do
+    15	  {
+    16	    date --iso-8601=seconds
+    17	    free -h
+    18	    uptime
+    19	  } >>"$sample_log"
+    20	  available_kib=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+    21	  if [ "$available_kib" -lt $((2 * 1024 * 1024)) ]; then
+    22	    printf 'RED_STOP_RESOURCE MEM_AVAILABLE_KIB=%s\n' "$available_kib" | tee -a "$sample_log"
+    23	    kill -TERM "$build_pid"
+    24	    wait "$build_pid"
+    25	    printf 'BUILD_EXIT_CODE=%d\n' "$?"
+    26	    exit 22
+    27	  fi
+    28	  for _ in $(seq 1 300); do
+    29	    kill -0 "$build_pid" 2>/dev/null || break
+    30	    sleep 1
+    31	  done
+    32	done
+    33	wait "$build_pid"
+    34	rc=$?
+    35	printf 'BUILD_EXIT_CODE=%d\n' "$rc"
+    36	exit "$rc"
+
+===== progress/R42/tools/build_probes.sh =====
+     1	#!/bin/bash
+     2	set -eu
+     3	workspace=/home/toolchain/development/libc++_replacement
+     4	arch=$1
+     5	out="$workspace/tmp/R42/probes/$arch"
+     6	src="$workspace/progress/R42/src/s1_rethrow_probe.cpp"
+     7	control_src="$workspace/progress/R42/src/unpatched_cancel_probe.cpp"
+     8	mkdir -p "$out"
+     9	
+    10	run() {
+    11	  printf 'COMMAND='; printf '%q ' "$@"; printf '\n'
+    12	  nice -n 15 ionice -c 3 "$@"
+    13	  rc=$?
+    14	  printf 'EXIT_CODE=%d\n' "$rc"
+    15	  return "$rc"
+    16	}
+    17	
+    18	if [ "$arch" = x86_64 ]; then
+    19	  cxx="$workspace/progress/R33/tools/tizen-clang++"
+    20	  build="$workspace/tmp/R42/build-patched-x86_64"
+    21	  runtime="$workspace/tmp/R42/runtime/patched/x86_64"
+    22	  sysroot="$workspace/tmp/GBS-ROOT/R32-candidates-libcxx-x86_64-20260813-02/local/BUILD-ROOTS/scratch.x86_64.0"
+    23	  run "$cxx" -O0 -g -pthread -stdlib=libc++ -nostdinc++ -I"$build/include/c++/v1" "$src" \
+    24	    -L"$runtime" -L"$sysroot/usr/lib64" -Wl,-rpath,'$ORIGIN/../runtime/patched/x86_64' \
+    25	    -Wl,-z,now -lc++ -lc++abi -o "$out/s1_libcxx"
+    26	  run "$cxx" -O0 -g -pthread "$src" -Wl,-z,now -o "$out/s1_libstdcxx"
+    27	  run "$cxx" -O0 -g -pthread -stdlib=libc++ -nostdinc++ -I"$build/include/c++/v1" "$control_src" \
+    28	    -L"$sysroot/usr/lib64" -Wl,-z,now -lc++ -lc++abi -o "$out/unpatched_libcxx"
+    29	elif [ "$arch" = armv7l ]; then
+    30	  cxx="$workspace/progress/R36/tools/armv7l-clang++"
+    31	  build="$workspace/tmp/R42/build-patched-armv7l"
+    32	  static_libcxx="$workspace/tmp/R38/build-unpatched-armv7l/lib/libc++.a"
+    33	  common=(-O0 -g -fexceptions -pthread)
+    34	  run "$cxx" "${common[@]}" -stdlib=libc++ -nostdinc++ -I"$build/include/c++/v1" \
+    35	    -Dprivate_1=unwinder_cache.reserved1 -c "$src" -o "$out/s1_libcxx.o"
+    36	  run "$cxx" "$out/s1_libcxx.o" -nostdlib++ "$static_libcxx" -L"$build/lib" \
+    37	    -Wl,-z,now -lc++abi -lpthread -ldl -lm -latomic -lc -lgcc_s -lgcc -o "$out/s1_libcxx"
+    38	  run "$cxx" "${common[@]}" -Dprivate_1=unwinder_cache.reserved1 \
+    39	    -c "$src" -o "$out/s1_libstdcxx.o"
+    40	  run "$cxx" "$out/s1_libstdcxx.o" -pthread -Wl,-z,now -o "$out/s1_libstdcxx"
+    41	  run "$cxx" "${common[@]}" -stdlib=libc++ -nostdinc++ -I"$build/include/c++/v1" \
+    42	    -c "$control_src" -o "$out/unpatched_libcxx.o"
+    43	  run "$cxx" "$out/unpatched_libcxx.o" -nostdlib++ "$static_libcxx" \
+    44	    -L"$workspace/tmp/R38/build-unpatched-armv7l/lib" -Wl,-z,now \
+    45	    -lc++abi -lpthread -ldl -lm -latomic -lc -lgcc_s -lgcc -o "$out/unpatched_libcxx"
+    46	else
+    47	  printf 'unsupported arch: %s\n' "$arch" >&2
+    48	  exit 2
+    49	fi
+    50	
+    51	for binary in "$out/s1_libcxx" "$out/s1_libstdcxx" "$out/unpatched_libcxx"; do
+    52	  file "$binary"
+    53	  readelf -dW "$binary"
+    54	  readelf --dyn-syms -W "$binary" | grep -E '__forced_unwind|__gxx_personality|__cxa_rethrow|_Unwind_|Num:' || true
+    55	  sha256sum "$binary"
+    56	done
+
+===== progress/R42/tools/run_x86_matrix.sh =====
+     1	#!/bin/bash
+     2	set -u
+     3	workspace=/home/toolchain/development/libc++_replacement
+     4	sysroot="$workspace/tmp/GBS-ROOT/R32-candidates-libcxx-x86_64-20260813-02/local/BUILD-ROOTS/scratch.x86_64.0"
+     5	loader="$sysroot/lib64/ld-linux-x86-64.so.2"
+     6	patched="$workspace/tmp/R42/runtime/patched/x86_64"
+     7	probes="$workspace/tmp/R42/probes/x86_64"
+     8	
+     9	run_cell() {
+    10	  suite=$1
+    11	  binary=$2
+    12	  mode=$3
+    13	  library_path=$4
+    14	  printf '\nCELL_BEGIN suite=%s mode=%s\n' "$suite" "$mode"
+    15	  if [ "$mode" = NO_ARGUMENT ]; then
+    16	    cmd=(/usr/bin/timeout --preserve-status 15s "$loader" --library-path "$library_path" "$binary")
+    17	  else
+    18	    cmd=(/usr/bin/timeout --preserve-status 15s "$loader" --library-path "$library_path" "$binary" "$mode")
+    19	  fi
+    20	  printf 'EXECUTION_MODE=HOST_NATIVE_X86_64_TARGET_USERSPACE_NO_QEMU\n'
+    21	  printf 'RUN_COMMAND='; printf '%q ' "${cmd[@]}"; printf '\n'
+    22	  "${cmd[@]}"
+    23	  rc=$?
+    24	  printf 'CELL_EXIT_CODE=%d\n' "$rc"
+    25	  if [ "$rc" -gt 128 ]; then printf 'CELL_SIGNAL=%d\n' "$((rc-128))"; else printf 'CELL_SIGNAL=0\n'; fi
+    26	  printf 'CELL_END suite=%s mode=%s\n' "$suite" "$mode"
+    27	}
+    28	
+    29	printf 'RUNTIME_IDENTITY_PATCHED_BEGIN\n'
+    30	env LD_LIBRARY_PATH="$patched:$sysroot/usr/lib64:$sysroot/lib64" ldd "$probes/s1_libcxx"
+    31	sha256sum "$patched/libc++abi.so.1.0" "$probes/s1_libcxx"
+    32	printf 'RUNTIME_IDENTITY_PATCHED_END\n'
+    33	
+    34	modes=(cancel exit real foreign cancel-no-catch exit-no-catch cancel-nested)
+    35	for mode in "${modes[@]}"; do
+    36	  run_cell libcxx_patched "$probes/s1_libcxx" "$mode" "$patched:$sysroot/usr/lib64:$sysroot/lib64"
+    37	done
+    38	for mode in "${modes[@]}"; do
+    39	  run_cell libstdcxx_control "$probes/s1_libstdcxx" "$mode" "$sysroot/usr/lib64:$sysroot/lib64"
+    40	done
+    41	run_cell libcxx_unpatched "$probes/unpatched_libcxx" NO_ARGUMENT "$sysroot/usr/lib64:$sysroot/lib64"
+    42	exit 0
+
+===== progress/R42/tools/run_board_matrix.sh =====
+     1	#!/bin/bash
+     2	set -u
+     3	sdb=/home/toolchain/.local/bin/sdb
+     4	serial=192.168.108.26:26101
+     5	remote=/var/tmp/r42_s1_20260815
+     6	
+     7	run_cell() {
+     8	  suite=$1
+     9	  library_dir=$2
+    10	  binary=$3
+    11	  mode=$4
+    12	  printf '\nCELL_BEGIN suite=%s mode=%s\n' "$suite" "$mode"
+    13	  if [ "$mode" = NO_ARGUMENT ]; then
+    14	    remote_cmd="set +e; LD_LIBRARY_PATH='$library_dir' '$binary'; rc=\$?; printf 'REMOTE_CELL_EXIT_CODE=%d\\n' \"\$rc\"; if test \"\$rc\" -gt 128; then printf 'REMOTE_CELL_SIGNAL=%d\\n' \"\$((rc-128))\"; else printf 'REMOTE_CELL_SIGNAL=0\\n'; fi; exit 0"
+    15	  else
+    16	    remote_cmd="set +e; LD_LIBRARY_PATH='$library_dir' '$binary' '$mode'; rc=\$?; printf 'REMOTE_CELL_EXIT_CODE=%d\\n' \"\$rc\"; if test \"\$rc\" -gt 128; then printf 'REMOTE_CELL_SIGNAL=%d\\n' \"\$((rc-128))\"; else printf 'REMOTE_CELL_SIGNAL=0\\n'; fi; exit 0"
+    17	  fi
+    18	  printf 'EXECUTION_MODE=BOARD_NATIVE_ARMV7L_NO_QEMU\n'
+    19	  printf 'SDB_COMMAND='; printf '%q ' "$sdb" -s "$serial" shell "$remote_cmd"; printf '\n'
+    20	  /usr/bin/timeout --preserve-status 20s "$sdb" -s "$serial" shell "$remote_cmd"
+    21	  carrier_rc=$?
+    22	  printf 'SDB_CARRIER_EXIT_CODE=%d\nCELL_END suite=%s mode=%s\n' "$carrier_rc" "$suite" "$mode"
+    23	}
+    24	
+    25	printf 'RUNTIME_IDENTITY_PATCHED_BEGIN\n'
+    26	identity="set +e; LD_LIBRARY_PATH='$remote/patched' ldd '$remote/s1_libcxx'; ldd_rc=\$?; sha256sum '$remote/s1_libcxx' '$remote/patched/libc++abi.so.1'; printf 'LDD_EXIT_CODE=%d\\n' \"\$ldd_rc\"; exit 0"
+    27	printf 'SDB_COMMAND='; printf '%q ' "$sdb" -s "$serial" shell "$identity"; printf '\n'
+    28	"$sdb" -s "$serial" shell "$identity"
+    29	printf 'RUNTIME_IDENTITY_PATCHED_END\n'
+    30	
+    31	modes=(cancel exit real foreign cancel-no-catch exit-no-catch cancel-nested)
+    32	for mode in "${modes[@]}"; do
+    33	  run_cell libcxx_patched "$remote/patched" "$remote/s1_libcxx" "$mode"
+    34	done
+    35	for mode in "${modes[@]}"; do
+    36	  run_cell libstdcxx_control /lib "$remote/s1_libstdcxx" "$mode"
+    37	done
+    38	run_cell libcxx_unpatched "$remote/unpatched" "$remote/unpatched_libcxx" NO_ARGUMENT
+    39	exit 0
+
+===== progress/R43b/tools/build_tests.sh =====
+     1	#!/bin/bash
+     2	set -u
+     3	
+     4	workspace=/home/toolchain/development/libc++_replacement
+     5	arch=$1
+     6	source_dir="$workspace/progress/R43b/src/upstream"
+     7	out="$workspace/progress/R43b/build/$arch"
+     8	mkdir -p "$out/libcxx" "$out/libstdcxx"
+     9	
+    10	run() {
+    11	  printf 'COMMAND='
+    12	  printf '%q ' "$@"
+    13	  printf '\n'
+    14	  nice -n 15 ionice -c 3 "$@"
+    15	  rc=$?
+    16	  printf 'EXIT_CODE=%d\n' "$rc"
+    17	  return "$rc"
+    18	}
+    19	
+    20	sources=(
+    21	  forced_unwind1.pass.cpp forced_unwind2.pass.cpp forced_unwind3.pass.cpp
+    22	  forced_unwind4.pass.cpp unwind_01.pass.cpp unwind_02.pass.cpp
+    23	  unwind_03.pass.cpp unwind_04.pass.cpp unwind_05.pass.cpp unwind_06.pass.cpp
+    24	)
+    25	
+    26	if [ "$arch" = x86_64 ]; then
+    27	  cxx="$workspace/progress/R33/tools/tizen-clang++"
+    28	  build="$workspace/tmp/R42/build-patched-x86_64"
+    29	  sysroot="$workspace/tmp/GBS-ROOT/R32-candidates-libcxx-x86_64-20260813-02/local/BUILD-ROOTS/scratch.x86_64.0"
+    30	  for source_name in "${sources[@]}"; do
+    31	    name=${source_name%.pass.cpp}
+    32	    opt=-O0
+    33	    [ "$name" = unwind_06 ] && opt=-Os
+    34	    run "$cxx" -std=c++14 "$opt" -g -fexceptions -pthread -stdlib=libc++ \
+    35	      -nostdinc++ -I"$build/include/c++/v1" -I"$workspace/codes/llvm/libcxxabi/include" \
+    36	      "$source_dir/$source_name" -L"$sysroot/usr/lib64" -Wl,-z,now \
+    37	      -lc++ -lc++abi -o "$out/libcxx/$name" || true
+    38	    if run "$cxx" -std=c++14 "$opt" -g -fexceptions -pthread \
+    39	      -I"$workspace/codes/llvm/libcxxabi/include" -c "$source_dir/$source_name" \
+    40	      -o "$out/libstdcxx/$name.o"; then
+    41	      run "$cxx" "$out/libstdcxx/$name.o" -pthread -Wl,-z,now \
+    42	        -o "$out/libstdcxx/$name" || true
+    43	    fi
+    44	  done
+    45	  run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+    46	    -nostdinc++ -I"$build/include/c++/v1" "$workspace/progress/R43b/src/stdlib_cancel_probe.cpp" \
+    47	    -L"$sysroot/usr/lib64" -Wl,-z,now -lc++ -lc++abi -o "$out/libcxx/stdlib_cancel_probe"
+    48	  if run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread \
+    49	    -c "$workspace/progress/R43b/src/stdlib_cancel_probe.cpp" \
+    50	    -o "$out/libstdcxx/stdlib_cancel_probe.o"; then
+    51	    run "$cxx" "$out/libstdcxx/stdlib_cancel_probe.o" -pthread -Wl,-z,now \
+    52	      -o "$out/libstdcxx/stdlib_cancel_probe" || true
+    53	  fi
+    54	elif [ "$arch" = armv7l ]; then
+    55	  cxx="$workspace/progress/R36/tools/armv7l-clang++"
+    56	  build="$workspace/tmp/R42/build-patched-armv7l"
+    57	  static_libcxx="$workspace/tmp/R38/build-unpatched-armv7l/lib/libc++.a"
+    58	  unpatched_abi="$workspace/tmp/R38/build-unpatched-armv7l/lib"
+    59	  for source_name in "${sources[@]}"; do
+    60	    name=${source_name%.pass.cpp}
+    61	    opt=-O0
+    62	    [ "$name" = unwind_06 ] && opt=-Os
+    63	    if run "$cxx" -std=c++14 "$opt" -g -fexceptions -pthread -stdlib=libc++ \
+    64	      -nostdinc++ -I"$build/include/c++/v1" -I"$workspace/codes/llvm/libcxxabi/include" \
+    65	      -c "$source_dir/$source_name" -o "$out/libcxx/$name.o"; then
+    66	      run "$cxx" "$out/libcxx/$name.o" -nostdlib++ "$static_libcxx" \
+    67	        -L"$unpatched_abi" -Wl,-z,now -lc++abi -lpthread -ldl -lm -latomic -lc -lgcc_s -lgcc \
+    68	        -o "$out/libcxx/$name" || true
+    69	    fi
+    70	    if run "$cxx" -std=c++14 "$opt" -g -fexceptions -pthread \
+    71	      -I"$workspace/codes/llvm/libcxxabi/include" -c "$source_dir/$source_name" \
+    72	      -o "$out/libstdcxx/$name.o"; then
+    73	      run "$cxx" "$out/libstdcxx/$name.o" -pthread -Wl,-z,now \
+    74	        -o "$out/libstdcxx/$name" || true
+    75	    fi
+    76	  done
+    77	  run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+    78	    -nostdinc++ -I"$build/include/c++/v1" \
+    79	    -c "$workspace/progress/R43b/src/stdlib_cancel_probe.cpp" \
+    80	    -o "$out/libcxx/stdlib_cancel_probe.o"
+    81	  run "$cxx" "$out/libcxx/stdlib_cancel_probe.o" -nostdlib++ "$static_libcxx" \
+    82	    -L"$unpatched_abi" -Wl,-z,now -lc++abi -lpthread -ldl -lm -latomic -lc -lgcc_s -lgcc \
+    83	    -o "$out/libcxx/stdlib_cancel_probe"
+    84	  if run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread \
+    85	    -c "$workspace/progress/R43b/src/stdlib_cancel_probe.cpp" \
+    86	    -o "$out/libstdcxx/stdlib_cancel_probe.o"; then
+    87	    run "$cxx" "$out/libstdcxx/stdlib_cancel_probe.o" -pthread -Wl,-z,now \
+    88	      -o "$out/libstdcxx/stdlib_cancel_probe" || true
+    89	  fi
+    90	else
+    91	  printf 'UNSUPPORTED_ARCH=%s\n' "$arch" >&2
+    92	  exit 2
+    93	fi
+    94	
+    95	for binary in "$out"/libcxx/* "$out"/libstdcxx/*; do
+    96	  [ -x "$binary" ] || continue
+    97	  file "$binary"
+    98	  sha256sum "$binary"
+    99	  readelf -dW "$binary"
+   100	done
+
+===== progress/R43b/tools/run_x86_matrix.sh =====
+     1	#!/bin/bash
+     2	set -u
+     3	
+     4	workspace=/home/toolchain/development/libc++_replacement
+     5	sysroot="$workspace/tmp/GBS-ROOT/R32-candidates-libcxx-x86_64-20260813-02/local/BUILD-ROOTS/scratch.x86_64.0"
+     6	loader="$sysroot/lib64/ld-linux-x86-64.so.2"
+     7	patched="$workspace/tmp/R42/runtime/patched/x86_64"
+     8	unpatched="$sysroot/usr/lib64"
+     9	build="$workspace/progress/R43b/build/x86_64"
+    10	tests=(forced_unwind1 forced_unwind2 forced_unwind3 forced_unwind4 unwind_01 unwind_02 unwind_03 unwind_04 unwind_05 unwind_06)
+    11	modes=(cout getline packaged_task shrink_to_fit control)
+    12	
+    13	run_cell() {
+    14	  local section=$1 suite=$2 binary=$3 argument=$4 library_path=$5
+    15	  local cmd rc
+    16	  printf '\nCELL_BEGIN section=%s arch=x86_64 suite=%s test=%s\n' "$section" "$suite" "$argument"
+    17	  printf 'EXECUTION_MODE=HOST_NATIVE_X86_64_TARGET_USERSPACE_NO_QEMU\n'
+    18	  if [ "$section" = A ]; then
+    19	    cmd=(/usr/bin/timeout --preserve-status 20s "$loader" --library-path "$library_path" "$binary")
+    20	  else
+    21	    cmd=(/usr/bin/timeout --preserve-status 20s "$loader" --library-path "$library_path" "$binary" "$argument")
+    22	  fi
+    23	  printf 'RUN_COMMAND='; printf '%q ' "${cmd[@]}"; printf '\n'
+    24	  "${cmd[@]}"
+    25	  rc=$?
+    26	  printf 'CELL_EXIT_CODE=%d\n' "$rc"
+    27	  if [ "$rc" -gt 128 ]; then printf 'CELL_SIGNAL=%d\n' "$((rc-128))"; else printf 'CELL_SIGNAL=0\n'; fi
+    28	  printf 'CELL_END section=%s arch=x86_64 suite=%s test=%s\n' "$section" "$suite" "$argument"
+    29	}
+    30	
+    31	printf 'RUNTIME_IDENTITIES_BEGIN\n'
+    32	sha256sum "$unpatched/libc++abi.so.1.0" "$patched/libc++abi.so.1.0" "$unpatched/libc++.so.1.0"
+    33	"$loader" --library-path "$unpatched:$sysroot/lib64" --list "$build/libcxx/forced_unwind1"
+    34	"$loader" --library-path "$patched:$unpatched:$sysroot/lib64" --list "$build/libcxx/forced_unwind1"
+    35	"$loader" --library-path "$unpatched:$sysroot/lib64" --list "$build/libstdcxx/forced_unwind1"
+    36	printf 'RUNTIME_IDENTITIES_END\n'
+    37	
+    38	printf 'LD_DEBUG_IDENTITY_BEGIN\n'
+    39	LD_DEBUG=libs /usr/bin/timeout --preserve-status 20s "$loader" \
+    40	  --library-path "$patched:$unpatched:$sysroot/lib64" "$build/libcxx/unwind_01"
+    41	printf 'LD_DEBUG_EXIT_CODE=%d\nLD_DEBUG_IDENTITY_END\n' "$?"
+    42	
+    43	for test_name in "${tests[@]}"; do
+    44	  run_cell A libcxx_unpatched "$build/libcxx/$test_name" "$test_name" "$unpatched:$sysroot/lib64"
+    45	  run_cell A libcxx_r42 "$build/libcxx/$test_name" "$test_name" "$patched:$unpatched:$sysroot/lib64"
+    46	  run_cell A libstdcxx_control "$build/libstdcxx/$test_name" "$test_name" "$unpatched:$sysroot/lib64"
+    47	done
+    48	
+    49	for mode in "${modes[@]}"; do
+    50	  run_cell B libcxx_unpatched "$build/libcxx/stdlib_cancel_probe" "$mode" "$unpatched:$sysroot/lib64"
+    51	  run_cell B libcxx_r42 "$build/libcxx/stdlib_cancel_probe" "$mode" "$patched:$unpatched:$sysroot/lib64"
+    52	  run_cell B libstdcxx_control "$build/libstdcxx/stdlib_cancel_probe" "$mode" "$unpatched:$sysroot/lib64"
+    53	done
+    54	exit 0
+
+===== progress/R43b/tools/run_board_matrix.sh =====
+     1	#!/bin/bash
+     2	set -u
+     3	
+     4	sdb=/home/toolchain/.local/bin/sdb
+     5	serial=192.168.108.26:26101
+     6	remote=/var/tmp/r43b_20260815
+     7	tests=(forced_unwind1 forced_unwind2 forced_unwind3 forced_unwind4 unwind_01 unwind_02 unwind_03 unwind_04 unwind_05 unwind_06)
+     8	modes=(cout getline packaged_task shrink_to_fit control)
+     9	
+    10	run_cell() {
+    11	  local section=$1 suite=$2 binary=$3 argument=$4 library_path=$5
+    12	  local remote_cmd carrier_rc
+    13	  printf '\nCELL_BEGIN section=%s arch=armv7l suite=%s test=%s\n' "$section" "$suite" "$argument"
+    14	  printf 'EXECUTION_MODE=BOARD_NATIVE_ARMV7L_NO_QEMU\n'
+    15	  if [ "$section" = A ]; then
+    16	    remote_cmd="set +e; LD_LIBRARY_PATH='$library_path' '$binary'; rc=\$?; printf 'REMOTE_CELL_EXIT_CODE=%d\\n' \"\$rc\"; if test \"\$rc\" -gt 128; then printf 'REMOTE_CELL_SIGNAL=%d\\n' \"\$((rc-128))\"; else printf 'REMOTE_CELL_SIGNAL=0\\n'; fi; exit 0"
+    17	  else
+    18	    remote_cmd="set +e; LD_LIBRARY_PATH='$library_path' '$binary' '$argument'; rc=\$?; printf 'REMOTE_CELL_EXIT_CODE=%d\\n' \"\$rc\"; if test \"\$rc\" -gt 128; then printf 'REMOTE_CELL_SIGNAL=%d\\n' \"\$((rc-128))\"; else printf 'REMOTE_CELL_SIGNAL=0\\n'; fi; exit 0"
+    19	  fi
+    20	  printf 'SDB_COMMAND='; printf '%q ' "$sdb" -s "$serial" shell "$remote_cmd"; printf '\n'
+    21	  /usr/bin/timeout --preserve-status 30s "$sdb" -s "$serial" shell "$remote_cmd"
+    22	  carrier_rc=$?
+    23	  printf 'SDB_CARRIER_EXIT_CODE=%d\nCELL_END section=%s arch=armv7l suite=%s test=%s\n' "$carrier_rc" "$section" "$suite" "$argument"
+    24	  test "$carrier_rc" -eq 0 || return 90
+    25	}
+    26	
+    27	printf 'RUNTIME_IDENTITIES_BEGIN\n'
+    28	identity="set +e; LD_LIBRARY_PATH='$remote/unpatched' ldd '$remote/libcxx/forced_unwind1'; LD_LIBRARY_PATH='$remote/patched' ldd '$remote/libcxx/forced_unwind1'; ldd '$remote/libstdcxx/forced_unwind1'; sha256sum '$remote/unpatched/libc++abi.so.1' '$remote/patched/libc++abi.so.1'; exit 0"
+    29	printf 'SDB_COMMAND='; printf '%q ' "$sdb" -s "$serial" shell "$identity"; printf '\n'
+    30	"$sdb" -s "$serial" shell "$identity" || exit 90
+    31	printf 'RUNTIME_IDENTITIES_END\n'
+    32	
+    33	printf 'LD_DEBUG_IDENTITY_BEGIN\n'
+    34	debug="set +e; LD_DEBUG=libs LD_LIBRARY_PATH='$remote/patched' '$remote/libcxx/unwind_01'; rc=\$?; printf 'LD_DEBUG_REMOTE_EXIT_CODE=%d\\n' \"\$rc\"; exit 0"
+    35	printf 'SDB_COMMAND='; printf '%q ' "$sdb" -s "$serial" shell "$debug"; printf '\n'
+    36	"$sdb" -s "$serial" shell "$debug" || exit 90
+    37	printf 'LD_DEBUG_IDENTITY_END\n'
+    38	
+    39	for test_name in "${tests[@]}"; do
+    40	  run_cell A libcxx_unpatched "$remote/libcxx/$test_name" "$test_name" "$remote/unpatched" || exit $?
+    41	  run_cell A libcxx_r42 "$remote/libcxx/$test_name" "$test_name" "$remote/patched" || exit $?
+    42	  run_cell A libstdcxx_control "$remote/libstdcxx/$test_name" "$test_name" /lib || exit $?
+    43	done
+    44	for mode in "${modes[@]}"; do
+    45	  run_cell B libcxx_unpatched "$remote/libcxx/stdlib_cancel_probe" "$mode" "$remote/unpatched" || exit $?
+    46	  run_cell B libcxx_r42 "$remote/libcxx/stdlib_cancel_probe" "$mode" "$remote/patched" || exit $?
+    47	  run_cell B libstdcxx_control "$remote/libstdcxx/stdlib_cancel_probe" "$mode" /lib || exit $?
+    48	done
+    49	exit 0
+
+===== progress/R44b/tools/build_matrix_tests.sh =====
+     1	#!/usr/bin/env bash
+     2	set -u
+     3	set -o pipefail
+     4	
+     5	workspace=/home/toolchain/development/libc++_replacement
+     6	arch=${1:?architecture required}
+     7	source_file="$workspace/progress/R43b/src/stdlib_cancel_probe.cpp"
+     8	out_dir="$workspace/tmp/R44b/tests/$arch"
+     9	mkdir -p "$out_dir/libcxx" "$out_dir/libstdcxx"
+    10	
+    11	case "$arch" in
+    12	  x86_64)
+    13	    cxx="$workspace/progress/R33/tools/tizen-clang++"
+    14	    headers="$workspace/tmp/R42/build-patched-x86_64/include/c++/v1"
+    15	    baseline="$workspace/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib"
+    16	    ;;
+    17	  armv7l)
+    18	    cxx="$workspace/progress/R36/tools/armv7l-clang++"
+    19	    headers="$workspace/tmp/R42/build-patched-armv7l/include/c++/v1"
+    20	    baseline="$workspace/tmp/GBS-ROOT/LIBCXX-2218-armv7l-20260806-c2/local/BUILD-ROOTS/scratch.armv7l.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib"
+    21	    ;;
+    22	  *)
+    23	    printf 'unsupported architecture: %s\n' "$arch" >&2
+    24	    exit 2
+    25	    ;;
+    26	esac
+    27	
+    28	run() {
+    29	  printf 'COMMAND='
+    30	  printf '%q ' "$@"
+    31	  printf '\n'
+    32	  nice -n 15 ionice -c 3 "$@"
+    33	  rc=$?
+    34	  printf 'EXIT_CODE=%d\n' "$rc"
+    35	  return "$rc"
+    36	}
+    37	
+    38	if [[ $arch == x86_64 ]]; then
+    39	  run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+    40	    -nostdinc++ -I"$headers" "$source_file" -L"$baseline" \
+    41	    -Wl,-z,now -Wl,-rpath-link,"$baseline" -lc++ -lc++abi \
+    42	    -o "$out_dir/libcxx/stdlib_cancel_probe"
+    43	else
+    44	  run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+    45	    -nostdinc++ -I"$headers" -c "$source_file" \
+    46	    -o "$out_dir/libcxx/stdlib_cancel_probe.o"
+    47	  run "$cxx" "$out_dir/libcxx/stdlib_cancel_probe.o" -nostdlib++ \
+    48	    -L"$baseline" -Wl,-z,now -Wl,-rpath-link,"$baseline" \
+    49	    -lc++ -lc++abi -lpthread -ldl -lm -latomic -lc -lgcc_s -lgcc \
+    50	    -o "$out_dir/libcxx/stdlib_cancel_probe"
+    51	fi
+    52	
+    53	printf 'COMMAND=cp %q %q\n' \
+    54	  "$workspace/progress/R43b/build/$arch/libstdcxx/stdlib_cancel_probe" \
+    55	  "$out_dir/libstdcxx/stdlib_cancel_probe"
+    56	cp "$workspace/progress/R43b/build/$arch/libstdcxx/stdlib_cancel_probe" \
+    57	  "$out_dir/libstdcxx/stdlib_cancel_probe"
+    58	printf 'EXIT_CODE=%d\n' "$?"
+    59	
+    60	for binary in "$out_dir/libcxx/stdlib_cancel_probe" "$out_dir/libstdcxx/stdlib_cancel_probe"; do
+    61	  file "$binary"
+    62	  sha256sum "$binary"
+    63	  readelf -dW "$binary"
+    64	done
+
+===== progress/R44b/tools/run_x86_matrix.sh =====
+     1	#!/usr/bin/env bash
+     2	set -u
+     3	set -o pipefail
+     4	
+     5	workspace=/home/toolchain/development/libc++_replacement
+     6	sysroot="$workspace/tmp/GBS-ROOT/R32-candidates-libcxx-x86_64-20260813-02/local/BUILD-ROOTS/scratch.x86_64.0"
+     7	loader="$sysroot/lib64/ld-linux-x86-64.so.2"
+     8	baseline="$workspace/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib"
+     9	r42_abi="$workspace/tmp/R42/build-patched-x86_64/lib/libc++abi.so.1.0"
+    10	spike_libcxx="$workspace/tmp/R44b/build/x86_64/libc++.so.1.0"
+    11	test_dir="$workspace/tmp/R44b/tests/x86_64"
+    12	runtime="$workspace/tmp/R44b/runtime/x86_64"
+    13	mode=${1:-cout}
+    14	
+    15	mkdir -p "$runtime/unpatched" "$runtime/layer1" "$runtime/aggregation"
+    16	ln -sfn "$baseline/libc++.so.1.0" "$runtime/unpatched/libc++.so.1"
+    17	ln -sfn "$baseline/libc++abi.so.1.0" "$runtime/unpatched/libc++abi.so.1"
+    18	ln -sfn "$baseline/libc++.so.1.0" "$runtime/layer1/libc++.so.1"
+    19	ln -sfn "$r42_abi" "$runtime/layer1/libc++abi.so.1"
+    20	ln -sfn "$spike_libcxx" "$runtime/aggregation/libc++.so.1"
+    21	ln -sfn "$r42_abi" "$runtime/aggregation/libc++abi.so.1"
+    22	
+    23	run_cell() {
+    24	  local suite=$1 mode=$2 library_path=$3 binary=$4
+    25	  local rc
+    26	  printf '\nCELL_BEGIN arch=x86_64 suite=%s mode=%s\n' "$suite" "$mode"
+    27	  printf 'EXECUTION_MODE=HOST_NATIVE_X86_64_NO_QEMU\n'
+    28	  printf 'RUN_COMMAND='
+    29	  printf '%q ' /usr/bin/timeout --preserve-status 20s "$loader" --library-path "$library_path" "$binary" "$mode"
+    30	  printf '\n'
+    31	  /usr/bin/timeout --preserve-status 20s "$loader" --library-path "$library_path" "$binary" "$mode"
+    32	  rc=$?
+    33	  printf 'CELL_EXIT_CODE=%d\n' "$rc"
+    34	  if (( rc > 128 )); then printf 'CELL_SIGNAL=%d\n' "$((rc - 128))"; else printf 'CELL_SIGNAL=0\n'; fi
+    35	  printf 'CELL_END arch=x86_64 suite=%s mode=%s\n' "$suite" "$mode"
+    36	}
+    37	
+    38	printf 'RUNTIME_IDENTITIES_BEGIN\n'
+    39	sha256sum \
+    40	  "$baseline/libc++.so.1.0" "$baseline/libc++abi.so.1.0" \
+    41	  "$r42_abi" "$spike_libcxx" \
+    42	  "$test_dir/libcxx/stdlib_cancel_probe" "$test_dir/libstdcxx/stdlib_cancel_probe"
+    43	for suite in unpatched layer1 aggregation; do
+    44	  printf 'LOADER_LIST_SUITE=%s\n' "$suite"
+    45	  "$loader" --library-path "$runtime/$suite:$sysroot/usr/lib64:$sysroot/lib64" \
+    46	    --list "$test_dir/libcxx/stdlib_cancel_probe"
+    47	  printf 'LOADER_LIST_EXIT_CODE=%d\n' "$?"
+    48	done
+    49	printf 'LOADER_LIST_SUITE=libstdcxx_control\n'
+    50	"$loader" --library-path "$sysroot/usr/lib64:$sysroot/lib64" \
+    51	  --list "$test_dir/libstdcxx/stdlib_cancel_probe"
+    52	printf 'LOADER_LIST_EXIT_CODE=%d\nRUNTIME_IDENTITIES_END\n' "$?"
+    53	
+    54	printf 'LD_DEBUG_IDENTITY_BEGIN\n'
+    55	LD_DEBUG=libs /usr/bin/timeout --preserve-status 20s "$loader" \
+    56	  --library-path "$runtime/aggregation:$sysroot/usr/lib64:$sysroot/lib64" \
+    57	  "$test_dir/libcxx/stdlib_cancel_probe" control
+    58	printf 'LD_DEBUG_EXIT_CODE=%d\nLD_DEBUG_IDENTITY_END\n' "$?"
+    59	
+    60	run_cell unpatched "$mode" "$runtime/unpatched:$sysroot/usr/lib64:$sysroot/lib64" "$test_dir/libcxx/stdlib_cancel_probe"
+    61	run_cell layer1 "$mode" "$runtime/layer1:$sysroot/usr/lib64:$sysroot/lib64" "$test_dir/libcxx/stdlib_cancel_probe"
+    62	run_cell aggregation "$mode" "$runtime/aggregation:$sysroot/usr/lib64:$sysroot/lib64" "$test_dir/libcxx/stdlib_cancel_probe"
+    63	run_cell libstdcxx_control "$mode" "$sysroot/usr/lib64:$sysroot/lib64" "$test_dir/libstdcxx/stdlib_cancel_probe"
+    64	exit 0
+
+===== progress/R44b/tools/run_board_matrix.sh =====
+     1	#!/usr/bin/env bash
+     2	set -u
+     3	set -o pipefail
+     4	
+     5	sdb=/home/toolchain/.local/bin/sdb
+     6	serial=192.168.108.26:26101
+     7	remote=/var/tmp/r44b_20260815
+     8	mode=${1:-cout}
+     9	
+    10	run_cell() {
+    11	  local suite=$1 library_path=$2 binary=$3
+    12	  local remote_command carrier_rc
+    13	  remote_command="set +e; LD_LIBRARY_PATH='$library_path' '$binary' '$mode' & pid=\$!; (sleep 20; kill -TERM \$pid 2>/dev/null; sleep 1; kill -KILL \$pid 2>/dev/null) & guard=\$!; wait \$pid; rc=\$?; kill \$guard 2>/dev/null; wait \$guard 2>/dev/null; printf 'REMOTE_CELL_EXIT_CODE=%d\\n' \"\$rc\"; if test \"\$rc\" -gt 128; then printf 'REMOTE_CELL_SIGNAL=%d\\n' \"\$((rc-128))\"; else printf 'REMOTE_CELL_SIGNAL=0\\n'; fi; exit 0"
+    14	  printf '\nCELL_BEGIN arch=armv7l suite=%s mode=%s\n' "$suite" "$mode"
+    15	  printf 'EXECUTION_MODE=BOARD_NATIVE_ARMV7L_NO_QEMU\n'
+    16	  printf 'SDB_COMMAND='
+    17	  printf '%q ' /usr/bin/timeout --preserve-status 30s "$sdb" -s "$serial" shell "$remote_command"
+    18	  printf '\n'
+    19	  /usr/bin/timeout --preserve-status 30s "$sdb" -s "$serial" shell "$remote_command"
+    20	  carrier_rc=$?
+    21	  printf 'SDB_CARRIER_EXIT_CODE=%d\n' "$carrier_rc"
+    22	  printf 'CELL_END arch=armv7l suite=%s mode=%s\n' "$suite" "$mode"
+    23	  (( carrier_rc == 0 )) || return 90
+    24	}
+    25	
+    26	run_cell unpatched "$remote/unpatched" "$remote/bin/libcxx_probe" || exit $?
+    27	run_cell layer1 "$remote/layer1" "$remote/bin/libcxx_probe" || exit $?
+    28	run_cell aggregation "$remote/aggregation" "$remote/bin/libcxx_probe" || exit $?
+    29	run_cell libstdcxx_control /lib:/usr/lib "$remote/bin/libstdcxx_probe" || exit $?
+    30	exit 0
+
+===== progress/R44b/tools/run_with_monitor.sh =====
+     1	#!/usr/bin/env bash
+     2	set -u
+     3	set -o pipefail
+     4	
+     5	sample_log=${1:?sample log required}
+     6	shift
+     7	
+     8	nice -n 15 ionice -c 3 "$@" &
+     9	watched_pid=$!
+    10	printf 'watched_pid=%s\n' "$watched_pid" >"$sample_log"
+    11	
+    12	while kill -0 "$watched_pid" 2>/dev/null; do
+    13	  {
+    14	    date --iso-8601=seconds
+    15	    printf '%s\n' '$ free -h'
+    16	    free -h
+    17	    printf '[exit_code=%s]\n' "$?"
+    18	    printf '%s\n' '$ uptime'
+    19	    uptime
+    20	    printf '[exit_code=%s]\n' "$?"
+    21	  } >>"$sample_log" 2>&1
+    22	  mem_available_kib=$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo)
+    23	  if (( mem_available_kib < 1048576 )); then
+    24	    printf 'RED_STOP_RESOURCE\tmem_available_kib=%s\n' "$mem_available_kib" >>"$sample_log"
+    25	    kill -TERM "$watched_pid" 2>/dev/null || true
+    26	    wait "$watched_pid" 2>/dev/null || true
+    27	    exit 30
+    28	  fi
+    29	  elapsed=0
+    30	  while (( elapsed < 300 )) && kill -0 "$watched_pid" 2>/dev/null; do
+    31	    sleep 1
+    32	    elapsed=$((elapsed + 1))
+    33	  done
+    34	done
+    35	
+    36	wait "$watched_pid"
+    37	exit $?
+EXIT_CODE=0

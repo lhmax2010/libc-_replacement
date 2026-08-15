@@ -1,0 +1,29 @@
+COMMAND: nl -ba R42 relink script and identify missing R45 binaries
+     1	#!/bin/bash
+     2	set -u
+     3	workspace=/home/toolchain/development/libc++_replacement
+     4	build_dir="$workspace/tmp/R42/build-patched-x86_64"
+     5	runtime="$workspace/tmp/R42/runtime/patched/x86_64"
+     6	map="$workspace/packaging/libcxx-llvm22.map"
+     7	mkdir -p "$runtime"
+     8	mapfile -t objects < <(find "$build_dir/libcxxabi/src/CMakeFiles/cxxabi_shared_objects.dir" -type f -name '*.o' | sort)
+     9	printf 'OBJECT_COUNT=%d\n' "${#objects[@]}"
+    10	test "${#objects[@]}" -gt 0 || exit 3
+    11	cmd=(nice -n 15 ionice -c 3 "$workspace/progress/R33/tools/tizen-clang++"
+    12	  --target=x86_64-tizen-linux-gnu -fPIC -O2 -g -DNDEBUG -shared --rtlib=libgcc
+    13	  -Wl,-z,defs -Wl,-z,nodelete -nostdlib++ -Wl,--version-script="$map"
+    14	  -Wl,-soname,libc++abi.so.1 -o "$runtime/libc++abi.so.1.0"
+    15	  "${objects[@]}" -lpthread -lc -lgcc_s)
+    16	printf 'LINK_COMMAND='; printf '%q ' "${cmd[@]}"; printf '\n'
+    17	"${cmd[@]}" || exit $?
+    18	ln -sfn libc++abi.so.1.0 "$runtime/libc++abi.so.1"
+    19	ln -sfn libc++abi.so.1 "$runtime/libc++abi.so"
+    20	readelf -dW "$runtime/libc++abi.so.1.0"
+    21	readelf --dyn-syms -W "$runtime/libc++abi.so.1.0" | grep -E '__forced_unwind|__cxa_rethrow'
+    22	readelf --version-info -W "$runtime/libc++abi.so.1.0"
+    23	sha256sum "$runtime/libc++abi.so.1.0" "$map"
+===== existing x86 libcxx binaries =====
+unpatched_cancel_probe
+===== version scripts =====
+progress/R40/code/reference/libcxx-llvm22.map
+EXIT_CODE=0

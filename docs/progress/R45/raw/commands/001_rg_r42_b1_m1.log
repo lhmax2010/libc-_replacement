@@ -1,0 +1,398 @@
+COMMAND: rg -n "isForcedUnwindHandler|__cxa_begin_cleanup|__forced_unwind|found_type == found_cleanup" tmp/R42 progress/R42 docs/progress/R42 codes/gcc/libstdc++-v3
+progress/R42/spec_and_reference_basis.md:29:  `__cxa_begin_cleanup` / `__cxa_end_cleanup`，Arm personality 在进入
+progress/R42/spec_and_reference_basis.md:32:  `__cxa_begin_cleanup`；catch descriptor 的 handler 路径设置 VRS 并
+progress/R42/spec_and_reference_basis.md:47:  throw type 映射为 `abi::__forced_unwind`；
+progress/R42/spec_and_reference_basis.md:52:- `eh_personality.cc:734-737`：仅当 `found_type == found_cleanup` 时
+progress/R42/spec_and_reference_basis.md:53:  调用 `__cxa_begin_cleanup`，随后安装 context。
+progress/R42/spec_and_reference_basis.md:59:`cxa_exception.cpp:325-419` 显示：`__cxa_begin_cleanup` 把异常压入
+progress/R42/spec_and_reference_basis.md:67:`__forced_unwind` handler”组合下，应按 catch handler 安装 landing
+progress/R42/spec_and_reference_basis.md:68:pad，不调用 `__cxa_begin_cleanup`；landing pad 由编译器生成的
+progress/R42/diff/cxa_exception.cpp.diff:20:+__forced_unwind::~__forced_unwind() = default;
+progress/R42/diff/cxa_exception.cpp.diff:70:         // It seems that __cxa_begin_cleanup() is not called properly.
+progress/R42/diff/cxa_personality.cpp.diff:20:+    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+progress/R42/diff/cxa_personality.cpp.diff:28:+    results.isForcedUnwindHandler = false;
+progress/R42/diff/cxa_personality.cpp.diff:56:+                                &typeid(__cxxabiv1::__forced_unwind));
+progress/R42/diff/cxa_personality.cpp.diff:62:+                            results.isForcedUnwindHandler = true;
+progress/R42/diff/cxa_personality.cpp.diff:111:+    results.isForcedUnwindHandler = false;
+progress/R42/diff/cxa_personality.cpp.diff:229:+                results.isForcedUnwindHandler)
+progress/R42/diff/cxxabi.h.diff:9:+class _LIBCXXABI_TYPE_VIS __forced_unwind {
+progress/R42/diff/cxxabi.h.diff:11:+  virtual ~__forced_unwind();
+progress/R42/src/s1_rethrow_probe.cpp:29:  } catch (const __cxxabiv1::__forced_unwind&) {
+progress/R42/src/s1_rethrow_probe.cpp:44:  } catch (const __cxxabiv1::__forced_unwind&) {
+progress/R42/src/s1_rethrow_probe.cpp:70:  } catch (const __cxxabiv1::__forced_unwind&) {
+progress/R42/src/s1_rethrow_probe.cpp:116:  } catch (const __cxxabiv1::__forced_unwind&) {
+progress/R42/report.md:8:- armv7l trace-on 逐帧记录确认：forced typed handler 不再调用 `__cxa_begin_cleanup`；进入 handler 时 `propagatingExceptions` 为空；重抛后遇到真正 cleanup 时完成一次 `nil -> exception -> nil` 的压栈/出栈配对，最终 `join=PTHREAD_CANCELED`。
+progress/R42/report.md:10:- 完整 S1 实现涉及 3 个源文件；相对当前平台基线的完整实验 diff 为 `+237/-6`（其中包含可关闭的 R40/R41/R42 观测代码）。新增公开的 `__forced_unwind` 类及其 out-of-line key function 会新增类型、析构、typeinfo/typeinfo-name 等 ABI 符号；既有 ABI 符号未删除。第四处改动本身不新增导出符号，只改变严格限定组合的控制路径。
+progress/R42/report.md:39:- §9.4.2 的 `__cxa_begin_cleanup`/`__cxa_end_cleanup` 定义 cleanup 生命周期。
+progress/R42/report.md:40:- 附录示例明确：cleanup descriptor 调 `__cxa_begin_cleanup`；catch descriptor 直接安装 catch context，不调用该函数。
+progress/R42/report.md:48:- `eh_arm.cc` 将 forced unwind 映射到 `abi::__forced_unwind`。
+progress/R42/report.md:50:- 只对 `found_cleanup` 调 `__cxa_begin_cleanup`；catching handler 不调用它。
+progress/R42/report.md:58:在 `scan_results` 中增加仅供本次控制流使用的 `isForcedUnwindHandler`。它只在以下全部条件满足时置位：
+progress/R42/report.md:62:3. catch 类型与 `__cxxabiv1::__forced_unwind` 匹配；
+progress/R42/report.md:65:EHABI phase 2 遇到该标志时，保存 barrier cache、设置寄存器并直接返回 `_URC_INSTALL_CONTEXT`，从而绕过只属于 cleanup 的 `__cxa_begin_cleanup`。其他 `_URC_HANDLER_FOUND` 路径仍逐字保留原有 cleanup 登记逻辑。
+progress/R42/report.md:67:红线核验：`__cxa_begin_cleanup` 中 `globals->propagatingExceptions` 非空即 terminate 的检测未修改。完整 diff 为 `diff/*.diff`，逐项表为 `tables/implementation_changes.tsv`。
+progress/R42/report.md:101:4. 随后的真正 cleanup（`ttype=0`）才调用 `__cxa_begin_cleanup`，栈从 nil 压入 exception；`__cxa_end_cleanup` 将其弹回 nil。
+progress/R42/report.md:108:- 完整 S1 新增 `__cxxabiv1::__forced_unwind` 公开类型与强 typeinfo，属于新增 ABI 表面；未删除或改名现有符号。
+progress/R42/tables/implementation_changes.tsv:2:S1-1	libcxxabi/include/cxxabi.h	__forced_unwind declaration	public ABI type for typed forced handler	all architectures; new type ABI
+progress/R42/tables/implementation_changes.tsv:3:S1-1b	libcxxabi/src/cxa_exception.cpp	__forced_unwind destructor	out-of-line key function and unique exported typeinfo	all architectures; consumers need no export-dynamic
+progress/R42/tables/implementation_changes.tsv:4:S1-2	libcxxabi/src/cxa_personality.cpp	scan_eh_tab foreign branch	map foreign forced unwind to __forced_unwind type	foreign+force only
+progress/R42/tools/build_probes.sh:54:  readelf --dyn-syms -W "$binary" | grep -E '__forced_unwind|__gxx_personality|__cxa_rethrow|_Unwind_|Num:' || true
+progress/R42/tools/relink_versioned_x86.sh:21:readelf --dyn-syms -W "$runtime/libc++abi.so.1.0" | grep -E '__forced_unwind|__cxa_rethrow'
+progress/R42/reference/arm/ehabi32.rst:2088:  bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)
+progress/R42/reference/arm/ehabi32.rst:2098:``bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)``
+progress/R42/commands/006_arm_ehabi_relevant_text.log:526:  2088	  bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)
+progress/R42/commands/006_arm_ehabi_relevant_text.log:536:  2098	``bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)``
+progress/R42/commands/059_final_source_and_diff_identity.log:31:   593	    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+progress/R42/commands/059_final_source_and_diff_identity.log:105:   667	    results.isForcedUnwindHandler = false;
+progress/R42/commands/059_final_source_and_diff_identity.log:284:   846	                                &typeid(__cxxabiv1::__forced_unwind));
+progress/R42/commands/059_final_source_and_diff_identity.log:290:   852	                            results.isForcedUnwindHandler = true;
+progress/R42/commands/059_final_source_and_diff_identity.log:323:  1229	    results.isForcedUnwindHandler = false;
+progress/R42/commands/059_final_source_and_diff_identity.log:463:  1369	                results.isForcedUnwindHandler)
+progress/R42/commands/059_final_source_and_diff_identity.log:488:  1394	            __cxa_begin_cleanup(unwind_exception);
+progress/R42/commands/059_final_source_and_diff_identity.log:541:   336	bool __cxa_begin_cleanup(void *unwind_arg) throw() {
+progress/R42/commands/059_final_source_and_diff_identity.log:608:   403	        // It seems that __cxa_begin_cleanup() is not called properly.
+progress/R42/commands/035_build_probes_x86.log:49:    15: 0000000000000000     0 OBJECT  GLOBAL DEFAULT  UND _ZTIN10__cxxabiv115__forced_unwindE@LLVM_22 (5)
+progress/R42/commands/035_build_probes_x86.log:91:    10: 0000000000000000     0 OBJECT  GLOBAL DEFAULT  UND _ZTIN10__cxxabiv115__forced_unwindE@CXXABI_1.3.2 (8)
+progress/R42/commands/034_relink_versioned_x86.log:40:    50: 000000000003bcd8    32 OBJECT  GLOBAL DEFAULT   22 _ZTVN10__cxxabiv115__forced_unwindE@@LLVM_22
+progress/R42/commands/034_relink_versioned_x86.log:41:    51: 0000000000029d80     1 FUNC    GLOBAL DEFAULT   12 _ZN10__cxxabiv115__forced_unwindD2Ev@@LLVM_22
+progress/R42/commands/034_relink_versioned_x86.log:42:    70: 0000000000030a50    32 OBJECT  GLOBAL DEFAULT   15 _ZTSN10__cxxabiv115__forced_unwindE@@LLVM_22
+progress/R42/commands/034_relink_versioned_x86.log:43:    71: 000000000003bcf8    16 OBJECT  GLOBAL DEFAULT   22 _ZTIN10__cxxabiv115__forced_unwindE@@LLVM_22
+progress/R42/commands/034_relink_versioned_x86.log:46:   320: 0000000000029d90    23 FUNC    GLOBAL DEFAULT   12 _ZN10__cxxabiv115__forced_unwindD0Ev@@LLVM_22
+progress/R42/commands/034_relink_versioned_x86.log:47:   372: 0000000000029d80     1 FUNC    GLOBAL DEFAULT   12 _ZN10__cxxabiv115__forced_unwindD1Ev@@LLVM_22
+progress/R42/commands/010_static_reference_extract.log:227:   567		  throw_type = &typeid(abi::__forced_unwind);
+progress/R42/commands/010_static_reference_extract.log:315:   655	      if (found_type == found_cleanup)
+progress/R42/commands/010_static_reference_extract.log:394:   734	  if (found_type == found_cleanup)
+progress/R42/commands/010_static_reference_extract.log:395:   735	    __cxa_begin_cleanup(ue_header);
+progress/R42/commands/010_static_reference_extract.log:468:    57	    throw_type = &typeid(abi::__forced_unwind);
+progress/R42/commands/010_static_reference_extract.log:508:    97	__cxa_begin_cleanup(_Unwind_Exception* ue_header)
+progress/R42/commands/010_static_reference_extract.log:588:   330	bool __cxa_begin_cleanup(void *unwind_arg) throw() {
+progress/R42/commands/010_static_reference_extract.log:635:   377	        // It seems that __cxa_begin_cleanup() is not called properly.
+progress/R42/commands/010_static_reference_extract.log:769:  1279	            __cxa_begin_cleanup(unwind_exception);
+progress/R42/commands/014_implementation_diff_and_scope.log:2:COMMAND=bash -lc printf\ \"=====\ PLATFORM\ TO\ R42\ DIFF\ =====\\n\"\;\ diff\ -u\ codes/llvm/libcxxabi/include/cxxabi.h\ tmp/R42/source-patched/libcxxabi/include/cxxabi.h\ \|\|\ true\;\ diff\ -u\ codes/llvm/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ \|\|\ true\;\ diff\ -u\ codes/llvm/libcxxabi/src/cxa_personality.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\ \|\|\ true\;\ printf\ \"=====\ R40\ STRONG\ TO\ R42\ DIFF\ =====\\n\"\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/include/cxxabi.h\ tmp/R42/source-patched/libcxxabi/include/cxxabi.h\ \|\|\ true\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ \|\|\ true\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/src/cxa_personality.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\ \|\|\ true\;\ printf\ \"=====\ TRACE/FIX\ LOCATIONS\ =====\\n\"\;\ rg\ -n\ \"R42_TRACE\|R42_EHABI_FORCED_HANDLER_PATH\|isForcedUnwindHandler\|__forced_unwind::\~\"\ tmp/R42/source-patched/libcxxabi/include/cxxabi.h\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\;\ printf\ \"=====\ UNWRAPPED\ FPRINTF\ =====\\n\"\;\ rg\ -n\ \"fprintf\\\\\(stderr\"\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\ \|\|\ true\;\ sha256sum\ tmp/R42/source-patched/libcxxabi/include/cxxabi.h\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp 
+progress/R42/commands/014_implementation_diff_and_scope.log:12:+class _LIBCXXABI_TYPE_VIS __forced_unwind {
+progress/R42/commands/014_implementation_diff_and_scope.log:14:+  virtual ~__forced_unwind();
+progress/R42/commands/014_implementation_diff_and_scope.log:39:+__forced_unwind::~__forced_unwind() = default;
+progress/R42/commands/014_implementation_diff_and_scope.log:89:         // It seems that __cxa_begin_cleanup() is not called properly.
+progress/R42/commands/014_implementation_diff_and_scope.log:185:+    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+progress/R42/commands/014_implementation_diff_and_scope.log:193:+    results.isForcedUnwindHandler = false;
+progress/R42/commands/014_implementation_diff_and_scope.log:221:+                                &typeid(__cxxabiv1::__forced_unwind));
+progress/R42/commands/014_implementation_diff_and_scope.log:227:+                            results.isForcedUnwindHandler = true;
+progress/R42/commands/014_implementation_diff_and_scope.log:276:+    results.isForcedUnwindHandler = false;
+progress/R42/commands/014_implementation_diff_and_scope.log:394:+                results.isForcedUnwindHandler)
+progress/R42/commands/014_implementation_diff_and_scope.log:521:         // It seems that __cxa_begin_cleanup() is not called properly.
+progress/R42/commands/014_implementation_diff_and_scope.log:614:+    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+progress/R42/commands/014_implementation_diff_and_scope.log:622:+    results.isForcedUnwindHandler = false;
+progress/R42/commands/014_implementation_diff_and_scope.log:646:+                            results.isForcedUnwindHandler = true;
+progress/R42/commands/014_implementation_diff_and_scope.log:692:+    results.isForcedUnwindHandler = false;
+progress/R42/commands/014_implementation_diff_and_scope.log:810:+                results.isForcedUnwindHandler)
+progress/R42/commands/014_implementation_diff_and_scope.log:880:tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:45:__forced_unwind::~__forced_unwind() = default;
+progress/R42/commands/014_implementation_diff_and_scope.log:894:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:593:    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+progress/R42/commands/014_implementation_diff_and_scope.log:895:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:667:    results.isForcedUnwindHandler = false;
+progress/R42/commands/014_implementation_diff_and_scope.log:897:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:852:                            results.isForcedUnwindHandler = true;
+progress/R42/commands/014_implementation_diff_and_scope.log:901:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1229:    results.isForcedUnwindHandler = false;
+progress/R42/commands/014_implementation_diff_and_scope.log:911:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1369:                results.isForcedUnwindHandler)
+progress/R42/commands/017_redline_selfcheck.log:2:COMMAND=bash -c set\ -o\ pipefail\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/src/cxa_personality.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\;\ rg\ -n\ \"if\ \\\(NULL\ \!=\ globals-\>propagatingExceptions\\\)\|__cxa_begin_cleanup\\\(unwind_exception\\\)\|isForcedUnwindHandler\|LIBCXXABI_R42_TRACE\"\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp 
+progress/R42/commands/017_redline_selfcheck.log:63:         // It seems that __cxa_begin_cleanup() is not called properly.
+progress/R42/commands/017_redline_selfcheck.log:156:+    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+progress/R42/commands/017_redline_selfcheck.log:164:+    results.isForcedUnwindHandler = false;
+progress/R42/commands/017_redline_selfcheck.log:188:+                            results.isForcedUnwindHandler = true;
+progress/R42/commands/017_redline_selfcheck.log:234:+    results.isForcedUnwindHandler = false;
+progress/R42/commands/017_redline_selfcheck.log:352:+                results.isForcedUnwindHandler)
+progress/R42/commands/017_redline_selfcheck.log:419:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:593:    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+progress/R42/commands/017_redline_selfcheck.log:420:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:667:    results.isForcedUnwindHandler = false;
+progress/R42/commands/017_redline_selfcheck.log:421:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:852:                            results.isForcedUnwindHandler = true;
+progress/R42/commands/017_redline_selfcheck.log:422:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1229:    results.isForcedUnwindHandler = false;
+progress/R42/commands/017_redline_selfcheck.log:423:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1369:                results.isForcedUnwindHandler)
+progress/R42/commands/017_redline_selfcheck.log:424:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1394:            __cxa_begin_cleanup(unwind_exception);
+progress/R42/commands/038_build_probes_arm_retry.log:58:    10: 00000000     0 OBJECT  GLOBAL DEFAULT  UND _ZTIN10__cxxabiv115__forced_unwindE
+progress/R42/commands/038_build_probes_arm_retry.log:101:    13: 00000000     0 OBJECT  GLOBAL DEFAULT  UND _ZTIN10__cxxabiv115__forced_unwindE@CXXABI_1.3.2 (8)
+progress/R42/commands/005_arm_ehabi_locations.log:2:COMMAND=bash -lc sha256sum\ progress/R42/reference/arm/ehabi32.rst\;\ rg\ -n\ \"\^\(7\|7\\\\.\|Exception-handling\ ABI\ routines\|_Unwind_ForcedUnwind\|__cxa_begin_cleanup\|__cxa_end_cleanup\)\|forced\ unwind\|force\ unwind\|Forced\ unwind\|cleanup\"\ progress/R42/reference/arm/ehabi32.rst\ \|\ sed\ -n\ \"1\,260p\" 
+progress/R42/commands/005_arm_ehabi_locations.log:65:2088:  bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)
+progress/R42/commands/005_arm_ehabi_locations.log:66:2098:``bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)``
+progress/R42/commands/051_prepare_stripped_deploy_libraries.log:2:COMMAND=bash -c set\ -e\;\ llvm-strip\ --strip-debug\ tmp/R42/deploy/armv7l/patched/libc++abi.so.1\;\ llvm-strip\ --strip-debug\ tmp/R42/deploy/armv7l/trace/libc++abi.so.1\;\ llvm-strip\ --strip-debug\ tmp/R42/deploy/armv7l/unpatched/libc++abi.so.1\;\ sha256sum\ tmp/R42/deploy/armv7l/\*/libc++abi.so.1\;\ file\ tmp/R42/deploy/armv7l/\*/libc++abi.so.1\;\ readelf\ --dyn-syms\ --wide\ tmp/R42/deploy/armv7l/patched/libc++abi.so.1\ \|\ rg\ \"_ZT\[IS\]N10__cxxabiv115__forced_unwindE\"\;\ strings\ tmp/R42/deploy/armv7l/patched/libc++abi.so.1\ \|\ rg\ \"R4\[012\]_\"\ \&\&\ exit\ 1\ \|\|\ test\ \$\{PIPESTATUS\[1\]\}\ -eq\ 1\;\ strings\ tmp/R42/deploy/armv7l/trace/libc++abi.so.1\ \|\ rg\ \"R42_EHABI_FORCED_HANDLER_PATH\" 
+progress/R42/commands/051_prepare_stripped_deploy_libraries.log:9:    75: 0001df5e    32 OBJECT  GLOBAL DEFAULT   13 _ZTSN10__cxxabiv115__forced_unwindE
+progress/R42/commands/051_prepare_stripped_deploy_libraries.log:10:    76: 00021eb0     8 OBJECT  GLOBAL DEFAULT   20 _ZTIN10__cxxabiv115__forced_unwindE
+progress/R42/commands/032_build_identity_and_trace_toggle.log:2:COMMAND=bash -c set\ -o\ pipefail\;\ sha256sum\ tmp/R42/build-patched-x86_64/lib/libc++abi.so.1.0\ tmp/R42/build-patched-armv7l/lib/libc++abi.so.1.0\ tmp/R42/build-trace-armv7l/lib/libc++abi.so.1.0\;\ file\ tmp/R42/build-\*/lib/libc++abi.so.1.0\;\ echo\ TRACE_OFF_ARM\;\ strings\ tmp/R42/build-patched-armv7l/lib/libc++abi.so.1.0\ \|\ rg\ \"R4\[012\]_\"\ \|\|\ test\ \$\{PIPESTATUS\[1\]\}\ -eq\ 1\;\ echo\ TRACE_OFF_X86\;\ strings\ tmp/R42/build-patched-x86_64/lib/libc++abi.so.1.0\ \|\ rg\ \"R4\[012\]_\"\ \|\|\ test\ \$\{PIPESTATUS\[1\]\}\ -eq\ 1\;\ echo\ TRACE_ON_ARM\;\ strings\ tmp/R42/build-trace-armv7l/lib/libc++abi.so.1.0\ \|\ rg\ \"R4\[012\]_\"\;\ readelf\ --dyn-syms\ --wide\ tmp/R42/build-patched-armv7l/lib/libc++abi.so.1.0\ \|\ rg\ \"_ZT\[IS\]N10__cxxabiv115__forced_unwindE\" 
+progress/R42/commands/032_build_identity_and_trace_toggle.log:38:    75: 0001df5e    32 OBJECT  GLOBAL DEFAULT   13 _ZTSN10__cxxabiv115__forced_unwindE
+progress/R42/commands/032_build_identity_and_trace_toggle.log:39:    76: 00021eb0     8 OBJECT  GLOBAL DEFAULT   20 _ZTIN10__cxxabiv115__forced_unwindE
+progress/R42/commands/036_build_probes_arm.log:63:    10: 00000000     0 OBJECT  GLOBAL DEFAULT  UND _ZTIN10__cxxabiv115__forced_unwindE
+codes/gcc/libstdc++-v3/ChangeLog-2007:4052:	* libsupc++/cxxabi.h (__forced_unwind, __foreign_exception):
+codes/gcc/libstdc++-v3/ChangeLog-2007:4057:	* libsupc++/eh_personality.cc: A handler for abi::__forced_unwind
+docs/progress/R42/spec_and_reference_basis.md:29:  `__cxa_begin_cleanup` / `__cxa_end_cleanup`，Arm personality 在进入
+docs/progress/R42/spec_and_reference_basis.md:32:  `__cxa_begin_cleanup`；catch descriptor 的 handler 路径设置 VRS 并
+docs/progress/R42/spec_and_reference_basis.md:47:  throw type 映射为 `abi::__forced_unwind`；
+docs/progress/R42/spec_and_reference_basis.md:52:- `eh_personality.cc:734-737`：仅当 `found_type == found_cleanup` 时
+docs/progress/R42/spec_and_reference_basis.md:53:  调用 `__cxa_begin_cleanup`，随后安装 context。
+docs/progress/R42/spec_and_reference_basis.md:59:`cxa_exception.cpp:325-419` 显示：`__cxa_begin_cleanup` 把异常压入
+docs/progress/R42/spec_and_reference_basis.md:67:`__forced_unwind` handler”组合下，应按 catch handler 安装 landing
+docs/progress/R42/spec_and_reference_basis.md:68:pad，不调用 `__cxa_begin_cleanup`；landing pad 由编译器生成的
+codes/gcc/libstdc++-v3/ChangeLog-2005:942:	* libsupc++/eh_arm.cc (__cxa_begin_cleanup): Remember a
+codes/gcc/libstdc++-v3/ChangeLog-2005:2007:	(__cxa_type_match, __cxa_begin_cleanup, __cxa_end_cleanup): Add
+docs/progress/R42/code/cxa_exception.cpp.diff:20:+__forced_unwind::~__forced_unwind() = default;
+docs/progress/R42/code/cxa_exception.cpp.diff:70:         // It seems that __cxa_begin_cleanup() is not called properly.
+docs/progress/R42/code/cxa_personality.cpp.diff:20:+    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+docs/progress/R42/code/cxa_personality.cpp.diff:28:+    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/cxa_personality.cpp.diff:56:+                                &typeid(__cxxabiv1::__forced_unwind));
+docs/progress/R42/code/cxa_personality.cpp.diff:62:+                            results.isForcedUnwindHandler = true;
+docs/progress/R42/code/cxa_personality.cpp.diff:111:+    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/cxa_personality.cpp.diff:229:+                results.isForcedUnwindHandler)
+codes/gcc/libstdc++-v3/ChangeLog-2010:2963:	(__cxa_begin_cleanup): Likewise.
+docs/progress/R42/report.md:8:- armv7l trace-on 逐帧记录确认：forced typed handler 不再调用 `__cxa_begin_cleanup`；进入 handler 时 `propagatingExceptions` 为空；重抛后遇到真正 cleanup 时完成一次 `nil -> exception -> nil` 的压栈/出栈配对，最终 `join=PTHREAD_CANCELED`。
+docs/progress/R42/report.md:10:- 完整 S1 实现涉及 3 个源文件；相对当前平台基线的完整实验 diff 为 `+237/-6`（其中包含可关闭的 R40/R41/R42 观测代码）。新增公开的 `__forced_unwind` 类及其 out-of-line key function 会新增类型、析构、typeinfo/typeinfo-name 等 ABI 符号；既有 ABI 符号未删除。第四处改动本身不新增导出符号，只改变严格限定组合的控制路径。
+docs/progress/R42/report.md:39:- §9.4.2 的 `__cxa_begin_cleanup`/`__cxa_end_cleanup` 定义 cleanup 生命周期。
+docs/progress/R42/report.md:40:- 附录示例明确：cleanup descriptor 调 `__cxa_begin_cleanup`；catch descriptor 直接安装 catch context，不调用该函数。
+docs/progress/R42/report.md:48:- `eh_arm.cc` 将 forced unwind 映射到 `abi::__forced_unwind`。
+docs/progress/R42/report.md:50:- 只对 `found_cleanup` 调 `__cxa_begin_cleanup`；catching handler 不调用它。
+docs/progress/R42/report.md:58:在 `scan_results` 中增加仅供本次控制流使用的 `isForcedUnwindHandler`。它只在以下全部条件满足时置位：
+docs/progress/R42/report.md:62:3. catch 类型与 `__cxxabiv1::__forced_unwind` 匹配；
+docs/progress/R42/report.md:65:EHABI phase 2 遇到该标志时，保存 barrier cache、设置寄存器并直接返回 `_URC_INSTALL_CONTEXT`，从而绕过只属于 cleanup 的 `__cxa_begin_cleanup`。其他 `_URC_HANDLER_FOUND` 路径仍逐字保留原有 cleanup 登记逻辑。
+docs/progress/R42/report.md:67:红线核验：`__cxa_begin_cleanup` 中 `globals->propagatingExceptions` 非空即 terminate 的检测未修改。完整 diff 为 `diff/*.diff`，逐项表为 `tables/implementation_changes.tsv`。
+docs/progress/R42/report.md:101:4. 随后的真正 cleanup（`ttype=0`）才调用 `__cxa_begin_cleanup`，栈从 nil 压入 exception；`__cxa_end_cleanup` 将其弹回 nil。
+docs/progress/R42/report.md:108:- 完整 S1 新增 `__cxxabiv1::__forced_unwind` 公开类型与强 typeinfo，属于新增 ABI 表面；未删除或改名现有符号。
+docs/progress/R42/tables/implementation_changes.tsv:2:S1-1	libcxxabi/include/cxxabi.h	__forced_unwind declaration	public ABI type for typed forced handler	all architectures; new type ABI
+docs/progress/R42/tables/implementation_changes.tsv:3:S1-1b	libcxxabi/src/cxa_exception.cpp	__forced_unwind destructor	out-of-line key function and unique exported typeinfo	all architectures; consumers need no export-dynamic
+docs/progress/R42/tables/implementation_changes.tsv:4:S1-2	libcxxabi/src/cxa_personality.cpp	scan_eh_tab foreign branch	map foreign forced unwind to __forced_unwind type	foreign+force only
+codes/gcc/libstdc++-v3/config/abi/post/s390x-linux-gnu/baseline_symbols.txt:4954:OBJECT:16:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/s390x-linux-gnu/32/baseline_symbols.txt:6044:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/powerpc-linux-gnu/baseline_symbols.txt:6282:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/powerpc64le-linux-gnu/baseline_symbols.txt:5173:OBJECT:16:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/aarch64-linux-gnu/baseline_symbols.txt:4699:OBJECT:16:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/sparc64-linux-gnu/baseline_symbols.txt:4501:OBJECT:16:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/s390-linux-gnu/baseline_symbols.txt:6044:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/riscv64-linux-gnu/baseline_symbols.txt:4699:OBJECT:16:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/sparc64-linux-gnu/32/baseline_symbols.txt:5762:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/sparc-solaris/baseline_symbols.txt:5923:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/m68k-linux-gnu/baseline_symbols.txt:5963:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/alpha-linux-gnu/baseline_symbols.txt:4737:OBJECT:16:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/sparc-solaris/sparcv9/baseline_symbols.txt:4656:OBJECT:16:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/hppa-linux-gnu/baseline_symbols.txt:11831:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE
+codes/gcc/libstdc++-v3/config/abi/post/hppa-linux-gnu/baseline_symbols.txt:11832:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/mips64-linux-gnu/64/baseline_symbols.txt:2626:OBJECT:16:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/pre/gnu.ver:2539:    __cxa_begin_cleanup;
+codes/gcc/libstdc++-v3/config/abi/pre/gnu.ver:2647:    _ZTIN10__cxxabiv115__forced_unwindE;
+codes/gcc/libstdc++-v3/config/abi/pre/gnu-versioned-namespace.ver:169:    __cxa_begin_cleanup;
+codes/gcc/libstdc++-v3/config/abi/pre/gnu-versioned-namespace.ver:287:    _ZTIN10__cxxabiv115__forced_unwindE;
+codes/gcc/libstdc++-v3/config/abi/pre/gnu-versioned-namespace.ver:289:    _ZTIN10__cxxabiv115__forced_unwindE;
+docs/progress/R42/code/tools/relink_versioned_x86.sh:21:readelf --dyn-syms -W "$runtime/libc++abi.so.1.0" | grep -E '__forced_unwind|__cxa_rethrow'
+docs/progress/R42/code/tools/build_probes.sh:54:  readelf --dyn-syms -W "$binary" | grep -E '__forced_unwind|__gxx_personality|__cxa_rethrow|_Unwind_|Num:' || true
+codes/gcc/libstdc++-v3/src/c++98/istream.cc:91:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/src/c++98/istream.cc:203:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/src/c++98/istream.cc:282:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/src/c++98/istream.cc:353:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/src/c++98/istream.cc:456:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/src/c++98/istream-string.cc:100:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/src/c++98/istream-string.cc:184:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/src/c++98/istream-string.cc:269:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/src/c++98/compatibility.cc:124:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/src/c++98/compatibility.cc:203:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/config/abi/post/mips64-linux-gnu/baseline_symbols.txt:3708:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/mips64-linux-gnu/32/baseline_symbols.txt:3658:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/ChangeLog-2014:5897:	not swallow __forced_unwind.
+codes/gcc/libstdc++-v3/ChangeLog-2014:5899:	(__future_base::_Async_state_impl): Turn __forced_unwind into broken
+codes/gcc/libstdc++-v3/ChangeLog-2006:3246:	* libsupc++/eh_arm.cc (__cxa_begin_cleanup): Always return 'true'.
+codes/gcc/libstdc++-v3/config/abi/post/x86_64-linux-gnu/baseline_symbols.txt:4705:OBJECT:16:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/x86_64-linux-gnu/32/baseline_symbols.txt:5985:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/ChangeLog-2012:75:	__forced_unwind exceptions.
+codes/gcc/libstdc++-v3/config/abi/post/i386-solaris/amd64/baseline_symbols.txt:4659:OBJECT:16:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/i386-solaris/baseline_symbols.txt:5935:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/i486-linux-gnu/baseline_symbols.txt:5985:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/include/experimental/executor:1734:	__catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/experimental/executor:1794:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/experimental/executor:1812:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/experimental/executor:1830:	  __catch(__cxxabiv1::__forced_unwind&)
+docs/progress/R42/code/evidence/006_arm_ehabi_relevant_text.log:526:  2088	  bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)
+docs/progress/R42/code/evidence/006_arm_ehabi_relevant_text.log:536:  2098	``bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)``
+codes/gcc/libstdc++-v3/include/bits/basic_string.tcc:390:	catch (const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/basic_string.tcc:884:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/basic_string.tcc:948:	  __catch(__cxxabiv1::__forced_unwind&)
+docs/progress/R42/code/evidence/059_final_source_and_diff_identity.log:31:   593	    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+docs/progress/R42/code/evidence/059_final_source_and_diff_identity.log:105:   667	    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/evidence/059_final_source_and_diff_identity.log:284:   846	                                &typeid(__cxxabiv1::__forced_unwind));
+docs/progress/R42/code/evidence/059_final_source_and_diff_identity.log:290:   852	                            results.isForcedUnwindHandler = true;
+docs/progress/R42/code/evidence/059_final_source_and_diff_identity.log:323:  1229	    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/evidence/059_final_source_and_diff_identity.log:463:  1369	                results.isForcedUnwindHandler)
+docs/progress/R42/code/evidence/059_final_source_and_diff_identity.log:488:  1394	            __cxa_begin_cleanup(unwind_exception);
+docs/progress/R42/code/evidence/059_final_source_and_diff_identity.log:541:   336	bool __cxa_begin_cleanup(void *unwind_arg) throw() {
+docs/progress/R42/code/evidence/059_final_source_and_diff_identity.log:608:   403	        // It seems that __cxa_begin_cleanup() is not called properly.
+codes/gcc/libstdc++-v3/config/abi/post/mips-linux-gnu/baseline_symbols.txt:3257:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/x86_64-linux-gnu/x32/baseline_symbols.txt:6041:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+docs/progress/R42/code/evidence/035_build_probes_x86.log:49:    15: 0000000000000000     0 OBJECT  GLOBAL DEFAULT  UND _ZTIN10__cxxabiv115__forced_unwindE@LLVM_22 (5)
+docs/progress/R42/code/evidence/035_build_probes_x86.log:91:    10: 0000000000000000     0 OBJECT  GLOBAL DEFAULT  UND _ZTIN10__cxxabiv115__forced_unwindE@CXXABI_1.3.2 (8)
+codes/gcc/libstdc++-v3/config/abi/post/i386-linux-gnu/baseline_symbols.txt:5870:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/ia64-linux-gnu/baseline_symbols.txt:4637:OBJECT:16:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+docs/progress/R42/code/evidence/034_relink_versioned_x86.log:40:    50: 000000000003bcd8    32 OBJECT  GLOBAL DEFAULT   22 _ZTVN10__cxxabiv115__forced_unwindE@@LLVM_22
+docs/progress/R42/code/evidence/034_relink_versioned_x86.log:41:    51: 0000000000029d80     1 FUNC    GLOBAL DEFAULT   12 _ZN10__cxxabiv115__forced_unwindD2Ev@@LLVM_22
+docs/progress/R42/code/evidence/034_relink_versioned_x86.log:42:    70: 0000000000030a50    32 OBJECT  GLOBAL DEFAULT   15 _ZTSN10__cxxabiv115__forced_unwindE@@LLVM_22
+docs/progress/R42/code/evidence/034_relink_versioned_x86.log:43:    71: 000000000003bcf8    16 OBJECT  GLOBAL DEFAULT   22 _ZTIN10__cxxabiv115__forced_unwindE@@LLVM_22
+docs/progress/R42/code/evidence/034_relink_versioned_x86.log:46:   320: 0000000000029d90    23 FUNC    GLOBAL DEFAULT   12 _ZN10__cxxabiv115__forced_unwindD0Ev@@LLVM_22
+docs/progress/R42/code/evidence/034_relink_versioned_x86.log:47:   372: 0000000000029d80     1 FUNC    GLOBAL DEFAULT   12 _ZN10__cxxabiv115__forced_unwindD1Ev@@LLVM_22
+codes/gcc/libstdc++-v3/config/abi/post/sparc-linux-gnu/baseline_symbols.txt:3900:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/powerpc64-linux-gnu/baseline_symbols.txt:4952:OBJECT:16:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+codes/gcc/libstdc++-v3/config/abi/post/powerpc64-linux-gnu/32/baseline_symbols.txt:6282:OBJECT:8:_ZTIN10__cxxabiv115__forced_unwindE@@CXXABI_1.3.2
+docs/progress/R42/code/evidence/010_static_reference_extract.log:227:   567		  throw_type = &typeid(abi::__forced_unwind);
+docs/progress/R42/code/evidence/010_static_reference_extract.log:315:   655	      if (found_type == found_cleanup)
+docs/progress/R42/code/evidence/010_static_reference_extract.log:394:   734	  if (found_type == found_cleanup)
+docs/progress/R42/code/evidence/010_static_reference_extract.log:395:   735	    __cxa_begin_cleanup(ue_header);
+docs/progress/R42/code/evidence/010_static_reference_extract.log:468:    57	    throw_type = &typeid(abi::__forced_unwind);
+docs/progress/R42/code/evidence/010_static_reference_extract.log:508:    97	__cxa_begin_cleanup(_Unwind_Exception* ue_header)
+docs/progress/R42/code/evidence/010_static_reference_extract.log:588:   330	bool __cxa_begin_cleanup(void *unwind_arg) throw() {
+docs/progress/R42/code/evidence/010_static_reference_extract.log:635:   377	        // It seems that __cxa_begin_cleanup() is not called properly.
+docs/progress/R42/code/evidence/010_static_reference_extract.log:769:  1279	            __cxa_begin_cleanup(unwind_exception);
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:2:COMMAND=bash -lc printf\ \"=====\ PLATFORM\ TO\ R42\ DIFF\ =====\\n\"\;\ diff\ -u\ codes/llvm/libcxxabi/include/cxxabi.h\ tmp/R42/source-patched/libcxxabi/include/cxxabi.h\ \|\|\ true\;\ diff\ -u\ codes/llvm/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ \|\|\ true\;\ diff\ -u\ codes/llvm/libcxxabi/src/cxa_personality.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\ \|\|\ true\;\ printf\ \"=====\ R40\ STRONG\ TO\ R42\ DIFF\ =====\\n\"\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/include/cxxabi.h\ tmp/R42/source-patched/libcxxabi/include/cxxabi.h\ \|\|\ true\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ \|\|\ true\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/src/cxa_personality.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\ \|\|\ true\;\ printf\ \"=====\ TRACE/FIX\ LOCATIONS\ =====\\n\"\;\ rg\ -n\ \"R42_TRACE\|R42_EHABI_FORCED_HANDLER_PATH\|isForcedUnwindHandler\|__forced_unwind::\~\"\ tmp/R42/source-patched/libcxxabi/include/cxxabi.h\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\;\ printf\ \"=====\ UNWRAPPED\ FPRINTF\ =====\\n\"\;\ rg\ -n\ \"fprintf\\\\\(stderr\"\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\ \|\|\ true\;\ sha256sum\ tmp/R42/source-patched/libcxxabi/include/cxxabi.h\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp 
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:12:+class _LIBCXXABI_TYPE_VIS __forced_unwind {
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:14:+  virtual ~__forced_unwind();
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:39:+__forced_unwind::~__forced_unwind() = default;
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:89:         // It seems that __cxa_begin_cleanup() is not called properly.
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:185:+    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:193:+    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:221:+                                &typeid(__cxxabiv1::__forced_unwind));
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:227:+                            results.isForcedUnwindHandler = true;
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:276:+    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:394:+                results.isForcedUnwindHandler)
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:521:         // It seems that __cxa_begin_cleanup() is not called properly.
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:614:+    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:622:+    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:646:+                            results.isForcedUnwindHandler = true;
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:692:+    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:810:+                results.isForcedUnwindHandler)
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:880:tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:45:__forced_unwind::~__forced_unwind() = default;
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:894:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:593:    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:895:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:667:    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:897:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:852:                            results.isForcedUnwindHandler = true;
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:901:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1229:    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/evidence/014_implementation_diff_and_scope.log:911:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1369:                results.isForcedUnwindHandler)
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:2:COMMAND=bash -c set\ -o\ pipefail\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/src/cxa_personality.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\;\ rg\ -n\ \"if\ \\\(NULL\ \!=\ globals-\>propagatingExceptions\\\)\|__cxa_begin_cleanup\\\(unwind_exception\\\)\|isForcedUnwindHandler\|LIBCXXABI_R42_TRACE\"\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp 
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:63:         // It seems that __cxa_begin_cleanup() is not called properly.
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:156:+    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:164:+    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:188:+                            results.isForcedUnwindHandler = true;
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:234:+    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:352:+                results.isForcedUnwindHandler)
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:419:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:593:    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:420:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:667:    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:421:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:852:                            results.isForcedUnwindHandler = true;
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:422:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1229:    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:423:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1369:                results.isForcedUnwindHandler)
+docs/progress/R42/code/evidence/017_redline_selfcheck.log:424:tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1394:            __cxa_begin_cleanup(unwind_exception);
+docs/progress/R42/code/evidence/038_build_probes_arm_retry.log:58:    10: 00000000     0 OBJECT  GLOBAL DEFAULT  UND _ZTIN10__cxxabiv115__forced_unwindE
+docs/progress/R42/code/evidence/038_build_probes_arm_retry.log:101:    13: 00000000     0 OBJECT  GLOBAL DEFAULT  UND _ZTIN10__cxxabiv115__forced_unwindE@CXXABI_1.3.2 (8)
+docs/progress/R42/code/evidence/005_arm_ehabi_locations.log:2:COMMAND=bash -lc sha256sum\ progress/R42/reference/arm/ehabi32.rst\;\ rg\ -n\ \"\^\(7\|7\\\\.\|Exception-handling\ ABI\ routines\|_Unwind_ForcedUnwind\|__cxa_begin_cleanup\|__cxa_end_cleanup\)\|forced\ unwind\|force\ unwind\|Forced\ unwind\|cleanup\"\ progress/R42/reference/arm/ehabi32.rst\ \|\ sed\ -n\ \"1\,260p\" 
+docs/progress/R42/code/evidence/005_arm_ehabi_locations.log:65:2088:  bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)
+docs/progress/R42/code/evidence/005_arm_ehabi_locations.log:66:2098:``bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)``
+docs/progress/R42/code/evidence/051_prepare_stripped_deploy_libraries.log:2:COMMAND=bash -c set\ -e\;\ llvm-strip\ --strip-debug\ tmp/R42/deploy/armv7l/patched/libc++abi.so.1\;\ llvm-strip\ --strip-debug\ tmp/R42/deploy/armv7l/trace/libc++abi.so.1\;\ llvm-strip\ --strip-debug\ tmp/R42/deploy/armv7l/unpatched/libc++abi.so.1\;\ sha256sum\ tmp/R42/deploy/armv7l/\*/libc++abi.so.1\;\ file\ tmp/R42/deploy/armv7l/\*/libc++abi.so.1\;\ readelf\ --dyn-syms\ --wide\ tmp/R42/deploy/armv7l/patched/libc++abi.so.1\ \|\ rg\ \"_ZT\[IS\]N10__cxxabiv115__forced_unwindE\"\;\ strings\ tmp/R42/deploy/armv7l/patched/libc++abi.so.1\ \|\ rg\ \"R4\[012\]_\"\ \&\&\ exit\ 1\ \|\|\ test\ \$\{PIPESTATUS\[1\]\}\ -eq\ 1\;\ strings\ tmp/R42/deploy/armv7l/trace/libc++abi.so.1\ \|\ rg\ \"R42_EHABI_FORCED_HANDLER_PATH\" 
+docs/progress/R42/code/evidence/051_prepare_stripped_deploy_libraries.log:9:    75: 0001df5e    32 OBJECT  GLOBAL DEFAULT   13 _ZTSN10__cxxabiv115__forced_unwindE
+docs/progress/R42/code/evidence/051_prepare_stripped_deploy_libraries.log:10:    76: 00021eb0     8 OBJECT  GLOBAL DEFAULT   20 _ZTIN10__cxxabiv115__forced_unwindE
+docs/progress/R42/code/evidence/032_build_identity_and_trace_toggle.log:2:COMMAND=bash -c set\ -o\ pipefail\;\ sha256sum\ tmp/R42/build-patched-x86_64/lib/libc++abi.so.1.0\ tmp/R42/build-patched-armv7l/lib/libc++abi.so.1.0\ tmp/R42/build-trace-armv7l/lib/libc++abi.so.1.0\;\ file\ tmp/R42/build-\*/lib/libc++abi.so.1.0\;\ echo\ TRACE_OFF_ARM\;\ strings\ tmp/R42/build-patched-armv7l/lib/libc++abi.so.1.0\ \|\ rg\ \"R4\[012\]_\"\ \|\|\ test\ \$\{PIPESTATUS\[1\]\}\ -eq\ 1\;\ echo\ TRACE_OFF_X86\;\ strings\ tmp/R42/build-patched-x86_64/lib/libc++abi.so.1.0\ \|\ rg\ \"R4\[012\]_\"\ \|\|\ test\ \$\{PIPESTATUS\[1\]\}\ -eq\ 1\;\ echo\ TRACE_ON_ARM\;\ strings\ tmp/R42/build-trace-armv7l/lib/libc++abi.so.1.0\ \|\ rg\ \"R4\[012\]_\"\;\ readelf\ --dyn-syms\ --wide\ tmp/R42/build-patched-armv7l/lib/libc++abi.so.1.0\ \|\ rg\ \"_ZT\[IS\]N10__cxxabiv115__forced_unwindE\" 
+docs/progress/R42/code/evidence/032_build_identity_and_trace_toggle.log:38:    75: 0001df5e    32 OBJECT  GLOBAL DEFAULT   13 _ZTSN10__cxxabiv115__forced_unwindE
+docs/progress/R42/code/evidence/032_build_identity_and_trace_toggle.log:39:    76: 00021eb0     8 OBJECT  GLOBAL DEFAULT   20 _ZTIN10__cxxabiv115__forced_unwindE
+docs/progress/R42/code/evidence/036_build_probes_arm.log:63:    10: 00000000     0 OBJECT  GLOBAL DEFAULT  UND _ZTIN10__cxxabiv115__forced_unwindE
+docs/progress/R42/code/reference/ehabi32.rst:2088:  bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)
+docs/progress/R42/code/reference/ehabi32.rst:2098:``bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)``
+docs/progress/R42/code/tests/s1_rethrow_probe.cpp:29:  } catch (const __cxxabiv1::__forced_unwind&) {
+docs/progress/R42/code/tests/s1_rethrow_probe.cpp:44:  } catch (const __cxxabiv1::__forced_unwind&) {
+docs/progress/R42/code/tests/s1_rethrow_probe.cpp:70:  } catch (const __cxxabiv1::__forced_unwind&) {
+docs/progress/R42/code/tests/s1_rethrow_probe.cpp:116:  } catch (const __cxxabiv1::__forced_unwind&) {
+docs/progress/R42/code/cxxabi.h.diff:9:+class _LIBCXXABI_TYPE_VIS __forced_unwind {
+docs/progress/R42/code/cxxabi.h.diff:11:+  virtual ~__forced_unwind();
+docs/progress/R42/code/libcxxabi/src/cxa_personality.cpp:593:    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+docs/progress/R42/code/libcxxabi/src/cxa_personality.cpp:667:    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/libcxxabi/src/cxa_personality.cpp:846:                                &typeid(__cxxabiv1::__forced_unwind));
+docs/progress/R42/code/libcxxabi/src/cxa_personality.cpp:852:                            results.isForcedUnwindHandler = true;
+docs/progress/R42/code/libcxxabi/src/cxa_personality.cpp:1229:    results.isForcedUnwindHandler = false;
+docs/progress/R42/code/libcxxabi/src/cxa_personality.cpp:1369:                results.isForcedUnwindHandler)
+docs/progress/R42/code/libcxxabi/src/cxa_personality.cpp:1394:            __cxa_begin_cleanup(unwind_exception);
+docs/progress/R42/code/libcxxabi/src/cxa_exception.cpp:45:__forced_unwind::~__forced_unwind() = default;
+docs/progress/R42/code/libcxxabi/src/cxa_exception.cpp:336:bool __cxa_begin_cleanup(void *unwind_arg) throw() {
+docs/progress/R42/code/libcxxabi/src/cxa_exception.cpp:403:        // It seems that __cxa_begin_cleanup() is not called properly.
+docs/progress/R42/code/libcxxabi/include/cxxabi.h:42:class _LIBCXXABI_TYPE_VIS __forced_unwind {
+docs/progress/R42/code/libcxxabi/include/cxxabi.h:44:  virtual ~__forced_unwind();
+docs/progress/R42/code/libcxxabi/include/cxxabi.h:82:__cxa_begin_cleanup(void *exceptionObject) _LIBCXXABI_NOEXCEPT;
+codes/gcc/libstdc++-v3/doc/xml/manual/using_exceptions.xml:486:  for <classname>__cxxabiv1::__forced_unwind</classname>, which is the
+codes/gcc/libstdc++-v3/doc/xml/manual/using_exceptions.xml:491:  catch(const __cxxabiv1::__forced_unwind&amp;)
+codes/gcc/libstdc++-v3/include/ext/vstring.tcc:605:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/ext/vstring.tcc:681:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/ostream.tcc:81:	    __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/ostream.tcc:136:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/ostream.tcc:172:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/ostream.tcc:206:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/ostream.tcc:240:	      __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/ostream.tcc:331:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/cow_string.h:3733:	catch (const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/ostream_insert.h:107:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:75:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:113:	    __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:163:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:213:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:243:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:279:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:316:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:359:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:414:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:467:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:509:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:579:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:656:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:686:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:715:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:747:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:782:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:817:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:853:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:883:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:920:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:959:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:992:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:1053:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/bits/istream.tcc:1102:	  __catch (const __cxxabiv1::__forced_unwind&)
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:593:    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:667:    results.isForcedUnwindHandler = false;
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:846:                                &typeid(__cxxabiv1::__forced_unwind));
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:852:                            results.isForcedUnwindHandler = true;
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1229:    results.isForcedUnwindHandler = false;
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1369:                results.isForcedUnwindHandler)
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1394:            __cxa_begin_cleanup(unwind_exception);
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:45:__forced_unwind::~__forced_unwind() = default;
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:336:bool __cxa_begin_cleanup(void *unwind_arg) throw() {
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:403:        // It seems that __cxa_begin_cleanup() is not called properly.
+codes/gcc/libstdc++-v3/doc/html/manual/using_exceptions.html:313:  for <code class="classname">__cxxabiv1::__forced_unwind</code>, which is the
+codes/gcc/libstdc++-v3/doc/html/manual/using_exceptions.html:316:  catch(const __cxxabiv1::__forced_unwind&amp;)
+tmp/R42/source-patched/libcxxabi/include/cxxabi.h:42:class _LIBCXXABI_TYPE_VIS __forced_unwind {
+tmp/R42/source-patched/libcxxabi/include/cxxabi.h:44:  virtual ~__forced_unwind();
+tmp/R42/source-patched/libcxxabi/include/cxxabi.h:82:__cxa_begin_cleanup(void *exceptionObject) _LIBCXXABI_NOEXCEPT;
+tmp/R42/build-patched-x86_64/include/c++/v1/cxxabi.h:42:class _LIBCXXABI_TYPE_VIS __forced_unwind {
+tmp/R42/build-patched-x86_64/include/c++/v1/cxxabi.h:44:  virtual ~__forced_unwind();
+tmp/R42/build-patched-x86_64/include/c++/v1/cxxabi.h:82:__cxa_begin_cleanup(void *exceptionObject) _LIBCXXABI_NOEXCEPT;
+codes/gcc/libstdc++-v3/testsuite/30_threads/async/forced_unwind.cc:25:// Test (non-standard) handling of __forced_unwind exception.
+codes/gcc/libstdc++-v3/testsuite/30_threads/packaged_task/forced_unwind.cc:23:// Test (non-standard) handling of __forced_unwind exception.
+codes/gcc/libstdc++-v3/testsuite/30_threads/condition_variable/members/103382.cc:25:    wait(cv, lock); // __forced_unwind exception should not terminate process.
+codes/gcc/libstdc++-v3/include/tr2/dynamic_bitset.tcc:255:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/bitset:1662:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/ostream:896:	__catch(const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/ostream:951:	    __catch(const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/ostream:969:	__catch(const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/iomanip:286:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/iomanip:334:	  __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/iomanip:389:          __catch(__cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/iomanip:443:          __catch(__cxxabiv1::__forced_unwind&)
+tmp/R42/build-trace-armv7l/include/c++/v1/cxxabi.h:42:class _LIBCXXABI_TYPE_VIS __forced_unwind {
+tmp/R42/build-trace-armv7l/include/c++/v1/cxxabi.h:44:  virtual ~__forced_unwind();
+tmp/R42/build-trace-armv7l/include/c++/v1/cxxabi.h:82:__cxa_begin_cleanup(void *exceptionObject) _LIBCXXABI_NOEXCEPT;
+tmp/R42/build-patched-armv7l/include/c++/v1/cxxabi.h:42:class _LIBCXXABI_TYPE_VIS __forced_unwind {
+tmp/R42/build-patched-armv7l/include/c++/v1/cxxabi.h:44:  virtual ~__forced_unwind();
+tmp/R42/build-patched-armv7l/include/c++/v1/cxxabi.h:82:__cxa_begin_cleanup(void *exceptionObject) _LIBCXXABI_NOEXCEPT;
+codes/gcc/libstdc++-v3/include/std/future:1418:	__catch(const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/future:1441:	__catch(const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/future:1783:	__catch (const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/condition_variable:268:	      __catch(const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/libsupc++/unwind-cxx.h:183:extern "C" bool __cxa_begin_cleanup (_Unwind_Exception*);
+codes/gcc/libstdc++-v3/libsupc++/eh_exception.cc:35:abi::__forced_unwind::~__forced_unwind() throw() { }
+codes/gcc/libstdc++-v3/libsupc++/new_opnt.cc:44:      // exits with a __forced_unwind exception. The process will print
+codes/gcc/libstdc++-v3/libsupc++/eh_arm.cc:57:    throw_type = &typeid(abi::__forced_unwind);
+codes/gcc/libstdc++-v3/libsupc++/eh_arm.cc:97:__cxa_begin_cleanup(_Unwind_Exception* ue_header)
+codes/gcc/libstdc++-v3/libsupc++/cxxabi_forced.h:48:  class __forced_unwind
+codes/gcc/libstdc++-v3/libsupc++/cxxabi_forced.h:50:    virtual ~__forced_unwind() throw();
+codes/gcc/libstdc++-v3/libsupc++/eh_personality.cc:567:	  throw_type = &typeid(abi::__forced_unwind);
+codes/gcc/libstdc++-v3/libsupc++/eh_personality.cc:655:      if (found_type == found_cleanup)
+codes/gcc/libstdc++-v3/libsupc++/eh_personality.cc:734:  if (found_type == found_cleanup)
+codes/gcc/libstdc++-v3/libsupc++/eh_personality.cc:735:    __cxa_begin_cleanup(ue_header);
+EXIT_CODE=0

@@ -1,0 +1,74 @@
+COMMAND: diff R42 to R45; rg removed field; redline check; source SHA256
+--- tmp/R42/source-patched/libcxxabi/include/cxxabi.h	2026-08-14 20:08:35.559822636 +0800
++++ tmp/R45/source-patched/libcxxabi/include/cxxabi.h	2026-08-15 18:19:41.696534282 +0800
+@@ -37,11 +37,12 @@
+ // runtime routines use C calling conventions, but are in __cxxabiv1 namespace
+ namespace __cxxabiv1 {
+ 
+-// R40 strong-typeinfo experiment: an out-of-line key function makes the
+-// runtime library own the unique exported typeinfo definition.
++// An out-of-line key function makes the runtime library own the unique
++// exported typeinfo definition.  Keep the libstdc++ abstract class shape so
++// this marker can only be caught by reference.
+ class _LIBCXXABI_TYPE_VIS __forced_unwind {
+-public:
+   virtual ~__forced_unwind();
++  virtual void __pure_dummy() = 0;
+ };
+ 
+ struct __cxa_exception;
+--- tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp	2026-08-15 12:08:53.317108497 +0800
++++ tmp/R45/source-patched/libcxxabi/src/cxa_personality.cpp	2026-08-15 18:19:41.700534282 +0800
+@@ -590,7 +590,6 @@
+     lsd_ptr_t      languageSpecificData; // Needed only for __cxa_call_unexpected
+     landing_pad_t  landingPad;   // null -> nothing found, else something found
+     void*          adjustedPtr;  // Used in cxa_exception.cpp
+-    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+     _Unwind_Reason_Code reason;  // One of _URC_FATAL_PHASE1_ERROR,
+                                  //        _URC_FATAL_PHASE2_ERROR,
+                                  //        _URC_CONTINUE_UNWIND,
+@@ -664,7 +663,6 @@
+     results.languageSpecificData = 0;
+     results.landingPad = 0;
+     results.adjustedPtr = 0;
+-    results.isForcedUnwindHandler = false;
+     results.reason = _URC_FATAL_PHASE1_ERROR;
+     // Check for consistent actions
+     if (actions & _UA_SEARCH_PHASE)
+@@ -849,7 +847,6 @@
+                             results.ttypeIndex = ttypeIndex;
+                             results.actionRecord = actionRecord;
+                             results.adjustedPtr = adjustedPtr;
+-                            results.isForcedUnwindHandler = true;
+                             results.reason = _URC_HANDLER_FOUND;
+                             R42_TRACE(
+                                     "R41_SCAN_MATCH kind=forced-type actions=0x%x native=%d ip=0x%lx catch_type=%p forced_type=%p landing=0x%lx ttype=%lld reason=%d unwind=%p\n",
+@@ -1226,7 +1223,6 @@
+     results.languageSpecificData = (const uint8_t*)unwind_exception->barrier_cache.bitpattern[2];
+     results.landingPad = (uintptr_t)unwind_exception->barrier_cache.bitpattern[3];
+     results.ttypeIndex = (int64_t)(int32_t)unwind_exception->barrier_cache.bitpattern[4];
+-    results.isForcedUnwindHandler = false;
+ }
+ 
+ extern "C" _LIBCXXABI_FUNC_VIS _Unwind_Reason_Code
+@@ -1365,8 +1361,11 @@
+                 static_cast<void*>(unwind_exception));
+         if (results.reason == _URC_HANDLER_FOUND)
+         {
++            // A non-zero ttypeIndex identifies a catching handler.  ARM EHABI
++            // requires __cxa_begin_cleanup only for a true cleanup entry
++            // (ttypeIndex == 0), matching libstdc++'s found_cleanup gate.
+             if (is_force_unwinding && !native_exception &&
+-                results.isForcedUnwindHandler)
++                results.ttypeIndex != 0)
+             {
+                 R42_TRACE(
+                     "R42_EHABI_FORCED_HANDLER_PATH force=1 native=0 landing=0x%lx ttype=%lld unwind=%p\n",
+tmp/R45/source-patched/libcxxabi/src/cxa_personality.cpp:1368:                results.ttypeIndex != 0)
+tmp/R45/source-patched/libcxxabi/src/cxa_personality.cpp:1393:            __cxa_begin_cleanup(unwind_exception);
+tmp/R45/source-patched/libcxxabi/include/cxxabi.h:45:  virtual void __pure_dummy() = 0;
+tmp/R45/source-patched/libcxxabi/src/cxa_exception.cpp:362:        if (NULL != globals->propagatingExceptions) {
+f5820fb3cc0a3f7698e62b30aa3cb4299bdbd21eb7197739816536a7c7bab821  tmp/R45/source-patched/libcxxabi/include/cxxabi.h
+1b1c6a987f82b2d951c9f7540944970fbcb5bc2b71901055a2b3ad278c668dd1  tmp/R45/source-patched/libcxxabi/src/cxa_exception.cpp
+fe6c51f1bba00ef674995b0367afa57fb086ec53c0951e84988c35cbd398da6b  tmp/R45/source-patched/libcxxabi/src/cxa_personality.cpp
+EXIT_CODE=0

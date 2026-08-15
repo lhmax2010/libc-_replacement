@@ -1,0 +1,298 @@
+$ find tmp/R44b -maxdepth 4 -type f -o -type l | sort | sed -n "1,200p"
+tmp/R44b/build/armv7l/ios.cpp.o
+tmp/R44b/build/armv7l/ios.cpp.o.d
+tmp/R44b/build/armv7l/libc++.link.d
+tmp/R44b/build/armv7l/libc++.so
+tmp/R44b/build/armv7l/libc++.so.1
+tmp/R44b/build/armv7l/libc++.so.1.0
+tmp/R44b/build/x86_64/ios.cpp.o
+tmp/R44b/build/x86_64/ios.cpp.o.d
+tmp/R44b/build/x86_64/libc++.link.d
+tmp/R44b/build/x86_64/libc++.so
+tmp/R44b/build/x86_64/libc++.so.1
+tmp/R44b/build/x86_64/libc++.so.1.0
+tmp/R44b/deploy/armv7l/MANIFEST.sha256
+tmp/R44b/deploy/armv7l/aggregation/libc++.so.1
+tmp/R44b/deploy/armv7l/aggregation/libc++abi.so.1
+tmp/R44b/deploy/armv7l/bin/libcxx_probe
+tmp/R44b/deploy/armv7l/bin/libstdcxx_probe
+tmp/R44b/deploy/armv7l/layer1/libc++.so.1
+tmp/R44b/deploy/armv7l/layer1/libc++abi.so.1
+tmp/R44b/deploy/armv7l/unpatched/libc++.so.1
+tmp/R44b/deploy/armv7l/unpatched/libc++abi.so.1
+tmp/R44b/deploy/r44b-armv7l.tar.gz
+tmp/R44b/experiment/libcxx/src/ios.cpp
+tmp/R44b/runtime/x86_64/aggregation/libc++.so.1
+tmp/R44b/runtime/x86_64/aggregation/libc++abi.so.1
+tmp/R44b/runtime/x86_64/layer1/libc++.so.1
+tmp/R44b/runtime/x86_64/layer1/libc++abi.so.1
+tmp/R44b/runtime/x86_64/unpatched/libc++.so.1
+tmp/R44b/runtime/x86_64/unpatched/libc++abi.so.1
+tmp/R44b/tests/armv7l/libcxx/stdlib_cancel_probe
+tmp/R44b/tests/armv7l/libcxx/stdlib_cancel_probe.o
+tmp/R44b/tests/armv7l/libstdcxx/stdlib_cancel_probe
+tmp/R44b/tests/armv7l/libstdcxx/stdlib_cancel_probe.o
+tmp/R44b/tests/x86_64/libcxx/stdlib_cancel_probe
+tmp/R44b/tests/x86_64/libcxx/stdlib_cancel_probe.o
+tmp/R44b/tests/x86_64/libstdcxx/stdlib_cancel_probe
+tmp/R44b/tests/x86_64/libstdcxx/stdlib_cancel_probe.o
+EXIT_CODE=0
+$ sed -n "1,260p" progress/R44b/tools/run_x86_matrix.sh
+#!/usr/bin/env bash
+set -u
+set -o pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+sysroot="$workspace/tmp/GBS-ROOT/R32-candidates-libcxx-x86_64-20260813-02/local/BUILD-ROOTS/scratch.x86_64.0"
+loader="$sysroot/lib64/ld-linux-x86-64.so.2"
+baseline="$workspace/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib"
+r42_abi="$workspace/tmp/R42/build-patched-x86_64/lib/libc++abi.so.1.0"
+spike_libcxx="$workspace/tmp/R44b/build/x86_64/libc++.so.1.0"
+test_dir="$workspace/tmp/R44b/tests/x86_64"
+runtime="$workspace/tmp/R44b/runtime/x86_64"
+mode=${1:-cout}
+
+mkdir -p "$runtime/unpatched" "$runtime/layer1" "$runtime/aggregation"
+ln -sfn "$baseline/libc++.so.1.0" "$runtime/unpatched/libc++.so.1"
+ln -sfn "$baseline/libc++abi.so.1.0" "$runtime/unpatched/libc++abi.so.1"
+ln -sfn "$baseline/libc++.so.1.0" "$runtime/layer1/libc++.so.1"
+ln -sfn "$r42_abi" "$runtime/layer1/libc++abi.so.1"
+ln -sfn "$spike_libcxx" "$runtime/aggregation/libc++.so.1"
+ln -sfn "$r42_abi" "$runtime/aggregation/libc++abi.so.1"
+
+run_cell() {
+  local suite=$1 mode=$2 library_path=$3 binary=$4
+  local rc
+  printf '\nCELL_BEGIN arch=x86_64 suite=%s mode=%s\n' "$suite" "$mode"
+  printf 'EXECUTION_MODE=HOST_NATIVE_X86_64_NO_QEMU\n'
+  printf 'RUN_COMMAND='
+  printf '%q ' /usr/bin/timeout --preserve-status 20s "$loader" --library-path "$library_path" "$binary" "$mode"
+  printf '\n'
+  /usr/bin/timeout --preserve-status 20s "$loader" --library-path "$library_path" "$binary" "$mode"
+  rc=$?
+  printf 'CELL_EXIT_CODE=%d\n' "$rc"
+  if (( rc > 128 )); then printf 'CELL_SIGNAL=%d\n' "$((rc - 128))"; else printf 'CELL_SIGNAL=0\n'; fi
+  printf 'CELL_END arch=x86_64 suite=%s mode=%s\n' "$suite" "$mode"
+}
+
+printf 'RUNTIME_IDENTITIES_BEGIN\n'
+sha256sum \
+  "$baseline/libc++.so.1.0" "$baseline/libc++abi.so.1.0" \
+  "$r42_abi" "$spike_libcxx" \
+  "$test_dir/libcxx/stdlib_cancel_probe" "$test_dir/libstdcxx/stdlib_cancel_probe"
+for suite in unpatched layer1 aggregation; do
+  printf 'LOADER_LIST_SUITE=%s\n' "$suite"
+  "$loader" --library-path "$runtime/$suite:$sysroot/usr/lib64:$sysroot/lib64" \
+    --list "$test_dir/libcxx/stdlib_cancel_probe"
+  printf 'LOADER_LIST_EXIT_CODE=%d\n' "$?"
+done
+printf 'LOADER_LIST_SUITE=libstdcxx_control\n'
+"$loader" --library-path "$sysroot/usr/lib64:$sysroot/lib64" \
+  --list "$test_dir/libstdcxx/stdlib_cancel_probe"
+printf 'LOADER_LIST_EXIT_CODE=%d\nRUNTIME_IDENTITIES_END\n' "$?"
+
+printf 'LD_DEBUG_IDENTITY_BEGIN\n'
+LD_DEBUG=libs /usr/bin/timeout --preserve-status 20s "$loader" \
+  --library-path "$runtime/aggregation:$sysroot/usr/lib64:$sysroot/lib64" \
+  "$test_dir/libcxx/stdlib_cancel_probe" control
+printf 'LD_DEBUG_EXIT_CODE=%d\nLD_DEBUG_IDENTITY_END\n' "$?"
+
+run_cell unpatched "$mode" "$runtime/unpatched:$sysroot/usr/lib64:$sysroot/lib64" "$test_dir/libcxx/stdlib_cancel_probe"
+run_cell layer1 "$mode" "$runtime/layer1:$sysroot/usr/lib64:$sysroot/lib64" "$test_dir/libcxx/stdlib_cancel_probe"
+run_cell aggregation "$mode" "$runtime/aggregation:$sysroot/usr/lib64:$sysroot/lib64" "$test_dir/libcxx/stdlib_cancel_probe"
+run_cell libstdcxx_control "$mode" "$sysroot/usr/lib64:$sysroot/lib64" "$test_dir/libstdcxx/stdlib_cancel_probe"
+exit 0
+EXIT_CODE=0
+$ sed -n "1,260p" progress/R45/tools/prepare_board_payload.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+payload="$workspace/tmp/R45/board-payload"
+archive="$workspace/tmp/R45/r45_board_payload.tar"
+arm_baseline="$workspace/tmp/GBS-ROOT/LIBCXX-2218-armv7l-20260806-c2/local/BUILD-ROOTS/scratch.armv7l.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib"
+
+mkdir -p "$payload"/{bin/libcxx,bin/libstdcxx,runtime/unpatched,runtime/r42,runtime/r45,aggregation/bin,aggregation/unpatched,aggregation/layer1,aggregation/fixed}
+cp "$workspace/tmp/R45/tests/armv7l/libcxx/"{forced_unwind1,forced_unwind2,forced_unwind3,forced_unwind4,unwind_01,unwind_02,unwind_03,unwind_04,unwind_05,unwind_06,s1_rethrow_probe,unpatched_cancel_probe} "$payload/bin/libcxx/"
+cp "$workspace/tmp/R45/tests/armv7l/libstdcxx/"{forced_unwind1,forced_unwind2,forced_unwind3,forced_unwind4,unwind_01,unwind_02,unwind_03,unwind_04,unwind_05,unwind_06,s1_rethrow_probe} "$payload/bin/libstdcxx/"
+cp "$workspace/tmp/R38/build-unpatched-armv7l/lib/libc++abi.so.1.0" "$payload/runtime/unpatched/libc++abi.so.1"
+cp "$workspace/tmp/R42/build-patched-armv7l/lib/libc++abi.so.1.0" "$payload/runtime/r42/libc++abi.so.1"
+cp "$workspace/tmp/R45/build-armv7l/lib/libc++abi.so.1.0" "$payload/runtime/r45/libc++abi.so.1"
+
+cp "$workspace/tmp/R44b/tests/armv7l/libcxx/stdlib_cancel_probe" "$payload/aggregation/bin/libcxx_probe"
+cp "$workspace/tmp/R44b/tests/armv7l/libstdcxx/stdlib_cancel_probe" "$payload/aggregation/bin/libstdcxx_probe"
+cp "$arm_baseline/libc++.so.1.0" "$payload/aggregation/unpatched/libc++.so.1"
+cp "$workspace/tmp/R38/build-unpatched-armv7l/lib/libc++abi.so.1.0" "$payload/aggregation/unpatched/libc++abi.so.1"
+cp "$arm_baseline/libc++.so.1.0" "$payload/aggregation/layer1/libc++.so.1"
+cp "$workspace/tmp/R45/build-armv7l/lib/libc++abi.so.1.0" "$payload/aggregation/layer1/libc++abi.so.1"
+cp "$workspace/tmp/R44b/build/armv7l/libc++.so.1.0" "$payload/aggregation/fixed/libc++.so.1"
+cp "$workspace/tmp/R45/build-armv7l/lib/libc++abi.so.1.0" "$payload/aggregation/fixed/libc++abi.so.1"
+
+find "$payload" -type f -exec chmod 0755 {} +
+printf 'PAYLOAD_FILES_BEGIN\n'
+find "$payload" -type f -print0 | sort -z | xargs -0 sha256sum
+printf 'PAYLOAD_FILES_END\n'
+tar -C "$payload" -cf "$archive" .
+sha256sum "$archive"
+EXIT_CODE=0
+$ sed -n "1,240p" progress/R43b/src/stdlib_cancel_probe.cpp
+#include <atomic>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <future>
+#include <iostream>
+#include <pthread.h>
+#include <string>
+#include <unistd.h>
+
+static std::atomic<bool> ready(false);
+
+static void wait_until_ready() {
+  for (int i = 0; i != 500 && !ready.load(std::memory_order_acquire); ++i)
+    usleep(10000);
+}
+
+static int cancel_and_join(pthread_t thread, const char* mode) {
+  wait_until_ready();
+  for (int i = 0; i != 3; ++i) {
+    int rc = pthread_cancel(thread);
+    std::fprintf(stderr, "MODE=%s CANCEL_ATTEMPT=%d RC=%d\n", mode, i + 1, rc);
+    usleep(10000);
+  }
+  void* result = nullptr;
+  int join_rc = pthread_join(thread, &result);
+  std::fprintf(stderr, "MODE=%s JOIN_RC=%d JOIN_IS_CANCELED=%d JOIN_VALUE=%p\n",
+               mode, join_rc, result == PTHREAD_CANCELED, result);
+  return join_rc == 0 && result == PTHREAD_CANCELED ? 0 : 2;
+}
+
+static void* cout_worker(void*) {
+  ready.store(true, std::memory_order_release);
+  for (unsigned long i = 0;; ++i)
+    std::cout << i << std::endl;
+  return nullptr;
+}
+
+static int run_cout() {
+  int pipe_fds[2];
+  if (pipe(pipe_fds) != 0)
+    return 10;
+  if (dup2(pipe_fds[1], STDOUT_FILENO) < 0)
+    return 11;
+  close(pipe_fds[1]);
+  pthread_t thread;
+  int create_rc = pthread_create(&thread, nullptr, cout_worker, nullptr);
+  std::fprintf(stderr, "MODE=cout CREATE_RC=%d PIPE_READ_FD=%d\n", create_rc, pipe_fds[0]);
+  if (create_rc != 0)
+    return 12;
+  return cancel_and_join(thread, "cout");
+}
+
+static void* getline_worker(void*) {
+  ready.store(true, std::memory_order_release);
+  std::string line;
+  std::getline(std::cin, line);
+  return nullptr;
+}
+
+static int run_getline() {
+  int pipe_fds[2];
+  if (pipe(pipe_fds) != 0)
+    return 20;
+  if (dup2(pipe_fds[0], STDIN_FILENO) < 0)
+    return 21;
+  close(pipe_fds[0]);
+  pthread_t thread;
+  int create_rc = pthread_create(&thread, nullptr, getline_worker, nullptr);
+  std::fprintf(stderr, "MODE=getline CREATE_RC=%d PIPE_WRITE_FD=%d\n", create_rc, pipe_fds[1]);
+  if (create_rc != 0)
+    return 22;
+  return cancel_and_join(thread, "getline");
+}
+
+static void packaged_callable() {
+  ready.store(true, std::memory_order_release);
+  for (;;)
+    pthread_testcancel();
+}
+
+static void* packaged_worker(void* opaque) {
+  std::packaged_task<void()>* task = static_cast<std::packaged_task<void()>*>(opaque);
+  (*task)();
+  return nullptr;
+}
+
+static int run_packaged_task() {
+  std::packaged_task<void()> task(packaged_callable);
+  pthread_t thread;
+  int create_rc = pthread_create(&thread, nullptr, packaged_worker, &task);
+  std::fprintf(stderr, "MODE=packaged_task CREATE_RC=%d\n", create_rc);
+  if (create_rc != 0)
+    return 32;
+  return cancel_and_join(thread, "packaged_task");
+}
+
+static void* shrink_worker(void*) {
+  std::string value(16384, 'x');
+  ready.store(true, std::memory_order_release);
+  for (;;) {
+    value.resize(8192);
+    value.shrink_to_fit();
+    value.append(8192, 'x');
+    pthread_testcancel();
+  }
+  return nullptr;
+}
+
+static int run_shrink() {
+  pthread_t thread;
+  int create_rc = pthread_create(&thread, nullptr, shrink_worker, nullptr);
+  std::fprintf(stderr, "MODE=shrink_to_fit CREATE_RC=%d INTERNAL_CANCEL_POINT=0\n", create_rc);
+  if (create_rc != 0)
+    return 42;
+  int rc = cancel_and_join(thread, "shrink_to_fit");
+  std::fprintf(stderr, "SHRINK_INTERNAL_FORCED_UNWIND=NOT_OBSERVED\n");
+  return rc;
+}
+
+static void* control_worker(void*) {
+  volatile unsigned long value = 0;
+  ready.store(true, std::memory_order_release);
+  for (;;) {
+    ++value;
+    pthread_testcancel();
+  }
+  return nullptr;
+}
+
+static int run_control() {
+  pthread_t thread;
+  int create_rc = pthread_create(&thread, nullptr, control_worker, nullptr);
+  std::fprintf(stderr, "MODE=control CREATE_RC=%d\n", create_rc);
+  if (create_rc != 0)
+    return 52;
+  return cancel_and_join(thread, "control");
+}
+
+int main(int argc, char** argv) {
+  if (argc != 2) {
+    std::fprintf(stderr, "USAGE=%s cout|getline|packaged_task|shrink_to_fit|control\n", argv[0]);
+    return 64;
+  }
+  ready.store(false, std::memory_order_release);
+  if (std::strcmp(argv[1], "cout") == 0)
+    return run_cout();
+  if (std::strcmp(argv[1], "getline") == 0)
+    return run_getline();
+  if (std::strcmp(argv[1], "packaged_task") == 0)
+    return run_packaged_task();
+  if (std::strcmp(argv[1], "shrink_to_fit") == 0)
+    return run_shrink();
+  if (std::strcmp(argv[1], "control") == 0)
+    return run_control();
+  std::fprintf(stderr, "UNKNOWN_MODE=%s\n", argv[1]);
+  return 65;
+}
+EXIT_CODE=0
