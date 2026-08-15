@@ -1,0 +1,773 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc for\ range\ in\ 930\,1050\ 1340\,1480\ 1830\,2120\ 2740\,2840\ 3120\,3230\;\ do\ start=\$\{range%\,\*\}\;\ end=\$\{range#\*\,\}\;\ printf\ \"=====\ LINES\ %s-%s\ =====\\\\n\"\ \"\$start\"\ \"\$end\"\;\ nl\ -ba\ progress/R42/reference/arm/ehabi32.rst\ \|\ sed\ -n\ \"\$\{start\}\,\$\{end\}p\"\;\ done 
+===== LINES 930-1050 =====
+   930	comprehends:
+   931	
+   932	-  Platform-specific information, including representation of and
+   933	   manipulation of the machine state.
+   934	
+   935	-  The content of exception index table entries (`Index table entries`_) and the
+   936	   language-independent first word of exception-handling table entries
+   937	   (`Exception-handling table entries`_).
+   938	
+   939	This section describes the interfaces and behaviours of that
+   940	component, and the protocol by which it interfaces to personality
+   941	routines. The target environment runtime library must provide the
+   942	language-independent *unwind library* routines specified in this
+   943	section.
+   944	
+   945	Terminology
+   946	^^^^^^^^^^^
+   947	
+   948	When a function F calls some other function G, and G or one of its
+   949	callees initiates a throw, the *apparently throwing call* in F is the
+   950	call to G. The return address into F from G (ignoring any Thumb
+   951	instruction set indicator in bit 0) denotes the *apparently throwing
+   952	call site* in F.
+   953	
+   954	From a language-independent unwinding viewpoint, a *propagation barrier*
+   955	is a point at which a particular stack unwinding must cease. The code
+   956	associated with a propagation barrier, a *handler*, retains control at
+   957	the end of an exception propagation (and, indeed, returns it to the
+   958	application).
+   959	
+   960	A *cleanup* denotes some kind of frame-specific activity to be performed
+   961	on a frame during unwinding (and also denotes the code that performs the
+   962	activity) which on completion returns control to the unwinder. For
+   963	example, C++ cleanups may destroy objects of automatic storage class.
+   964	
+   965	A block of code associated with a parent function and entered for some
+   966	purpose during exception propagation, such as to perform cleanup or to
+   967	catch a thrown object, is called a *landing pad*. Sometime this phrase
+   968	refers particularly to the initial part of such a code sequence.
+   969	
+   970	A client language will implement handlers either as code reached via
+   971	landing pads (for handlers specific to a particular parent function) or
+   972	as independent functions (for handlers not tied to particular parent
+   973	functions – an example is the C++ std::terminate() function).
+   974	
+   975	Language-independent exception propagation
+   976	^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   977	
+   978	Stack unwinding happens in 2 phases:
+   979	
+   980	-  In phase 1 the stack is searched for a propagation barrier that will
+   981	   stop the eventual real unwinding.
+   982	
+   983	   Such a barrier could be (in C++) a catch clause that will accept the
+   984	   exception object, or a function exception specification that will not
+   985	   allow the exception type to pass. C++ uses the general term ‘handler’ to
+   986	   refer to both a barrier and the code entered as a result of it.
+   987	
+   988	   Clearly, the recognition of a propagation barrier is
+   989	   language-/implementation-specific.
+   990	
+   991	-  In phase 2, the stack is unwound to the designated propagation
+   992	   barrier, performing cleanups on the way.
+   993	
+   994	   The appropriate action (enter landing pad, call special routine...) is
+   995	   performed when the barrier is reached.
+   996	
+   997	   Clearly, the action performed is language-/implementation-specific.
+   998	
+   999	From a language-independent unwinding viewpoint, an exception
+  1000	propagation begins at the start of phase 1 and ends shortly after phase
+  1001	2, when the handler notifies the unwinder that it has extracted any data
+  1002	it needs from the exception object. Particular languages may have a
+  1003	broader notion and may allow an exception object to be reused
+  1004	(re-thrown) from an exception handler. This is treated as a new
+  1005	exception propagation by the language-independent unwinder.
+  1006	
+  1007	During phase 1, the language-independent unwinder calls the personality
+  1008	routine of a frame to discover whether a barrier exists within the
+  1009	frame. During phase 2 the personality routine is again called, this time
+  1010	to initialize internal state so that real unwinding may be performed.
+  1011	The language-independent unwinder transfers this internal state to the
+  1012	real machine so that execution is transferred to the designated code.
+  1013	After a cleanup, the personality routine will eventually be re-entered
+  1014	to decide what to do next; it is allowed to go round several cleanup
+  1015	cycles per frame. After dealing with all the cleanups it must use the
+  1016	frame unwinding information to load the internal state in a way that
+  1017	causes the frame to be removed from the stack. It then indicates this to
+  1018	the language-independent unwinder, which will locate the personality
+  1019	routine for the next frame and invoke it, and so on. This protocol is
+  1020	described in detail in `Phase 1 unwinding`_ and `Phase 2 unwinding`_.
+  1021	
+  1022	As stated, a cleanup should exit by returning control to the unwinder
+  1023	(possibly via an intermediate language-specific routine). Throwing out
+  1024	of a cleanup would violate this and is thus normally forbidden (C++
+  1025	cleanups forbid exit by throw and the exception table covering their
+  1026	range should enforce this). Languages (if any) which need to permit
+  1027	throw out of a cleanup must take the necessary steps to explicitly
+  1028	terminate the previously active exception propagation. Also their
+  1029	cleanup may need its own cleanup. Infinite regression is avoided because
+  1030	eventually there must be a simple cleanup that does not end by throwing.
+  1031	
+  1032	Exception propagation state
+  1033	^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  1034	
+  1035	When propagating an exception through a particular function during
+  1036	unwinding phase 2, it is guaranteed that the first landing pad entered
+  1037	is entered in the machine state prevailing at the point of the
+  1038	apparently throwing call within that function, aside from any registers
+  1039	used to pass arguments to the landing pad. If the landing pad is a
+  1040	cleanup (so it returns control to the unwinder on exit) it is possible
+  1041	that further pads may be entered for the same function. The entry state
+  1042	for such pads is the exit state from the previous pad, again possibly
+  1043	modified by any arguments passed to the pad.
+  1044	
+  1045	In particular when a pad is entered, the stack pointer has the value it
+  1046	had immediately before the call to the apparently throwing function
+  1047	(assuming stack-moves-once). It follows that no unwinding function stack
+  1048	frame can persist over a landing pad invocation. Therefore, all data
+  1049	needed to track the exception propagation state must be held in the
+  1050	thrown object itself, or be reachable from it, or be in thread-safe
+===== LINES 1340-1480 =====
+  1340	3. \_URC\_FAILURE indicates that some error occurred that prevented
+  1341	   further processing (this includes falling off the top of the stack,
+  1342	   or any other detected error). \_Unwind\_RaiseException returns to its
+  1343	   caller with \_URC\_FAILURE.
+  1344	
+  1345	4. \_URC\_CONTINUE\_UNWIND indicates that no applicable propagation
+  1346	   barrier was found in the function. Before returning, the PR is
+  1347	   required to have done a virtual unwind by updating the VRS to reflect
+  1348	   the machine state at the call to the current function. In particular
+  1349	   the virtual unwind should set VRS[r15] to the return address into
+  1350	   that previous function. The EHT entry must contain sufficient
+  1351	   information about the function’s frame to support this (possibly in
+  1352	   the form of a language-dependent, encoded unwind description).
+  1353	   Scanning then continues with the next frame. **Go to** step 1.
+  1354	
+  1355	5. In the \_URC\_HANDLER\_FOUND case, the PR is required to initialize
+  1356	   the UCB barrier\_cache substructure before returning. It must save
+  1357	   the SP value for the current frame and also anything mandated by the
+  1358	   language semantics library of the language owning the frame.
+  1359	   Typically it will also save such other information as it need to
+  1360	   recognise the propagation barrier easily and unambiguously in phase
+  1361	   2. Usually this will be the address of some point in the EHT entry,
+  1362	   and it may cache additional information to avoid re-computing it.
+  1363	
+  1364	When the PR returns \_URC\_HANDLER\_FOUND, \_Unwind\_RaiseException
+  1365	copies its “temporary VRS” back to the primary VRS and calls a private
+  1366	routine, for exposition named \_Unwind\_Next\_Frame, with the UCB
+  1367	pointer to start phase 2 unwinding.
+  1368	
+  1369	Phase 2 unwinding
+  1370	-----------------
+  1371	
+  1372	In phase 2, the stack is really unwound and cleanups are run.
+  1373	
+  1374	The VRS content at the start of phase 2 is that which existed at the
+  1375	start of the call to \_Unwind\_RaiseException. Unwinding will proceed
+  1376	frame by frame until a personality routine indicates it should stop, or
+  1377	an uncontinuable error is encountered.
+  1378	
+  1379	.. note::
+  1380	
+  1381	   Statically detectable errors should be found during phase 1, allowing
+  1382	   the throwing language to make a language-dependent response.
+  1383	
+  1384	The details are as follows:
+  1385	
+  1386	1. At the start of each new frame, \_Unwind\_Next\_Frame is entered with
+  1387	   a pointer to the UCB. It searches the index table for the entry E
+  1388	   that matches the return address (in VRS[r15]). If no matching entry
+  1389	   is found, or if the entry contains the special bitpattern
+  1390	   EXIDX\_CANTUNWIND (see `Index table entries`_), the unwinder will call abort(). Otherwise
+  1391	   the personality routine (PR) for the frame is obtained via E, and the
+  1392	   unwinder initializes the UCB pr\_cache substructure. The unwinder
+  1393	   must then preserve VRS[r15] by some means, as the value may be needed
+  1394	   again after performing any cleanup initiated by the PR. Finally it
+  1395	   calls the PR, passing state \_US\_UNWIND\_FRAME\_STARTING, the UCB
+  1396	   pointer, and an \_Unwind\_Context pointer for VRS access.
+  1397	
+  1398	   At this point:
+  1399	
+  1400	   - The PR has just been entered for the first time for this frame.
+  1401	
+  1402	   - The UCB pr\_cache and barrier\_cache substructures are valid.
+  1403	
+  1404	2. The PR should now examine the EHT entry and the barrier\_cache to
+  1405	   decide what to do. It should return one of:
+  1406	
+  1407	   - \_URC\_FAILURE
+  1408	
+  1409	   - \_URC\_CONTINUE\_UNWIND
+  1410	
+  1411	   - \_URC\_INSTALL\_CONTEXT
+  1412	
+  1413	3. \_URC\_FAILURE indicates that some error occurred that prevented
+  1414	   further processing. The unwinder will call abort().
+  1415	
+  1416	4. \_URC\_CONTINUE\_UNWIND indicates that the current frame has been
+  1417	   fully dealt with, and that the PR has virtually unwound the frame.
+  1418	   The PR does this by updating the VRS to reflect the machine state at
+  1419	   the call to the current function, using the frame-specific unwind
+  1420	   description. In particular the virtual unwind should set VRS[r15] to
+  1421	   the return address into that previous function. The unwinder will
+  1422	   (re)enter \_Unwind\_Next\_Frame to initiate unwinding of the parent
+  1423	   frame. **Go to** step 1.
+  1424	
+  1425	5. \_URC\_INSTALL\_CONTEXT instructs the unwinder to save any state it
+  1426	   needs and then to upload the virtual register set to the real machine
+  1427	   registers. This causes the unwinder frames to vanish and whatever
+  1428	   routine the PR installed in VRS[r15] to be entered. The PR will make
+  1429	   this return when it wants to run a cleanup or when it wants to enter
+  1430	   the handler that was located during phase 1. The PR must have set up
+  1431	   the VRS with the required register-state to enter the designated
+  1432	   code, including any arguments it knows it must pass. If the PR
+  1433	   expects to eventually get control back (after running a cleanup) it
+  1434	   must also save in the UCB cleanup\_cache substructure whatever
+  1435	   state-tracking information it requires so it can resume scanning the
+  1436	   EHT entry at the correct place on re-entry.
+  1437	
+  1438	   .. note::
+  1439	
+  1440	    In general an unwinder must load *all* the machine registers listed in the VRS.
+  1441	
+  1442	
+  1443	   If Branch Target Identification mechanism is enabled, the unwinder may
+  1444	   transfer control to the routine installed in VRS[r15] using a BTI-setting
+  1445	   instruction that requires a BTI-clearing instruction at the destination.
+  1446	
+  1447	
+  1448	6. After a cleanup has finished, the unwind must be continued by passing
+  1449	   the UCB pointer to \_Unwind\_Resume. A cleanup may exit via some
+  1450	   language-specific ABI-defined routine (in C++, \_\_cxa\_end\_cleanup)
+  1451	   to do this. The cleanup may have made changes to the machine register
+  1452	   state which must not be lost, for example updating the value of a
+  1453	   variable held in a register. Thus \_Unwind\_Resume must copy the
+  1454	   registers to the VRS. It must set VRS[r15] to the value saved in step
+  1455	   (1) as this may be required for further scanning of the EHT entry
+  1456	   (and it must again preserve that value across the next PR call).
+  1457	   \_Unwind\_Resume then calls the PR with state
+  1458	   \_US\_UNWIND\_FRAME\_RESUME, the UCB pointer and an \_Unwind\_Context
+  1459	   pointer. The PR should recover data that it saved in the UCB
+  1460	   cleanup\_cache, so that it can continue scanning the EHT entry from
+  1461	   where it left off. **Go to** step 2.
+  1462	
+  1463	.. note::
+  1464	
+  1465	   - The language-specific cleanup exit routine must not corrupt any
+  1466	     significant registers before calling \_Unwind\_Resume, and may
+  1467	     therefore require a small assembly wrapper if it additionally
+  1468	     performs language-specific housekeeping. The intent of these register
+  1469	     rules is that the compiler should not be unduly constrained when
+  1470	     code-generating a cleanup fragment, and that the fragment’s register
+  1471	     saving can be minimised.
+  1472	
+  1473	   - It is expected that the unwinder will use the UCB unwinder\_cache to
+  1474	     preserve the VRS[r15] value over a PR call and cleanup.
+  1475	
+  1476	Virtual register set manipulation
+  1477	---------------------------------
+  1478	
+  1479	The Arm architecture defines a number of optional extensions such as
+  1480	VFP. The registers associated with such extensions are not present on
+===== LINES 1830-2120 =====
+  1830	   PageBreak
+  1831	
+  1832	The generic C++ exception handling ABI
+  1833	======================================
+  1834	
+  1835	Section overview
+  1836	----------------
+  1837	
+  1838	The C++ language exception semantics are implemented via calls to
+  1839	Standard Library routines and a set of ABI routines. The routines may be
+  1840	collected together into a single "C++ exception semantics library”.
+  1841	
+  1842	All compliant C++ exception semantics libraries should implement the
+  1843	functionality described in this section and will therefore be
+  1844	interchangeable aside from their interactions with the exception support
+  1845	of other languages. Recall that the exception\_class member of every
+  1846	exception object identifies both the originating language and library
+  1847	vendor - implementations may differ in the support they provide for
+  1848	dealing with particular foreign exceptions.
+  1849	
+  1850	Correct runtime behavior is achieved through co-operation between the
+  1851	application code, personality routines and handling tables. Where there
+  1852	is flexibility, personality routine authors should document the
+  1853	circumstances under which they call the semantics library routines and
+  1854	it is the responsibility of the compiler writer to ensure that
+  1855	application code, including landing pads, interacts with the personality
+  1856	routine’s behavior to produce the correct runtime semantics.
+  1857	
+  1858	C++ landing pads divide into two categories:
+  1859	
+  1860	-  Entry points to code fragments which eventually exit by resuming the
+  1861	   current unwind, and therefore purely perform cleanups such as
+  1862	   destroying automatic variables. We call these *cleanup landing pads*.
+  1863	
+  1864	-  Entry points to code fragments which eventually re-enter application
+  1865	   code (such as catch handlers). The code fragment may optionally
+  1866	   perform cleanups before control enters the handler. We call these
+  1867	   *handler landing pads*.
+  1868	
+  1869	The C++ Standard uses the general term ‘handler’ to refer to both a
+  1870	propagation barrier and the code entered as a result of it. Two special
+  1871	functions defined by the Standard – std::terminate() and
+  1872	std::unexpected() – should also be regarded as handlers when entered as
+  1873	a consequence of throwing an exception (see `Appendix A – C++ Uncaught Exception Semantics`_ for a further discussion
+  1874	of this). Programs are also allowed to call these functions directly,
+  1875	outside of an exceptions context.
+  1876	
+  1877	Conceptually there is a stack of exception objects which are being
+  1878	handled (i.e. which have resulted in entry to a handler which has not
+  1879	yet exited). The item at the top of this stack is the *currently handled
+  1880	exception object*.
+  1881	
+  1882	Data structures
+  1883	---------------
+  1884	
+  1885	A complete C++ exception control object consists of the C++ object being
+  1886	thrown (the EO), local housekeeping state (the LEO) and the
+  1887	language-independent unwinding control block (the UCB) as described in
+  1888	`Exception propagation state`_. The size and content of the LEO are private to the semantics
+  1889	library implementation.
+  1890	
+  1891	The semantics library mandates the following usage of the UCB
+  1892	barrier\_cache. All C++ personality routines must respect this:
+  1893	
+  1894	-  On entry to a catch handler, ucbp->barrier\_cache.bitpattern[0] must
+  1895	   be the address of the type-matched object.
+  1896	
+  1897	-  \_\_cxa\_call\_unexpected must be able to traverse the set of types
+  1898	   associated with the violated function exception specification. The
+  1899	   traversal is made possible via data passed in
+  1900	   ucbp->barrier\_cache.bitpattern[1] through [4] as follows:
+  1901	
+  1902	-  [1] A count N of type\_info object references.
+  1903	
+  1904	-  [2] Unused (should be 0). [This member was used in earlier versions
+  1905	   of the EHABI]
+  1906	
+  1907	-  [3] The stride S (in bytes) between successive type\_info object
+  1908	   references.
+  1909	
+  1910	-  [4] A pointer P to the first 4-byte type\_info object reference.
+  1911	
+  1912	-  This asserts there are N type\_info object references available, at
+  1913	   addresses P, P+S, …, P+S\*(N-1). This representation permits a
+  1914	   variety of exception-handling table implementations at little cost.
+  1915	   Each reference must be the platform-specific result of resolving an
+  1916	   R\_ARM\_TARGET2 relocation to the required type\_info object (see
+  1917	   `Relocations`_). \_\_cxa\_call\_unexpected will know how to follow these to
+  1918	   the type\_info objects.
+  1919	
+  1920	Routines from the C++ Standard Library
+  1921	--------------------------------------
+  1922	
+  1923	The C++ exception semantics library must define the following routines
+  1924	which are part of the C++ Standard Library but which require knowledge
+  1925	of the implementation:
+  1926	
+  1927	.. code-block::
+  1928	
+  1929	  bool std::uncaught_exception(void)
+  1930	  void std::terminate(void)
+  1931	  std::terminate_handler std::set_terminate(std::terminate_handler h)
+  1932	  void std::unexpected(void)
+  1933	  std::unexpected_handler std::set_unexpected(std::unexpected_handler h)
+  1934	
+  1935	ABI routines
+  1936	------------
+  1937	
+  1938	All routines are declared ``extern`` “C”.
+  1939	
+  1940	Compiler helper functions
+  1941	^^^^^^^^^^^^^^^^^^^^^^^^^
+  1942	
+  1943	Compiled C++ application code calls the following generic routines to
+  1944	implement C++ exception handling semantics.
+  1945	
+  1946	.. code-block::
+  1947	
+  1948	  void *__cxa_allocate_exception(size_t size);
+  1949	  void __cxa_free_exception(void *p);
+  1950	  void __cxa_throw(void *, const std::type_info *, void (*dtor)(void *));
+  1951	  void __cxa_rethrow(void);
+  1952	  void *__cxa_begin_catch(_Unwind_Control_Block *);
+  1953	  void *__cxa_get_exception_ptr(_Unwind_Control_Block *);
+  1954	  void __cxa_end_catch(void);
+  1955	  void __cxa_end_cleanup(void);
+  1956	
+  1957	The routines are described below.
+  1958	
+  1959	``void *__cxa_allocate_exception(size_t size)``
+  1960	
+  1961	*Size* is the size (in bytes) of the EO type to be thrown. The routine
+  1962	allocates an area of thread-safe persistent store for the exception
+  1963	control object (the LEO + UCB + EO). If it fails to allocate the
+  1964	required memory it must call terminate(). It may initialize UCB fields,
+  1965	and may initialize some of the LEO. It returns a pointer to the
+  1966	(suitably aligned) EO for initialization by the caller.
+  1967	
+  1968	.. note::
+  1969	
+  1970	   As the language is C++, the final 4 bytes of exception\_class should
+  1971	   be initialized to ``C++\0``.
+  1972	
+  1973	``void __cxa_free_exception(void *p)``
+  1974	
+  1975	Releases the object into which p points. P must be the result of a call
+  1976	to \_\_cxa\_allocate\_exception. The application should not call this
+  1977	explicitly in a handler (see \_\_cxa\_end\_catch). It should call it
+  1978	only if the object has never been thrown via \_\_cxa\_throw.
+  1979	
+  1980	``void __cxa_throw(void *p, const std::type_info *t, void (*d)(void))``
+  1981	
+  1982	Initiate a throw. P must be the result of a call to
+  1983	\_\_cxa\_allocate\_exception, and this routine must be used at most once
+  1984	per EO. T is a pointer to the type\_info object for the EO type, and d
+  1985	is the address of the destructor for this type, or NULL if the type has
+  1986	no destructor. The destructor will be run automatically on the EO when
+  1987	the EO eventually requires destruction. \_\_cxa\_throw must complete
+  1988	initialization of the UCB and LEO begun by \_\_cxa\_allocate\_exception
+  1989	(specifically, between them they must initialize the exception\_class,
+  1990	exception\_cleanup and unwinder\_cache.reserved1 fields), perform
+  1991	housekeeping as required to indicate that a propagation has started,
+  1992	then call \_Unwind\_RaiseException to begin unwinding. \_\_cxa\_throw
+  1993	does not return to its caller.
+  1994	
+  1995	``void __cxa_rethrow(void)``
+  1996	
+  1997	The currently handled exception object may be rethrown (``throw;``) at any
+  1998	time. \_\_cxa\_rethrow calls terminate() if there is no currently
+  1999	handled exception. Otherwise it performs whatever housekeeping is
+  2000	required and re-throws the exception by calling
+  2001	\_Unwind\_RaiseException. This routine does not return.
+  2002	
+  2003	Do not use this routine to resume unwinding at the end of a cleanup
+  2004	fragment – use \_\_cxa\_end\_cleanup.
+  2005	
+  2006	.. note::
+  2007	
+  2008	   Collaboration between \_\_cxa\_rethrow and \_\_cxa\_end\_catch is
+  2009	   required so that the latter never destroys an EO which is being
+  2010	   re-thrown. See `Handlers and landing pads`_.
+  2011	
+  2012	``void *__cxa_begin_catch(_Unwind_Control_Block *)``
+  2013	
+  2014	On entry, a handler is passed a pointer to the UCB. It must call
+  2015	\_\_cxa\_begin\_catch with this pointer. \_\_cxa\_begin\_catch must do
+  2016	the housekeeping required by C++ exception handling semantics and then
+  2017	return the contents of the UCB barrier\_cache.bitpattern[0] field which,
+  2018	in the context of a catch handler, must have been set by the personality
+  2019	routine. If \_\_cxa\_begin\_catch is called from a non-catch handler
+  2020	(see later notes on \_\_cxa\_call\_terminate and
+  2021	\_\_cxa\_call\_unexpected) the return value is undefined.
+  2022	
+  2023	Immediately before returning, \_\_cxa\_begin\_catch must call
+  2024	\_Unwind\_Complete.
+  2025	
+  2026	See `Handlers and landing pads`_ for remarks on use of this routine.
+  2027	
+  2028	.. note::
+  2029	
+  2030	   \_Unwind\_Complete may overwrite certain UCB fields whose contents
+  2031	   are specific to the exception propagation that has just completed,
+  2032	   including the barrier\_cache, so any required values must be
+  2033	   extracted before making that call. See `unwinding library implications for implementations`_ for more details.
+  2034	
+  2035	``void *__cxa_get_exception_ptr(_Unwind_Control_Block *);``
+  2036	
+  2037	Return the contents of the UCB barrier\_cache.bitpattern[0] field which,
+  2038	in the context of a catch handler, must have been set by the personality
+  2039	routine. If \_\_cxa\_get\_exception\_ptr is called from a non-catch
+  2040	handler the return value is undefined. See `Handlers and landing pads`_ for remarks on use of
+  2041	this routine.
+  2042	
+  2043	``void __cxa_end_catch(void)``
+  2044	
+  2045	During exit from a handler for any reason, even by re-throwing,
+  2046	\_\_cxa\_end\_catch must be called to do the housekeeping on the
+  2047	currently handled exception. If the ECO belongs to C++, and it is no
+  2048	longer required (if it is not currently caught in any other handler and
+  2049	is not being re-thrown), \_\_cxa\_end\_catch must cause a call of the EO
+  2050	destructor if it has one, and then a call to \_\_cxa\_free\_exception to
+  2051	free its memory. If the ECO belongs to some other language,
+  2052	\_\_cxa\_end\_catch must call the ECO’s exception\_cleanup function if
+  2053	it is non-NULL, and the recommended way of doing that is by calling
+  2054	\_Unwind\_DeleteException. See `Cross-language support, and object deletion`_ and `Catching foreign exceptions`_.
+  2055	
+  2056	.. note::
+  2057	
+  2058	   Earlier versions of this specification stated that
+  2059	   ‘\_\_cxa\_end\_catch must call’ the destructor and
+  2060	   \_\_cxa\_free\_exception, implying direct calls were mandatory. The
+  2061	   calls need not be direct, and in particular languages may choose to
+  2062	   move the calls into the exception\_cleanup function and call that.
+  2063	
+  2064	``void __cxa_end_cleanup(void)``
+  2065	
+  2066	A cleanup must return control to the unwinding code by tail calling
+  2067	\_\_cxa\_end\_cleanup. The routine performs whatever housekeeping is
+  2068	required and resumes the exception propagation by calling
+  2069	\_Unwind\_Resume. This routine does not return.
+  2070	
+  2071	.. note::
+  2072	
+  2073	   The cleanup may have made changes to the machine register state which
+  2074	   must not be lost, for example updating the value of a variable held
+  2075	   in a register. \_\_cxa\_end\_cleanup must not corrupt any significant
+  2076	   registers before calling \_Unwind\_Resume, and may therefore require
+  2077	   a small assembly wrapper.
+  2078	
+  2079	Personality routine helper functions
+  2080	^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  2081	
+  2082	There are additional functions primarily intended for use by personality
+  2083	routines, but also callable from compiler-generated code should the
+  2084	compiler so choose:
+  2085	
+  2086	.. code-block:: c
+  2087	
+  2088	  bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)
+  2089	  __cxa_type_match_result __cxa_type_match(_Unwind_Control_Block *ucbp,
+  2090	                                           const std::type_info *rttip,
+  2091	                                           bool is_reference_type,
+  2092	                                           void **matched_object)
+  2093	  void __cxa_call_terminate(_Unwind_Control_Block *ucbp)
+  2094	  void __cxa_call_unexpected(_Unwind_Control_Block *ucbp)
+  2095	
+  2096	They are described below.
+  2097	
+  2098	``bool __cxa_begin_cleanup(_Unwind_Control_Block *ucbp)``
+  2099	
+  2100	This routine must be called before entry to or early on during a
+  2101	cleanup, to allow the semantics library to perform any required
+  2102	housekeeping and to arrange that a later call to \_\_cxa\_end\_cleanup
+  2103	can recover the UCB to resume unwinding. The routine returns false if
+  2104	any error occurs, else true.
+  2105	
+  2106	.. note::
+  2107	
+  2108	   The Arm-defined personality routines call this routine before
+  2109	   entering a cleanup landing pad, so the landing pad itself must not
+  2110	   call it if using these personality routines.
+  2111	
+  2112	.. code-block:: c
+  2113	
+  2114	  typedef enum {
+  2115	       ctm_failed = 0,
+  2116	       ctm_succeeded = 1,
+  2117	       ctm_succeeded_with_ptr_to_base = 2
+  2118	  } __cxa_type_match_result;
+  2119	  __cxa_type_match_result __cxa_type_match(_Unwind_Control_Block *ucbp,
+  2120	                                           const std::type_info *rttip,
+===== LINES 2740-2840 =====
+  2740	  +---------------------------+--------------------------------------------------------------------------------------------------------------+
+  2741	  | ``11010nnn``              | Pop VFP double-precision registers D[8]-D[8+nnn] saved (as if) by VPUSH (see **remark d**)                   |
+  2742	  +---------------------------+--------------------------------------------------------------------------------------------------------------+
+  2743	  | ``11xxxyyy``              | Spare (xxx != 000, 001, 010)                                                                                 |
+  2744	  +---------------------------+--------------------------------------------------------------------------------------------------------------+
+  2745	
+  2746	It may be possible for application code to save registers in a variety
+  2747	of data representations. When restoring registers the personality
+  2748	routine will assume that the application saved the registers using the
+  2749	following representations:
+  2750	
+  2751	-  An integer register is assumed to be on the stack as if transferred
+  2752	   by a STR instruction.
+  2753	
+  2754	-  A sequence of VFP registers encoded in a single unwind instruction
+  2755	   are assumed to have been saved as if by FSTMFDX or VPUSH, depending
+  2756	   on the unwind instruction used.
+  2757	
+  2758	-  A WMMX data register is assumed to have been saved as if by WSTRD.
+  2759	
+  2760	-  A WMMX control register is assumed to have been saved as if by WSTRW.
+  2761	
+  2762	Interpreting the tables
+  2763	-----------------------
+  2764	
+  2765	Recall that the return address into the current function is in VRS[r15]
+  2766	on entry to the personality routine. The personality routines interpret
+  2767	an exception-handling table entry as follows:
+  2768	
+  2769	The descriptors are traversed linearly.
+  2770	
+  2771	Cleanup descriptors are ignored in phase 1. In phase 2, if the return
+  2772	address is within the specified range, the PR must update the virtual
+  2773	register set for entry to the landing pad, call \_\_cxa\_begin\_cleanup
+  2774	(see `ABI routines`_), save whatever it needs in the UCB cleanup\_cache (see `Language-independent unwinding types and functions`_)
+  2775	then return \_URC\_INSTALL\_CONTEXT.
+  2776	
+  2777	Catch descriptors are examined in phase 1. If the return address is
+  2778	within the specified range, the type of the thrown exception is checked
+  2779	for a match against the catch type. \_\_cxa\_type\_match (see `ABI routines`_) may
+  2780	be used when offset encodes a type\_info object. A match denotes a
+  2781	propagation barrier and the PR should fill in the barrier\_cache and
+  2782	return \_URC\_HANDLER\_FOUND. On re-encountering the barrier in phase 2,
+  2783	the PR should set the VRS for landing pad entry (passing the UCB address
+  2784	in r0) and return \_URC\_INSTALL\_CONTEXT.
+  2785	
+  2786	Function exception specification descriptors are examined in phase 1. If
+  2787	the return address is within the specified range, the type of the thrown
+  2788	exception is checked for a match against the specified types.
+  2789	\_\_cxa\_type\_match (see `ABI routines`_) may be used. No match against any of the
+  2790	types denotes a propagation barrier and the PR should fill in the
+  2791	barrier\_cache and return \_URC\_HANDLER\_FOUND. On re-encountering the
+  2792	barrier in phase 2, the behaviour depends on whether the descriptor has
+  2793	an explicitly specified landing pad (signified by high bit set in the
+  2794	type count word) or not:
+  2795	
+  2796	-  If it does, the PR should set the VRS for entry to that pad (passing
+  2797	   the UCB address in r0), ensure the data required for
+  2798	   \_\_cxa\_call\_unexpected is in the barrier\_cache (see `Data structures`_), and
+  2799	   then return \_URC\_INSTALL\_CONTEXT. The pad will call
+  2800	   \_\_cxa\_call\_unexpected.
+  2801	
+  2802	-  If it does not, the PR should execute the unwind description to
+  2803	   virtually unwind the frame, set the VRS for entry to
+  2804	   \_\_cxa\_call\_unexpected (see `ABI routines`_), ensure the data required for
+  2805	   \_\_cxa\_call\_unexpected is in the barrier\_cache (see `Data structures`_), then
+  2806	   return \_URC\_INSTALL\_CONTEXT.
+  2807	
+  2808	If the PR has retained control after processing the final descriptor, it
+  2809	must execute the unwind description to virtually unwind the frame. It
+  2810	must then return \_URC\_CONTINUE\_UNWIND, causing the unwinder to locate
+  2811	and initiate processing of the next frame.
+  2812	
+  2813	The PR is not allowed to change its mind about a barrier between phase 1
+  2814	and phase 2.
+  2815	
+  2816	In summary, the Arm personality routines always pass a pointer to the
+  2817	UCB in r0 when entering a handler or a handler landing pad.
+  2818	
+  2819	Arm personality routines implications for implementations
+  2820	---------------------------------------------------------
+  2821	
+  2822	The Arm personality routines call \_\_cxa\_begin\_cleanup (see `ABI routines`_)
+  2823	before entering a cleanup landing pad, so the landing pad itself should
+  2824	not do so.
+  2825	
+  2826	When a function exception specification has been violated on a function
+  2827	F called from function G, the C++ Standard requires that F's automatics
+  2828	are cleaned up before unexpected() is entered. If a successful rethrow
+  2829	out of unexpected() occurs, these automatics must not be destroyed a
+  2830	second time and more generally any table descriptors previously
+  2831	encountered while processing F must be ignored on this occasion; the
+  2832	behaviour must be as if unwinding resumes in G at the call site to F.
+  2833	Thus if F contains such descriptors, it is essential to change the
+  2834	apparently throwing call site from its current location in F before
+  2835	\_\_cxa\_call\_unexpected is entered. There are 2 supported ways of
+  2836	doing this:
+  2837	
+  2838	(a) Entering a landing pad in G which then explicitly calls
+  2839	    \_\_cxa\_call\_unexpected.
+  2840	
+===== LINES 3120-3230 =====
+  3120	
+  3121	.. raw:: pdf
+  3122	
+  3123	   PageBreak
+  3124	
+  3125	APPENDIX B: Example C++ language implementation
+  3126	===============================================
+  3127	
+  3128	This section is for illustration only and the actual Arm implementation
+  3129	may deviate without notice from the details presented here.
+  3130	
+  3131	Exception Control Object
+  3132	------------------------
+  3133	
+  3134	At the time of writing, the following structure is used by the Arm C++
+  3135	implementation.
+  3136	
+  3137	.. code-block:: c++
+  3138	
+  3139	  struct __cxa_exception {
+  3140	    const std::type_info *exceptionType;  // RTTI object describing the type of the exception
+  3141	    void (*exceptionDestructor)(void *);  // Destructor for the exception object (may be NULL)
+  3142	    unexpected_handler unexpectedHandler; // Handler in force after evaluating throw expr
+  3143	    terminate_handler terminateHandler;   // Handler in force after evaluating throw expr
+  3144	    __cxa_exception *nextCaughtException; // Chain of "currently caught" c++ exception objects
+  3145	    uint32_t handlerCount;                // Count of how many handlers this EO is "caught" in
+  3146	    __cxa_exception *nextPropagatingException; // Chain of objects saved over cleanup
+  3147	    uint32_t propagationCount;            // Count of live propagations(throws) of this EO
+  3148	    _Unwind_Control_Block ucb;            // Forces alignment of next item to 8-byte boundary
+  3149	  };
+  3150	
+  3151	
+  3152	A complete C++ exception object consists of a \_\_cxa\_exception
+  3153	followed by the C++ exception object (EO) itself. Type
+  3154	\_\_cxa\_exception includes the LEO members required for housekeeping by
+  3155	the C++ implementation, and the unwinding control block (UCB—see `Language-independent unwinding types and functions`_).
+  3156	
+  3157	Per-thread global memory
+  3158	------------------------
+  3159	
+  3160	The \_\_cxa\_eh\_globals structure records the per-thread handlers set
+  3161	by std::set\_terminate() and std::set\_unexpected(), and contains other
+  3162	fields needed by the implementation.
+  3163	
+  3164	.. code-block:: c++
+  3165	
+  3166	  typedef void (*handler)(void);
+  3167	  typedef void (*terminate_handler)(void);
+  3168	  typedef void (*unexpected_handler)(void);
+  3169	  struct __cxa_eh_globals {
+  3170	    uint32_t uncaughtExceptions;               // counter
+  3171	    unexpected_handler unexpectedHandler;      // per-thread handler
+  3172	    terminate_handler terminateHandler;        // per-thread handler
+  3173	    bool implementation_ever_called_terminate; // true if it ever did
+  3174	    handler call_hook;                    // transient field for terminate/unexpected call hook
+  3175	    __cxa_exception *caughtExceptions;         // chain of "caught" exceptions
+  3176	    __cxa_exception *propagatingExceptions;    // chain of "propagating"(in cleanup) exceptions
+  3177	    void *emergency_buffer;                    // for when rest of heap full
+  3178	  };
+  3179	
+  3180	\_\_cxa\_eh\_globals contains the following fields:
+  3181	
+  3182	-  *uncaughtExceptions* is a count of C++ exceptions which are active
+  3183	   but not in the *caught* state (in the technical meaning of the C++
+  3184	   Standard).
+  3185	
+  3186	-  *UnexpectedHandler* and *terminateHandler* are the current
+  3187	   (per-thread) handlers set by std::set\_unexpected() and
+  3188	   std::set\_terminate() respectively.
+  3189	
+  3190	-  *implementation\_ever\_called\_terminate* is true if the unwind
+  3191	   mechanism ever called terminate(). We believe this is required for
+  3192	   correct implementation of std::uncaught\_exception(). See `Appendix A – C++ Uncaught Exception Semantics`_ for a
+  3193	   lengthy discussion).
+  3194	
+  3195	-  *call\_hook* is set by the implementation to the handler it wants
+  3196	   std::terminate() or std::unexpected() to call.
+  3197	
+  3198	If std::terminate() or std::unexpected() are entered and find this field
+  3199	non-NULL, they should set the field to NULL and call the provided
+  3200	function (it will be the hook which existed at the time the throw was
+  3201	initiated, if the throw was initiated by C++). Otherwise they should
+  3202	call the \_\_cxa\_eh\_globals terminate or unexpected handler as
+  3203	appropriate. This machinery is required because std::terminate() and
+  3204	std::unexpected() have behavior that depends on whether they were called
+  3205	directly by the application, or by the implementation.
+  3206	
+  3207	-  *caughtExceptions* is required by re-throwing using *throw* with no
+  3208	   argument. See immediately below for a brief explanation and
+  3209	   `Appendix A – C++ Uncaught Exception Semantics`_ for a lengthy discussion.
+  3210	
+  3211	-  *propagatingExceptions* allows the current exception object to be
+  3212	   recovered by \_\_cxa\_end\_cleanup.
+  3213	
+  3214	-  *emergency\_buffer* is a pointer to reserved memory which can be used
+  3215	   when attempting to throw an exception when the heap is exhausted.
+  3216	
+  3217	A C++ exception object (EO) can be caught in more than 1 catch clause,
+  3218	if re-throwing has occurred. C++ DR 208 has an example, and here is
+  3219	another.
+  3220	
+  3221	.. code-block:: c++
+  3222	
+  3223	  void f() { try { throw 1; } catch(...) { A a; flag=1; throw; } }
+  3224	  A::~A() { try { if (flag) throw; } catch(...) { /* 1 */ } }
+  3225	
+  3226	At the point /\* 1 \*/, the EO for the thrown integer 1 is live in 2
+  3227	handlers.
+  3228	
+  3229	So, we need to determine the number of handlers an EO is active in, and
+  3230	an EO should only be destroyed when this count falls to 0. A uint32\_t
+EXIT_CODE=0

@@ -1,0 +1,925 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc printf\ \"=====\ PLATFORM\ TO\ R42\ DIFF\ =====\\n\"\;\ diff\ -u\ codes/llvm/libcxxabi/include/cxxabi.h\ tmp/R42/source-patched/libcxxabi/include/cxxabi.h\ \|\|\ true\;\ diff\ -u\ codes/llvm/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ \|\|\ true\;\ diff\ -u\ codes/llvm/libcxxabi/src/cxa_personality.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\ \|\|\ true\;\ printf\ \"=====\ R40\ STRONG\ TO\ R42\ DIFF\ =====\\n\"\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/include/cxxabi.h\ tmp/R42/source-patched/libcxxabi/include/cxxabi.h\ \|\|\ true\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ \|\|\ true\;\ diff\ -u\ tmp/R40/source-strong/libcxxabi/src/cxa_personality.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\ \|\|\ true\;\ printf\ \"=====\ TRACE/FIX\ LOCATIONS\ =====\\n\"\;\ rg\ -n\ \"R42_TRACE\|R42_EHABI_FORCED_HANDLER_PATH\|isForcedUnwindHandler\|__forced_unwind::\~\"\ tmp/R42/source-patched/libcxxabi/include/cxxabi.h\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\;\ printf\ \"=====\ UNWRAPPED\ FPRINTF\ =====\\n\"\;\ rg\ -n\ \"fprintf\\\\\(stderr\"\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp\ \|\|\ true\;\ sha256sum\ tmp/R42/source-patched/libcxxabi/include/cxxabi.h\ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp\ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp 
+===== PLATFORM TO R42 DIFF =====
+--- codes/llvm/libcxxabi/include/cxxabi.h	2026-08-05 11:41:57.984830359 +0800
++++ tmp/R42/source-patched/libcxxabi/include/cxxabi.h	2026-08-14 20:08:35.559822636 +0800
+@@ -37,6 +37,13 @@
+ // runtime routines use C calling conventions, but are in __cxxabiv1 namespace
+ namespace __cxxabiv1 {
+ 
++// R40 strong-typeinfo experiment: an out-of-line key function makes the
++// runtime library own the unique exported typeinfo definition.
++class _LIBCXXABI_TYPE_VIS __forced_unwind {
++public:
++  virtual ~__forced_unwind();
++};
++
+ struct __cxa_exception;
+ 
+ extern "C"  {
+--- codes/llvm/libcxxabi/src/cxa_exception.cpp	2026-08-05 11:41:57.985555207 +0800
++++ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp	2026-08-15 12:08:42.607108072 +0800
+@@ -13,6 +13,12 @@
+ #include "cxxabi.h"
+ 
+ #include <exception>        // for std::terminate
++#if defined(LIBCXXABI_R42_TRACE)
++#  include <stdio.h>
++#  define R42_TRACE(...) fprintf(stderr, __VA_ARGS__)
++#else
++#  define R42_TRACE(...) ((void)0)
++#endif
+ #include <string.h>         // for memset
+ #include "cxa_exception.h"
+ #include "cxa_handlers.h"
+@@ -36,6 +42,8 @@
+ 
+ namespace __cxxabiv1 {
+ 
++__forced_unwind::~__forced_unwind() = default;
++
+ //  Utility routines
+ static
+ inline
+@@ -331,6 +339,13 @@
+     __cxa_exception* exception_header =
+         cxa_exception_from_exception_unwind_exception(unwind_exception);
+ 
++    R42_TRACE(
++            "R41_BEGIN_CLEANUP_ENTRY native=%d propagating=%p unwind=%p exception_header=%p\n",
++            static_cast<int>(__isOurExceptionClass(unwind_exception)),
++            static_cast<void*>(globals->propagatingExceptions),
++            static_cast<void*>(unwind_exception),
++            static_cast<void*>(exception_header));
++
+     if (__isOurExceptionClass(unwind_exception))
+     {
+         if (0 == exception_header->propagationCount)
+@@ -344,10 +359,19 @@
+     {
+         // If the propagatingExceptions stack is not empty, since we can't
+         // chain the foreign exception, terminate it.
+-        if (NULL != globals->propagatingExceptions)
++        if (NULL != globals->propagatingExceptions) {
++            R42_TRACE(
++                    "R41_BEGIN_CLEANUP_TERMINATE reason=foreign-stack-nonempty propagating=%p unwind=%p\n",
++                    static_cast<void*>(globals->propagatingExceptions),
++                    static_cast<void*>(unwind_exception));
+             std::terminate();
++        }
+         globals->propagatingExceptions = exception_header;
+     }
++    R42_TRACE(
++            "R41_BEGIN_CLEANUP_RETURN propagating=%p unwind=%p result=1\n",
++            static_cast<void*>(globals->propagatingExceptions),
++            static_cast<void*>(unwind_exception));
+     return true;
+ }
+ 
+@@ -370,6 +394,10 @@
+ {
+     __cxa_eh_globals* globals = __cxa_get_globals();
+     __cxa_exception* exception_header = globals->propagatingExceptions;
++    R42_TRACE(
++        "R42_END_CLEANUP_ENTRY propagating=%p exception_header=%p\n",
++        static_cast<void*>(globals->propagatingExceptions),
++        static_cast<void*>(exception_header));
+     if (NULL == exception_header)
+     {
+         // It seems that __cxa_begin_cleanup() is not called properly.
+@@ -390,6 +418,10 @@
+     {
+         globals->propagatingExceptions = NULL;
+     }
++    R42_TRACE(
++        "R42_END_CLEANUP_RETURN propagating=%p unwind=%p\n",
++        static_cast<void*>(globals->propagatingExceptions),
++        static_cast<void*>(&exception_header->unwindHeader));
+     return &exception_header->unwindHeader;
+ }
+ 
+@@ -454,6 +486,11 @@
+     _Unwind_Exception* unwind_exception = static_cast<_Unwind_Exception*>(unwind_arg);
+     bool native_exception = __isOurExceptionClass(unwind_exception);
+     __cxa_eh_globals* globals = __cxa_get_globals();
++    R42_TRACE(
++        "R42_BEGIN_CATCH_ENTRY native=%d caught=%p propagating=%p unwind=%p\n",
++        static_cast<int>(native_exception),
++        static_cast<void*>(globals->caughtExceptions),
++        static_cast<void*>(globals->propagatingExceptions), unwind_arg);
+     // exception_header is a hackish offset from a foreign exception, but it
+     //   works as long as we're careful not to try to access any __cxa_exception
+     //   parts.
+@@ -495,6 +532,10 @@
+         std::terminate();
+     // Push the foreign exception on to the stack
+     globals->caughtExceptions = exception_header;
++    R42_TRACE(
++        "R42_BEGIN_CATCH_FOREIGN_RETURN caught=%p propagating=%p unwind=%p\n",
++        static_cast<void*>(globals->caughtExceptions),
++        static_cast<void*>(globals->propagatingExceptions), unwind_arg);
+     return unwind_exception + 1;
+ }
+ 
+@@ -639,6 +680,22 @@
+     }
+     else  // this is a foreign exception
+     {
++        // R40 observation only: report the unwinder's forced-unwind state at
++        // the exact point where a foreign exception is rethrown.  This does
++        // not mutate the exception object or select a different control path.
++#if defined(_LIBCXXABI_ARM_EHABI)
++        R42_TRACE(
++                "R40_RETHROW_STATE arch=armv7l reserved1=0x%lx reserved4=0x%lx unwind=%p\n",
++                static_cast<unsigned long>(exception_header->unwindHeader.unwinder_cache.reserved1),
++                static_cast<unsigned long>(exception_header->unwindHeader.unwinder_cache.reserved4),
++                static_cast<void*>(&exception_header->unwindHeader));
++#else
++        R42_TRACE(
++                "R40_RETHROW_STATE arch=x86_64 private_1=0x%lx private_2=0x%lx unwind=%p\n",
++                static_cast<unsigned long>(exception_header->unwindHeader.private_1),
++                static_cast<unsigned long>(exception_header->unwindHeader.private_2),
++                static_cast<void*>(&exception_header->unwindHeader));
++#endif
+         // The only way to communicate to __cxa_end_catch that we've rethrown
+         //   a foreign exception, so don't delete us, is to pop the stack here
+         //   which must be empty afterwards.  Then __cxa_end_catch will do
+@@ -648,7 +705,17 @@
+ #ifdef __USING_SJLJ_EXCEPTIONS__
+     _Unwind_SjLj_RaiseException(&exception_header->unwindHeader);
+ #else
+-    _Unwind_RaiseException(&exception_header->unwindHeader);
++    if (native_exception)
++        _Unwind_RaiseException(&exception_header->unwindHeader);
++    else
++    {
++        _Unwind_Reason_Code r40_rethrow_result =
++            _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
++        R42_TRACE(
++                "R40_RESUME_OR_RETHROW_RETURN reason=%d unwind=%p\n",
++                static_cast<int>(r40_rethrow_result),
++                static_cast<void*>(&exception_header->unwindHeader));
++    }
+ #endif
+ 
+     //  If we get here, some kind of unwinding error has occurred.
+--- codes/llvm/libcxxabi/src/cxa_personality.cpp	2026-08-05 12:51:38.754063247 +0800
++++ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp	2026-08-15 12:08:53.317108497 +0800
+@@ -12,6 +12,12 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include <assert.h>
++#if defined(LIBCXXABI_R42_TRACE)
++#  include <stdio.h>
++#  define R42_TRACE(...) fprintf(stderr, __VA_ARGS__)
++#else
++#  define R42_TRACE(...) ((void)0)
++#endif
+ #include <stdlib.h>
+ #include <string.h>
+ #include <typeinfo>
+@@ -584,6 +590,7 @@
+     lsd_ptr_t      languageSpecificData; // Needed only for __cxa_call_unexpected
+     landing_pad_t  landingPad;   // null -> nothing found, else something found
+     void*          adjustedPtr;  // Used in cxa_exception.cpp
++    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+     _Unwind_Reason_Code reason;  // One of _URC_FATAL_PHASE1_ERROR,
+                                  //        _URC_FATAL_PHASE2_ERROR,
+                                  //        _URC_CONTINUE_UNWIND,
+@@ -657,6 +664,7 @@
+     results.languageSpecificData = 0;
+     results.landingPad = 0;
+     results.adjustedPtr = 0;
++    results.isForcedUnwindHandler = false;
+     results.reason = _URC_FATAL_PHASE1_ERROR;
+     // Check for consistent actions
+     if (actions & _UA_SEARCH_PHASE)
+@@ -815,10 +823,48 @@
+                         results.adjustedPtr =
+                             get_thrown_object_ptr(unwind_exception);
+                         results.reason = _URC_HANDLER_FOUND;
++                        R42_TRACE(
++                                "R41_SCAN_MATCH kind=catch-all actions=0x%x native=%d ip=0x%lx landing=0x%lx ttype=%lld reason=%d unwind=%p\n",
++                                static_cast<unsigned>(actions),
++                                static_cast<int>(native_exception),
++                                static_cast<unsigned long>(ip),
++                                static_cast<unsigned long>(results.landingPad),
++                                static_cast<long long>(ttypeIndex),
++                                static_cast<int>(results.reason),
++                                static_cast<void*>(unwind_exception));
+                         return;
+                     }
+                     // Else this is a catch (T) clause and will never
+                     //    catch a foreign exception
++                    else if (!native_exception &&
++                             (actions & _UA_FORCE_UNWIND))
++                    {
++                        void* adjustedPtr =
++                            get_thrown_object_ptr(unwind_exception);
++                        const __shim_type_info* forcedType =
++                            static_cast<const __shim_type_info*>(
++                                &typeid(__cxxabiv1::__forced_unwind));
++                        if (catchType->can_catch(forcedType, adjustedPtr))
++                        {
++                            results.ttypeIndex = ttypeIndex;
++                            results.actionRecord = actionRecord;
++                            results.adjustedPtr = adjustedPtr;
++                            results.isForcedUnwindHandler = true;
++                            results.reason = _URC_HANDLER_FOUND;
++                            R42_TRACE(
++                                    "R41_SCAN_MATCH kind=forced-type actions=0x%x native=%d ip=0x%lx catch_type=%p forced_type=%p landing=0x%lx ttype=%lld reason=%d unwind=%p\n",
++                                    static_cast<unsigned>(actions),
++                                    static_cast<int>(native_exception),
++                                    static_cast<unsigned long>(ip),
++                                    static_cast<const void*>(catchType),
++                                    static_cast<const void*>(forcedType),
++                                    static_cast<unsigned long>(results.landingPad),
++                                    static_cast<long long>(ttypeIndex),
++                                    static_cast<int>(results.reason),
++                                    static_cast<void*>(unwind_exception));
++                            return;
++                        }
++                    }
+                     else if (native_exception)
+                     {
+                         __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+@@ -1037,6 +1083,11 @@
+                     (int version, _Unwind_Action actions, uint64_t exceptionClass,
+                      _Unwind_Exception* unwind_exception, _Unwind_Context* context)
+ {
++    R42_TRACE(
++            "R41_ITANIUM_ENTRY version=%d actions=0x%x exception_class=0x%llx unwind=%p context=%p\n",
++            version, static_cast<unsigned>(actions),
++            static_cast<unsigned long long>(exceptionClass),
++            static_cast<void*>(unwind_exception), static_cast<void*>(context));
+     if (version != 1 || unwind_exception == 0 || context == 0)
+         return _URC_FATAL_PHASE1_ERROR;
+ 
+@@ -1071,6 +1122,13 @@
+ 
+     // In other cases we need to scan LSDA.
+     scan_eh_tab(results, actions, native_exception, unwind_exception, context);
++    R42_TRACE(
++            "R41_ITANIUM_SCAN actions=0x%x native=%d reason=%d landing=0x%lx ttype=%lld unwind=%p\n",
++            static_cast<unsigned>(actions), static_cast<int>(native_exception),
++            static_cast<int>(results.reason),
++            static_cast<unsigned long>(results.landingPad),
++            static_cast<long long>(results.ttypeIndex),
++            static_cast<void*>(unwind_exception));
+     if (results.reason == _URC_CONTINUE_UNWIND ||
+         results.reason == _URC_FATAL_PHASE1_ERROR)
+         return results.reason;
+@@ -1168,6 +1226,7 @@
+     results.languageSpecificData = (const uint8_t*)unwind_exception->barrier_cache.bitpattern[2];
+     results.landingPad = (uintptr_t)unwind_exception->barrier_cache.bitpattern[3];
+     results.ttypeIndex = (int64_t)(int32_t)unwind_exception->barrier_cache.bitpattern[4];
++    results.isForcedUnwindHandler = false;
+ }
+ 
+ extern "C" _LIBCXXABI_FUNC_VIS _Unwind_Reason_Code
+@@ -1175,10 +1234,15 @@
+                      _Unwind_Exception* unwind_exception,
+                      _Unwind_Context* context)
+ {
++    R42_TRACE(
++            "R41_EHABI_ENTRY raw_state=0x%x unwind=%p context=%p\n",
++            static_cast<unsigned>(state), static_cast<void*>(unwind_exception),
++            static_cast<void*>(context));
+     if (unwind_exception == 0 || context == 0)
+         return _URC_FATAL_PHASE1_ERROR;
+ 
+     bool native_exception = __isOurExceptionClass(unwind_exception);
++    _Unwind_State r40_raw_state = state;
+ 
+ #if !defined(_LIBUNWIND_VERSION)
+     // Copy the address of _Unwind_Control_Block to r12 so that
+@@ -1194,8 +1258,13 @@
+     scan_results results;
+     switch (state) {
+     case _US_VIRTUAL_UNWIND_FRAME:
+-        if (is_force_unwinding)
++        if (is_force_unwinding) {
++            R42_TRACE(
++                    "R41_EHABI_RETURN branch=virtual-force result=%d unwind=%p\n",
++                    static_cast<int>(_URC_CONTINUE_UNWIND),
++                    static_cast<void*>(unwind_exception));
+             return continue_unwind(unwind_exception, context);
++        }
+ 
+         // Phase 1 search:  All we're looking for in phase 1 is a handler that halts unwinding
+         scan_eh_tab(results, _UA_SEARCH_PHASE, native_exception, unwind_exception, context);
+@@ -1204,11 +1273,25 @@
+             unwind_exception->barrier_cache.sp = _Unwind_GetGR(context, REG_SP);
+             if (native_exception)
+                 save_results_to_barrier_cache(unwind_exception, results);
++            R42_TRACE(
++                    "R41_EHABI_RETURN branch=virtual-handler result=%d unwind=%p\n",
++                    static_cast<int>(_URC_HANDLER_FOUND),
++                    static_cast<void*>(unwind_exception));
+             return _URC_HANDLER_FOUND;
+         }
+         // Did not find the catch handler
+-        if (results.reason == _URC_CONTINUE_UNWIND)
++        if (results.reason == _URC_CONTINUE_UNWIND) {
++            R42_TRACE(
++                    "R41_EHABI_RETURN branch=virtual-continue scan_reason=%d result=%d unwind=%p\n",
++                    static_cast<int>(results.reason),
++                    static_cast<int>(_URC_CONTINUE_UNWIND),
++                    static_cast<void*>(unwind_exception));
+             return continue_unwind(unwind_exception, context);
++        }
++        R42_TRACE(
++                "R41_EHABI_RETURN branch=virtual-error result=%d unwind=%p\n",
++                static_cast<int>(results.reason),
++                static_cast<void*>(unwind_exception));
+         return results.reason;
+ 
+     case _US_UNWIND_FRAME_STARTING:
+@@ -1217,6 +1300,17 @@
+         // will call this personality function with (_US_FORCE_UNWIND |
+         // _US_UNWIND_FRAME_STARTING).
+ 
++        // R40 observation only: report the EHABI barrier decision inputs.
++        R42_TRACE(
++                "R40_EHABI_START raw_state=0x%x masked_state=0x%x force=%d native=%d barrier_sp=0x%lx current_sp=0x%lx unwind=%p\n",
++                static_cast<unsigned>(r40_raw_state),
++                static_cast<unsigned>(state),
++                static_cast<int>(is_force_unwinding),
++                static_cast<int>(native_exception),
++                static_cast<unsigned long>(unwind_exception->barrier_cache.sp),
++                static_cast<unsigned long>(_Unwind_GetGR(context, REG_SP)),
++                static_cast<void*>(unwind_exception));
++
+         // Phase 2 search
+         if (unwind_exception->barrier_cache.sp == _Unwind_GetGR(context, REG_SP))
+         {
+@@ -1232,12 +1326,24 @@
+                 // Search for the catching handler again for the foreign exception.
+                 scan_eh_tab(results, static_cast<_Unwind_Action>(_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME),
+                             native_exception, unwind_exception, context);
+-                if (results.reason != _URC_HANDLER_FOUND)  // phase1 search should guarantee to find one
++                if (results.reason != _URC_HANDLER_FOUND) { // phase1 search should guarantee to find one
++                    R42_TRACE(
++                            "R40_EHABI_TERMINATE barrier_equal=1 force=%d reason=%d unwind=%p\n",
++                            static_cast<int>(is_force_unwinding),
++                            static_cast<int>(results.reason),
++                            static_cast<void*>(unwind_exception));
+                     call_terminate(native_exception, unwind_exception);
++                }
+             }
+ 
+             // Install the context for the catching handler
+             set_registers(unwind_exception, context, results);
++            R42_TRACE(
++                    "R41_EHABI_RETURN branch=starting-barrier-handler force=%d result=%d landing=0x%lx unwind=%p\n",
++                    static_cast<int>(is_force_unwinding),
++                    static_cast<int>(_URC_INSTALL_CONTEXT),
++                    static_cast<unsigned long>(results.landingPad),
++                    static_cast<void*>(unwind_exception));
+             return _URC_INSTALL_CONTEXT;
+         }
+ 
+@@ -1252,10 +1358,36 @@
+         else
+           scan_eh_tab(results, _UA_CLEANUP_PHASE, native_exception,
+                       unwind_exception, context);
++        R42_TRACE(
++                "R40_EHABI_SCAN force=%d reason=%d barrier_equal=0 unwind=%p\n",
++                static_cast<int>(is_force_unwinding),
++                static_cast<int>(results.reason),
++                static_cast<void*>(unwind_exception));
+         if (results.reason == _URC_HANDLER_FOUND)
+         {
++            if (is_force_unwinding && !native_exception &&
++                results.isForcedUnwindHandler)
++            {
++                R42_TRACE(
++                    "R42_EHABI_FORCED_HANDLER_PATH force=1 native=0 landing=0x%lx ttype=%lld unwind=%p\n",
++                    static_cast<unsigned long>(results.landingPad),
++                    static_cast<long long>(results.ttypeIndex),
++                    static_cast<void*>(unwind_exception));
++                save_results_to_barrier_cache(unwind_exception, results);
++                set_registers(unwind_exception, context, results);
++                return _URC_INSTALL_CONTEXT;
++            }
++
+             // Found a non-catching handler
+ 
++            R42_TRACE(
++                    "R41_EHABI_BEGIN_CLEANUP_CALL force=%d landing=0x%lx ttype=%lld action_record=%p unwind=%p\n",
++                    static_cast<int>(is_force_unwinding),
++                    static_cast<unsigned long>(results.landingPad),
++                    static_cast<long long>(results.ttypeIndex),
++                    static_cast<const void*>(results.actionRecord),
++                    static_cast<void*>(unwind_exception));
++
+             // ARM EHABI 8.4.2: Before we can jump to the cleanup handler, we have to setup some
+             // internal data structures, so that __cxa_end_cleanup() can get unwind_exception from
+             // __cxa_get_globals().
+@@ -1263,15 +1395,39 @@
+ 
+             // Install the context for the cleanup handler
+             set_registers(unwind_exception, context, results);
++            R42_TRACE(
++                    "R41_EHABI_RETURN branch=starting-install force=%d scan_reason=%d result=%d landing=0x%lx ttype=%lld unwind=%p\n",
++                    static_cast<int>(is_force_unwinding),
++                    static_cast<int>(results.reason),
++                    static_cast<int>(_URC_INSTALL_CONTEXT),
++                    static_cast<unsigned long>(results.landingPad),
++                    static_cast<long long>(results.ttypeIndex),
++                    static_cast<void*>(unwind_exception));
+             return _URC_INSTALL_CONTEXT;
+         }
+ 
+         // Did not find any handler
+-        if (results.reason == _URC_CONTINUE_UNWIND)
++        if (results.reason == _URC_CONTINUE_UNWIND) {
++            R42_TRACE(
++                    "R41_EHABI_RETURN branch=starting-continue force=%d scan_reason=%d result=%d unwind=%p\n",
++                    static_cast<int>(is_force_unwinding),
++                    static_cast<int>(results.reason),
++                    static_cast<int>(_URC_CONTINUE_UNWIND),
++                    static_cast<void*>(unwind_exception));
+             return continue_unwind(unwind_exception, context);
++        }
++        R42_TRACE(
++                "R41_EHABI_RETURN branch=starting-error force=%d result=%d unwind=%p\n",
++                static_cast<int>(is_force_unwinding),
++                static_cast<int>(results.reason),
++                static_cast<void*>(unwind_exception));
+         return results.reason;
+ 
+     case _US_UNWIND_FRAME_RESUME:
++        R42_TRACE(
++                "R41_EHABI_RETURN branch=resume result=%d unwind=%p\n",
++                static_cast<int>(_URC_CONTINUE_UNWIND),
++                static_cast<void*>(unwind_exception));
+         return continue_unwind(unwind_exception, context);
+     }
+ 
+===== R40 STRONG TO R42 DIFF =====
+--- tmp/R40/source-strong/libcxxabi/src/cxa_exception.cpp	2026-08-14 20:08:35.559822636 +0800
++++ tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp	2026-08-15 12:08:42.607108072 +0800
+@@ -13,6 +13,12 @@
+ #include "cxxabi.h"
+ 
+ #include <exception>        // for std::terminate
++#if defined(LIBCXXABI_R42_TRACE)
++#  include <stdio.h>
++#  define R42_TRACE(...) fprintf(stderr, __VA_ARGS__)
++#else
++#  define R42_TRACE(...) ((void)0)
++#endif
+ #include <string.h>         // for memset
+ #include "cxa_exception.h"
+ #include "cxa_handlers.h"
+@@ -333,6 +339,13 @@
+     __cxa_exception* exception_header =
+         cxa_exception_from_exception_unwind_exception(unwind_exception);
+ 
++    R42_TRACE(
++            "R41_BEGIN_CLEANUP_ENTRY native=%d propagating=%p unwind=%p exception_header=%p\n",
++            static_cast<int>(__isOurExceptionClass(unwind_exception)),
++            static_cast<void*>(globals->propagatingExceptions),
++            static_cast<void*>(unwind_exception),
++            static_cast<void*>(exception_header));
++
+     if (__isOurExceptionClass(unwind_exception))
+     {
+         if (0 == exception_header->propagationCount)
+@@ -346,10 +359,19 @@
+     {
+         // If the propagatingExceptions stack is not empty, since we can't
+         // chain the foreign exception, terminate it.
+-        if (NULL != globals->propagatingExceptions)
++        if (NULL != globals->propagatingExceptions) {
++            R42_TRACE(
++                    "R41_BEGIN_CLEANUP_TERMINATE reason=foreign-stack-nonempty propagating=%p unwind=%p\n",
++                    static_cast<void*>(globals->propagatingExceptions),
++                    static_cast<void*>(unwind_exception));
+             std::terminate();
++        }
+         globals->propagatingExceptions = exception_header;
+     }
++    R42_TRACE(
++            "R41_BEGIN_CLEANUP_RETURN propagating=%p unwind=%p result=1\n",
++            static_cast<void*>(globals->propagatingExceptions),
++            static_cast<void*>(unwind_exception));
+     return true;
+ }
+ 
+@@ -372,6 +394,10 @@
+ {
+     __cxa_eh_globals* globals = __cxa_get_globals();
+     __cxa_exception* exception_header = globals->propagatingExceptions;
++    R42_TRACE(
++        "R42_END_CLEANUP_ENTRY propagating=%p exception_header=%p\n",
++        static_cast<void*>(globals->propagatingExceptions),
++        static_cast<void*>(exception_header));
+     if (NULL == exception_header)
+     {
+         // It seems that __cxa_begin_cleanup() is not called properly.
+@@ -392,6 +418,10 @@
+     {
+         globals->propagatingExceptions = NULL;
+     }
++    R42_TRACE(
++        "R42_END_CLEANUP_RETURN propagating=%p unwind=%p\n",
++        static_cast<void*>(globals->propagatingExceptions),
++        static_cast<void*>(&exception_header->unwindHeader));
+     return &exception_header->unwindHeader;
+ }
+ 
+@@ -456,6 +486,11 @@
+     _Unwind_Exception* unwind_exception = static_cast<_Unwind_Exception*>(unwind_arg);
+     bool native_exception = __isOurExceptionClass(unwind_exception);
+     __cxa_eh_globals* globals = __cxa_get_globals();
++    R42_TRACE(
++        "R42_BEGIN_CATCH_ENTRY native=%d caught=%p propagating=%p unwind=%p\n",
++        static_cast<int>(native_exception),
++        static_cast<void*>(globals->caughtExceptions),
++        static_cast<void*>(globals->propagatingExceptions), unwind_arg);
+     // exception_header is a hackish offset from a foreign exception, but it
+     //   works as long as we're careful not to try to access any __cxa_exception
+     //   parts.
+@@ -497,6 +532,10 @@
+         std::terminate();
+     // Push the foreign exception on to the stack
+     globals->caughtExceptions = exception_header;
++    R42_TRACE(
++        "R42_BEGIN_CATCH_FOREIGN_RETURN caught=%p propagating=%p unwind=%p\n",
++        static_cast<void*>(globals->caughtExceptions),
++        static_cast<void*>(globals->propagatingExceptions), unwind_arg);
+     return unwind_exception + 1;
+ }
+ 
+@@ -641,6 +680,22 @@
+     }
+     else  // this is a foreign exception
+     {
++        // R40 observation only: report the unwinder's forced-unwind state at
++        // the exact point where a foreign exception is rethrown.  This does
++        // not mutate the exception object or select a different control path.
++#if defined(_LIBCXXABI_ARM_EHABI)
++        R42_TRACE(
++                "R40_RETHROW_STATE arch=armv7l reserved1=0x%lx reserved4=0x%lx unwind=%p\n",
++                static_cast<unsigned long>(exception_header->unwindHeader.unwinder_cache.reserved1),
++                static_cast<unsigned long>(exception_header->unwindHeader.unwinder_cache.reserved4),
++                static_cast<void*>(&exception_header->unwindHeader));
++#else
++        R42_TRACE(
++                "R40_RETHROW_STATE arch=x86_64 private_1=0x%lx private_2=0x%lx unwind=%p\n",
++                static_cast<unsigned long>(exception_header->unwindHeader.private_1),
++                static_cast<unsigned long>(exception_header->unwindHeader.private_2),
++                static_cast<void*>(&exception_header->unwindHeader));
++#endif
+         // The only way to communicate to __cxa_end_catch that we've rethrown
+         //   a foreign exception, so don't delete us, is to pop the stack here
+         //   which must be empty afterwards.  Then __cxa_end_catch will do
+@@ -653,7 +708,14 @@
+     if (native_exception)
+         _Unwind_RaiseException(&exception_header->unwindHeader);
+     else
+-        _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
++    {
++        _Unwind_Reason_Code r40_rethrow_result =
++            _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
++        R42_TRACE(
++                "R40_RESUME_OR_RETHROW_RETURN reason=%d unwind=%p\n",
++                static_cast<int>(r40_rethrow_result),
++                static_cast<void*>(&exception_header->unwindHeader));
++    }
+ #endif
+ 
+     //  If we get here, some kind of unwinding error has occurred.
+--- tmp/R40/source-strong/libcxxabi/src/cxa_personality.cpp	2026-08-13 22:29:58.003731425 +0800
++++ tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp	2026-08-15 12:08:53.317108497 +0800
+@@ -12,6 +12,12 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include <assert.h>
++#if defined(LIBCXXABI_R42_TRACE)
++#  include <stdio.h>
++#  define R42_TRACE(...) fprintf(stderr, __VA_ARGS__)
++#else
++#  define R42_TRACE(...) ((void)0)
++#endif
+ #include <stdlib.h>
+ #include <string.h>
+ #include <typeinfo>
+@@ -584,6 +590,7 @@
+     lsd_ptr_t      languageSpecificData; // Needed only for __cxa_call_unexpected
+     landing_pad_t  landingPad;   // null -> nothing found, else something found
+     void*          adjustedPtr;  // Used in cxa_exception.cpp
++    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+     _Unwind_Reason_Code reason;  // One of _URC_FATAL_PHASE1_ERROR,
+                                  //        _URC_FATAL_PHASE2_ERROR,
+                                  //        _URC_CONTINUE_UNWIND,
+@@ -657,6 +664,7 @@
+     results.languageSpecificData = 0;
+     results.landingPad = 0;
+     results.adjustedPtr = 0;
++    results.isForcedUnwindHandler = false;
+     results.reason = _URC_FATAL_PHASE1_ERROR;
+     // Check for consistent actions
+     if (actions & _UA_SEARCH_PHASE)
+@@ -815,6 +823,15 @@
+                         results.adjustedPtr =
+                             get_thrown_object_ptr(unwind_exception);
+                         results.reason = _URC_HANDLER_FOUND;
++                        R42_TRACE(
++                                "R41_SCAN_MATCH kind=catch-all actions=0x%x native=%d ip=0x%lx landing=0x%lx ttype=%lld reason=%d unwind=%p\n",
++                                static_cast<unsigned>(actions),
++                                static_cast<int>(native_exception),
++                                static_cast<unsigned long>(ip),
++                                static_cast<unsigned long>(results.landingPad),
++                                static_cast<long long>(ttypeIndex),
++                                static_cast<int>(results.reason),
++                                static_cast<void*>(unwind_exception));
+                         return;
+                     }
+                     // Else this is a catch (T) clause and will never
+@@ -832,7 +849,19 @@
+                             results.ttypeIndex = ttypeIndex;
+                             results.actionRecord = actionRecord;
+                             results.adjustedPtr = adjustedPtr;
++                            results.isForcedUnwindHandler = true;
+                             results.reason = _URC_HANDLER_FOUND;
++                            R42_TRACE(
++                                    "R41_SCAN_MATCH kind=forced-type actions=0x%x native=%d ip=0x%lx catch_type=%p forced_type=%p landing=0x%lx ttype=%lld reason=%d unwind=%p\n",
++                                    static_cast<unsigned>(actions),
++                                    static_cast<int>(native_exception),
++                                    static_cast<unsigned long>(ip),
++                                    static_cast<const void*>(catchType),
++                                    static_cast<const void*>(forcedType),
++                                    static_cast<unsigned long>(results.landingPad),
++                                    static_cast<long long>(ttypeIndex),
++                                    static_cast<int>(results.reason),
++                                    static_cast<void*>(unwind_exception));
+                             return;
+                         }
+                     }
+@@ -1054,6 +1083,11 @@
+                     (int version, _Unwind_Action actions, uint64_t exceptionClass,
+                      _Unwind_Exception* unwind_exception, _Unwind_Context* context)
+ {
++    R42_TRACE(
++            "R41_ITANIUM_ENTRY version=%d actions=0x%x exception_class=0x%llx unwind=%p context=%p\n",
++            version, static_cast<unsigned>(actions),
++            static_cast<unsigned long long>(exceptionClass),
++            static_cast<void*>(unwind_exception), static_cast<void*>(context));
+     if (version != 1 || unwind_exception == 0 || context == 0)
+         return _URC_FATAL_PHASE1_ERROR;
+ 
+@@ -1088,6 +1122,13 @@
+ 
+     // In other cases we need to scan LSDA.
+     scan_eh_tab(results, actions, native_exception, unwind_exception, context);
++    R42_TRACE(
++            "R41_ITANIUM_SCAN actions=0x%x native=%d reason=%d landing=0x%lx ttype=%lld unwind=%p\n",
++            static_cast<unsigned>(actions), static_cast<int>(native_exception),
++            static_cast<int>(results.reason),
++            static_cast<unsigned long>(results.landingPad),
++            static_cast<long long>(results.ttypeIndex),
++            static_cast<void*>(unwind_exception));
+     if (results.reason == _URC_CONTINUE_UNWIND ||
+         results.reason == _URC_FATAL_PHASE1_ERROR)
+         return results.reason;
+@@ -1185,6 +1226,7 @@
+     results.languageSpecificData = (const uint8_t*)unwind_exception->barrier_cache.bitpattern[2];
+     results.landingPad = (uintptr_t)unwind_exception->barrier_cache.bitpattern[3];
+     results.ttypeIndex = (int64_t)(int32_t)unwind_exception->barrier_cache.bitpattern[4];
++    results.isForcedUnwindHandler = false;
+ }
+ 
+ extern "C" _LIBCXXABI_FUNC_VIS _Unwind_Reason_Code
+@@ -1192,10 +1234,15 @@
+                      _Unwind_Exception* unwind_exception,
+                      _Unwind_Context* context)
+ {
++    R42_TRACE(
++            "R41_EHABI_ENTRY raw_state=0x%x unwind=%p context=%p\n",
++            static_cast<unsigned>(state), static_cast<void*>(unwind_exception),
++            static_cast<void*>(context));
+     if (unwind_exception == 0 || context == 0)
+         return _URC_FATAL_PHASE1_ERROR;
+ 
+     bool native_exception = __isOurExceptionClass(unwind_exception);
++    _Unwind_State r40_raw_state = state;
+ 
+ #if !defined(_LIBUNWIND_VERSION)
+     // Copy the address of _Unwind_Control_Block to r12 so that
+@@ -1211,8 +1258,13 @@
+     scan_results results;
+     switch (state) {
+     case _US_VIRTUAL_UNWIND_FRAME:
+-        if (is_force_unwinding)
++        if (is_force_unwinding) {
++            R42_TRACE(
++                    "R41_EHABI_RETURN branch=virtual-force result=%d unwind=%p\n",
++                    static_cast<int>(_URC_CONTINUE_UNWIND),
++                    static_cast<void*>(unwind_exception));
+             return continue_unwind(unwind_exception, context);
++        }
+ 
+         // Phase 1 search:  All we're looking for in phase 1 is a handler that halts unwinding
+         scan_eh_tab(results, _UA_SEARCH_PHASE, native_exception, unwind_exception, context);
+@@ -1221,11 +1273,25 @@
+             unwind_exception->barrier_cache.sp = _Unwind_GetGR(context, REG_SP);
+             if (native_exception)
+                 save_results_to_barrier_cache(unwind_exception, results);
++            R42_TRACE(
++                    "R41_EHABI_RETURN branch=virtual-handler result=%d unwind=%p\n",
++                    static_cast<int>(_URC_HANDLER_FOUND),
++                    static_cast<void*>(unwind_exception));
+             return _URC_HANDLER_FOUND;
+         }
+         // Did not find the catch handler
+-        if (results.reason == _URC_CONTINUE_UNWIND)
++        if (results.reason == _URC_CONTINUE_UNWIND) {
++            R42_TRACE(
++                    "R41_EHABI_RETURN branch=virtual-continue scan_reason=%d result=%d unwind=%p\n",
++                    static_cast<int>(results.reason),
++                    static_cast<int>(_URC_CONTINUE_UNWIND),
++                    static_cast<void*>(unwind_exception));
+             return continue_unwind(unwind_exception, context);
++        }
++        R42_TRACE(
++                "R41_EHABI_RETURN branch=virtual-error result=%d unwind=%p\n",
++                static_cast<int>(results.reason),
++                static_cast<void*>(unwind_exception));
+         return results.reason;
+ 
+     case _US_UNWIND_FRAME_STARTING:
+@@ -1234,6 +1300,17 @@
+         // will call this personality function with (_US_FORCE_UNWIND |
+         // _US_UNWIND_FRAME_STARTING).
+ 
++        // R40 observation only: report the EHABI barrier decision inputs.
++        R42_TRACE(
++                "R40_EHABI_START raw_state=0x%x masked_state=0x%x force=%d native=%d barrier_sp=0x%lx current_sp=0x%lx unwind=%p\n",
++                static_cast<unsigned>(r40_raw_state),
++                static_cast<unsigned>(state),
++                static_cast<int>(is_force_unwinding),
++                static_cast<int>(native_exception),
++                static_cast<unsigned long>(unwind_exception->barrier_cache.sp),
++                static_cast<unsigned long>(_Unwind_GetGR(context, REG_SP)),
++                static_cast<void*>(unwind_exception));
++
+         // Phase 2 search
+         if (unwind_exception->barrier_cache.sp == _Unwind_GetGR(context, REG_SP))
+         {
+@@ -1249,12 +1326,24 @@
+                 // Search for the catching handler again for the foreign exception.
+                 scan_eh_tab(results, static_cast<_Unwind_Action>(_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME),
+                             native_exception, unwind_exception, context);
+-                if (results.reason != _URC_HANDLER_FOUND)  // phase1 search should guarantee to find one
++                if (results.reason != _URC_HANDLER_FOUND) { // phase1 search should guarantee to find one
++                    R42_TRACE(
++                            "R40_EHABI_TERMINATE barrier_equal=1 force=%d reason=%d unwind=%p\n",
++                            static_cast<int>(is_force_unwinding),
++                            static_cast<int>(results.reason),
++                            static_cast<void*>(unwind_exception));
+                     call_terminate(native_exception, unwind_exception);
++                }
+             }
+ 
+             // Install the context for the catching handler
+             set_registers(unwind_exception, context, results);
++            R42_TRACE(
++                    "R41_EHABI_RETURN branch=starting-barrier-handler force=%d result=%d landing=0x%lx unwind=%p\n",
++                    static_cast<int>(is_force_unwinding),
++                    static_cast<int>(_URC_INSTALL_CONTEXT),
++                    static_cast<unsigned long>(results.landingPad),
++                    static_cast<void*>(unwind_exception));
+             return _URC_INSTALL_CONTEXT;
+         }
+ 
+@@ -1269,10 +1358,36 @@
+         else
+           scan_eh_tab(results, _UA_CLEANUP_PHASE, native_exception,
+                       unwind_exception, context);
++        R42_TRACE(
++                "R40_EHABI_SCAN force=%d reason=%d barrier_equal=0 unwind=%p\n",
++                static_cast<int>(is_force_unwinding),
++                static_cast<int>(results.reason),
++                static_cast<void*>(unwind_exception));
+         if (results.reason == _URC_HANDLER_FOUND)
+         {
++            if (is_force_unwinding && !native_exception &&
++                results.isForcedUnwindHandler)
++            {
++                R42_TRACE(
++                    "R42_EHABI_FORCED_HANDLER_PATH force=1 native=0 landing=0x%lx ttype=%lld unwind=%p\n",
++                    static_cast<unsigned long>(results.landingPad),
++                    static_cast<long long>(results.ttypeIndex),
++                    static_cast<void*>(unwind_exception));
++                save_results_to_barrier_cache(unwind_exception, results);
++                set_registers(unwind_exception, context, results);
++                return _URC_INSTALL_CONTEXT;
++            }
++
+             // Found a non-catching handler
+ 
++            R42_TRACE(
++                    "R41_EHABI_BEGIN_CLEANUP_CALL force=%d landing=0x%lx ttype=%lld action_record=%p unwind=%p\n",
++                    static_cast<int>(is_force_unwinding),
++                    static_cast<unsigned long>(results.landingPad),
++                    static_cast<long long>(results.ttypeIndex),
++                    static_cast<const void*>(results.actionRecord),
++                    static_cast<void*>(unwind_exception));
++
+             // ARM EHABI 8.4.2: Before we can jump to the cleanup handler, we have to setup some
+             // internal data structures, so that __cxa_end_cleanup() can get unwind_exception from
+             // __cxa_get_globals().
+@@ -1280,15 +1395,39 @@
+ 
+             // Install the context for the cleanup handler
+             set_registers(unwind_exception, context, results);
++            R42_TRACE(
++                    "R41_EHABI_RETURN branch=starting-install force=%d scan_reason=%d result=%d landing=0x%lx ttype=%lld unwind=%p\n",
++                    static_cast<int>(is_force_unwinding),
++                    static_cast<int>(results.reason),
++                    static_cast<int>(_URC_INSTALL_CONTEXT),
++                    static_cast<unsigned long>(results.landingPad),
++                    static_cast<long long>(results.ttypeIndex),
++                    static_cast<void*>(unwind_exception));
+             return _URC_INSTALL_CONTEXT;
+         }
+ 
+         // Did not find any handler
+-        if (results.reason == _URC_CONTINUE_UNWIND)
++        if (results.reason == _URC_CONTINUE_UNWIND) {
++            R42_TRACE(
++                    "R41_EHABI_RETURN branch=starting-continue force=%d scan_reason=%d result=%d unwind=%p\n",
++                    static_cast<int>(is_force_unwinding),
++                    static_cast<int>(results.reason),
++                    static_cast<int>(_URC_CONTINUE_UNWIND),
++                    static_cast<void*>(unwind_exception));
+             return continue_unwind(unwind_exception, context);
++        }
++        R42_TRACE(
++                "R41_EHABI_RETURN branch=starting-error force=%d result=%d unwind=%p\n",
++                static_cast<int>(is_force_unwinding),
++                static_cast<int>(results.reason),
++                static_cast<void*>(unwind_exception));
+         return results.reason;
+ 
+     case _US_UNWIND_FRAME_RESUME:
++        R42_TRACE(
++                "R41_EHABI_RETURN branch=resume result=%d unwind=%p\n",
++                static_cast<int>(_URC_CONTINUE_UNWIND),
++                static_cast<void*>(unwind_exception));
+         return continue_unwind(unwind_exception, context);
+     }
+ 
+===== TRACE/FIX LOCATIONS =====
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:16:#if defined(LIBCXXABI_R42_TRACE)
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:18:#  define R42_TRACE(...) fprintf(stderr, __VA_ARGS__)
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:20:#  define R42_TRACE(...) ((void)0)
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:45:__forced_unwind::~__forced_unwind() = default;
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:342:    R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:363:            R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:371:    R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:397:    R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:421:    R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:489:    R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:535:    R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:687:        R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:693:        R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:714:        R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:15:#if defined(LIBCXXABI_R42_TRACE)
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:17:#  define R42_TRACE(...) fprintf(stderr, __VA_ARGS__)
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:19:#  define R42_TRACE(...) ((void)0)
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:593:    bool           isForcedUnwindHandler; // A typed foreign forced-unwind catch.
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:667:    results.isForcedUnwindHandler = false;
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:826:                        R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:852:                            results.isForcedUnwindHandler = true;
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:854:                            R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1086:    R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1125:    R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1229:    results.isForcedUnwindHandler = false;
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1237:    R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1262:            R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1276:            R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1284:            R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1291:        R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1304:        R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1330:                    R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1341:            R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1361:        R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1369:                results.isForcedUnwindHandler)
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1371:                R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1372:                    "R42_EHABI_FORCED_HANDLER_PATH force=1 native=0 landing=0x%lx ttype=%lld unwind=%p\n",
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1383:            R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1398:            R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1411:            R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1419:        R42_TRACE(
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:1427:        R42_TRACE(
+===== UNWRAPPED FPRINTF =====
+tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp:17:#  define R42_TRACE(...) fprintf(stderr, __VA_ARGS__)
+tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp:18:#  define R42_TRACE(...) fprintf(stderr, __VA_ARGS__)
+655c7fd1aa31a71db9cd9ad6a62b2c5aec778dd0d3cabc23f71544297e133592  tmp/R42/source-patched/libcxxabi/include/cxxabi.h
+06adcf54b96231e4243aac5633ad3219acc68d77bf76281c4bfec4478de22aba  tmp/R42/source-patched/libcxxabi/src/cxa_exception.cpp
+d5456568463e5147925302ad97c293bd9bd087afcd522eeef223fc6f31438e87  tmp/R42/source-patched/libcxxabi/src/cxa_personality.cpp
+EXIT_CODE=0
