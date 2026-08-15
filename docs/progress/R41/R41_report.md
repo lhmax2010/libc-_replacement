@@ -180,3 +180,13 @@ GitHub CLI 本机不可得，原始失败为 `gh: command not found`，见
 x86_64 对照。观测打印只执行 `fprintf`，没有改分支条件、返回值、
 展开寄存器或控制转移。未调试或修改 libgcc；静态路径由平台对应 GCC
 源码与运行序列互证。未实现修法，不做方案推荐。
+
+## 交付记录
+
+- 证据主提交：`baf0afa84bb1eb5850d0c21c65358cb71355ef9e`；
+- 已推送至 `origin/codex/r5-ehabi-diagnosis`；
+- 远端 `refs/heads/codex/r5-ehabi-diagnosis` 经 `git ls-remote`
+  核验与本地主提交一致；原始推送与核验记录见
+  `commands/057_push_primary.log`、`059_remote_verify_primary_corrected.log`；
+- 首次远端核验命令因 `awk` 转义错误退出 1，原样保留于
+  `commands/058_remote_verify_primary.log`，随后仅修正取列方式并复核通过。
