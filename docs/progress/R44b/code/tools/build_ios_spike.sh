@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -u
+set -o pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+arch=${1:?architecture required}
+out_dir="$workspace/tmp/R44b/build/$arch"
+experiment_source="$workspace/tmp/R44b/experiment/libcxx/src/ios.cpp"
+abi_include="$workspace/tmp/R42/source-patched/libcxxabi/include"
+version_script="$workspace/packaging/libcxx-llvm22.map"
+
+case "$arch" in
+  x86_64)
+    buildroot="$workspace/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0"
+    r42_abi="$workspace/tmp/R42/build-patched-x86_64/lib/libc++abi.so.1.0"
+    buildroot_compiler=/bin/x86_64-tizen-linux-gnu-clang++
+    host_compiler="$workspace/progress/R33/tools/tizen-clang++"
+    ;;
+  armv7l)
+    buildroot="$workspace/tmp/GBS-ROOT/LIBCXX-2218-armv7l-20260806-c2/local/BUILD-ROOTS/scratch.armv7l.0"
+    r42_abi="$workspace/tmp/R42/build-patched-armv7l/lib/libc++abi.so.1.0"
+    buildroot_compiler=/bin/armv7l-tizen-linux-gnueabi-clang++
+    host_compiler="$workspace/progress/R36/tools/armv7l-clang++"
+    ;;
+  *)
+    printf 'unsupported architecture: %s\n' "$arch" >&2
+    exit 2
+    ;;
+esac
+
+source_root="$buildroot/home/abuild/rpmbuild/BUILD/llvm-22.1.8"
+build_dir="$source_root/build"
+object_out="$out_dir/ios.cpp.o"
+dep_out="$out_dir/ios.cpp.o.d"
+library_out="$out_dir/libc++.so.1.0"
+link_dep_out="$out_dir/libc++.link.d"
+mkdir -p "$out_dir"
+
+compile_command=$(ninja -C "$build_dir" -t commands libcxx/src/CMakeFiles/cxx_shared.dir/ios.cpp.o |
+  awk '/ -c \/home\/abuild\/rpmbuild\/BUILD\/llvm-22[.]1[.]8\/libcxx\/src\/ios[.]cpp$/ {line=$0} END {print line}')
+if [[ -z $compile_command ]]; then
+  printf 'compile command not found\n' >&2
+  exit 3
+fi
+
+compile_command=${compile_command//\/home\/abuild\/rpmbuild\/BUILD\/llvm-22.1.8/$source_root}
+compile_command=${compile_command/#$buildroot_compiler/${host_compiler@Q}}
+compile_command=${compile_command/ -D/ -I${abi_include@Q} -D}
+compile_command=${compile_command//-MF libcxx\/src\/CMakeFiles\/cxx_shared.dir\/ios.cpp.o.d/-MF ${dep_out@Q}}
+compile_command=${compile_command//-o libcxx\/src\/CMakeFiles\/cxx_shared.dir\/ios.cpp.o/-o ${object_out@Q}}
+compile_command=${compile_command//${source_root}\/libcxx\/src\/ios.cpp/${experiment_source@Q}}
+
+printf 'ARCH=%s\n' "$arch"
+printf 'PWD=%q\n' "$build_dir"
+printf 'COMPILE_COMMAND=cd %q && %s\n' "$build_dir" "$compile_command"
+(cd "$build_dir" && eval "$compile_command")
+compile_rc=$?
+printf 'COMPILE_EXIT_CODE=%s\n' "$compile_rc"
+if (( compile_rc != 0 )); then
+  exit "$compile_rc"
+fi
+
+link_command=$(ninja -C "$build_dir" -t commands cxx_shared |
+  awk '/ -shared .* -o lib\/libc[+][+]\.so\.1\.0 / {line=$0} END {print line}')
+if [[ -z $link_command ]]; then
+  printf 'link command not found\n' >&2
+  exit 4
+fi
+
+link_command=${link_command//-Wl,--version-script=\/home\/abuild\/rpmbuild\/SOURCES\/libcxx-llvm22.map/-Wl,--version-script=${version_script@Q}}
+link_command=${link_command//$buildroot_compiler/${host_compiler@Q}}
+link_command=${link_command//-Xlinker --dependency-file=libcxx\/src\/CMakeFiles\/cxx_shared.dir\/link.d/-Xlinker --dependency-file=${link_dep_out@Q}}
+link_command=${link_command//-o lib\/libc++.so.1.0/-o ${library_out@Q}}
+link_command=${link_command//libcxx\/src\/CMakeFiles\/cxx_shared.dir\/ios.cpp.o/${object_out@Q}}
+link_command=${link_command//lib\/libc++abi.so.1.0/${r42_abi@Q}}
+link_command=${link_command//-Wl,-rpath,\/home\/abuild\/rpmbuild\/BUILD\/llvm-22.1.8\/build\/lib:/-Wl,-rpath,${out_dir@Q}:}
+
+printf 'LINK_COMMAND=cd %q && %s\n' "$build_dir" "$link_command"
+(cd "$build_dir" && eval "$link_command")
+link_rc=$?
+printf 'LINK_EXIT_CODE=%s\n' "$link_rc"
+if (( link_rc != 0 )); then
+  exit "$link_rc"
+fi
+
+ln -sfn libc++.so.1.0 "$out_dir/libc++.so.1"
+ln -sfn libc++.so.1 "$out_dir/libc++.so"
+sha256sum "$object_out" "$library_out"
+readelf -dW "$library_out"
