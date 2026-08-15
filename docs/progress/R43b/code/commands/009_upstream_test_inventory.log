@@ -1,0 +1,1138 @@
+PWD=/home/toolchain/development/libc++_replacement
+COMMAND=bash -lc find\ codes/llvm/libcxxabi/test\ -maxdepth\ 1\ -type\ f\ \\\(\ -name\ \"forced_unwind\*.pass.cpp\"\ -o\ -name\ \"unwind_\*.pass.cpp\"\ \\\)\ -print\ \|\ sort\;\ for\ f\ in\ codes/llvm/libcxxabi/test/forced_unwind\*.pass.cpp\ codes/llvm/libcxxabi/test/unwind_\*.pass.cpp\;\ do\ echo\ FILE=\$f\;\ sha256sum\ \"\$f\"\;\ sed\ -n\ \"1\,260p\"\ \"\$f\"\;\ done 
+codes/llvm/libcxxabi/test/forced_unwind1.pass.cpp
+codes/llvm/libcxxabi/test/forced_unwind2.pass.cpp
+codes/llvm/libcxxabi/test/forced_unwind3.pass.cpp
+codes/llvm/libcxxabi/test/forced_unwind4.pass.cpp
+codes/llvm/libcxxabi/test/unwind_01.pass.cpp
+codes/llvm/libcxxabi/test/unwind_02.pass.cpp
+codes/llvm/libcxxabi/test/unwind_03.pass.cpp
+codes/llvm/libcxxabi/test/unwind_04.pass.cpp
+codes/llvm/libcxxabi/test/unwind_05.pass.cpp
+codes/llvm/libcxxabi/test/unwind_06.pass.cpp
+FILE=codes/llvm/libcxxabi/test/forced_unwind1.pass.cpp
+51eab5d2ebc0ebea410d7c469081eee2a880d282d39fd7c077270a08cdf34286  codes/llvm/libcxxabi/test/forced_unwind1.pass.cpp
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+// _Unwind_ForcedUnwind raised exception can be caught by catch (...) and be
+// rethrown. If not rethrown, exception_cleanup will be called.
+
+// UNSUPPORTED: no-exceptions, c++03
+
+// VE only supports SjLj and doesn't provide _Unwind_ForcedUnwind.
+// UNSUPPORTED: target={{ve-.*}}
+
+// These tests fail on previously released dylibs, investigation needed.
+// XFAIL: stdlib=system && target={{.+}}-apple-macosx10.{{9|10|11|12|13|14|15}}
+// XFAIL: stdlib=system && target={{.+}}-apple-macosx{{11.0|12.0}}
+
+#include <stdlib.h>
+#include <string.h>
+#include <unwind.h>
+#include <tuple>
+#include <__cxxabi_config.h>
+
+static int bits = 0;
+
+struct C {
+  int bit;
+  C(int b) : bit(b) {}
+  ~C() { bits |= bit; }
+};
+
+template <typename T>
+struct Stop;
+
+template <typename R, typename... Args>
+struct Stop<R (*)(Args...)> {
+  // The third argument of _Unwind_Stop_Fn is uint64_t in Itanium C++ ABI/LLVM
+  // libunwind while _Unwind_Exception_Class in libgcc.
+  typedef typename std::tuple_element<2, std::tuple<Args...>>::type type;
+
+  static _Unwind_Reason_Code stop(int, _Unwind_Action actions, type,
+                                  struct _Unwind_Exception*,
+                                  struct _Unwind_Context*, void*) {
+    if (actions & _UA_END_OF_STACK)
+      abort();
+    return _URC_NO_REASON;
+  }
+};
+
+static void cleanup(_Unwind_Reason_Code, struct _Unwind_Exception* exc) {
+  bits |= 8;
+  delete exc;
+}
+
+static void forced_unwind() {
+  _Unwind_Exception* exc = new _Unwind_Exception;
+  memset(&exc->exception_class, 0, sizeof(exc->exception_class));
+  exc->exception_cleanup = cleanup;
+  _Unwind_ForcedUnwind(exc, Stop<_Unwind_Stop_Fn>::stop, 0);
+  abort();
+}
+
+static void test() {
+  try {
+    C four(4);
+    try {
+      C one(1);
+      forced_unwind();
+    } catch (...) {
+      bits |= 2;
+      throw;
+    }
+  } catch (int) {
+  } catch (...) {
+    // __cxa_end_catch calls cleanup.
+  }
+}
+
+int main(int, char**) {
+  test();
+  return bits != 15;
+}
+FILE=codes/llvm/libcxxabi/test/forced_unwind2.pass.cpp
+e91fda9c2b8129c7c8f2543f6e8adaa0448697e8f38aa0ff2cde5f094e7e8608  codes/llvm/libcxxabi/test/forced_unwind2.pass.cpp
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+// Forced unwinding causes std::terminate when going through noexcept.
+
+// UNSUPPORTED: no-exceptions, c++03
+
+// VE only supports SjLj and doesn't provide _Unwind_ForcedUnwind.
+// UNSUPPORTED: target={{ve-.*}}
+
+// These tests fail on previously released dylibs, investigation needed.
+// XFAIL: stdlib=system && target={{.+}}-apple-macosx10.{{9|10|11|12|13|14|15}}
+// XFAIL: stdlib=system && target={{.+}}-apple-macosx{{11.0|12.0}}
+
+#include <exception>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <unwind.h>
+#include <tuple>
+#include <__cxxabi_config.h>
+
+template <typename T>
+struct Stop;
+
+template <typename R, typename... Args>
+struct Stop<R (*)(Args...)> {
+  // The third argument of _Unwind_Stop_Fn is uint64_t in Itanium C++ ABI/LLVM
+  // libunwind while _Unwind_Exception_Class in libgcc.
+  typedef typename std::tuple_element<2, std::tuple<Args...>>::type type;
+
+  static _Unwind_Reason_Code stop(int, _Unwind_Action actions, type,
+                                  struct _Unwind_Exception*,
+                                  struct _Unwind_Context*, void*) {
+    if (actions & _UA_END_OF_STACK)
+      abort();
+    return _URC_NO_REASON;
+  }
+};
+
+static void forced_unwind() {
+  static _Unwind_Exception exc = {};
+  _Unwind_ForcedUnwind(&exc, Stop<_Unwind_Stop_Fn>::stop, 0);
+  abort();
+}
+
+static void test() noexcept { forced_unwind(); }
+
+static void terminate() { exit(0); }
+
+int main(int, char**) {
+  std::set_terminate(terminate);
+  try {
+    test();
+  } catch (...) {
+  }
+  abort();
+}
+FILE=codes/llvm/libcxxabi/test/forced_unwind3.pass.cpp
+a819971ed171257f4a1056de9c61d06bd43450fd3e90b6032b851811efe76a85  codes/llvm/libcxxabi/test/forced_unwind3.pass.cpp
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+// Let's run ForcedUnwind until it reaches end of the stack, this test simulates
+// what pthread_cancel does.
+
+// UNSUPPORTED: c++03
+// UNSUPPORTED: no-threads
+// UNSUPPORTED: no-exceptions
+
+// VE only supports SjLj and doesn't provide _Unwind_ForcedUnwind.
+// UNSUPPORTED: target={{ve-.*}}
+
+#include <assert.h>
+#include <exception>
+#include <stdlib.h>
+#include <string.h>
+#include <unwind.h>
+#include <thread>
+#include <tuple>
+#include <__cxxabi_config.h>
+
+// TODO: dump version back to 14 once clang is updated on the CI.
+#if defined(_LIBCXXABI_ARM_EHABI) && defined(__clang__) && __clang_major__ < 15
+// _Unwind_ForcedUnwind is not available or broken before version 14.
+int main(int, char**) { return 0; }
+
+#else
+static bool destructorCalled = false;
+
+struct myClass {
+  myClass() {}
+  ~myClass() {
+    assert(destructorCalled == false);
+    destructorCalled = true;
+  };
+};
+
+template <typename T>
+struct Stop;
+
+template <typename R, typename... Args>
+struct Stop<R (*)(Args...)> {
+  // The third argument of _Unwind_Stop_Fn is uint64_t in Itanium C++ ABI/LLVM
+  // libunwind while _Unwind_Exception_Class in libgcc.
+  typedef typename std::tuple_element<2, std::tuple<Args...>>::type type;
+
+  static _Unwind_Reason_Code stop(int, _Unwind_Action actions, type, _Unwind_Exception*, struct _Unwind_Context*,
+                                  void*) {
+    if (actions & _UA_END_OF_STACK) {
+      assert(destructorCalled == true);
+      exit(0);
+    }
+    return _URC_NO_REASON;
+  }
+};
+
+static void forced_unwind() {
+  _Unwind_Exception* exc = new _Unwind_Exception;
+  memset(&exc->exception_class, 0, sizeof(exc->exception_class));
+  exc->exception_cleanup = 0;
+  _Unwind_ForcedUnwind(exc, Stop<_Unwind_Stop_Fn>::stop, 0);
+  abort();
+}
+
+__attribute__((__noinline__)) static void test() {
+  myClass c{};
+  forced_unwind();
+  abort();
+}
+
+int main(int, char**) {
+  std::thread t{test};
+  t.join();
+  return -1;
+}
+#endif
+FILE=codes/llvm/libcxxabi/test/forced_unwind4.pass.cpp
+493d10cf48efd20dead81a977ce3bcc03fbf6a7c20fc03f10e213c75923570c1  codes/llvm/libcxxabi/test/forced_unwind4.pass.cpp
+// -*- C++ -*-
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+// REQUIRES: linux && target=aarch64-{{.+}}-gnu
+
+// pthread_cancel in case of glibc calls _Unwind_ForcedUnwind from a signal on
+// the child_thread. This test ensures sigreturn is handled correctly (see:
+// UnwindCursor<A, R>::setInfoForSigReturn).
+
+#include <cstdlib> // defines __BIONIC__
+
+// Android/Bionic does not support pthread_cancel.
+#ifdef __BIONIC__
+int main(int, char**) { return 0; }
+#else
+
+#include <chrono>
+#include <condition_variable>
+#include <pthread.h>
+#include <unistd.h>
+
+using namespace std::chrono_literals;
+
+std::condition_variable cv;
+std::mutex cv_m;
+bool thread_ready = false;
+
+static void* test(void* arg) {
+  (void)arg;
+  thread_ready = true;
+  cv.notify_all();
+
+  // This must be a pthread cancellation point.
+  while (1)
+    sleep(100);
+
+  return (void*)1;
+}
+
+int main(int, char**) {
+  pthread_t child_thread;
+  std::unique_lock<std::mutex> lk(cv_m);
+  pthread_create(&child_thread, 0, test, (void*)0);
+
+  if (!cv.wait_for(lk, 100ms, [] { return thread_ready; }))
+    return -1;
+
+  pthread_cancel(child_thread);
+  pthread_join(child_thread, NULL);
+  return 0;
+}
+#endif
+FILE=codes/llvm/libcxxabi/test/unwind_01.pass.cpp
+e96769fb4e50826b7d253bebca7a580a6e1c01e33f172156bf21e76b956bff9e  codes/llvm/libcxxabi/test/unwind_01.pass.cpp
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+// UNSUPPORTED: no-exceptions
+
+#include <assert.h>
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wunreachable-code"
+#endif
+
+struct A
+{
+    static int count;
+    int id_;
+    A() : id_(++count) {}
+    ~A() {assert(id_ == count--);}
+
+private:
+    A(const A&);
+    A& operator=(const A&);
+};
+
+int A::count = 0;
+
+struct B
+{
+    static int count;
+    int id_;
+    B() : id_(++count) {}
+    ~B() {assert(id_ == count--);}
+
+private:
+    B(const B&);
+    B& operator=(const B&);
+};
+
+int B::count = 0;
+
+struct C
+{
+    static int count;
+    int id_;
+    C() : id_(++count) {}
+    ~C() {assert(id_ == count--);}
+
+private:
+    C(const C&);
+    C& operator=(const C&);
+};
+
+int C::count = 0;
+
+void f2()
+{
+    C c;
+    A a;
+    throw 55;
+    B b;
+}
+
+void f1()
+{
+    A a;
+    B b;
+    f2();
+    C c;
+}
+
+int main(int, char**)
+{
+    try
+    {
+        f1();
+        assert(false);
+    }
+    catch (int* i)
+    {
+        assert(false);
+    }
+    catch (long i)
+    {
+        assert(false);
+    }
+    catch (int i)
+    {
+        assert(i == 55);
+    }
+    catch (...)
+    {
+        assert(false);
+    }
+    assert(A::count == 0);
+    assert(B::count == 0);
+    assert(C::count == 0);
+
+    return 0;
+}
+FILE=codes/llvm/libcxxabi/test/unwind_02.pass.cpp
+0cc1cf31bbda6cce265ba1d440acaba377c33adaf56e462036d6004ba8723ad3  codes/llvm/libcxxabi/test/unwind_02.pass.cpp
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+// UNSUPPORTED: no-exceptions
+// REQUIRES: c++03 || c++11 || c++14
+
+#include <assert.h>
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wunreachable-code"
+#pragma GCC diagnostic ignored "-Wdeprecated" // dynamic exception specifications are deprecated
+#endif
+
+struct A
+{
+    static int count;
+    int id_;
+    A() : id_(++count) {}
+    ~A() {assert(id_ == count--);}
+
+private:
+    A(const A&);
+    A& operator=(const A&);
+};
+
+int A::count = 0;
+
+struct B
+{
+    static int count;
+    int id_;
+    B() : id_(++count) {}
+    ~B() {assert(id_ == count--);}
+
+private:
+    B(const B&);
+    B& operator=(const B&);
+};
+
+int B::count = 0;
+
+struct C
+{
+    static int count;
+    int id_;
+    C() : id_(++count) {}
+    ~C() {assert(id_ == count--);}
+
+private:
+    C(const C&);
+    C& operator=(const C&);
+};
+
+int C::count = 0;
+
+void f2()
+{
+    C c;
+    A a;
+    throw 55;
+    B b;
+}
+
+void f1() throw (long, char, int, double)
+{
+    A a;
+    B b;
+    f2();
+    C c;
+}
+
+int main(int, char**)
+{
+    try
+    {
+        f1();
+        assert(false);
+    }
+    catch (int* i)
+    {
+        assert(false);
+    }
+    catch (long i)
+    {
+        assert(false);
+    }
+    catch (int i)
+    {
+        assert(i == 55);
+    }
+    catch (...)
+    {
+        assert(false);
+    }
+    assert(A::count == 0);
+    assert(B::count == 0);
+    assert(C::count == 0);
+
+    return 0;
+}
+FILE=codes/llvm/libcxxabi/test/unwind_03.pass.cpp
+84652cf2ee940f18e59628ef9a0f10ddf4784782c91573efc7093df4ffbadcbb  codes/llvm/libcxxabi/test/unwind_03.pass.cpp
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+// UNSUPPORTED: no-exceptions
+// REQUIRES: c++03 || c++11 || c++14
+
+#include <exception>
+#include <stdlib.h>
+#include <assert.h>
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wunreachable-code"
+#pragma GCC diagnostic ignored "-Wdeprecated" // dynamic exception specifications are deprecated
+#endif
+
+struct A
+{
+    static int count;
+    int id_;
+    A() : id_(++count) {}
+    ~A() {assert(id_ == count--);}
+
+private:
+    A(const A&);
+    A& operator=(const A&);
+};
+
+int A::count = 0;
+
+struct B
+{
+    static int count;
+    int id_;
+    B() : id_(++count) {}
+    ~B() {assert(id_ == count--);}
+
+private:
+    B(const B&);
+    B& operator=(const B&);
+};
+
+int B::count = 0;
+
+struct C
+{
+    static int count;
+    int id_;
+    C() : id_(++count) {}
+    ~C() {assert(id_ == count--);}
+
+private:
+    C(const C&);
+    C& operator=(const C&);
+};
+
+int C::count = 0;
+
+void f2()
+{
+    C c;
+    A a;
+    throw 55;
+    B b;
+}
+
+void f1() throw (long, char, double)
+{
+    A a;
+    B b;
+    f2();
+    C c;
+}
+
+void u_handler()
+{
+    exit(0);
+}
+
+int main(int, char**)
+{
+    std::set_unexpected(u_handler);
+    try
+    {
+        f1();
+        assert(false);
+    }
+    catch (int* i)
+    {
+        assert(false);
+    }
+    catch (long i)
+    {
+        assert(false);
+    }
+    catch (int i)
+    {
+        assert(i == 55);
+    }
+    catch (...)
+    {
+        assert(false);
+    }
+    assert(false);
+
+    return 0;
+}
+FILE=codes/llvm/libcxxabi/test/unwind_04.pass.cpp
+0a2cc97b48ada4ad92f3325db0f35539a98e65b63f20a8e67f95a9ab480ed528  codes/llvm/libcxxabi/test/unwind_04.pass.cpp
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+// UNSUPPORTED: no-exceptions
+// REQUIRES: c++03 || c++11 || c++14
+
+#include <exception>
+#include <stdlib.h>
+#include <assert.h>
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wunreachable-code"
+#pragma GCC diagnostic ignored "-Wdeprecated" // dynamic exception specifications are deprecated
+#endif
+
+struct A
+{
+    static int count;
+    int id_;
+    A() : id_(++count) {}
+    ~A() {assert(id_ == count--);}
+
+private:
+    A(const A&);
+    A& operator=(const A&);
+};
+
+int A::count = 0;
+
+struct B
+{
+    static int count;
+    int id_;
+    B() : id_(++count) {}
+    ~B() {assert(id_ == count--);}
+
+private:
+    B(const B&);
+    B& operator=(const B&);
+};
+
+int B::count = 0;
+
+struct C
+{
+    static int count;
+    int id_;
+    C() : id_(++count) {}
+    ~C() {assert(id_ == count--);}
+
+private:
+    C(const C&);
+    C& operator=(const C&);
+};
+
+int C::count = 0;
+
+void f2()
+{
+    C c;
+    A a;
+    throw 55;
+    B b;
+}
+
+void f1() throw (long, char, double)
+{
+    A a;
+    B b;
+    f2();
+    C c;
+}
+
+void u_handler()
+{
+    throw 'a';
+}
+
+int main(int, char**)
+{
+    std::set_unexpected(u_handler);
+    try
+    {
+        f1();
+        assert(false);
+    }
+    catch (int* i)
+    {
+        assert(false);
+    }
+    catch (long i)
+    {
+        assert(false);
+    }
+    catch (int i)
+    {
+        assert(false);
+    }
+    catch (char c)
+    {
+        assert(c == 'a');
+    }
+    catch (...)
+    {
+        assert(false);
+    }
+    assert(A::count == 0);
+    assert(B::count == 0);
+    assert(C::count == 0);
+
+    return 0;
+}
+FILE=codes/llvm/libcxxabi/test/unwind_05.pass.cpp
+8527685dc3349abe2b8eeac7918a3411d9f409b57f05172717e2f83eaf648a84  codes/llvm/libcxxabi/test/unwind_05.pass.cpp
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+// UNSUPPORTED: no-exceptions
+// REQUIRES: c++03 || c++11 || c++14
+
+#include <exception>
+#include <stdlib.h>
+#include <assert.h>
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wunreachable-code"
+#pragma GCC diagnostic ignored "-Wdeprecated" // dynamic exception specifications are deprecated
+#endif
+
+struct A
+{
+    static int count;
+    int id_;
+    A() : id_(++count) {}
+    ~A() {assert(id_ == count--);}
+
+private:
+    A(const A&);
+    A& operator=(const A&);
+};
+
+int A::count = 0;
+
+struct B
+{
+    static int count;
+    int id_;
+    B() : id_(++count) {}
+    ~B() {assert(id_ == count--);}
+
+private:
+    B(const B&);
+    B& operator=(const B&);
+};
+
+int B::count = 0;
+
+struct C
+{
+    static int count;
+    int id_;
+    C() : id_(++count) {}
+    ~C() {assert(id_ == count--);}
+
+private:
+    C(const C&);
+    C& operator=(const C&);
+};
+
+int C::count = 0;
+
+void f2()
+{
+    C c;
+    A a;
+    throw 55;
+    B b;
+}
+
+void f1() throw (long, char, double, std::bad_exception)
+{
+    A a;
+    B b;
+    f2();
+    C c;
+}
+
+void u_handler()
+{
+    throw;
+}
+
+int main(int, char**)
+{
+    std::set_unexpected(u_handler);
+    try
+    {
+        f1();
+        assert(false);
+    }
+    catch (int* i)
+    {
+        assert(false);
+    }
+    catch (long i)
+    {
+        assert(false);
+    }
+    catch (int i)
+    {
+        assert(false);
+    }
+    catch (char c)
+    {
+        assert(false);
+    }
+    catch (const std::bad_exception& e)
+    {
+        assert(true);
+    }
+    catch (...)
+    {
+        assert(false);
+    }
+    assert(A::count == 0);
+    assert(B::count == 0);
+    assert(C::count == 0);
+
+    return 0;
+}
+FILE=codes/llvm/libcxxabi/test/unwind_06.pass.cpp
+1554918e999c29add071010fe0a00325807644e6b097fe5a5e2bcbf4239e3762  codes/llvm/libcxxabi/test/unwind_06.pass.cpp
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+// UNSUPPORTED: no-exceptions
+
+#include <exception>
+#include <stdlib.h>
+#include <assert.h>
+#include <stdio.h>
+
+// Suppress diagnostics about deprecated volatile operations
+#if defined(__GNUC__) && !defined(__clang__)
+# pragma GCC diagnostic ignored "-Wvolatile"
+#endif
+
+// Compile with -Os to get compiler uses float registers to hold float variables
+
+double get_(int x) { return (double)x; }
+
+double (* volatile get)(int) = get_;
+
+volatile int counter;
+
+double try1(bool v) {
+  double a = get(0);
+  double b = get(1);
+  for (counter = 100; counter; counter = counter - 1)
+    a += get(1) + b;
+  if (v) throw 10;
+  return get(0)+a+b;
+}
+
+double try2(bool v) {
+  double a = get(0);
+  double b = get(1);
+  double c = get(2);
+  for (counter = 100; counter; counter = counter - 1)
+    a += get(1) + b + c;
+  if (v) throw 10;
+  return get(0)+a+b+c;
+}
+
+double try3(bool v) {
+  double a = get(0);
+  double b = get(1);
+  double c = get(2);
+  double d = get(3);
+  for (counter = 100; counter; counter = counter - 1)
+    a += get(1) + b + c + d;
+  if (v) throw 10;
+  return get(0)+a+b+c+d;
+}
+
+double try4(bool v) {
+  double a = get(0);
+  double b = get(0);
+  double c = get(0);
+  double d = get(0);
+  double e = get(0);
+  for (counter = 100; counter; counter = counter - 1)
+    a += get(1) + b+c+d+e;
+  if (v) throw 10;
+  return get(0)+a+b+c+d+e;
+}
+
+double try5(bool v) {
+  double a = get(0);
+  double b = get(0);
+  double c = get(0);
+  double d = get(0);
+  double e = get(0);
+  double f = get(0);
+  for (counter = 100; counter; counter = counter - 1)
+    a += get(1) + b+c+d+e+f;
+  if (v) throw 10;
+  return get(0)+a+b+c+d+e+f;
+}
+
+double try6(bool v) {
+  double a = get(0);
+  double b = get(0);
+  double c = get(0);
+  double d = get(0);
+  double e = get(0);
+  double f = get(0);
+  double g = get(0);
+  for (counter = 100; counter; counter = counter - 1)
+    a += get(1) + b+c+d+e+f+g;
+  if (v) throw 10;
+  return get(0)+a+b+c+d+e+f+g;
+}
+
+double try7(bool v) {
+  double a = get(0);
+  double b = get(0);
+  double c = get(0);
+  double d = get(0);
+  double e = get(0);
+  double f = get(0);
+  double g = get(0);
+  double h = get(0);
+  for (counter = 100; counter; counter = counter - 1)
+    a += get(1) + b+c+d+e+f+g+h;
+  if (v) throw 10;
+  return get(0)+a+b+c+d+e+f+g+h;
+}
+
+double try8(bool v) {
+  double a = get(0);
+  double b = get(0);
+  double c = get(0);
+  double d = get(0);
+  double e = get(0);
+  double f = get(0);
+  double g = get(0);
+  double h = get(0);
+  double i = get(0);
+  for (counter = 100; counter; counter = counter - 1)
+    a += get(1) + b+c+d+e+f+g+h+i;
+  if (v) throw 10;
+  return get(0)+a+b+c+d+e+f+g+h+i;
+}
+
+
+
+
+
+double foo()
+{
+  double a = get(1);
+  double b = get(2);
+  double c = get(3);
+  double d = get(4);
+  double e = get(5);
+  double f = get(6);
+  double g = get(7);
+  double h = get(8);
+  try {
+    try1(true);
+  }
+  catch (int) {
+  }
+  assert(a == get(1));
+  assert(b == get(2));
+  assert(c == get(3));
+  assert(d == get(4));
+  assert(e == get(5));
+  assert(f == get(6));
+  assert(g == get(7));
+  assert(h == get(8));
+
+  try {
+    try2(true);
+  }
+  catch (int) {
+  }
+  assert(a == get(1));
+  assert(b == get(2));
+  assert(c == get(3));
+  assert(d == get(4));
+  assert(e == get(5));
+  assert(f == get(6));
+  assert(g == get(7));
+  assert(h == get(8));
+
+  try {
+    try3(true);
+  }
+  catch (int) {
+  }
+  assert(a == get(1));
+  assert(b == get(2));
+  assert(c == get(3));
+  assert(d == get(4));
+  assert(e == get(5));
+  assert(f == get(6));
+  assert(g == get(7));
+  assert(h == get(8));
+
+  try {
+    try4(true);
+  }
+  catch (int) {
+  }
+  assert(a == get(1));
+  assert(b == get(2));
+  assert(c == get(3));
+  assert(d == get(4));
+  assert(e == get(5));
+  assert(f == get(6));
+  assert(g == get(7));
+  assert(h == get(8));
+
+  try {
+    try5(true);
+  }
+  catch (int) {
+  }
+  assert(a == get(1));
+  assert(b == get(2));
+  assert(c == get(3));
+  assert(d == get(4));
+  assert(e == get(5));
+  assert(f == get(6));
+  assert(g == get(7));
+  assert(h == get(8));
+
+  try {
+    try6(true);
+  }
+  catch (int) {
+  }
+  assert(a == get(1));
+  assert(b == get(2));
+  assert(c == get(3));
+  assert(d == get(4));
+  assert(e == get(5));
+  assert(f == get(6));
+  assert(g == get(7));
+  assert(h == get(8));
+
+  try {
+    try7(true);
+  }
+  catch (int) {
+  }
+  assert(a == get(1));
+  assert(b == get(2));
+  assert(c == get(3));
+  assert(d == get(4));
+  assert(e == get(5));
+  assert(f == get(6));
+  assert(g == get(7));
+  assert(h == get(8));
+
+  try {
+    try8(true);
+  }
+  catch (int) {
+  }
+  assert(a == get(1));
+  assert(b == get(2));
+  assert(c == get(3));
+  assert(d == get(4));
+  assert(e == get(5));
+  assert(f == get(6));
+  assert(g == get(7));
+  assert(h == get(8));
+
+  return a+b+c+d+e+f+g+h;
+}
+
+
+
+int main(int, char**) {
+EXIT_CODE=0
