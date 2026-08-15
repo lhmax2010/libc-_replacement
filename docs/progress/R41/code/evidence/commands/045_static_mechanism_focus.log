@@ -1,0 +1,319 @@
+COMMAND=bash -lc $'\nprintf "LIBCXXABI_BEGIN_CLEANUP\\n"; nl -ba tmp/R40/source-diagnostic/libcxxabi/src/cxa_exception.cpp | sed -n "324,355p";\nprintf "LIBCXXABI_EHABI_INSTALL\\n"; nl -ba tmp/R40/source-diagnostic/libcxxabi/src/cxa_personality.cpp | sed -n "1275,1315p";\nprintf "LIBSTDCXX_FOUND_TYPE_AND_BEGIN_CLEANUP\\n"; nl -ba codes/gcc/libstdc++-v3/libsupc++/eh_personality.cc | sed -n "584,647p;668,738p";\nprintf "LIBSTDCXX_ARM_FORCED_CLASS\\n"; nl -ba codes/gcc/libstdc++-v3/libsupc++/eh_personality.cc | sed -n "542,563p"; nl -ba codes/gcc/libstdc++-v3/libsupc++/eh_arm.cc | sed -n "35,92p"; nl -ba codes/gcc/libstdc++-v3/libsupc++/unwind-cxx.h | sed -n "287,311p"\n' 
+LIBCXXABI_BEGIN_CLEANUP
+   324	#if defined(_LIBCXXABI_ARM_EHABI)
+   325	/*
+   326	The routine to be called before the cleanup.  This will save __cxa_exception in
+   327	__cxa_eh_globals, so that __cxa_end_cleanup() can recover later.
+   328	*/
+   329	bool __cxa_begin_cleanup(void *unwind_arg) throw() {
+   330	    _Unwind_Exception* unwind_exception = static_cast<_Unwind_Exception*>(unwind_arg);
+   331	    __cxa_eh_globals* globals = __cxa_get_globals();
+   332	    __cxa_exception* exception_header =
+   333	        cxa_exception_from_exception_unwind_exception(unwind_exception);
+   334	
+   335	    if (__isOurExceptionClass(unwind_exception))
+   336	    {
+   337	        if (0 == exception_header->propagationCount)
+   338	        {
+   339	            exception_header->nextPropagatingException = globals->propagatingExceptions;
+   340	            globals->propagatingExceptions = exception_header;
+   341	        }
+   342	        ++exception_header->propagationCount;
+   343	    }
+   344	    else
+   345	    {
+   346	        // If the propagatingExceptions stack is not empty, since we can't
+   347	        // chain the foreign exception, terminate it.
+   348	        if (NULL != globals->propagatingExceptions)
+   349	            std::terminate();
+   350	        globals->propagatingExceptions = exception_header;
+   351	    }
+   352	    return true;
+   353	}
+   354	
+   355	/*
+LIBCXXABI_EHABI_INSTALL
+  1275	            // Install the context for the catching handler
+  1276	            set_registers(unwind_exception, context, results);
+  1277	            return _URC_INSTALL_CONTEXT;
+  1278	        }
+  1279	
+  1280	        // Either we didn't do a phase 1 search (due to forced unwinding), or
+  1281	        // phase 1 reported no catching-handlers.
+  1282	        // Search for a (non-catching) cleanup
+  1283	        if (is_force_unwinding)
+  1284	          scan_eh_tab(
+  1285	              results,
+  1286	              static_cast<_Unwind_Action>(_UA_CLEANUP_PHASE | _UA_FORCE_UNWIND),
+  1287	              native_exception, unwind_exception, context);
+  1288	        else
+  1289	          scan_eh_tab(results, _UA_CLEANUP_PHASE, native_exception,
+  1290	                      unwind_exception, context);
+  1291	        fprintf(stderr,
+  1292	                "R40_EHABI_SCAN force=%d reason=%d barrier_equal=0 unwind=%p\n",
+  1293	                static_cast<int>(is_force_unwinding),
+  1294	                static_cast<int>(results.reason),
+  1295	                static_cast<void*>(unwind_exception));
+  1296	        if (results.reason == _URC_HANDLER_FOUND)
+  1297	        {
+  1298	            // Found a non-catching handler
+  1299	
+  1300	            // ARM EHABI 8.4.2: Before we can jump to the cleanup handler, we have to setup some
+  1301	            // internal data structures, so that __cxa_end_cleanup() can get unwind_exception from
+  1302	            // __cxa_get_globals().
+  1303	            __cxa_begin_cleanup(unwind_exception);
+  1304	
+  1305	            // Install the context for the cleanup handler
+  1306	            set_registers(unwind_exception, context, results);
+  1307	            return _URC_INSTALL_CONTEXT;
+  1308	        }
+  1309	
+  1310	        // Did not find any handler
+  1311	        if (results.reason == _URC_CONTINUE_UNWIND)
+  1312	            return continue_unwind(unwind_exception, context);
+  1313	        return results.reason;
+  1314	
+  1315	    case _US_UNWIND_FRAME_RESUME:
+LIBSTDCXX_FOUND_TYPE_AND_BEGIN_CLEANUP
+   584	      while (1)
+   585		{
+   586		  p = action_record;
+   587		  p = read_sleb128 (p, &ar_filter);
+   588		  read_sleb128 (p, &ar_disp);
+   589	
+   590		  if (ar_filter == 0)
+   591		    {
+   592		      // Zero filter values are cleanups.
+   593		      saw_cleanup = true;
+   594		    }
+   595		  else if (actions == _UA_CLEANUP_PHASE)
+   596		    // We checked the handlers in the search phase; if one of them
+   597		    // matched, actions would also have _UA_HANDLER_FRAME set.
+   598		    ;
+   599		  else if (ar_filter > 0)
+   600		    {
+   601		      // Positive filter values are handlers.
+   602		      catch_type = get_ttype_entry (&info, ar_filter);
+   603	
+   604		      // Null catch type is a catch-all handler; we can catch foreign
+   605		      // exceptions with this.  Otherwise we must match types.
+   606		      if (! catch_type
+   607			  || (throw_type
+   608			      && get_adjusted_ptr (catch_type, throw_type,
+   609						   &thrown_ptr)))
+   610			{
+   611			  saw_handler = true;
+   612			  break;
+   613			}
+   614		    }
+   615		  else
+   616		    {
+   617		      // Negative filter values are exception specifications.
+   618		      // ??? How do foreign exceptions fit in?  As far as I can
+   619		      // see we can't match because there's no __cxa_exception
+   620		      // object to stuff bits in for __cxa_call_unexpected to use.
+   621		      // Allow them iff the exception spec is non-empty.  I.e.
+   622		      // a throw() specification results in __unexpected.
+   623		      if ((throw_type
+   624			   && !(actions & _UA_FORCE_UNWIND)
+   625			   && !foreign_exception)
+   626			  ? ! check_exception_spec (&info, throw_type, thrown_ptr,
+   627						    ar_filter)
+   628			  : empty_exception_spec (&info, ar_filter))
+   629			{
+   630			  saw_handler = true;
+   631			  break;
+   632			}
+   633		    }
+   634	
+   635		  if (ar_disp == 0)
+   636		    break;
+   637		  action_record = p + ar_disp;
+   638		}
+   639	
+   640	      if (saw_handler)
+   641		{
+   642		  handler_switch_value = ar_filter;
+   643		  found_type = found_handler;
+   644		}
+   645	      else
+   646		found_type = (saw_cleanup ? found_cleanup : found_nothing);
+   647	    }
+   668	 install_context:
+   669	  
+   670	  // We can't use any of the cxa routines with foreign exceptions,
+   671	  // because they all expect ue_header to be a struct __cxa_exception.
+   672	  // So in that case, call terminate or unexpected directly.
+   673	  if ((actions & _UA_FORCE_UNWIND)
+   674	      || foreign_exception)
+   675	    {
+   676	      if (found_type == found_terminate)
+   677		std::terminate ();
+   678	      else if (handler_switch_value < 0)
+   679		{
+   680	#pragma GCC diagnostic push
+   681	#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+   682		  __try
+   683		    { std::unexpected (); }
+   684		  __catch(...)
+   685		    { std::terminate (); }
+   686	#pragma GCC diagnostic pop
+   687		}
+   688	    }
+   689	  else
+   690	    {
+   691	      if (found_type == found_terminate)
+   692		__cxa_call_terminate(ue_header);
+   693	
+   694	      // Cache the TType base value for __cxa_call_unexpected, as we won't
+   695	      // have an _Unwind_Context then.
+   696	      if (handler_switch_value < 0)
+   697		{
+   698		  parse_lsda_header (context, language_specific_data, &info);
+   699		  info.ttype_base = base_of_encoded_value (info.ttype_encoding,
+   700							   context);
+   701	
+   702	#ifdef __ARM_EABI_UNWINDER__
+   703		  const _Unwind_Word* e;
+   704		  _Unwind_Word n;
+   705		  
+   706		  e = ((const _Unwind_Word*) info.TType) - handler_switch_value - 1;
+   707		  // Count the number of rtti objects.
+   708		  n = 0;
+   709		  while (e[n] != 0)
+   710		    n++;
+   711	
+   712		  // Count.
+   713		  ue_header->barrier_cache.bitpattern[1] = n;
+   714		  // Base
+   715		  ue_header->barrier_cache.bitpattern[2] = info.ttype_base;
+   716		  // Stride.
+   717		  ue_header->barrier_cache.bitpattern[3] = 4;
+   718		  // List head.
+   719		  ue_header->barrier_cache.bitpattern[4] = (_Unwind_Word) e;
+   720	#else
+   721		  xh->catchTemp = base_of_encoded_value (info.ttype_encoding, context);
+   722	#endif
+   723		}
+   724	    }
+   725	
+   726	  /* For targets with pointers smaller than the word size, we must extend the
+   727	     pointer, and this extension is target dependent.  */
+   728	  _Unwind_SetGR (context, __builtin_eh_return_data_regno (0),
+   729			 __builtin_extend_pointer (ue_header));
+   730	  _Unwind_SetGR (context, __builtin_eh_return_data_regno (1),
+   731			 handler_switch_value);
+   732	  _Unwind_SetIP (context, landing_pad);
+   733	#ifdef __ARM_EABI_UNWINDER__
+   734	  if (found_type == found_cleanup)
+   735	    __cxa_begin_cleanup(ue_header);
+   736	#endif
+   737	  return _URC_INSTALL_CONTEXT;
+   738	}
+LIBSTDCXX_ARM_FORCED_CLASS
+   542	  else
+   543	    {
+   544	      // Otherwise we have a catch handler or exception specification.
+   545	
+   546	      _sleb128_t ar_filter, ar_disp;
+   547	      const std::type_info* catch_type;
+   548	      _throw_typet* throw_type;
+   549	      bool saw_cleanup = false;
+   550	      bool saw_handler = false;
+   551	
+   552	#ifdef __ARM_EABI_UNWINDER__
+   553	      // ??? How does this work - more importantly, how does it interact with
+   554	      // dependent exceptions?
+   555	      throw_type = ue_header;
+   556	      if (actions & _UA_FORCE_UNWIND)
+   557		{
+   558		  __GXX_INIT_FORCED_UNWIND_CLASS(ue_header->exception_class);
+   559		}
+   560	      else if (!foreign_exception)
+   561		thrown_ptr = __get_object_from_ue (ue_header);
+   562	#else
+   563	#if __cpp_rtti
+    35	// a match and if so, update *THROWN_PTR_P to point to either the
+    36	// type-matched object, or in the case of a pointer type, the object
+    37	// pointed to by the pointer.
+    38	
+    39	extern "C" __cxa_type_match_result
+    40	__cxa_type_match(_Unwind_Exception* ue_header,
+    41			 const std::type_info* catch_type,
+    42			 bool is_reference __attribute__((__unused__)),
+    43			 void** thrown_ptr_p)
+    44	{
+    45	  bool forced_unwind
+    46	    = __is_gxx_forced_unwind_class(ue_header->exception_class);
+    47	  bool foreign_exception
+    48	    = !forced_unwind && !__is_gxx_exception_class(ue_header->exception_class);
+    49	  bool dependent_exception
+    50	    = __is_dependent_exception(ue_header->exception_class);
+    51	  __cxa_exception* xh = __get_exception_header_from_ue(ue_header);
+    52	  __cxa_dependent_exception *dx = __get_dependent_exception_from_ue(ue_header);
+    53	  const std::type_info* throw_type;
+    54	  void *thrown_ptr = 0;
+    55	
+    56	  if (forced_unwind)
+    57	    throw_type = &typeid(abi::__forced_unwind);
+    58	  else if (foreign_exception)
+    59	    throw_type = &typeid(abi::__foreign_exception);
+    60	  else
+    61	    {
+    62	      if (dependent_exception)
+    63		xh = __get_exception_header_from_obj (dx->primaryException);
+    64	      throw_type = xh->exceptionType;
+    65	      // We used to require the caller set the target of thrown_ptr_p,
+    66	      // but that's incorrect -- the EHABI makes no such requirement
+    67	      // -- and not all callers will set it.  Fortunately callers that
+    68	      // do initialize will always pass us the value we calculate
+    69	      // here, so there's no backwards compatibility problem.
+    70	      thrown_ptr = __get_object_from_ue (ue_header);
+    71	    }
+    72	  
+    73	  __cxa_type_match_result result = ctm_succeeded;
+    74	
+    75	  // Pointer types need to adjust the actual pointer, not
+    76	  // the pointer to pointer that is the exception object.
+    77	  // This also has the effect of passing pointer types
+    78	  // "by value" through the __cxa_begin_catch return value.
+    79	  if (throw_type->__is_pointer_p())
+    80	    {
+    81	      thrown_ptr = *(void**) thrown_ptr;
+    82	      // We need to indicate the indirection to our caller.
+    83	      result = ctm_succeeded_with_ptr_to_base;
+    84	    }
+    85	
+    86	  if (catch_type->__do_catch(throw_type, &thrown_ptr, 1))
+    87	    {
+    88	      *thrown_ptr_p = thrown_ptr;
+    89	      return result;
+    90	    }
+    91	
+    92	  return ctm_failed;
+   287	static inline bool
+   288	__is_gxx_forced_unwind_class(_Unwind_Exception_Class c)
+   289	{
+   290	  return c[0] == 'G'
+   291		 && c[1] == 'N'
+   292		 && c[2] == 'U'
+   293		 && c[3] == 'C'
+   294		 && c[4] == 'F'
+   295		 && c[5] == 'O'
+   296		 && c[6] == 'R'
+   297		 && c[7] == '\0';
+   298	}
+   299	
+   300	static inline void
+   301	__GXX_INIT_FORCED_UNWIND_CLASS(_Unwind_Exception_Class c)
+   302	{
+   303	  c[0] = 'G';
+   304	  c[1] = 'N';
+   305	  c[2] = 'U';
+   306	  c[3] = 'C';
+   307	  c[4] = 'F';
+   308	  c[5] = 'O';
+   309	  c[6] = 'R';
+   310	  c[7] = '\0';
+   311	}
+EXIT_CODE=0

@@ -1,0 +1,483 @@
+COMMAND=bash -lc $'\nprintf "FILE=codes/gcc/libgcc/unwind-arm-common.inc SHA256="; sha256sum codes/gcc/libgcc/unwind-arm-common.inc; nl -ba codes/gcc/libgcc/unwind-arm-common.inc | sed -n "55,95p;440,575p;625,735p";\nprintf "FILE=codes/gcc/libgcc/config/arm/libunwind.S SHA256="; sha256sum codes/gcc/libgcc/config/arm/libunwind.S; nl -ba codes/gcc/libgcc/config/arm/libunwind.S | sed -n "285,370p";\nprintf "REASON_ENUM_FILES_BEGIN\\n"; for f in $(rg -l "_URC_HANDLER_FOUND" codes/gcc/libgcc codes/llvm/libunwind/include codes/llvm/libcxxabi/include | sort -u); do printf "FILE=%s SHA256=" "$f"; sha256sum "$f"; nl -ba "$f" | rg -n "_URC_(NO_REASON|FOREIGN_EXCEPTION_CAUGHT|FATAL_PHASE2_ERROR|FATAL_PHASE1_ERROR|NORMAL_STOP|END_OF_STACK|HANDLER_FOUND|INSTALL_CONTEXT|CONTINUE_UNWIND|FAILURE)"; done; printf "REASON_ENUM_FILES_END\\n"\n' 
+FILE=codes/gcc/libgcc/unwind-arm-common.inc SHA256=6a543c2081390f57b5452cf11b308f0a49a90e42e4e992ed32924251b9c11338  codes/gcc/libgcc/unwind-arm-common.inc
+    55	typedef unsigned char bool;
+    56	
+    57	typedef struct _ZSt9type_info type_info; /* This names C++ type_info type */
+    58	enum __cxa_type_match_result
+    59	  {
+    60	    ctm_failed = 0,
+    61	    ctm_succeeded = 1,
+    62	    ctm_succeeded_with_ptr_to_base = 2
+    63	  };
+    64	
+    65	void __attribute__((weak)) __cxa_call_unexpected(_Unwind_Control_Block *ucbp);
+    66	bool __attribute__((weak)) __cxa_begin_cleanup(_Unwind_Control_Block *ucbp);
+    67	enum __cxa_type_match_result __attribute__((weak)) __cxa_type_match
+    68	  (_Unwind_Control_Block *ucbp, const type_info *rttip,
+    69	   bool is_reference, void **matched_object);
+    70	
+    71	_Unwind_Ptr __attribute__((weak))
+    72	__gnu_Unwind_Find_exidx (_Unwind_Ptr, int *);
+    73	
+    74	#define EXIDX_CANTUNWIND 1
+    75	#define uint32_highbit (((_uw) 1) << 31)
+    76	
+    77	#define UCB_FORCED_STOP_FN(ucbp) ((ucbp)->unwinder_cache.reserved1)
+    78	#define UCB_PR_ADDR(ucbp) ((ucbp)->unwinder_cache.reserved2)
+    79	#define UCB_SAVED_CALLSITE_ADDR(ucbp) ((ucbp)->unwinder_cache.reserved3)
+    80	#define UCB_FORCED_STOP_ARG(ucbp) ((ucbp)->unwinder_cache.reserved4)
+    81	#define UCB_PR_GOT(ucbp) ((ucbp)->unwinder_cache.reserved5)
+    82	
+    83	/* Unwind descriptors.  */
+    84	
+    85	typedef struct
+    86	{
+    87	  _uw16 length;
+    88	  _uw16 offset;
+    89	} EHT16;
+    90	
+    91	typedef struct
+    92	{
+    93	  _uw length;
+    94	  _uw offset;
+    95	} EHT32;
+   440	      /* Call the pr to decide what to do.  */
+   441	#if __FDPIC__
+   442	      {
+   443		volatile struct funcdesc_t funcdesc;
+   444		funcdesc.ptr = UCB_PR_ADDR (ucbp);
+   445		funcdesc.got = UCB_PR_GOT (ucbp);
+   446		pr_result = ((personality_routine) &funcdesc)
+   447		  (_US_UNWIND_FRAME_STARTING, ucbp, (_Unwind_Context *) vrs);
+   448	      }
+   449	#else
+   450	      pr_result = ((personality_routine) UCB_PR_ADDR (ucbp))
+   451		(_US_UNWIND_FRAME_STARTING, ucbp, (_Unwind_Context *) vrs);
+   452	#endif
+   453	    }
+   454	  while (pr_result == _URC_CONTINUE_UNWIND);
+   455	  
+   456	  if (pr_result != _URC_INSTALL_CONTEXT)
+   457	    abort();
+   458	
+   459	#if __FDPIC__
+   460	  /* r9 could have been lost due to PLT jump.  Restore correct value.  */
+   461	  vrs->core.r[FDPIC_REGNUM] = _Unwind_gnu_Find_got (VRS_PC (vrs));
+   462	#endif
+   463	
+   464	  uw_restore_core_regs (vrs, &vrs->core);
+   465	}
+   466	
+   467	/* Perform phase2 forced unwinding.  */
+   468	
+   469	static _Unwind_Reason_Code
+   470	unwind_phase2_forced (_Unwind_Control_Block *ucbp, phase2_vrs *entry_vrs,
+   471			      int resuming)
+   472	{
+   473	  _Unwind_Stop_Fn stop_fn = (_Unwind_Stop_Fn) UCB_FORCED_STOP_FN (ucbp);
+   474	  void *stop_arg = (void *)UCB_FORCED_STOP_ARG (ucbp);
+   475	  _Unwind_Reason_Code pr_result = 0;
+   476	  /* We use phase1_vrs here even though we do not demand save, for the
+   477	     prev_sp field.  */
+   478	  phase1_vrs saved_vrs, next_vrs;
+   479	
+   480	  /* Save the core registers.  */
+   481	  saved_vrs.core = entry_vrs->core;
+   482	  /* We don't need to demand-save the non-core registers, because we
+   483	     unwind in a single pass.  */
+   484	  saved_vrs.demand_save_flags = 0;
+   485	
+   486	  /* Unwind until we reach a propagation barrier.  */
+   487	  do
+   488	    {
+   489	      _Unwind_State action;
+   490	      _Unwind_Reason_Code entry_code;
+   491	      _Unwind_Reason_Code stop_code;
+   492	
+   493	      /* Find the entry for this routine.  */
+   494	      entry_code = get_eit_entry (ucbp, VRS_PC (&saved_vrs));
+   495	
+   496	      if (resuming)
+   497		{
+   498		  action = _US_UNWIND_FRAME_RESUME | _US_FORCE_UNWIND;
+   499		  resuming = 0;
+   500		}
+   501	      else
+   502		action = _US_UNWIND_FRAME_STARTING | _US_FORCE_UNWIND;
+   503	
+   504	      if (entry_code == _URC_OK)
+   505		{
+   506		  UCB_SAVED_CALLSITE_ADDR (ucbp) = VRS_PC (&saved_vrs);
+   507	
+   508		  next_vrs = saved_vrs;
+   509	
+   510		  /* Call the pr to decide what to do.  */
+   511	#if __FDPIC__
+   512		  {
+   513		    volatile struct funcdesc_t funcdesc;
+   514		    funcdesc.ptr = UCB_PR_ADDR (ucbp);
+   515		    funcdesc.got = UCB_PR_GOT (ucbp);
+   516		    pr_result = ((personality_routine) &funcdesc)
+   517		      (action, ucbp, (void *) &next_vrs);
+   518		  }
+   519	#else
+   520		  pr_result = ((personality_routine) UCB_PR_ADDR (ucbp))
+   521		    (action, ucbp, (void *) &next_vrs);
+   522	#endif
+   523	
+   524		  saved_vrs.prev_sp = VRS_SP (&next_vrs);
+   525		}
+   526	      else
+   527		{
+   528		  /* Treat any failure as the end of unwinding, to cope more
+   529		     gracefully with missing EH information.  Mixed EH and
+   530		     non-EH within one object will usually result in failure,
+   531		     because the .ARM.exidx tables do not indicate the end
+   532		     of the code to which they apply; but mixed EH and non-EH
+   533		     shared objects should return an unwind failure at the
+   534		     entry of a non-EH shared object.  */
+   535		  action |= _US_END_OF_STACK;
+   536	
+   537		  saved_vrs.prev_sp = VRS_SP (&saved_vrs);
+   538		}
+   539	
+   540	      stop_code = stop_fn (1, action, ucbp->exception_class, ucbp,
+   541				   (void *)&saved_vrs, stop_arg);
+   542	      if (stop_code != _URC_NO_REASON)
+   543		return _URC_FAILURE;
+   544	
+   545	      if (entry_code != _URC_OK)
+   546		return entry_code;
+   547	
+   548	      saved_vrs = next_vrs;
+   549	    }
+   550	  while (pr_result == _URC_CONTINUE_UNWIND);
+   551	
+   552	  if (pr_result != _URC_INSTALL_CONTEXT)
+   553	    {
+   554	      /* Some sort of failure has occurred in the pr and probably the
+   555		 pr returned _URC_FAILURE.  */
+   556	      return _URC_FAILURE;
+   557	    }
+   558	
+   559	#if __FDPIC__
+   560	  /* r9 could have been lost due to PLT jump.  Restore correct value.  */
+   561	  saved_vrs.core.r[FDPIC_REGNUM] = _Unwind_gnu_Find_got (VRS_PC (&saved_vrs));
+   562	#endif
+   563	
+   564	  uw_restore_core_regs (&saved_vrs, &saved_vrs.core);
+   565	}
+   566	
+   567	/* This is a very limited implementation of _Unwind_GetCFA.  It returns
+   568	   the stack pointer as it is about to be unwound, and is only valid
+   569	   while calling the stop function during forced unwinding.  If the
+   570	   current personality routine result is going to run a cleanup, this
+   571	   will not be the CFA; but when the frame is really unwound, it will
+   572	   be.  */
+   573	
+   574	_Unwind_Word
+   575	_Unwind_GetCFA (_Unwind_Context *context)
+   625	     register state.  */
+   626	  restore_non_core_regs (&saved_vrs);
+   627	  if (pr_result != _URC_HANDLER_FOUND)
+   628	    {
+   629	      /* Some sort of failure has occurred in the pr and probably the
+   630		 pr returned _URC_FAILURE.  */
+   631	      return _URC_FAILURE;
+   632	    }
+   633	  
+   634	  unwind_phase2 (ucbp, entry_vrs);
+   635	}
+   636	
+   637	/* Resume unwinding after a cleanup has been run.  UCBP is the exception
+   638	   being thrown and ENTRY_VRS is the register state on entry to
+   639	   _Unwind_Resume.  */
+   640	_Unwind_Reason_Code
+   641	__gnu_Unwind_ForcedUnwind (_Unwind_Control_Block *,
+   642				   _Unwind_Stop_Fn, void *, phase2_vrs *);
+   643	
+   644	_Unwind_Reason_Code
+   645	__gnu_Unwind_ForcedUnwind (_Unwind_Control_Block *ucbp,
+   646				   _Unwind_Stop_Fn stop_fn, void *stop_arg,
+   647				   phase2_vrs *entry_vrs)
+   648	{
+   649	  UCB_FORCED_STOP_FN (ucbp) = (_uw) stop_fn;
+   650	  UCB_FORCED_STOP_ARG (ucbp) = (_uw) stop_arg;
+   651	
+   652	  /* Set the pc to the call site.  */
+   653	  VRS_PC (entry_vrs) = VRS_RETURN(entry_vrs);
+   654	
+   655	  return unwind_phase2_forced (ucbp, entry_vrs, 0);
+   656	}
+   657	
+   658	_Unwind_Reason_Code
+   659	__gnu_Unwind_Resume (_Unwind_Control_Block *, phase2_vrs *);
+   660	
+   661	_Unwind_Reason_Code
+   662	__gnu_Unwind_Resume (_Unwind_Control_Block * ucbp, phase2_vrs * entry_vrs)
+   663	{
+   664	  _Unwind_Reason_Code pr_result;
+   665	
+   666	  /* Recover the saved address.  */
+   667	  VRS_PC (entry_vrs) = UCB_SAVED_CALLSITE_ADDR (ucbp);
+   668	
+   669	  if (UCB_FORCED_STOP_FN (ucbp))
+   670	    {
+   671	      unwind_phase2_forced (ucbp, entry_vrs, 1);
+   672	
+   673	      /* We can't return failure at this point.  */
+   674	      abort ();
+   675	    }
+   676	
+   677	  /* Call the cached PR.  */
+   678	#if __FDPIC__
+   679	  {
+   680	    volatile struct funcdesc_t funcdesc;
+   681	    funcdesc.ptr = UCB_PR_ADDR (ucbp);
+   682	    funcdesc.got = UCB_PR_GOT (ucbp);
+   683	    pr_result = ((personality_routine) &funcdesc)
+   684	      (_US_UNWIND_FRAME_RESUME, ucbp, (_Unwind_Context *) entry_vrs);
+   685	  }
+   686	#else
+   687	  pr_result = ((personality_routine) UCB_PR_ADDR (ucbp))
+   688		(_US_UNWIND_FRAME_RESUME, ucbp, (_Unwind_Context *) entry_vrs);
+   689	#endif
+   690	
+   691	  switch (pr_result)
+   692	    {
+   693	    case _URC_INSTALL_CONTEXT:
+   694	      /* Upload the registers to enter the landing pad.  */
+   695	#if __FDPIC__
+   696	      /* r9 could have been lost due to PLT jump.  Restore correct value.  */
+   697	      entry_vrs->core.r[FDPIC_REGNUM] = _Unwind_gnu_Find_got (VRS_PC (entry_vrs));
+   698	#endif
+   699	      uw_restore_core_regs (entry_vrs, &entry_vrs->core);
+   700	
+   701	    case _URC_CONTINUE_UNWIND:
+   702	      /* Continue unwinding the next frame.  */
+   703	      unwind_phase2 (ucbp, entry_vrs);
+   704	
+   705	    default:
+   706	      abort ();
+   707	    }
+   708	}
+   709	
+   710	_Unwind_Reason_Code
+   711	__gnu_Unwind_Resume_or_Rethrow (_Unwind_Control_Block *, phase2_vrs *);
+   712	
+   713	_Unwind_Reason_Code
+   714	__gnu_Unwind_Resume_or_Rethrow (_Unwind_Control_Block * ucbp,
+   715					phase2_vrs * entry_vrs)
+   716	{
+   717	  if (!UCB_FORCED_STOP_FN (ucbp))
+   718	    return __gnu_Unwind_RaiseException (ucbp, entry_vrs);
+   719	
+   720	  /* Set the pc to the call site.  */
+   721	  VRS_PC (entry_vrs) = VRS_RETURN (entry_vrs);
+   722	  /* Continue unwinding the next frame.  */
+   723	  return unwind_phase2_forced (ucbp, entry_vrs, 0);
+   724	}
+   725	
+   726	/* Clean up an exception object when unwinding is complete.  */
+   727	void
+   728	_Unwind_Complete (_Unwind_Control_Block * ucbp __attribute__((unused)))
+   729	{
+   730	}
+   731	
+   732	
+   733	/* Free an exception.  */
+   734	
+   735	void
+FILE=codes/gcc/libgcc/config/arm/libunwind.S SHA256=87ff9baf269326f476721f0f13f5564484fbbd3f3726b7d1c8daa7c91b84d0c5  codes/gcc/libgcc/config/arm/libunwind.S
+   285		stcl  p1, cr9, [r0], #8 /* wstrd wr9, [r0], #8 */
+   286		stcl  p1, cr10, [r0], #8 /* wstrd wr10, [r0], #8 */
+   287		stcl  p1, cr11, [r0], #8 /* wstrd wr11, [r0], #8 */
+   288		stcl  p1, cr12, [r0], #8 /* wstrd wr12, [r0], #8 */
+   289		stcl  p1, cr13, [r0], #8 /* wstrd wr13, [r0], #8 */
+   290		stcl  p1, cr14, [r0], #8 /* wstrd wr14, [r0], #8 */
+   291		stcl  p1, cr15, [r0], #8 /* wstrd wr15, [r0], #8 */
+   292		RET
+   293	
+   294	ARM_FUNC_START gnu_Unwind_Restore_WMMXC
+   295		/* Use the generic coprocessor form so that gas doesn't complain
+   296		   on non-iWMMXt targets.  */
+   297		ldc2  p1, cr8, [r0], #4 /* wldrw wcgr0, [r0], #4 */
+   298		ldc2  p1, cr9, [r0], #4 /* wldrw wcgr1, [r0], #4 */
+   299		ldc2  p1, cr10, [r0], #4 /* wldrw wcgr2, [r0], #4 */
+   300		ldc2  p1, cr11, [r0], #4 /* wldrw wcgr3, [r0], #4 */
+   301		RET
+   302	
+   303	ARM_FUNC_START gnu_Unwind_Save_WMMXC
+   304		/* Use the generic coprocessor form so that gas doesn't complain
+   305		   on non-iWMMXt targets.  */
+   306		stc2  p1, cr8, [r0], #4 /* wstrw wcgr0, [r0], #4 */
+   307		stc2  p1, cr9, [r0], #4 /* wstrw wcgr1, [r0], #4 */
+   308		stc2  p1, cr10, [r0], #4 /* wstrw wcgr2, [r0], #4 */
+   309		stc2  p1, cr11, [r0], #4 /* wstrw wcgr3, [r0], #4 */
+   310		RET
+   311	
+   312	/* Wrappers to save core registers, then call the real routine.   */
+   313	
+   314	.macro  UNWIND_WRAPPER name nargs
+   315		ARM_FUNC_START \name
+   316		/* Create a phase2_vrs structure.  */
+   317		/* Split reg push in two to ensure the correct value for sp.  */
+   318	#if defined(__thumb2__)
+   319		mov ip, sp
+   320		push {lr} /* PC is ignored.  */
+   321		push {ip, lr} /* Push original SP and LR.  */
+   322	#else
+   323		stmfd sp!, {sp, lr, pc}
+   324	#endif
+   325		stmfd sp!, {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, sl, fp, ip}
+   326		
+   327		/* Demand-save flags, plus an extra word for alignment.  */
+   328		mov r3, #0
+   329		stmfd sp!, {r2, r3}
+   330	
+   331		/* Point r1 at the block.  Pass r[0..nargs) unchanged.  */
+   332		add r\nargs, sp, #4
+   333	#if defined(__thumb__) && !defined(__thumb2__)
+   334		/* Switch back to thumb mode to avoid interworking hassle.  */
+   335		adr ip, .L1_\name
+   336		orr ip, ip, #1
+   337		bx ip
+   338		.thumb
+   339	.L1_\name:
+   340		bl SYM (__gnu\name) __PLT__
+   341		ldr r3, [sp, #64]
+   342		add sp, #72
+   343		bx r3
+   344	#else
+   345		bl SYM (__gnu\name) __PLT__
+   346		ldr lr, [sp, #64]
+   347		add sp, sp, #72
+   348		RET
+   349	#endif
+   350		FUNC_END \name
+   351		UNPREFIX \name
+   352	.endm
+   353	
+   354	#endif /* __ARM_ARCH_ISA_ARM || __ARM_ARCH_ISA_THUMB != 1 */
+   355	
+   356	UNWIND_WRAPPER _Unwind_RaiseException 1
+   357	UNWIND_WRAPPER _Unwind_Resume 1
+   358	UNWIND_WRAPPER _Unwind_Resume_or_Rethrow 1
+   359	UNWIND_WRAPPER _Unwind_ForcedUnwind 3
+   360	UNWIND_WRAPPER _Unwind_Backtrace 2
+   361	
+   362	#endif  /* ndef __symbian__ */
+REASON_ENUM_FILES_BEGIN
+FILE=codes/gcc/libgcc/unwind-arm-common.inc SHA256=6a543c2081390f57b5452cf11b308f0a49a90e42e4e992ed32924251b9c11338  codes/gcc/libgcc/unwind-arm-common.inc
+253:   253	    return _URC_CONTINUE_UNWIND;
+259:   259	   Returns _URC_FAILURE if an error occurred, _URC_OK on success.  */
+302:   302		  return _URC_FAILURE;
+337:   337	      return _URC_FAILURE;
+366:   366	      return _URC_END_OF_STACK;
+409:   409		  return _URC_FAILURE;
+454:   454	  while (pr_result == _URC_CONTINUE_UNWIND);
+456:   456	  if (pr_result != _URC_INSTALL_CONTEXT)
+542:   542	      if (stop_code != _URC_NO_REASON)
+543:   543		return _URC_FAILURE;
+550:   550	  while (pr_result == _URC_CONTINUE_UNWIND);
+552:   552	  if (pr_result != _URC_INSTALL_CONTEXT)
+555:   555		 pr returned _URC_FAILURE.  */
+556:   556	      return _URC_FAILURE;
+606:   606		return _URC_FAILURE;
+622:   622	  while (pr_result == _URC_CONTINUE_UNWIND);
+627:   627	  if (pr_result != _URC_HANDLER_FOUND)
+630:   630		 pr returned _URC_FAILURE.  */
+631:   631	      return _URC_FAILURE;
+693:   693	    case _URC_INSTALL_CONTEXT:
+701:   701	    case _URC_CONTINUE_UNWIND:
+739:   739	    (*exc->exception_cleanup) (_URC_FOREIGN_EXCEPTION_CAUGHT, exc);
+770:   770		  code = _URC_FAILURE;
+783:   783		  != _URC_NO_REASON)
+785:   785		  code = _URC_FAILURE;
+805:   805	  while (code != _URC_END_OF_STACK
+806:   806		 && code != _URC_FAILURE);
+896:   896			    return _URC_FAILURE;
+899:   899			  return _URC_INSTALL_CONTEXT;
+919:   919				return _URC_FAILURE;
+954:   954				  return _URC_HANDLER_FOUND;
+969:   969			  return _URC_INSTALL_CONTEXT;
+1004:  1004				  return _URC_HANDLER_FOUND;
+1028:  1028			      return _URC_INSTALL_CONTEXT;
+1040:  1040		      return _URC_FAILURE;
+1050:  1050		return _URC_FAILURE;
+1055:  1055		return _URC_FAILURE;
+1063:  1063	      return _URC_INSTALL_CONTEXT;
+1066:  1066	  return _URC_CONTINUE_UNWIND;
+FILE=codes/gcc/libgcc/unwind-generic.h SHA256=d30e04959d7001defa7bc03f48eb38a9861fc26867668b7b3779623d63f4b4e0  codes/gcc/libgcc/unwind-generic.h
+68:    68	  _URC_NO_REASON = 0,
+69:    69	  _URC_FOREIGN_EXCEPTION_CAUGHT = 1,
+70:    70	  _URC_FATAL_PHASE2_ERROR = 2,
+71:    71	  _URC_FATAL_PHASE1_ERROR = 3,
+72:    72	  _URC_NORMAL_STOP = 4,
+73:    73	  _URC_END_OF_STACK = 5,
+74:    74	  _URC_HANDLER_FOUND = 6,
+75:    75	  _URC_INSTALL_CONTEXT = 7,
+76:    76	  _URC_CONTINUE_UNWIND = 8
+FILE=codes/gcc/libgcc/unwind-seh.c SHA256=b167a4cd0accb761de79d7eb0e060d770a021f983538f0b3ccd27841551fbbe8  codes/gcc/libgcc/unwind-seh.c
+267:   267	      if (gcc_reason == _URC_CONTINUE_UNWIND)
+270:   270	      if (gcc_reason == _URC_INSTALL_CONTEXT)
+284:   284	      /* In _Unwind_RaiseException_Phase2 we return _URC_FATAL_PHASE2_ERROR. */
+292:   292	      if (gcc_reason == _URC_CONTINUE_UNWIND)
+295:   295	      if (gcc_reason == _URC_HANDLER_FOUND)
+303:   303		  if (gcc_reason != _URC_INSTALL_CONTEXT)
+321:   321	      /* In _Unwind_RaiseException we return _URC_FATAL_PHASE1_ERROR.  */
+339:   339	  return _URC_END_OF_STACK;
+428:   428	    (*exc->exception_cleanup) (_URC_FOREIGN_EXCEPTION_CAUGHT, exc);
+461:   461		return _URC_END_OF_STACK;
+475:   475	      if (trace (&gcc_context, trace_argument) != _URC_NO_REASON)
+476:   476		return _URC_FATAL_PHASE1_ERROR;
+480:   480		return _URC_END_OF_STACK;
+FILE=codes/gcc/libgcc/unwind.inc SHA256=8b23f85e1d86727c8a577404e16f45b279ece24db15c77a32dc0b69b48458025  codes/gcc/libgcc/unwind.inc
+56:    56	      if (code != _URC_NO_REASON)
+59:    59		return _URC_FATAL_PHASE2_ERROR;
+66:    66		  if (code == _URC_INSTALL_CONTEXT)
+68:    68		  if (code != _URC_CONTINUE_UNWIND) 
+69:    69		    return _URC_FATAL_PHASE2_ERROR;
+106:   106	      if (code == _URC_END_OF_STACK)
+108:   108		return _URC_END_OF_STACK;
+110:   110	      if (code != _URC_NO_REASON)
+113:   113		return _URC_FATAL_PHASE1_ERROR;
+120:   120		  if (code == _URC_HANDLER_FOUND)
+122:   122		  else if (code != _URC_CONTINUE_UNWIND)
+123:   123		    return _URC_FATAL_PHASE1_ERROR;
+137:   137	  if (code != _URC_INSTALL_CONTEXT)
+163:   163	      if (code != _URC_NO_REASON && code != _URC_END_OF_STACK
+164:   164		  && code != _URC_NORMAL_STOP)
+165:   165		return _URC_FATAL_PHASE2_ERROR;
+169:   169	      if (code == _URC_END_OF_STACK || code == _URC_NORMAL_STOP)
+173:   173	      if (stop_code != _URC_NO_REASON)
+174:   174		return _URC_FATAL_PHASE2_ERROR;
+178:   178	      if (code == _URC_END_OF_STACK)
+185:   185		  if (code == _URC_INSTALL_CONTEXT)
+187:   187		  if (code != _URC_CONTINUE_UNWIND) 
+188:   188		    return _URC_FATAL_PHASE2_ERROR;
+219:   219	  if (code != _URC_INSTALL_CONTEXT)
+246:   246	  gcc_assert (code == _URC_INSTALL_CONTEXT);
+272:   272	  gcc_assert (code == _URC_INSTALL_CONTEXT);
+284:   284	    (*exc->exception_cleanup) (_URC_FOREIGN_EXCEPTION_CAUGHT, exc);
+304:   304	      if (code != _URC_NO_REASON && code != _URC_END_OF_STACK
+305:   305	          && code != _URC_NORMAL_STOP)
+306:   306		return _URC_FATAL_PHASE1_ERROR;
+309:   309	      if ((*trace) (&context, trace_argument) != _URC_NO_REASON)
+310:   310		return _URC_FATAL_PHASE1_ERROR;
+314:   314	      if (code == _URC_NORMAL_STOP)
+322:   322	      if (code == _URC_END_OF_STACK)
+FILE=codes/llvm/libunwind/include/unwind.h SHA256=e4a58637fc8ca1d29cd600c3c4416aafed50085edf276fa076214c8d81c263f0  codes/llvm/libunwind/include/unwind.h
+33:    33	  _URC_NO_REASON = 0,
+35:    35	  _URC_FOREIGN_EXCEPTION_CAUGHT = 1,
+36:    36	  _URC_FATAL_PHASE2_ERROR = 2,
+37:    37	  _URC_FATAL_PHASE1_ERROR = 3,
+38:    38	  _URC_NORMAL_STOP = 4,
+39:    39	  _URC_END_OF_STACK = 5,
+40:    40	  _URC_HANDLER_FOUND = 6,
+41:    41	  _URC_INSTALL_CONTEXT = 7,
+42:    42	  _URC_CONTINUE_UNWIND = 8,
+44:    44	  _URC_FAILURE = 9
+112:   112	// or the _Unwind_Trace_Fn function returns something other than _URC_NO_REASON.
+REASON_ENUM_FILES_END
+EXIT_CODE=0
