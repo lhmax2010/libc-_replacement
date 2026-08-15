@@ -1,0 +1,101 @@
+$ cat progress/R43/commands/002_resource_gate_driver.log
+ATTEMPT=1 LOG=/home/toolchain/development/libc++_replacement/progress/R43/resources/preflight_attempt1.log EXIT_CODE=20
+RED_STOP_RESOURCE
+RESOURCE_GATE_DRIVER_EXIT_CODE=20
+[exit_code=0]
+$ nl -ba progress/R43/tools/resource_gate.sh
+     1	#!/bin/bash
+     2	set -u
+     3	
+     4	label=${1:-R43}
+     5	printf 'LABEL=%s\n' "$label"
+     6	printf 'COMMAND=nproc\n'
+     7	nproc
+     8	printf 'NPROC_EXIT_CODE=%d\n' "$?"
+     9	printf 'COMMAND=free -h\n'
+    10	free -h
+    11	printf 'FREE_H_EXIT_CODE=%d\n' "$?"
+    12	printf 'COMMAND=uptime\n'
+    13	uptime
+    14	printf 'UPTIME_EXIT_CODE=%d\n' "$?"
+    15	printf 'COMMAND=df -h /home/toolchain/development/libc++_replacement/tmp\n'
+    16	df -h /home/toolchain/development/libc++_replacement/tmp
+    17	printf 'DF_EXIT_CODE=%d\n' "$?"
+    18	printf 'COMMAND=top -bn1 | head -20\n'
+    19	top -bn1 | head -20
+    20	printf 'TOP_EXIT_CODE=%d\n' "${PIPESTATUS[0]}"
+    21	
+    22	nproc_value=$(nproc)
+    23	available_kib=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+    24	load_one=$(awk '{print $1}' /proc/loadavg)
+    25	min_kib=$((8 * 1024 * 1024))
+    26	load_limit=$(awk -v n="$nproc_value" 'BEGIN { printf "%.2f", n * 0.8 }')
+    27	printf 'NPROC_VALUE=%s\nMEM_AVAILABLE_KIB=%s\nLOAD_ONE=%s\nLOAD_LIMIT=%s\n' \
+    28	  "$nproc_value" "$available_kib" "$load_one" "$load_limit"
+    29	
+    30	if [ "$available_kib" -lt "$min_kib" ]; then
+    31	  printf 'GATE_RESULT=RED_STOP_RESOURCE_MEMORY\n'
+    32	  exit 20
+    33	fi
+    34	if awk -v load="$load_one" -v limit="$load_limit" 'BEGIN { exit !(load > limit) }'; then
+    35	  printf 'GATE_RESULT=RETRYABLE_HIGH_LOAD\n'
+    36	  exit 21
+    37	fi
+    38	printf 'GATE_RESULT=PASS\n'
+    39	exit 0
+[exit_code=0]
+$ nl -ba progress/R44/tools/resource_gate.sh
+     1	#!/usr/bin/env bash
+     2	set -u
+     3	
+     4	out_dir=${1:?output directory required}
+     5	mkdir -p "$out_dir"
+     6	
+     7	{
+     8	  echo '$ nproc'
+     9	  nproc
+    10	  echo "[exit_code=$?]"
+    11	  echo '$ free -h'
+    12	  free -h
+    13	  echo "[exit_code=$?]"
+    14	  echo '$ uptime'
+    15	  uptime
+    16	  echo "[exit_code=$?]"
+    17	  echo '$ df -h /home/toolchain/development/libc++_replacement'
+    18	  df -h /home/toolchain/development/libc++_replacement
+    19	  echo "[exit_code=$?]"
+    20	  echo '$ top -bn1 | head -20'
+    21	  set +o pipefail
+    22	  top -bn1 | head -20
+    23	  top_rc=${PIPESTATUS[0]}
+    24	  head_rc=${PIPESTATUS[1]}
+    25	  set -o pipefail
+    26	  echo "[pipeline_exit_codes top=$top_rc head=$head_rc]"
+    27	} >"$out_dir/preflight.raw.log" 2>&1
+    28	
+    29	cpu_count=$(nproc)
+    30	mem_kib=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+    31	load_one=$(awk '{print $1}' /proc/loadavg)
+    32	load_limit=$(awk -v n="$cpu_count" 'BEGIN {printf "%.6f", n * 1.5}')
+    33	
+    34	{
+    35	  printf 'cpu_count\t%s\n' "$cpu_count"
+    36	  printf 'mem_available_kib\t%s\n' "$mem_kib"
+    37	  printf 'mem_threshold_kib\t%s\n' 2097152
+    38	  printf 'load_one\t%s\n' "$load_one"
+    39	  printf 'load_limit\t%s\n' "$load_limit"
+    40	} >"$out_dir/gate_values.tsv"
+    41	
+    42	if (( mem_kib < 2097152 )); then
+    43	  printf 'RED_STOP_RESOURCE\tMEMORY\t%s\n' "$mem_kib" >"$out_dir/gate_result.tsv"
+    44	  exit 20
+    45	fi
+    46	
+    47	if awk -v actual="$load_one" -v limit="$load_limit" 'BEGIN {exit !(actual > limit)}'; then
+    48	  printf 'RED_STOP_RESOURCE\tLOAD\t%s\t%s\n' "$load_one" "$load_limit" >"$out_dir/gate_result.tsv"
+    49	  exit 21
+    50	fi
+    51	
+    52	printf 'PASS\t%s\t%s\n' "$mem_kib" "$load_one" >"$out_dir/gate_result.tsv"
+    53	exit 0
+[exit_code=0]

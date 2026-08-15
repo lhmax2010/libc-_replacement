@@ -1,0 +1,150 @@
+$ cp -a tools/resource_gate.sh progress/R44a/evidence/fixed_resource_gate.sh
+[exit_code=0]
+$ cp -a tools/README.md progress/R44a/evidence/tools_README.md
+[exit_code=0]
+$ nl -ba tools/resource_gate.sh
+     1	#!/usr/bin/env bash
+     2	# Fixed resource gate for build and analysis tasks.
+     3	# Exit codes:
+     4	#   0  gate passed
+     5	#   10 script/usage/dependency error
+     6	#   20 insufficient available memory
+     7	#   21 excessive one-minute load average
+     8	
+     9	set -u
+    10	set -o pipefail
+    11	
+    12	level='NOT_AVAILABLE'
+    13	cpu_count='NOT_AVAILABLE'
+    14	mem_available_kib='NOT_AVAILABLE'
+    15	mem_min_kib='NOT_AVAILABLE'
+    16	load_one='NOT_AVAILABLE'
+    17	load_multiplier='NOT_AVAILABLE'
+    18	load_limit='NOT_AVAILABLE'
+    19	disk_path=${RESOURCE_GATE_DISK_PATH:-.}
+    20	disk_available_kib='NOT_AVAILABLE'
+    21	
+    22	usage() {
+    23	  printf 'Usage: %s --level {light|medium|heavy}\n' "$0"
+    24	}
+    25	
+    26	self_error() {
+    27	  printf 'level=%s\n' "$level"
+    28	  printf 'nproc=%s\n' "$cpu_count"
+    29	  printf 'mem_available_kib=%s\n' "$mem_available_kib"
+    30	  printf 'mem_min_kib=%s\n' "$mem_min_kib"
+    31	  printf 'load1=%s\n' "$load_one"
+    32	  printf 'load_multiplier=%s\n' "$load_multiplier"
+    33	  printf 'load_limit=%s\n' "$load_limit"
+    34	  printf 'disk_path=%s\n' "$disk_path"
+    35	  printf 'disk_available_kib=%s\n' "$disk_available_kib"
+    36	  printf 'gate_result=SELF_ERROR\n'
+    37	  printf 'error=%s\n' "$1"
+    38	  exit 10
+    39	}
+    40	
+    41	if (( $# != 2 )); then
+    42	  usage
+    43	  self_error 'expected exactly: --level LEVEL'
+    44	fi
+    45	if [[ ${1:-} != '--level' ]]; then
+    46	  usage
+    47	  self_error 'first argument must be --level'
+    48	fi
+    49	level=${2:-}
+    50	
+    51	case "$level" in
+    52	  light)
+    53	    default_mem_min_kib=2097152
+    54	    default_load_multiplier=1.5
+    55	    ;;
+    56	  medium)
+    57	    default_mem_min_kib=4194304
+    58	    default_load_multiplier=1.0
+    59	    ;;
+    60	  heavy)
+    61	    default_mem_min_kib=8388608
+    62	    default_load_multiplier=0.8
+    63	    ;;
+    64	  *)
+    65	    usage
+    66	    self_error "invalid level: $level"
+    67	    ;;
+    68	esac
+    69	
+    70	mem_min_kib=${RESOURCE_GATE_MEM_MIN_KIB:-$default_mem_min_kib}
+    71	load_multiplier=${RESOURCE_GATE_LOAD_MULTIPLIER:-$default_load_multiplier}
+    72	
+    73	for required_command in nproc awk df; do
+    74	  if ! command -v "$required_command" >/dev/null 2>&1; then
+    75	    self_error "required command not found: $required_command"
+    76	  fi
+    77	done
+    78	
+    79	if ! [[ $mem_min_kib =~ ^[0-9]+$ ]]; then
+    80	  self_error 'RESOURCE_GATE_MEM_MIN_KIB must be a non-negative integer'
+    81	fi
+    82	if ! [[ $load_multiplier =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    83	  self_error 'RESOURCE_GATE_LOAD_MULTIPLIER must be a non-negative number'
+    84	fi
+    85	if [[ ! -r /proc/meminfo ]]; then
+    86	  self_error '/proc/meminfo is not readable'
+    87	fi
+    88	if [[ ! -r /proc/loadavg ]]; then
+    89	  self_error '/proc/loadavg is not readable'
+    90	fi
+    91	if [[ ! -e $disk_path ]]; then
+    92	  self_error "disk path does not exist: $disk_path"
+    93	fi
+    94	
+    95	cpu_count=$(nproc) || self_error 'nproc failed'
+    96	mem_available_kib=$(awk '/^MemAvailable:/ {print $2; found=1; exit} END {if (!found) exit 1}' /proc/meminfo) ||
+    97	  self_error 'failed to read MemAvailable from /proc/meminfo'
+    98	load_one=$(awk '{print $1; exit}' /proc/loadavg) || self_error 'failed to read load1 from /proc/loadavg'
+    99	load_limit=$(awk -v cpus="$cpu_count" -v multiplier="$load_multiplier" \
+   100	  'BEGIN {printf "%.6f", cpus * multiplier}') || self_error 'failed to calculate load limit'
+   101	disk_available_kib=$(df -Pk "$disk_path" | awk 'NR == 2 {print $4; found=1} END {if (!found) exit 1}') ||
+   102	  self_error "failed to read disk availability for: $disk_path"
+   103	
+   104	if ! [[ $cpu_count =~ ^[1-9][0-9]*$ ]]; then
+   105	  self_error "invalid nproc value: $cpu_count"
+   106	fi
+   107	if ! [[ $mem_available_kib =~ ^[0-9]+$ ]]; then
+   108	  self_error "invalid MemAvailable value: $mem_available_kib"
+   109	fi
+   110	if ! [[ $load_one =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+   111	  self_error "invalid load1 value: $load_one"
+   112	fi
+   113	if ! [[ $disk_available_kib =~ ^[0-9]+$ ]]; then
+   114	  self_error "invalid disk availability value: $disk_available_kib"
+   115	fi
+   116	
+   117	printf 'level=%s\n' "$level"
+   118	printf 'nproc=%s\n' "$cpu_count"
+   119	printf 'mem_available_kib=%s\n' "$mem_available_kib"
+   120	printf 'mem_min_kib=%s\n' "$mem_min_kib"
+   121	printf 'load1=%s\n' "$load_one"
+   122	printf 'load_multiplier=%s\n' "$load_multiplier"
+   123	printf 'load_limit=%s\n' "$load_limit"
+   124	printf 'disk_path=%s\n' "$disk_path"
+   125	printf 'disk_available_kib=%s\n' "$disk_available_kib"
+   126	
+   127	if (( mem_available_kib < mem_min_kib )); then
+   128	  printf 'gate_result=INSUFFICIENT_MEMORY\n'
+   129	  exit 20
+   130	fi
+   131	
+   132	if awk -v actual="$load_one" -v limit="$load_limit" 'BEGIN {exit !(actual > limit)}'; then
+   133	  printf 'gate_result=EXCESSIVE_LOAD\n'
+   134	  exit 21
+   135	fi
+   136	
+   137	printf 'gate_result=PASS\n'
+   138	exit 0
+[exit_code=0]
+$ sha256sum tools/resource_gate.sh tools/README.md progress/R43/tools/resource_gate.sh progress/R44/tools/resource_gate.sh
+6d35feeaef2221b50a3132d157714360ffa017884808b72e8f0a0a10d7866969  tools/resource_gate.sh
+b7127ddb6dfeee12c8e91f00be39972cf7ad760bbde4b8313a9c4311a2afda46  tools/README.md
+841e1c28b2a30bd5c48b6e8ab2110c1b5afc60915e20a8ace4840aeb11d2ee32  progress/R43/tools/resource_gate.sh
+bd927f50c64fb67369e381ef518d00cd5341ccf0a0ab3fdb88f8cf3a91405e99  progress/R44/tools/resource_gate.sh
+[exit_code=0]
