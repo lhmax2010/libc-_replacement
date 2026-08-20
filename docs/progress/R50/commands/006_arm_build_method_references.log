@@ -1,0 +1,310 @@
+$ sed -n '1,320p' docs/progress/R46/code/tools/build_header_consumers.sh
+#!/usr/bin/env bash
+set -e
+set -u
+set -o pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+arch=${1:?architecture required}
+source_file="$workspace/progress/R46/src/stdlib_header_site_probe.cpp"
+out_dir="$workspace/tmp/R46/tests/$arch"
+patched_headers="$workspace/tmp/R46/overlay/include"
+r45_abi_headers_x86="$workspace/tmp/R45/build-x86_64/include/c++/v1"
+r45_abi_headers_arm="$workspace/tmp/R45/build-armv7l/include/c++/v1"
+
+case "$arch" in
+  x86_64)
+    cxx="$workspace/progress/R33/tools/tizen-clang++"
+    headers="$r45_abi_headers_x86"
+    abi_dir="$workspace/tmp/R45/runtime/x86_64"
+    baseline="$workspace/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib"
+    ;;
+  armv7l)
+    cxx="$workspace/progress/R36/tools/armv7l-clang++"
+    headers="$r45_abi_headers_arm"
+    abi_dir="$workspace/tmp/R45/build-armv7l/lib"
+    compiler_sysroot="$workspace/tmp/GBS-ROOT/R30-semantic-libcxx-armv7l-20260812-01/local/BUILD-ROOTS/scratch.armv7l.0"
+    gxx_headers="$compiler_sysroot/usr/lib/gcc/armv7l-tizen-linux-gnueabi/14.2.0/include/c++"
+    baseline="$workspace/tmp/GBS-ROOT/LIBCXX-2218-armv7l-20260806-c2/local/BUILD-ROOTS/scratch.armv7l.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib"
+    ;;
+  *)
+    printf 'unsupported architecture: %s\n' "$arch" >&2
+    exit 2
+    ;;
+esac
+
+mkdir -p "$out_dir"
+
+run() {
+  printf 'COMMAND='
+  printf '%q ' "$@"
+  printf '\n'
+  nice -n 15 ionice -c 3 "$@"
+  rc=$?
+  printf 'EXIT_CODE=%d\n' "$rc"
+  return "$rc"
+}
+
+compile_libcxx() {
+  local variant=$1
+  local include_root=$2
+  local object="$out_dir/$variant.o"
+  if [[ $arch == x86_64 ]]; then
+    local binary="$out_dir/$variant"
+    run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+      -nostdinc++ -I"$include_root" -I"$headers" "$source_file" \
+      -L"$abi_dir" -L"$baseline" -Wl,-z,now \
+      -Wl,-rpath-link,"$abi_dir" -Wl,-rpath-link,"$baseline" \
+      -lc++ -lc++abi -o "$binary"
+  else
+    local binary="$out_dir/lib$variant.so"
+    run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+      -nostdinc++ -I"$include_root" -I"$headers" -fPIC -c "$source_file" -o "$object"
+    run "$cxx" -shared "$object" -nostdlib++ -L"$baseline" -Wl,-z,now \
+      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$baseline" \
+      -lc++ -lpthread -ldl -lm \
+      -latomic -lc -lgcc_s -lgcc -o "$binary"
+  fi
+}
+
+compile_libcxx unpatched_headers "$headers"
+compile_libcxx patched_headers "$patched_headers"
+
+if [[ $arch == x86_64 ]]; then
+  run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread "$source_file" \
+    -o "$out_dir/libstdcxx"
+  outputs=("$out_dir/unpatched_headers" "$out_dir/patched_headers" "$out_dir/libstdcxx")
+else
+  run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -fPIC -nostdinc++ \
+    -I"$gxx_headers" -I"$gxx_headers/armv7l-tizen-linux-gnueabi" \
+    -I"$gxx_headers/backward" -c "$source_file" -o "$out_dir/libstdcxx.o"
+  run "$cxx" -shared "$out_dir/libstdcxx.o" -pthread -Wl,-z,now \
+    -o "$out_dir/liblibstdcxx.so"
+  run "$cxx" -x c -std=c11 -O0 -g -nostdinc -nostdlib++ -c \
+    "$workspace/progress/R46/src/dso_launcher.c" -o "$out_dir/dso_launcher.o"
+  run "$cxx" "$out_dir/dso_launcher.o" -nostdlib++ -ldl -lc -lgcc_s -lgcc \
+    -o "$out_dir/dso_launcher"
+  outputs=("$out_dir/libunpatched_headers.so" "$out_dir/libpatched_headers.so" \
+           "$out_dir/liblibstdcxx.so" "$out_dir/dso_launcher")
+fi
+
+for binary in "${outputs[@]}"; do
+  file "$binary"
+  sha256sum "$binary"
+  readelf -dW "$binary"
+  readelf --dyn-syms -W "$binary" | grep -E '__forced_unwind|UND' || true
+done
+EXIT_CODE=0
+$ sed -n '1,300p' docs/progress/R45/code/tools/build_test_binaries.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+arch=${1:?architecture required}
+source_dir="$workspace/progress/R45/src/upstream"
+out="$workspace/tmp/R45/tests/$arch"
+mkdir -p "$out/libcxx" "$out/libstdcxx"
+
+run() {
+  printf 'COMMAND='
+  printf '%q ' "$@"
+  printf '\n'
+  "$@"
+  rc=$?
+  printf 'EXIT_CODE=%d\n' "$rc"
+  return "$rc"
+}
+
+tests=(forced_unwind1 forced_unwind2 forced_unwind3 forced_unwind4
+       unwind_01 unwind_02 unwind_03 unwind_04 unwind_05 unwind_06)
+
+if [[ $arch == x86_64 ]]; then
+  cxx="$workspace/progress/R33/tools/tizen-clang++"
+  headers="$workspace/tmp/R45/build-x86_64/include/c++/v1"
+  abi="$workspace/tmp/R45/runtime/x86_64"
+  sysroot="$workspace/tmp/GBS-ROOT/R32-candidates-libcxx-x86_64-20260813-02/local/BUILD-ROOTS/scratch.x86_64.0"
+  baseline="$workspace/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib"
+  for name in "${tests[@]}"; do
+    opt=-O0
+    [[ $name == unwind_06 ]] && opt=-Os
+    run "$cxx" -std=c++14 "$opt" -g -fexceptions -pthread -stdlib=libc++ \
+      -nostdinc++ -I"$headers" -I"$workspace/tmp/R45/source-patched/libcxxabi/include" \
+      "$source_dir/$name.pass.cpp" -L"$abi" -L"$baseline" -L"$sysroot/usr/lib64" \
+      -Wl,-z,now -Wl,-rpath-link,"$baseline" -lc++ -lc++abi -o "$out/libcxx/$name"
+    run "$cxx" -std=c++14 "$opt" -g -fexceptions -pthread \
+      -I"$workspace/codes/llvm/libcxxabi/include" -c "$source_dir/$name.pass.cpp" \
+      -o "$out/libstdcxx/$name.o"
+    run "$cxx" "$out/libstdcxx/$name.o" -pthread -Wl,-z,now \
+      -o "$out/libstdcxx/$name"
+  done
+  run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+    -nostdinc++ -I"$headers" "$workspace/progress/R45/src/s1_rethrow_probe.cpp" \
+    -L"$abi" -L"$baseline" -L"$sysroot/usr/lib64" -Wl,-z,now \
+    -Wl,-rpath-link,"$baseline" -lc++ -lc++abi -o "$out/libcxx/s1_rethrow_probe"
+  run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread \
+    "$workspace/progress/R45/src/s1_rethrow_probe.cpp" -Wl,-z,now \
+    -o "$out/libstdcxx/s1_rethrow_probe"
+  run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+    -nostdinc++ -I"$headers" "$workspace/progress/R45/src/unpatched_cancel_probe.cpp" \
+    -L"$baseline" -L"$sysroot/usr/lib64" -Wl,-z,now -Wl,-rpath-link,"$baseline" \
+    -lc++ -lc++abi -o "$out/libcxx/unpatched_cancel_probe"
+elif [[ $arch == armv7l ]]; then
+  cxx="$workspace/progress/R36/tools/armv7l-clang++"
+  headers="$workspace/tmp/R45/build-armv7l/include/c++/v1"
+  abi="$workspace/tmp/R45/build-armv7l/lib"
+  static_libcxx="$workspace/tmp/R38/build-unpatched-armv7l/lib/libc++.a"
+  unpatched_abi="$workspace/tmp/R38/build-unpatched-armv7l/lib"
+  for name in "${tests[@]}"; do
+    opt=-O0
+    [[ $name == unwind_06 ]] && opt=-Os
+    run "$cxx" -std=c++14 "$opt" -g -fexceptions -pthread -stdlib=libc++ \
+      -nostdinc++ -I"$headers" -I"$workspace/tmp/R45/source-patched/libcxxabi/include" \
+      -c "$source_dir/$name.pass.cpp" -o "$out/libcxx/$name.o"
+    run "$cxx" "$out/libcxx/$name.o" -nostdlib++ "$static_libcxx" -L"$abi" \
+      -Wl,-z,now -lc++abi -lpthread -ldl -lm -latomic -lc -lgcc_s -lgcc \
+      -o "$out/libcxx/$name"
+    run "$cxx" -std=c++14 "$opt" -g -fexceptions -pthread \
+      -I"$workspace/codes/llvm/libcxxabi/include" -c "$source_dir/$name.pass.cpp" \
+      -o "$out/libstdcxx/$name.o"
+    run "$cxx" "$out/libstdcxx/$name.o" -pthread -Wl,-z,now \
+      -o "$out/libstdcxx/$name"
+  done
+  run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+    -nostdinc++ -I"$headers" -Dprivate_1=unwinder_cache.reserved1 \
+    -c "$workspace/progress/R45/src/s1_rethrow_probe.cpp" -o "$out/libcxx/s1_rethrow_probe.o"
+  run "$cxx" "$out/libcxx/s1_rethrow_probe.o" -nostdlib++ "$static_libcxx" -L"$abi" \
+    -Wl,-z,now -lc++abi -lpthread -ldl -lm -latomic -lc -lgcc_s -lgcc \
+    -o "$out/libcxx/s1_rethrow_probe"
+  run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread \
+    -Dprivate_1=unwinder_cache.reserved1 -c "$workspace/progress/R45/src/s1_rethrow_probe.cpp" \
+    -o "$out/libstdcxx/s1_rethrow_probe.o"
+  run "$cxx" "$out/libstdcxx/s1_rethrow_probe.o" -pthread -Wl,-z,now \
+    -o "$out/libstdcxx/s1_rethrow_probe"
+  run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+    -nostdinc++ -I"$headers" -c "$workspace/progress/R45/src/unpatched_cancel_probe.cpp" \
+    -o "$out/libcxx/unpatched_cancel_probe.o"
+  run "$cxx" "$out/libcxx/unpatched_cancel_probe.o" -nostdlib++ "$static_libcxx" \
+    -L"$unpatched_abi" -Wl,-z,now -lc++abi -lpthread -ldl -lm -latomic -lc \
+    -lgcc_s -lgcc -o "$out/libcxx/unpatched_cancel_probe"
+else
+  printf 'ERROR: unsupported architecture: %s\n' "$arch" >&2
+  exit 2
+fi
+
+for binary in "$out"/libcxx/* "$out"/libstdcxx/*; do
+  [[ -x $binary ]] || continue
+  file "$binary"
+  sha256sum "$binary"
+  readelf -dW "$binary"
+done
+EXIT_CODE=0
+$ arm_build=...; rg -n -C 2 'ios\.instantiations\.cpp\.o' "$arm_build/build.ninja" | head -80
+16581-  TARGET_PDB = lib/libc++.pdb
+16582-
+16583:build libcxx/src/CMakeFiles/cxx_shared.dir/ios.instantiations.cpp.o: CXX_COMPILER__cxx_shared_unscanned_Release /home/abuild/rpmbuild/BUILD/llvm-22.1.8/libcxx/src/ios.instantiations.cpp || cmake_object_order_depends_target_cxx_shared
+16584-  DEFINES = -DLIBCXX_BUILDING_LIBCXXABI -DLIBC_NAMESPACE=__llvm_libc_common_utils -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION=2 -D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER -D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+16585:  DEP_FILE = libcxx/src/CMakeFiles/cxx_shared.dir/ios.instantiations.cpp.o.d
+16586-  FLAGS = -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g --rtlib=libgcc -fvisibility-inlines-hidden -Werror=date-time -Werror=unguarded-availability-new -Wall -Wextra -Wno-unused-parameter -Wwrite-strings -Wcast-qual -Wmissing-field-initializers -Wimplicit-fallthrough -Wcovered-switch-default -Wno-noexcept-type -Wnon-virtual-dtor -Wdelete-non-virtual-dtor -Wsuggest-override -Wstring-conversion -Wno-pass-failed -Wmisleading-indentation -Wctad-maybe-unsupported -fdiagnostics-color -ffunction-sections -fdata-sections -O3 -DNDEBUG -std=c++23 -fPIC -faligned-allocation -nostdinc++ -fvisibility-inlines-hidden -fvisibility=hidden -fsized-deallocation -Wall -Wextra -Wnewline-eof -Wshadow -Wwrite-strings -Wno-unused-parameter -Wno-long-long -Werror=return-type -Wextra-semi -Wundef -Wunused-template -Wformat-nonliteral -Wzero-length-array -Wdeprecated-redundant-constexpr-static-def -Wno-nullability-completeness -Wmissing-prototypes -Wno-user-defined-literals -Wno-covered-switch-default -Wno-suggest-override -Wno-error -fdebug-prefix-map=/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/include/c++/v1=/home/abuild/rpmbuild/BUILD/llvm-22.1.8/libcxx/include
+16587-  INCLUDES = -I/home/abuild/rpmbuild/BUILD/llvm-22.1.8/libcxx/src -I/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/include/c++/v1 -I/home/abuild/rpmbuild/BUILD/llvm-22.1.8/libcxxabi/include -I/home/abuild/rpmbuild/BUILD/llvm-22.1.8/cmake/Modules/../../libc
+--
+16689-# Link the shared library lib/libc++.so.1.0
+16690-
+16691:build lib/libc++.so.1.0: CXX_SHARED_LIBRARY_LINKER__cxx_shared_Release libcxx/src/CMakeFiles/cxx_shared.dir/algorithm.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/any.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/bind.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/call_once.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/charconv.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/chrono.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/error_category.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/exception.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/expected.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/filesystem/filesystem_clock.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/filesystem/filesystem_error.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/filesystem/path.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/functional.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/hash.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/memory.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/memory_resource.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/new_handler.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/new_helpers.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/optional.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/print.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/random_shuffle.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/ryu/d2fixed.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/ryu/d2s.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/ryu/f2s.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/stdexcept.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/string.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/system_error.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/typeinfo.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/valarray.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/variant.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/vector.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/verbose_abort.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/atomic.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/barrier.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/condition_variable_destructor.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/condition_variable.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/future.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/mutex_destructor.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/mutex.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/shared_mutex.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/thread.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/random.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/fstream.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/ios.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/ios.instantiations.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/iostream.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/locale.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/ostream.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/regex.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/strstream.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/filesystem/directory_entry.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/filesystem/directory_iterator.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/filesystem/operations.cpp.o libcxx/src/CMakeFiles/cxx_shared.dir/filesystem/int128_builtins.cpp.o | lib/libc++abi.so.1.0 || lib/libc++abi.so libcxx/include/generate-cxx-headers libcxxabi/include/generate-cxxabi-headers libcxxabi/src/cxxabi_shared_objects lib/libc++abi.so
+16692-  DEP_FILE = libcxx/src/CMakeFiles/cxx_shared.dir/link.d
+16693-  LANGUAGE_COMPILE_FLAGS = -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g --rtlib=libgcc -fvisibility-inlines-hidden -Werror=date-time -Werror=unguarded-availability-new -Wall -Wextra -Wno-unused-parameter -Wwrite-strings -Wcast-qual -Wmissing-field-initializers -Wimplicit-fallthrough -Wcovered-switch-default -Wno-noexcept-type -Wnon-virtual-dtor -Wdelete-non-virtual-dtor -Wsuggest-override -Wstring-conversion -Wno-pass-failed -Wmisleading-indentation -Wctad-maybe-unsupported -fdiagnostics-color -ffunction-sections -fdata-sections -O3 -DNDEBUG
+--
+17160-  TARGET_PDB = lib/libc++.pdb
+17161-
+17162:build libcxx/src/CMakeFiles/cxx_static.dir/ios.instantiations.cpp.o: CXX_COMPILER__cxx_static_unscanned_Release /home/abuild/rpmbuild/BUILD/llvm-22.1.8/libcxx/src/ios.instantiations.cpp || cmake_object_order_depends_target_cxx_static
+17163-  DEFINES = -DLIBCXX_BUILDING_LIBCXXABI -DLIBC_NAMESPACE=__llvm_libc_common_utils -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION=2 -D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER -D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+17164:  DEP_FILE = libcxx/src/CMakeFiles/cxx_static.dir/ios.instantiations.cpp.o.d
+17165-  FLAGS = -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g --rtlib=libgcc -fvisibility-inlines-hidden -Werror=date-time -Werror=unguarded-availability-new -Wall -Wextra -Wno-unused-parameter -Wwrite-strings -Wcast-qual -Wmissing-field-initializers -Wimplicit-fallthrough -Wcovered-switch-default -Wno-noexcept-type -Wnon-virtual-dtor -Wdelete-non-virtual-dtor -Wsuggest-override -Wstring-conversion -Wno-pass-failed -Wmisleading-indentation -Wctad-maybe-unsupported -fdiagnostics-color -ffunction-sections -fdata-sections -O3 -DNDEBUG -std=c++23 -faligned-allocation -nostdinc++ -fvisibility-inlines-hidden -fvisibility=hidden -fsized-deallocation -Wall -Wextra -Wnewline-eof -Wshadow -Wwrite-strings -Wno-unused-parameter -Wno-long-long -Werror=return-type -Wextra-semi -Wundef -Wunused-template -Wformat-nonliteral -Wzero-length-array -Wdeprecated-redundant-constexpr-static-def -Wno-nullability-completeness -Wmissing-prototypes -Wno-user-defined-literals -Wno-covered-switch-default -Wno-suggest-override -Wno-error -fdebug-prefix-map=/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/include/c++/v1=/home/abuild/rpmbuild/BUILD/llvm-22.1.8/libcxx/include
+17166-  INCLUDES = -I/home/abuild/rpmbuild/BUILD/llvm-22.1.8/libcxx/src -I/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/include/c++/v1 -I/home/abuild/rpmbuild/BUILD/llvm-22.1.8/libcxxabi/include -I/home/abuild/rpmbuild/BUILD/llvm-22.1.8/cmake/Modules/../../libc
+--
+17268-# Link the static library lib/libc++.a
+17269-
+17270:build lib/libc++.a: CXX_STATIC_LIBRARY_LINKER__cxx_static_Release libcxx/src/CMakeFiles/cxx_static.dir/algorithm.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/any.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/bind.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/call_once.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/charconv.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/chrono.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/error_category.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/exception.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/expected.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/filesystem/filesystem_clock.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/filesystem/filesystem_error.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/filesystem/path.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/functional.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/hash.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/memory.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/memory_resource.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/new_handler.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/new_helpers.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/optional.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/print.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/random_shuffle.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/ryu/d2fixed.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/ryu/d2s.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/ryu/f2s.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/stdexcept.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/string.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/system_error.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/typeinfo.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/valarray.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/variant.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/vector.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/verbose_abort.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/atomic.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/barrier.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/condition_variable_destructor.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/condition_variable.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/future.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/mutex_destructor.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/mutex.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/shared_mutex.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/thread.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/random.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/fstream.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/ios.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/ios.instantiations.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/iostream.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/locale.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/ostream.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/regex.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/strstream.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/filesystem/directory_entry.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/filesystem/directory_iterator.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/filesystem/operations.cpp.o libcxx/src/CMakeFiles/cxx_static.dir/filesystem/int128_builtins.cpp.o || lib/libc++abi.a libcxx/include/generate-cxx-headers libcxxabi/include/generate-cxxabi-headers libcxxabi/src/cxxabi_static_objects
+17271-  LANGUAGE_COMPILE_FLAGS = -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g --rtlib=libgcc -fvisibility-inlines-hidden -Werror=date-time -Werror=unguarded-availability-new -Wall -Wextra -Wno-unused-parameter -Wwrite-strings -Wcast-qual -Wmissing-field-initializers -Wimplicit-fallthrough -Wcovered-switch-default -Wno-noexcept-type -Wnon-virtual-dtor -Wdelete-non-virtual-dtor -Wsuggest-override -Wstring-conversion -Wno-pass-failed -Wmisleading-indentation -Wctad-maybe-unsupported -fdiagnostics-color -ffunction-sections -fdata-sections -O3 -DNDEBUG
+17272-  OBJECT_DIR = libcxx/src/CMakeFiles/cxx_static.dir
+EXIT_CODE=0
+$ sed -n '1,220p' docs/progress/R47/code/tools/build_libcxx_r47.sh
+#!/usr/bin/env bash
+# R47:以补丁 istream overlay 重编 ios.instantiations.cpp.o 并重链 libc++.so.1.0。
+# 改编自 R44b build_ios_spike.sh(x86_64 专用;源文件不改,补丁在 overlay 头文件中)。
+set -u
+set -o pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+out_dir="$workspace/tmp/R47/build/x86_64"
+overlay_include="$workspace/tmp/R47/overlay/include"
+abi_include="$workspace/tmp/R45/source-patched/libcxxabi/include"
+version_script="$workspace/packaging/libcxx-llvm22.map"
+
+buildroot="$workspace/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0"
+r45_abi="$workspace/tmp/R45/runtime/x86_64/libc++abi.so.1.0"
+buildroot_compiler=/bin/x86_64-tizen-linux-gnu-clang++
+host_compiler="$workspace/progress/R33/tools/tizen-clang++"
+
+source_root="$buildroot/home/abuild/rpmbuild/BUILD/llvm-22.1.8"
+build_dir="$source_root/build"
+object_out="$out_dir/ios.instantiations.cpp.o"
+dep_out="$out_dir/ios.instantiations.cpp.o.d"
+library_out="$out_dir/libc++.so.1.0"
+link_dep_out="$out_dir/libc++.link.d"
+mkdir -p "$out_dir"
+
+compile_command=$(ninja -C "$build_dir" -t commands libcxx/src/CMakeFiles/cxx_shared.dir/ios.instantiations.cpp.o |
+  awk '/ -c \/home\/abuild\/rpmbuild\/BUILD\/llvm-22[.]1[.]8\/libcxx\/src\/ios[.]instantiations[.]cpp$/ {line=$0} END {print line}')
+if [[ -z $compile_command ]]; then
+  printf 'compile command not found\n' >&2
+  exit 3
+fi
+
+compile_command=${compile_command//\/home\/abuild\/rpmbuild\/BUILD\/llvm-22.1.8/$source_root}
+compile_command=${compile_command/#$buildroot_compiler/${host_compiler@Q}}
+# 前置 overlay(补丁 istream)与 R45 libcxxabi 头(__forced_unwind 所在的 cxxabi.h);
+# 插在第一个 -D 之前,使其位于既有全部 -I 之前(与 R44b 同法)。
+compile_command=${compile_command/ -D/ -I${overlay_include@Q} -I${abi_include@Q} -D}
+compile_command=${compile_command//-MF libcxx\/src\/CMakeFiles\/cxx_shared.dir\/ios.instantiations.cpp.o.d/-MF ${dep_out@Q}}
+compile_command=${compile_command//-o libcxx\/src\/CMakeFiles\/cxx_shared.dir\/ios.instantiations.cpp.o/-o ${object_out@Q}}
+
+printf 'PWD=%q\n' "$build_dir"
+printf 'COMPILE_COMMAND=cd %q && %s\n' "$build_dir" "$compile_command"
+(cd "$build_dir" && eval "nice -n 15 ionice -c 3 $compile_command")
+compile_rc=$?
+printf 'COMPILE_EXIT_CODE=%s\n' "$compile_rc"
+if (( compile_rc != 0 )); then
+  exit "$compile_rc"
+fi
+
+link_command=$(ninja -C "$build_dir" -t commands cxx_shared |
+  awk '/ -shared .* -o lib\/libc[+][+]\.so\.1\.0 / {line=$0} END {print line}')
+if [[ -z $link_command ]]; then
+  printf 'link command not found\n' >&2
+  exit 4
+fi
+
+link_command=${link_command//-Wl,--version-script=\/home\/abuild\/rpmbuild\/SOURCES\/libcxx-llvm22.map/-Wl,--version-script=${version_script@Q}}
+link_command=${link_command//$buildroot_compiler/${host_compiler@Q}}
+link_command=${link_command//-Xlinker --dependency-file=libcxx\/src\/CMakeFiles\/cxx_shared.dir\/link.d/-Xlinker --dependency-file=${link_dep_out@Q}}
+link_command=${link_command//-o lib\/libc++.so.1.0/-o ${library_out@Q}}
+link_command=${link_command//libcxx\/src\/CMakeFiles\/cxx_shared.dir\/ios.instantiations.cpp.o/${object_out@Q}}
+link_command=${link_command//lib\/libc++abi.so.1.0/${r45_abi@Q}}
+link_command=${link_command//-Wl,-rpath,\/home\/abuild\/rpmbuild\/BUILD\/llvm-22.1.8\/build\/lib:/-Wl,-rpath,${out_dir@Q}:}
+# ninja 输出的命令形如 “: && <link> && :”;剥掉前后哨兵,否则 nice/ionice 会去执行 “:”。
+link_command=${link_command#: && }
+link_command=${link_command% && :}
+
+printf 'LINK_COMMAND=cd %q && %s\n' "$build_dir" "$link_command"
+(cd "$build_dir" && eval "nice -n 15 ionice -c 3 $link_command")
+link_rc=$?
+printf 'LINK_EXIT_CODE=%s\n' "$link_rc"
+if (( link_rc != 0 )); then
+  exit "$link_rc"
+fi
+
+ln -sfn libc++.so.1.0 "$out_dir/libc++.so.1"
+ln -sfn libc++.so.1 "$out_dir/libc++.so"
+sha256sum "$object_out" "$library_out"
+readelf -dW "$library_out" | head -20
+EXIT_CODE=0

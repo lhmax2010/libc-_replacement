@@ -1,0 +1,305 @@
+$ rg --files docs/progress/R47 | LC_ALL=C sort
+docs/progress/R47/INDEX.tsv
+docs/progress/R47/MANIFEST.sha256
+docs/progress/R47/REPORT.md
+docs/progress/R47/code/config/CMakeCache.gbs_x86_64.txt
+docs/progress/R47/code/libcxx/istream.diff
+docs/progress/R47/code/libcxx/istream.patched
+docs/progress/R47/code/tests/r47_cancel_probe.cpp
+docs/progress/R47/code/tests/site_symbol_probe.cpp
+docs/progress/R47/code/tests/site_symbol_probe_cxx20.cpp
+docs/progress/R47/code/tools/build_consumers_r47.sh
+docs/progress/R47/code/tools/build_libcxx_r47.sh
+docs/progress/R47/code/tools/run_x86_matrix_r47.sh
+docs/progress/R47/commands/001_input_identity.log
+docs/progress/R47/commands/002_enclosing_function_raw.log
+docs/progress/R47/commands/003_reference_lib_identity.log
+docs/progress/R47/commands/004_rpm_extract.log
+docs/progress/R47/commands/005_dynsym_dump.log
+docs/progress/R47/commands/006_per_function_library_side.log
+docs/progress/R47/commands/007_negative_assertions.log
+docs/progress/R47/commands/008_helper_carrier.log
+docs/progress/R47/commands/009_build_probes.log
+docs/progress/R47/commands/010_probe_nm_dump.log
+docs/progress/R47/commands/011_consumer_side_members.log
+docs/progress/R47/commands/012_consumer_side_free_future.log
+docs/progress/R47/commands/013_consumer_side_refine.log
+docs/progress/R47/commands/014_consumer_side_final_checks.log
+docs/progress/R47/commands/015_async_symbol_search.log
+docs/progress/R47/commands/016_overlay_prepare.log
+docs/progress/R47/commands/017_overlay_diff.log
+docs/progress/R47/commands/018_prebuild_gate.log
+docs/progress/R47/commands/019_build_libcxx_r47.log
+docs/progress/R47/commands/020_build_libcxx_r47_retry.log
+docs/progress/R47/commands/021_patched_lib_identity.log
+docs/progress/R47/commands/022_build_consumers.log
+docs/progress/R47/commands/023_consumer_precheck.log
+docs/progress/R47/commands/024_postrun_identity_and_resources.log
+docs/progress/R47/raw/nm_cxx17_O0.txt
+docs/progress/R47/raw/nm_cxx17_O2.txt
+docs/progress/R47/raw/nm_cxx20_O0.txt
+docs/progress/R47/raw/nm_cxx20_O2.txt
+docs/progress/R47/raw/resources/000_top_before_work.log
+docs/progress/R47/raw/resources/001_resource_gate.log
+docs/progress/R47/raw/x86_64_matrix.raw.log
+docs/progress/R47/tables/classification_counts.tsv
+docs/progress/R47/tables/input_unaggregated_34.tsv
+docs/progress/R47/tables/reference_lib_identity.tsv
+docs/progress/R47/tables/runtime_matrix.tsv
+docs/progress/R47/tables/site_classification_34.tsv
+EXIT_CODE=0
+$ sha256sum docs/progress/R47/REPORT.md docs/progress/R47/tables/site_classification_34.tsv docs/progress/R47/tables/input_unaggregated_34.tsv docs/progress/R47/code/tests/site_symbol_probe.cpp docs/progress/R47/code/tests/site_symbol_probe_cxx20.cpp docs/progress/R47/code/tools/build_consumers_r47.sh docs/progress/R47/code/tools/build_libcxx_r47.sh
+21824d49618ebb5a93cdd22de2992e296b3c0459ee2ee8487997bc6ee829232b  docs/progress/R47/REPORT.md
+a4b6cbb449f4b816be3eafda2cd67c63b2d996e456f2227b1622bb6104f94d20  docs/progress/R47/tables/site_classification_34.tsv
+cf29138b3836f7d832122d5066d2317ef8c031ec4911d0b81ea84fd31ff203fa  docs/progress/R47/tables/input_unaggregated_34.tsv
+47699a5905d0f978a3a96cb9c3b88096df9670d28d76333805a1dbf7b8b45c7d  docs/progress/R47/code/tests/site_symbol_probe.cpp
+19394f8a705ce303b938af06cf91a989a2a934ac167089522c73d5e7407142f3  docs/progress/R47/code/tests/site_symbol_probe_cxx20.cpp
+aa38486b599b454d069ee3892ef08cc905512ddbf3e826208c5bc6845493e323  docs/progress/R47/code/tools/build_consumers_r47.sh
+16600d1093ce92066f6bd24e66e4344d42bb0b9d85c06d4b9a8ed22b85756c45  docs/progress/R47/code/tools/build_libcxx_r47.sh
+EXIT_CODE=0
+$ sed -n '1,280p' docs/progress/R47/REPORT.md
+# R47:层 C 中 34 处头文件站点的重编需求分类核查
+
+## 结论
+
+**「34 处全部需重编消费者」这一断言不成立。** 按符号级二维分类并经对照实验验证:
+
+- **18/34 处为库内**(修改后只需重编/重发 libc++,消费者不动):
+  - 16 处的所在函数以 `W …@@LLVM_22` 从 `libc++.so.1` 导出,消费者在 -O0 与 -O2 下均以 `UND` 引用库内定义 —— `basic_istream<char>` 的 15 个显式实例化成员 + `basic_ostream<char>::sentry::~sentry()`;
+  - 2 处(istream:377/:468)所在的 HIDE_FROM_ABI helper 自身不导出,但其代码经**已导出的载体成员** `operator>>(算术类型&)` 编入库内;消费者侧 helper 完全缺失、载体成员为 `UND`(-O0/-O2 一致)。
+- **16/34 处需重编消费者**:istream 自由函数 6 处(S18–S23)、future 9 处(S24–S32)、string 1 处(S34)。消费者在 -O0/-O2 下持本地弱定义或已完全内联。
+- **不可判定:0 处。**
+- `-O2`(生产口径)与 `-O0` 的结论**逐站点一致**,无需按 c 条款裁定分歧。
+- 评审所指"约 15 处位于 `basic_istream<char>` 显式实例化成员"经核实为**恰好 15 处**(S01–S15);`istream:644` 归属 `operator>>(basic_streambuf*)` 成员(库内)。另一处此前的粗测误差被更正:**`istream:1042` 实为 `sync()` 而非 `unget()`**(`unget()` 是 :1010),两者均库内,不改变计数。
+- 对照实验(S05 getline 成员、S08 read 成员,五格 + 两个扩展格,x86_64 宿主原生):**关键格「补站点防护 + 只重编 libc++、不重编消费者」在 -O0 与 -O2 消费者下均退出 0、join 为 `PTHREAD_CANCELED`**,与 libstdc++ 对照一致;镜像格「补丁头文件重编消费者 + 旧库」仍 134 —— 对成员站点,防护只能由库交付,重编消费者本身无效。符号级判定与运行时行为完全互证。
+
+## 1. 输入与判定基准
+
+| 项 | 值 |
+|---|---|
+| 34 处清单 | `docs/progress/R44b/tables/unaggregated_34.tsv`,SHA256 `cf29138b…`(副本:`tables/input_unaggregated_34.tsv`) |
+| llvm 源码 | `codes/llvm@5ed6c77…`,工作树干净(commands/001) |
+| 主判定基准库 | 平台 GBS 构建 `LIBCXX-2218-x86_64-20260806-c2` 的 `libc++.so.1.0`(SHA `9ea8619e…`) |
+| 交叉对照 1 | R44b 重链版(SHA `89caaa91…`) |
+| 交叉对照 2 | **平台发布 RPM** `libc++-22.1.8-1.x86_64.rpm`(RPM SHA `2f37335a…`,内含库 SHA `f1d0770e…`),从同轮 GBS 产出的 `local/repos/.../RPMS/` 提取 |
+
+**三库 dynsym 导出名集零差异(各 1970 名)**(commands/005)。发布版与构建版文件字节不同(brp/strip),导出集一致,故"以发布版为准"与主基准无裁定分歧。
+
+## 2. 第 1 步:符号级二维分类
+
+方法:34 处 → 所在函数映射(commands/002,逐处打印 template 起始行与签名);库侧以 `nm -D --defined-only` 三库对照(commands/005–007);消费者侧以覆盖全部 34 处所在函数的探针 TU(`code/tests/site_symbol_probe.cpp`)在 `-O0` 与 `-O2` 各编译一次、`nm` 逐符号判读(commands/009–015)。S23(数组重载)仅存在于 C++20,以补充探针(`site_symbol_probe_cxx20.cpp`,c++20 × O0/O2)单独观测。
+
+逐处结果:`tables/site_classification_34.tsv`;计数:`tables/classification_counts.tsv`。要点:
+
+- 15 个 istream 成员 + sentry 析构:三库均 `EXPORTED_W@LLVM_22`,消费者 O0/O2 均 `UND`。
+- S16/S17(:377/:468):helper 在库 `.o`/`.so` 内为本地符号(commands/008,26 处命中);消费者侧 helper 缺失、载体成员 `operator>>(double&)/(int&)` 为 `UND`(commands/014)。**修这两处头文件后重编 libc++ 即可覆盖全部经公开 API 的调用。**
+- S18–S23、S34:消费者本地 `W` 副本(S23 在 O2 下完全内联,原始 catch 代码仍在消费者侧)。
+- S24–S32(future):模板参数含消费者可调用体类型,**结构上不可能**库内预实例化;以代表性实例化(int()/void() 与函数指针)实测确认本地 `W`。S32(async)在 O0 为本地弱定义(mangled `_ZNSt3__15asyncB9nqe220108…`,nm -C 未能解出该 abi-tag 名,commands/015 以 mangled 检索证实)、O2 完全内联。
+
+消费者编译口径:`-std=c++17 -O0/-O2 -g -fexceptions -pthread -stdlib=libc++ -nostdinc++ -I<GBS build include/c++/v1> -fPIC`;未用 `-fvisibility=*`、`--export-dynamic`。平台 `%optflags` 的其余选项(如 `-fstack-protector`)按第一节答复 ② 以此为近似,不逐包展开。
+
+## 3. 第 2 步:对照实验(S05 getline 成员、S08 read 成员)
+
+- 补丁:`tmp/R47/overlay/include/istream` 仅在两站点 catch-all 前加 `catch (const __cxxabiv1::__forced_unwind&) { …; throw; }` 并 `#include <cxxabi.h>`(diff:`code/libcxx/istream.diff`,+14 行)。平台源码 `codes/` 未动(commands/017 核验工作树 0 改动)。
+- 库重建:以 GBS 构建树 ninja 命令原样提取,仅重编 `ios.instantiations.cpp.o`(overlay -I 前置 + R45 libcxxabi 头)并重链(`code/tools/build_libcxx_r47.sh`)。产物 SHA `3362967f…`;**导出名集与原版零差异**;新增 `UND _ZTIN10__cxxabiv115__forced_unwindE@LLVM_22`(即依赖层 B 的 libc++abi,commands/021)。
+- 消费者:`code/tests/r47_cancel_probe.cpp` —— 线程函数非 noexcept、裸 `pthread_create`、应用层零 catch、阻塞于空管道的 `read(2)` 取消点;4 个变体(基线头 O0/O2、补丁头 O0、libstdc++)。三个 libc++ 变体对两个被测成员**均为 `UND …@LLVM_22`**(commands/023)——补丁头重编的消费者也一样,因为 `extern template` 使补丁根本进不了消费者对象。
+- 执行:x86_64 宿主原生,GBS buildroot loader `--library-path`,无模拟器。
+
+结果(`tables/runtime_matrix.tsv`,原文 `raw/x86_64_matrix.raw.log`),两个模式完全相同:
+
+| 套件 | 库 | 消费者 | 退出码 | join |
+|---|---|---|---:|---|
+| unpatched | GBS 原版 | 基线 O0 | 134 | - |
+| layer_ab | GBS 原版 + R45 abi | 基线 O0 | 134 | - |
+| **key_O0** | **R47 补丁版 + R45 abi** | **基线 O0(未重编)** | **0** | **PTHREAD_CANCELED** |
+| **key_O2** | **R47 补丁版 + R45 abi** | **基线 O2(未重编)** | **0** | **PTHREAD_CANCELED** |
+| mirror | GBS 原版 + R45 abi | 补丁头 O0(重编) | 134 | - |
+| patched_both | R47 补丁版 + R45 abi | 补丁头 O0 | 0 | PTHREAD_CANCELED |
+| libstdc++ 对照 | - | - | 0 | PTHREAD_CANCELED |
+
+**双重身份佐证**(第二节 ① 要求):IDENTITY 块记录换入库 SHA `3362967f…`;key 格 `LD_DEBUG=libs` 原文显示 `libc++.so.1` 与 `libc++abi.so.1` 均从 `tmp/R47/runtime/key/` 加载,符号链接指向分别为 R47 补丁库与 R45 abi(commands/024)。
+
+## 4. 明确回答(任务 3c)
+
+- "34 处全部需重编消费者"**不成立**。实际:**需重编 16 处,不需重编 18 处**(16 直接导出 + 2 经载体)。
+- `-O2` 与 `-O0` 结论一致,无分歧需要裁定。
+- 成本差异的事实陈述(3d,不做建议):18 处库内站点的处置与 R44b 已判定的 `ios.cpp` 16 处汇聚点同型——改动只进 libc++ 包,消费者无需重编;16 处消费者侧站点的处置需要消费者以修改后的头文件重新编译才能生效(R46 已实测其中 2 处,本轮 S22/S30 的符号级观测与之一致)。两类的验证方式也不同:前者可在库侧单点验证,后者需消费者重编对照。
+- 未能判定的站点:**无**。
+
+## 5. 对 R46 `stale_consumer_rebuilt_libcxx` 格的单独记录(第二节 ① 要求)
+
+R46 的该格(`R46/code/tools/run_x86_matrix.sh:65`)换入的是**汇聚点补丁版** libc++(`$runtime/failbit`),而非"以 H1/H2 补丁头文件重建的 libc++",因此该格只能证明"汇聚点库对头文件站点无效",不能证明"头文件改动进了库仍无效"。对 R46 的两个站点(自由函数/未导出),后一命题恰好为真(本轮 S22/S30 分类:库内无载体,改头文件重建库不会引入其代码);但**对本轮的 15+1 个导出成员站点,该命题为假**——头文件改动进入库重建后,恰恰不重编消费者即可生效(key 格实测)。这正是本任务需要更严格库身份佐证的原因:R47 的关键格以「换入库 SHA + `LD_DEBUG` 加载原文」双重佐证,并以 `readelf`/`nm` 证明换入库确含补丁(新增 forced_unwind typeinfo 的 UND 引用)。
+
+## 6. 边界与限制
+
+- 消费者侧观测基于本轮申报的编译口径(-std=c++17/c++20、-O0/-O2、无 LTO、无 `-fvisibility` 定制)。启用 LTO 或对 `available_externally` 更激进内联的消费者配置,理论上可把导出成员内联为本地副本;本轮在 -O2 实测未发生,未测 LTO,记 `NOT_OBSERVED`。即便发生,内联的是未打补丁头文件的代码,行为等同现状,不会更坏。
+- 库内 16+2 处的导出符号绑定为 `W`(弱)。同进程其他 DSO 若显式实例化同名成员可发生解析插入;`extern template` 下正常构建的消费者不会产生此类定义,本轮未观测到,记为理论边界。
+- future 9 处的消费者侧结论以代表性实例化观测;"模板参数含消费者类型,不可库内预实例化"是结构性质,不依赖抽样。
+- 本轮仅 x86_64(按任务答复 ③);armv7l 的显式实例化范围与符号解析未验证。
+- 对照实验覆盖 18 个库内站点中的 2 个(S05/S08);其余 16 个库内站点的"不需重编"结论来自符号级判定,与被验证的 2 处同型(同一显式实例化机制、同一 UND 形态)。
+
+## 7. 失败留痕
+
+- commands/019:首次库重链退出 127 —— ninja 链接命令带 `: && … && :` 哨兵,`nice/ionice` 误执行 `:`。修正(剥哨兵)后成功(commands/020)。属装置错误,未计入结果。
+- 早期 grep 模式两处误配(:1255 受 basic_string 辅助符号污染、:1865 被 `launch` 排除词误滤、:1389 abi-tag 模式不匹配),均在 commands/012–015 中以精确模式重查并留痕;未据初查下结论。
+
+## 8. 资源纪律
+
+门禁 `--level light` 两次(开工 commands/…001、构建前 commands/018)均 PASS(退出码 0);构建/运行前后 `free/uptime` 采样落盘(commands/018/020/024);全部构建单进程、`nice -n 15 ionice -c 3`;执行期可用内存最低 17 GiB,未触及 1 GiB 线。本任务未重建 libc++abi,复用 R45 产物;libc++ 仅重编 1 个目标文件。
+EXIT_CODE=0
+$ sed -n '1,260p' docs/progress/R47/code/tools/build_consumers_r47.sh
+#!/usr/bin/env bash
+# R47:构建取消实验的消费者二进制(x86_64)。
+# 变体:unpatched_O0 / unpatched_O2(基线头文件)、patched_O0(补丁 overlay 头文件)、libstdcxx(对照)。
+set -euo pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+cxx="$workspace/progress/R33/tools/tizen-clang++"
+src="$workspace/tmp/R47/probe/r47_cancel_probe.cpp"
+out="$workspace/tmp/R47/tests/x86_64"
+buildroot="$workspace/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0"
+gbs_inc="$buildroot/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/include/c++/v1"
+gbs_lib="$buildroot/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib"
+overlay="$workspace/tmp/R47/overlay/include"
+r45_abi_inc="$workspace/tmp/R45/source-patched/libcxxabi/include"
+mkdir -p "$out"
+
+run() {
+  printf 'COMMAND='
+  printf '%q ' "$@"
+  printf '\n'
+  nice -n 15 ionice -c 3 "$@"
+  local rc=$?
+  printf 'EXIT_CODE=%d\n' "$rc"
+  return "$rc"
+}
+
+# 共同选项说明(逐项):
+#   -std=c++17          与 R46 消费者一致
+#   -O0 / -O2           两档优化(生产口径为 -O2)
+#   -g -fexceptions -pthread
+#   -stdlib=libc++ -nostdinc++ -I…   使用申报的头文件树,无其他隐式 C++ 头
+#   -L"$gbs_lib" -lc++ -lc++abi      链接期解析用 GBS 构建库(运行期由 loader --library-path 决定实际加载)
+#   -Wl,-z,now          立即绑定(与平台一致)
+#   未使用:-fvisibility=*、--export-dynamic、-rpath(运行期路径由 loader 显式给出)
+run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ -nostdinc++ \
+  -I"$gbs_inc" "$src" -L"$gbs_lib" -Wl,-z,now -lc++ -lc++abi \
+  -o "$out/consumer_unpatched_O0"
+
+run "$cxx" -std=c++17 -O2 -g -fexceptions -pthread -stdlib=libc++ -nostdinc++ \
+  -I"$gbs_inc" "$src" -L"$gbs_lib" -Wl,-z,now -lc++ -lc++abi \
+  -o "$out/consumer_unpatched_O2"
+
+# 补丁头文件消费者:overlay(补丁 istream)在前,R45 libcxxabi 头次之(cxxabi.h 的 __forced_unwind),基线头最后。
+run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ -nostdinc++ \
+  -I"$overlay" -I"$r45_abi_inc" -I"$gbs_inc" "$src" -L"$gbs_lib" -Wl,-z,now -lc++ -lc++abi \
+  -o "$out/consumer_patched_O0"
+
+# libstdc++ 对照:不加 -stdlib/-nostdinc++,包装器默认走 GCC/libstdc++(与 R43b x86_64 同法)。
+run "$cxx" -std=c++17 -O0 -g -fexceptions -pthread "$src" -Wl,-z,now \
+  -o "$out/consumer_libstdcxx"
+
+sha256sum "$src" "$out"/consumer_*
+EXIT_CODE=0
+$ sed -n '1,260p' docs/progress/R47/code/tests/site_symbol_probe.cpp
+// R47 分类探针:令消费者 TU 实际 odr-use 34 处站点的所在函数,
+// 供 nm 检查消费者目标文件中各符号为 UND / 本地定义 / 缺失。
+// 本探针只需编译,不需要运行;各 exercise 为外部链接函数,防止整体被删。
+// 无任何 catch。
+#include <future>
+#include <iostream>
+#include <istream>
+#include <sstream>
+#include <string>
+
+// ---- istream 成员(15 站点)----
+extern "C" void r47_istream_members() {
+  char buf[64];
+  std::stringbuf sb;
+  std::cin >> &sb;                                  // istream:644 operator>>(basic_streambuf*)
+  (void)std::cin.get();                             // istream:679 get()
+  std::cin.get(buf, 8, 'x');                        // istream:717 get(char*,n,delim)
+  std::cin.get(sb, 'x');                            // istream:765 get(streambuf&,delim)
+  std::cin.getline(buf, 8, 'x');                    // istream:808 getline(char*,n,delim)
+  std::cin.ignore(3, 'x');                          // istream:862 ignore(n,delim)
+  (void)std::cin.peek();                            // istream:889 peek()
+  std::cin.read(buf, 4);                            // istream:915 read(char*,n)
+  (void)std::cin.readsome(buf, 4);                  // istream:954 readsome(char*,n)
+  std::cin.putback('a');                            // istream:982 putback(char)
+  std::cin.unget();                                 // istream:1010 unget()
+  (void)std::cin.sync();                            // istream:1042 sync()
+  (void)std::cin.tellg();                           // istream:1066 tellg()
+  std::cin.seekg(std::streampos(0));                // istream:1091 seekg(pos_type)
+  std::cin.seekg(0, std::ios_base::beg);            // istream:1116 seekg(off,dir)
+}
+
+// ---- istream 自由函数模板(7 站点;:1389 需 C++20,另见补充 TU)----
+extern "C" void r47_istream_free() {
+  char c;
+  char arr[8];
+  double d;
+  int i;
+  std::string s;
+  std::cin >> d;      // istream:377 __input_arithmetic<double> 经成员 operator>>(double&)
+  std::cin >> i;      // istream:468 __input_arithmetic_with_numeric_limits<int> 经成员 operator>>(int&)
+  std::cin >> arr;    // istream:519 __input_c_string 经自由 operator>>(istream&, CharT*)(C++17)
+  std::cin >> c;      // istream:594 自由 operator>>(istream&, char&)
+  std::cin >> std::ws;                              // istream:1149 ws()
+  std::cin >> s;                                    // istream:1255 operator>>(istream&, string&)
+  std::getline(std::cin, s, ':');                   // istream:1328 getline(istream&, string&, delim)
+}
+
+// ---- future(9 站点)----
+static int r47_ret1() { return 1; }
+static void r47_retv() {}
+
+extern "C" void r47_future_sites() {
+  auto fd_int = std::async(std::launch::deferred, r47_ret1);   // future:1865 async; get 触发 future:792
+  (void)fd_int.get();
+  auto fd_void = std::async(std::launch::deferred, r47_retv);  // future:823
+  fd_void.get();
+  auto fa_int = std::async(std::launch::async, r47_ret1);      // future:853
+  (void)fa_int.get();
+  auto fa_void = std::async(std::launch::async, r47_retv);     // future:890
+  fa_void.get();
+
+  std::packaged_task<int()> pt_int(r47_ret1);
+  pt_int();                                                    // future:1664
+  std::packaged_task<int()> pt_int2(r47_ret1);
+  pt_int2.make_ready_at_thread_exit();                         // future:1681
+  std::packaged_task<void()> pt_void(r47_retv);
+  pt_void();                                                   // future:1764
+  std::packaged_task<void()> pt_void2(r47_retv);
+  pt_void2.make_ready_at_thread_exit();                        // future:1782
+}
+
+// ---- ostream sentry 析构(1 站点)与 string shrink_to_fit(1 站点)----
+extern "C" void r47_ostream_string_sites() {
+  std::cout << "x";                                 // basic_ostream.h:217 sentry::~sentry()
+  std::string s(1000, 'y');
+  s.resize(10);
+  s.shrink_to_fit();                                // string:3466 shrink_to_fit()
+}
+
+int main() {
+  r47_istream_members();
+  r47_istream_free();
+  r47_future_sites();
+  r47_ostream_string_sites();
+  return 0;
+}
+EXIT_CODE=0
+$ sed -n '1,260p' docs/progress/R47/code/tests/site_symbol_probe_cxx20.cpp
+// R47 补充探针(仅 istream:1389):operator>>(istream&, CharT(&)[N]) 仅在 C++20 存在。
+#include <iostream>
+
+extern "C" void r47_array_extraction() {
+  char arr[8];
+  std::cin >> arr;   // istream:1389(C++20 数组安全重载,内部调 __input_c_string,即 :519 的另一载体)
+}
+
+int main() {
+  r47_array_extraction();
+  return 0;
+}
+EXIT_CODE=0

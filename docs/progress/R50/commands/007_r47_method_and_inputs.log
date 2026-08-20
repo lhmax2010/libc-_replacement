@@ -1,0 +1,31 @@
+R47_METHOD_REPORT
+21824d49618ebb5a93cdd22de2992e296b3c0459ee2ee8487997bc6ee829232b  docs/progress/R47/REPORT.md
+cf29138b3836f7d832122d5066d2317ef8c031ec4911d0b81ea84fd31ff203fa  docs/progress/R47/tables/input_unaggregated_34.tsv
+a4b6cbb449f4b816be3eafda2cd67c63b2d996e456f2227b1622bb6104f94d20  docs/progress/R47/tables/site_classification_34.tsv
+47699a5905d0f978a3a96cb9c3b88096df9670d28d76333805a1dbf7b8b45c7d  docs/progress/R47/code/tests/site_symbol_probe.cpp
+19394f8a705ce303b938af06cf91a989a2a934ac167089522c73d5e7407142f3  docs/progress/R47/code/tests/site_symbol_probe_cxx20.cpp
+
+## 3. 第 2 步:对照实验(S05 getline 成员、S08 read 成员)
+
+- 补丁:`tmp/R47/overlay/include/istream` 仅在两站点 catch-all 前加 `catch (const __cxxabiv1::__forced_unwind&) { …; throw; }` 并 `#include <cxxabi.h>`(diff:`code/libcxx/istream.diff`,+14 行)。平台源码 `codes/` 未动(commands/017 核验工作树 0 改动)。
+- 库重建:以 GBS 构建树 ninja 命令原样提取,仅重编 `ios.instantiations.cpp.o`(overlay -I 前置 + R45 libcxxabi 头)并重链(`code/tools/build_libcxx_r47.sh`)。产物 SHA `3362967f…`;**导出名集与原版零差异**;新增 `UND _ZTIN10__cxxabiv115__forced_unwindE@LLVM_22`(即依赖层 B 的 libc++abi,commands/021)。
+- 消费者:`code/tests/r47_cancel_probe.cpp` —— 线程函数非 noexcept、裸 `pthread_create`、应用层零 catch、阻塞于空管道的 `read(2)` 取消点;4 个变体(基线头 O0/O2、补丁头 O0、libstdc++)。三个 libc++ 变体对两个被测成员**均为 `UND …@LLVM_22`**(commands/023)——补丁头重编的消费者也一样,因为 `extern template` 使补丁根本进不了消费者对象。
+- 执行:x86_64 宿主原生,GBS buildroot loader `--library-path`,无模拟器。
+
+结果(`tables/runtime_matrix.tsv`,原文 `raw/x86_64_matrix.raw.log`),两个模式完全相同:
+
+| 套件 | 库 | 消费者 | 退出码 | join |
+|---|---|---|---:|---|
+| unpatched | GBS 原版 | 基线 O0 | 134 | - |
+| layer_ab | GBS 原版 + R45 abi | 基线 O0 | 134 | - |
+| **key_O0** | **R47 补丁版 + R45 abi** | **基线 O0(未重编)** | **0** | **PTHREAD_CANCELED** |
+| **key_O2** | **R47 补丁版 + R45 abi** | **基线 O2(未重编)** | **0** | **PTHREAD_CANCELED** |
+| mirror | GBS 原版 + R45 abi | 补丁头 O0(重编) | 134 | - |
+| patched_both | R47 补丁版 + R45 abi | 补丁头 O0 | 0 | PTHREAD_CANCELED |
+| libstdc++ 对照 | - | - | 0 | PTHREAD_CANCELED |
+
+**双重身份佐证**(第二节 ① 要求):IDENTITY 块记录换入库 SHA `3362967f…`;key 格 `LD_DEBUG=libs` 原文显示 `libc++.so.1` 与 `libc++abi.so.1` 均从 `tmp/R47/runtime/key/` 加载,符号链接指向分别为 R47 补丁库与 R45 abi(commands/024)。
+
+## 4. 明确回答(任务 3c)
+
+EXIT_CODE=0
