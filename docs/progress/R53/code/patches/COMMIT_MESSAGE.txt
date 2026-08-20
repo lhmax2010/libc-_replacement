@@ -1,0 +1,30 @@
+libcxx: preserve forced unwind across library catch sites
+
+libc++ library-carried iostream and istream catch-all handlers can consume
+the foreign forced-unwind exception used by pthread cancellation.  Preserve
+the existing stream state updates, recognize __forced_unwind before the
+catch-all path, and rethrow it so cancellation can continue.
+
+The change covers the two out-of-line ios state helpers, the explicitly
+instantiated basic_istream members and their arithmetic carriers, and the
+basic_ostream sentry destructor carried by libc++.so.  The corresponding
+libstdc++ implementation catches __forced_unwind before catch-all and
+rethrows after applying the same state transition.
+
+This patch depends on libc++abi providing the compatible
+__cxxabiv1::__forced_unwind type and the forced-unwind rethrow fixes.
+
+Validated on x86_64 natively and armv7l hardware for cout, failbit,
+basic_istream::getline and basic_istream::read cancellation paths.  The
+library-only replacement path was checked without rebuilding consumers.
+Selected iostream/future/string tests and the libc++abi regression matrix
+were also run.  aarch64, LTO, concurrent cancellation and mixed-runtime
+frame traversal were not covered.  The sentry destructor site is not
+functionally observed because its implicit noexcept frame terminates a
+forced unwind that escapes it.
+
+中文说明：为 libc++ 库内承载的 iostream/istream catch-all 站点补充
+强制展开识别与重抛，同时保留原有状态位处理。补丁依赖 libc++abi
+提供兼容的 __forced_unwind 类型及重抛修复。已在 x86_64 原生与
+armv7l 真机验证代表性取消路径；aarch64、LTO、并发取消和混合运行时
+帧穿越未覆盖，sentry 析构站点因隐式 noexcept 未取得功能性观测。
