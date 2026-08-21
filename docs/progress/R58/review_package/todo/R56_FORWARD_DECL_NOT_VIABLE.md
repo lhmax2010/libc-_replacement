@@ -1,0 +1,102 @@
+# R56：以前置声明替代 `cxxabi.h` 的包含
+
+## 结论
+
+结论为 **`NOT_VIABLE`**。
+
+拟议写法仅提供：
+
+```cpp
+namespace __cxxabiv1 {
+class __forced_unwind;
+}
+```
+
+随后使用 `catch (const __cxxabiv1::__forced_unwind&)`。该写法在本次所用 Clang 22.1.8 中无法编译。libc++ 与 libstdc++ 两种编译模式均退出 1，诊断均为：
+
+```text
+error: cannot catch reference to incomplete type 'const __cxxabiv1::__forced_unwind'
+```
+
+包含提供完整类型定义的 `cxxabi.h` 后，两种模式的对照均退出 0。因此障碍发生在 C++ 语言编译阶段，早于链接、运行时类型匹配和可见性解析。
+
+依任务书“可行性验证不通过则在第二节停车”的要求，本任务没有替换三个头文件、没有更新层 C 补丁、没有进入功能/回归矩阵，也没有连接开发板。
+
+## 1. 资源检查
+
+固定工具调用：
+
+```text
+tools/resource_gate.sh --level medium
+```
+
+退出码为 0。实测 `MemAvailable=15462272 KiB`，下限 `4194304 KiB`；`load1=4.75`，上限 `20.000000`。证据见 `raw/resources/001_resource_gate_medium.log`。开工负载概览见 `raw/resources/002_top_preflight.log`。
+
+## 2. 输入与口径
+
+- LLVM 源码基线：`5ed6c77278dfa7a470667cf1a137723d3c96fe60`。
+- 编译器：Clang 22.1.8，目标 `x86_64-tizen-linux-gnu`。
+- libc++ 模式的完整定义来源：R55 固定头目录 `tmp/R55/headers/x86_64/include/c++/v1`。
+- 当前层 A+B+C 实验源中的 `libcxxabi/include/cxxabi.h` SHA256：`45561ece403db01e742e3d8300b6527ae0e029458a96eab618e9399ac6b1f04c`。
+- 三个待替换头文件的 SHA256：
+  - `future`: `80a837cdda19397af933d28f1ed611e9bf27504df2b17fd645f685bef9ac6a9d`
+  - `istream`: `4111af1754590455948aaa3e14a90a742445e852485322771bb923c80281bd7c`
+  - `string`: `a9d0adfef9ba6f86cb168b64b1500ad8fc4a6b97e4c54aef5e51175733bb6935`
+
+本节只测语言可行性；分母为 4 个编译格：2 种标准库模式 × 2 种类型可见形态。
+
+## 3. 最小用例与命令
+
+最小用例完整源码见 `code/tests/forward_decl_catch.cpp`。完整定义对照见 `code/tests/include_cxxabi_catch.cpp`。每格命令原文和退出码分别保存于 `commands/004_*` 至 `commands/007_*`。
+
+| 形态 | libc++ | libstdc++ |
+|---|---:|---:|
+| 仅前置声明 | 退出 1；未生成目标文件 | 退出 1；未生成目标文件 |
+| 包含完整 `cxxabi.h` | 退出 0 | 退出 0 |
+
+计数：前置声明 0/2 编译成功；完整定义对照 2/2 编译成功；全矩阵 2/4 编译成功。详细表见 `tables/feasibility_matrix.tsv`。
+
+`-stdlib=libc++` 在 compile-only 命令中被编译器报告为 unused；这不改变本次判断，因为失败来自 handler 参数的不完整类型，且 libc++ 模式的完整定义对照明确使用了 R55 的 libc++/libc++abi 头目录并成功生成目标文件。
+
+## 4. 类型信息一致性
+
+仅前置声明的两格均未生成目标文件。因此下列项目为 `NOT_AVAILABLE` 或 `NOT_OBSERVED`，不得推断：
+
+- 前置声明目标文件中的 typeinfo 符号、绑定、可见性和版本节点：`NOT_AVAILABLE`；
+- 前置声明与库内定义是否运行时匹配：`NOT_OBSERVED`；
+- 前置声明不带 `_LIBCXXABI_TYPE_VIS` 是否造成 typeinfo 不统一：`NOT_OBSERVED`。
+
+作为对照，包含完整定义后生成的两个目标文件均引用同名符号 `_ZTIN10__cxxabiv115__forced_unwindE`，形态均为 `GLOBAL DEFAULT UND`。该事实只说明完整定义对照一致，不能替代前置声明形态的缺失观测。详见 `tables/typeinfo_comparison.tsv`。
+
+## 5. 停车范围
+
+按任务书明确的停车条件，以下均未执行：
+
+- 将 `future`、`istream`、`string` 的 `#include <cxxabi.h>` 替换为前置声明；
+- 更新层 C 头文件批补丁；
+- x86_64 与 armv7l 功能等价矩阵；
+- async 20 次专项、R51 回归、上游 libc++abi 测试；
+- 无 `cxxabi.h` 环境的移植性编译；
+- 任何开发板连接、部署或运行。
+
+本任务没有修改 `codes/`，没有修改任何平台包源码，也没有产生或修改 libc++/libc++abi 产品补丁。
+
+## 6. 自行判断与尚存疑问
+
+- 自行判断：没有尝试给前置声明添加可见性属性。原因是语言层面的完整类型要求已经使拟议写法失败，且任务书明确禁止在失败后自行改用其他方案。
+- 尚存疑问：若继续消除 libc++ 头文件对 `cxxabi.h` 的直接依赖，需要为 catch 点提供某种完整类型声明；采用何种承载位置或条件化机制超出本任务范围，留待人工裁决。
+- 署名：人工未提供 name/email；由于本任务在实现前停车、没有生成补丁，`--amend` 事项不适用。
+
+## 7. 提交与上传
+
+- 项目分支：`codex/r5-ehabi-diagnosis`。
+- 内容提交：`6df7749eb078b985345a08ee23f9e258c201ac2e`。
+- `git push origin codex/r5-ehabi-diagnosis` 退出 0。
+- 首次上传后的 `git ls-remote` 返回同一 SHA，本地与远端匹配。
+- 没有向 Gerrit 或任何外部源码仓推送；上述远端仅为本项目 GitHub 仓。
+
+提交、推送与核验原文见 `commands/024_*` 至 `commands/026_*`、`raw/git_commit.log`、`raw/git_push.log`、`raw/git_ls_remote.log` 与 `tables/publication.tsv`。
+
+## 8. 证据索引
+
+策展副本的逐文件来源与 SHA256 见 `docs/progress/R56/INDEX.tsv`。原始输出、命令原文和退出码均保存在 `progress/R56/`，策展副本收录本轮全部小文件；不存在超过 5 MB 的排除项。

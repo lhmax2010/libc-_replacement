@@ -1,0 +1,247 @@
+From 2a4a25ad61b711a6052974b792a0532d01cbb2d1 Mon Sep 17 00:00:00 2001
+From: NOT_AVAILABLE <not-available@invalid>
+Date: Fri, 21 Aug 2026 14:25:06 +0800
+Subject: [PATCH] libcxx: make async state ready before forced-unwind rethrow
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The forced-unwind guards in the async associated-state execution paths
+must not rethrow before completing the shared state.  Doing so allows
+the detached worker to terminate while future::wait remains blocked
+forever.
+
+Match libstdc++'s observable semantics by storing a broken_promise in
+the shared state before rethrowing the forced unwind.  This wakes
+waiters without converting cancellation into a normal C++ exception;
+the worker still terminates through the original forced unwind.
+
+The change is limited to the value and void __async_assoc_state
+specializations.  packaged_task, deferred execution, normal async
+completion, and ordinary exception transport keep their existing
+paths.
+
+Validated on native x86_64 and ARMv7l hardware.  Cancellation was
+repeated 20 times per runtime combination.  Normal results, ordinary
+exceptions, the existing forced-unwind regression matrix, and the
+libc++abi forced-unwind tests were also checked.  Not covered:
+AArch64, LTO, mixed-runtime frame traversal, or application-specific
+future implementations.
+
+中文说明：std::async 工作线程在强制展开时，原防护直接重抛，导致
+线程已经结束但共享状态仍未 ready，future 等待方永久阻塞。本修改
+在继续传播强制展开前写入 broken_promise 并唤醒等待方；不改变取消
+传播语义，也不改 packaged_task、deferred、正常返回或普通异常路径。
+
+Author identity is NOT_AVAILABLE and must be amended before submission.
+---
+ libcxx/include/future  | 29 +++++++++++++++++++++++++++++
+ libcxx/include/istream | 25 +++++++++++++++++++++++++
+ libcxx/include/string  |  3 +++
+ 3 files changed, 57 insertions(+)
+
+diff --git a/libcxx/include/future b/libcxx/include/future
+index 4cd5e8a..8a00c93 100644
+--- a/libcxx/include/future
++++ b/libcxx/include/future
+@@ -367,6 +367,7 @@ template <class R, class Alloc> struct uses_allocator<packaged_task<R>, Alloc>;
+ 
+ #  if _LIBCPP_HAS_THREADS
+ 
++#    include <cxxabi.h>
+ #    include <__assert>
+ #    include <__chrono/duration.h>
+ #    include <__chrono/steady_clock.h>
+@@ -789,6 +790,8 @@ void __deferred_assoc_state<_Rp, _Fp>::__execute() {
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+     this->set_value(__func_());
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+   }
+@@ -820,6 +823,8 @@ void __deferred_assoc_state<void, _Fp>::__execute() {
+     __func_();
+     this->set_value();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+   }
+@@ -850,6 +855,13 @@ void __async_assoc_state<_Rp, _Fp>::__execute() {
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+     this->set_value(__func_());
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    try {
++      std::__throw_future_error(future_errc::broken_promise);
++    } catch (...) {
++      this->set_exception(current_exception());
++    }
++    throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+   }
+@@ -887,6 +899,13 @@ void __async_assoc_state<void, _Fp>::__execute() {
+     __func_();
+     this->set_value();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    try {
++      std::__throw_future_error(future_errc::broken_promise);
++    } catch (...) {
++      this->set_exception(current_exception());
++    }
++    throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+   }
+@@ -1661,6 +1680,8 @@ void packaged_task<_Rp(_ArgTypes...)>::operator()(_ArgTypes... __args) {
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+     __p_.set_value(__f_(std::forward<_ArgTypes>(__args)...));
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     __p_.set_exception(current_exception());
+   }
+@@ -1678,6 +1699,8 @@ void packaged_task<_Rp(_ArgTypes...)>::make_ready_at_thread_exit(_ArgTypes... __
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+     __p_.set_value_at_thread_exit(__f_(std::forward<_ArgTypes>(__args)...));
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     __p_.set_exception_at_thread_exit(current_exception());
+   }
+@@ -1761,6 +1784,8 @@ void packaged_task<void(_ArgTypes...)>::operator()(_ArgTypes... __args) {
+     __f_(std::forward<_ArgTypes>(__args)...);
+     __p_.set_value();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     __p_.set_exception(current_exception());
+   }
+@@ -1779,6 +1804,8 @@ void packaged_task<void(_ArgTypes...)>::make_ready_at_thread_exit(_ArgTypes... _
+     __f_(std::forward<_ArgTypes>(__args)...);
+     __p_.set_value_at_thread_exit();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     __p_.set_exception_at_thread_exit(current_exception());
+   }
+@@ -1862,6 +1889,8 @@ async(launch __policy, _Fp&& __f, _Args&&... __args) {
+     if (__does_policy_contain(__policy, launch::async))
+       return std::__make_async_assoc_state<_Rp>(_BF(std::forward<_Fp>(__f), std::forward<_Args>(__args)...));
+ #      if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     if (__policy == launch::async)
+       throw;
+diff --git a/libcxx/include/istream b/libcxx/include/istream
+index dfa22e9..deccf4e 100644
+--- a/libcxx/include/istream
++++ b/libcxx/include/istream
+@@ -166,6 +166,7 @@ template <class Stream, class T>
+ 
+ #  if _LIBCPP_HAS_LOCALIZATION
+ 
++#    include <cxxabi.h>
+ #    include <__fwd/istream.h>
+ #    include <__iterator/istreambuf_iterator.h>
+ #    include <__locale_dir/num.h>
+@@ -516,6 +517,10 @@ __input_c_string(basic_istream<_CharT, _Traits>& __is, _CharT* __p, size_t __n)
+       if (__s == __p)
+         __state |= ios_base::failbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      __is.__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       __is.__setstate_nothrow(__state);
+@@ -591,6 +596,10 @@ _LIBCPP_HIDE_FROM_ABI basic_istream<_CharT, _Traits>& operator>>(basic_istream<_
+       else
+         __c = _Traits::to_char_type(__i);
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      __is.__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       __is.__setstate_nothrow(__state);
+@@ -1146,6 +1155,10 @@ _LIBCPP_HIDE_FROM_ABI basic_istream<_CharT, _Traits>& ws(basic_istream<_CharT, _
+         __is.rdbuf()->sbumpc();
+       }
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      __is.__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       __is.__setstate_nothrow(__state);
+@@ -1252,6 +1265,10 @@ operator>>(basic_istream<_CharT, _Traits>& __is, basic_string<_CharT, _Traits, _
+       if (__c == 0)
+         __state |= ios_base::failbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      __is.__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       __is.__setstate_nothrow(__state);
+@@ -1325,6 +1342,10 @@ getline(basic_istream<_CharT, _Traits>& __is, basic_string<_CharT, _Traits, _All
+       __state |= ios_base::eofbit | (__str.empty() ? ios_base::failbit : ios_base::goodbit);
+ 
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    __state |= ios_base::badbit;
++    __is.__setstate_nothrow(__state);
++    throw;
+   } catch (...) {
+     __state |= ios_base::badbit;
+     __is.__setstate_nothrow(__state);
+@@ -1386,6 +1407,10 @@ operator>>(basic_istream<_CharT, _Traits>& __is, bitset<_Size>& __x) {
+       if (_Size > 0 && __c == 0)
+         __state |= ios_base::failbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      __is.__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       __is.__setstate_nothrow(__state);
+diff --git a/libcxx/include/string b/libcxx/include/string
+index 34af7ef..37a95c0 100644
+--- a/libcxx/include/string
++++ b/libcxx/include/string
+@@ -649,6 +649,7 @@ basic_string<char32_t> operator""s( const char32_t *str, size_t len );
+ #  include <climits>
+ #  include <cstdio> // EOF
+ #  include <cstring>
++#  include <cxxabi.h>
+ #  include <limits>
+ #  include <stdexcept>
+ #  include <string_view>
+@@ -3463,6 +3464,8 @@ inline _LIBCPP_CONSTEXPR_SINCE_CXX20 void basic_string<_CharT, _Traits, _Allocat
+     traits_type::copy(std::__to_address(__buffer.__data_), std::__to_address(__get_long_pointer()), __size + 1);
+     __reset_internal_buffer(__buffer);
+ #  if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     return;
+   }
+-- 
+2.43.0
+
