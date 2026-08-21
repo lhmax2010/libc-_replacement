@@ -1,0 +1,68 @@
+SOURCE=/home/toolchain/development/libc++_replacement/codes/gcc/libstdc++-v3/include/std/future
+SHA256=3c2b186a39dbc2c157086cc3404d5efc9949fc148b939cdffdf3931cc60a763e
+   420		      _M_complete_async();
+   421	
+   422		      return future_status::ready;
+   423		    }
+   424		  return future_status::timeout;
+   425		}
+   426	
+   427	      // Provide a result to the shared state and make it ready.
+   428	      // Calls at most once: _M_result = __res();
+   429	      void
+   430	      _M_set_result(function<_Ptr_type()> __res, bool __ignore_failure = false)
+   431	      {
+   432		bool __did_set = false;
+   433	        // all calls to this function are serialized,
+   434	        // side-effects of invoking __res only happen once
+   435		call_once(_M_once, &_State_baseV2::_M_do_set, this,
+   436			  std::__addressof(__res), std::__addressof(__did_set));
+   437		if (__did_set)
+   438		  // Use release MO to synchronize with observers of the ready state.
+   439		  _M_status._M_store_notify_all(_Status::__ready,
+   440						memory_order_release);
+   441		else if (!__ignore_failure)
+   442	          __throw_future_error(int(future_errc::promise_already_satisfied));
+   443	      }
+   444	
+   445	      // Provide a result to the shared state but delay making it ready
+   446	      // until the calling thread exits.
+   447	      // Calls at most once: _M_result = __res();
+   448	      void
+   449	      _M_set_delayed_result(function<_Ptr_type()> __res,
+   450				    weak_ptr<_State_baseV2> __self)
+   451	      {
+   452		bool __did_set = false;
+   453		unique_ptr<_Make_ready> __mr{new _Make_ready};
+   454	        // all calls to this function are serialized,
+   455	        // side-effects of invoking __res only happen once
+   456		call_once(_M_once, &_State_baseV2::_M_do_set, this,
+   457			  std::__addressof(__res), std::__addressof(__did_set));
+   458		if (!__did_set)
+   459	          __throw_future_error(int(future_errc::promise_already_satisfied));
+   460		__mr->_M_shared_state = std::move(__self);
+   461		__mr->_M_set();
+   462		__mr.release();
+   463	      }
+   464	
+   465	      // Abandon this shared state.
+   466	      void
+   467	      _M_break_promise(_Ptr_type __res)
+   468	      {
+   469		if (static_cast<bool>(__res))
+   470		  {
+   471		    __res->_M_error =
+   472		      make_exception_ptr(future_error(future_errc::broken_promise));
+   473		    // This function is only called when the last asynchronous result
+   474		    // provider is abandoning this shared state, so noone can be
+   475		    // trying to make the shared state ready at the same time, and
+   476		    // we can access _M_result directly instead of through call_once.
+   477		    _M_result.swap(__res);
+   478		    // Use release MO to synchronize with observers of the ready state.
+   479		    _M_status._M_store_notify_all(_Status::__ready,
+   480						  memory_order_release);
+   481		  }
+   482	      }
+   483	
+   484	      // Called when this object is first passed to a future.
+   485	      void

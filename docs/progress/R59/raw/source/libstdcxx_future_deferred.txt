@@ -1,0 +1,73 @@
+SOURCE=/home/toolchain/development/libc++_replacement/codes/gcc/libstdc++-v3/include/std/future
+SHA256=3c2b186a39dbc2c157086cc3404d5efc9949fc148b939cdffdf3931cc60a763e
+  1660	
+  1661	  template<typename _Fun, typename _Signature
+  1662		     = __function_guide_t<_Fun, decltype(&_Fun::operator())>>
+  1663	    packaged_task(_Fun) -> packaged_task<_Signature>;
+  1664	#endif
+  1665	
+  1666	  /// swap
+  1667	  template<typename _Res, typename... _ArgTypes>
+  1668	    inline void
+  1669	    swap(packaged_task<_Res(_ArgTypes...)>& __x,
+  1670		 packaged_task<_Res(_ArgTypes...)>& __y) noexcept
+  1671	    { __x.swap(__y); }
+  1672	
+  1673	#if __cplusplus < 201703L
+  1674	  // _GLIBCXX_RESOLVE_LIB_DEFECTS
+  1675	  // 2976. Dangling uses_allocator specialization for packaged_task
+  1676	  template<typename _Res, typename _Alloc>
+  1677	    struct uses_allocator<packaged_task<_Res>, _Alloc>
+  1678	    : public true_type { };
+  1679	#endif
+  1680	
+  1681	  /// @cond undocumented
+  1682	
+  1683	  // Shared state created by std::async().
+  1684	  // Holds a deferred function and storage for its result.
+  1685	  template<typename _BoundFn, typename _Res>
+  1686	    class __future_base::_Deferred_state final
+  1687	    : public __future_base::_State_base
+  1688	    {
+  1689	    public:
+  1690	      template<typename... _Args>
+  1691		explicit
+  1692		_Deferred_state(_Args&&... __args)
+  1693		: _M_result(new _Result<_Res>()),
+  1694		  _M_fn(std::forward<_Args>(__args)...)
+  1695		{ }
+  1696	
+  1697	    private:
+  1698	      typedef __future_base::_Ptr<_Result<_Res>> _Ptr_type;
+  1699	      _Ptr_type _M_result;
+  1700	      _BoundFn _M_fn;
+  1701	
+  1702	      // Run the deferred function.
+  1703	      virtual void
+  1704	      _M_complete_async()
+  1705	      {
+  1706		// Multiple threads can call a waiting function on the future and
+  1707		// reach this point at the same time. The call_once in _M_set_result
+  1708		// ensures only the first one run the deferred function, stores the
+  1709		// result in _M_result, swaps that with the base _M_result and makes
+  1710		// the state ready. Tell _M_set_result to ignore failure so all later
+  1711		// calls do nothing.
+  1712	        _M_set_result(_S_task_setter(_M_result, _M_fn), true);
+  1713	      }
+  1714	
+  1715	      // Caller should check whether the state is ready first, because this
+  1716	      // function will return true even after the deferred function has run.
+  1717	      virtual bool _M_is_deferred_future() const { return true; }
+  1718	    };
+  1719	
+  1720	  // Common functionality hoisted out of the _Async_state_impl template.
+  1721	  class __future_base::_Async_state_commonV2
+  1722	    : public __future_base::_State_base
+  1723	  {
+  1724	  protected:
+  1725	    ~_Async_state_commonV2() = default;
+  1726	
+  1727	    // Make waiting functions block until the thread completes, as if joined.
+  1728	    //
+  1729	    // This function is used by wait() to satisfy the first requirement below
+  1730	    // and by wait_for() / wait_until() to satisfy the second.

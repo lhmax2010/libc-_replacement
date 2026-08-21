@@ -1,0 +1,63 @@
+SOURCE=/home/toolchain/development/libc++_replacement/codes/gcc/libstdc++-v3/include/std/future
+SHA256=3c2b186a39dbc2c157086cc3404d5efc9949fc148b939cdffdf3931cc60a763e
+  1750	  // Shared state created by std::async().
+  1751	  // Starts a new thread that runs a function and makes the shared state ready.
+  1752	  template<typename _BoundFn, typename _Res>
+  1753	    class __future_base::_Async_state_impl final
+  1754	    : public __future_base::_Async_state_commonV2
+  1755	    {
+  1756	    public:
+  1757	      template<typename... _Args>
+  1758		explicit
+  1759		_Async_state_impl(_Args&&... __args)
+  1760		: _M_result(new _Result<_Res>()),
+  1761		  _M_fn(std::forward<_Args>(__args)...)
+  1762		{
+  1763		  _M_thread = std::thread{&_Async_state_impl::_M_run, this};
+  1764		}
+  1765	
+  1766	      // Must not destroy _M_result and _M_fn until the thread finishes.
+  1767	      // Call join() directly rather than through _M_join() because no other
+  1768	      // thread can be referring to this state if it is being destroyed.
+  1769	      ~_Async_state_impl()
+  1770	      {
+  1771		if (_M_thread.joinable())
+  1772		  _M_thread.join();
+  1773	      }
+  1774	
+  1775	    private:
+  1776	      void
+  1777	      _M_run()
+  1778	      {
+  1779		__try
+  1780		  {
+  1781		    _M_set_result(_S_task_setter(_M_result, _M_fn));
+  1782		  }
+  1783		__catch (const __cxxabiv1::__forced_unwind&)
+  1784		  {
+  1785		    // make the shared state ready on thread cancellation
+  1786		    if (static_cast<bool>(_M_result))
+  1787		      this->_M_break_promise(std::move(_M_result));
+  1788		    __throw_exception_again;
+  1789		  }
+  1790	      }
+  1791	
+  1792	      typedef __future_base::_Ptr<_Result<_Res>> _Ptr_type;
+  1793	      _Ptr_type _M_result;
+  1794	      _BoundFn _M_fn;
+  1795	    };
+  1796	  /// @endcond
+  1797	
+  1798	  /// async
+  1799	  template<typename _Fn, typename... _Args>
+  1800	    _GLIBCXX_NODISCARD future<__async_result_of<_Fn, _Args...>>
+  1801	    async(launch __policy, _Fn&& __fn, _Args&&... __args)
+  1802	    {
+  1803	      using _Wr = std::thread::_Call_wrapper<_Fn, _Args...>;
+  1804	      using _As = __future_base::_Async_state_impl<_Wr>;
+  1805	      using _Ds = __future_base::_Deferred_state<_Wr>;
+  1806	
+  1807	      std::shared_ptr<__future_base::_State_base> __state;
+  1808	      if ((__policy & launch::async) == launch::async)
+  1809		{
+  1810		  __try

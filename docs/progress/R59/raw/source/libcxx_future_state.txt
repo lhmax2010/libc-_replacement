@@ -1,0 +1,83 @@
+SOURCE=/home/toolchain/development/libc++_replacement/codes/llvm/libcxx/src/future.cpp
+SHA256=67ed09a7a89fb5f9581607380ac8f892481e323c0288c0a8662eac493867c494
+    55	
+    56	future_error::future_error(error_code __ec) : logic_error(__ec.message()), __ec_(__ec) {}
+    57	
+    58	future_error::~future_error() noexcept {}
+    59	
+    60	void __assoc_sub_state::__on_zero_shared() noexcept { delete this; }
+    61	
+    62	void __assoc_sub_state::set_value() {
+    63	  unique_lock<mutex> __lk(__mut_);
+    64	  if (__has_value())
+    65	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    66	  __state_ |= __constructed | ready;
+    67	  __cv_.notify_all();
+    68	}
+    69	
+    70	void __assoc_sub_state::set_value_at_thread_exit() {
+    71	  unique_lock<mutex> __lk(__mut_);
+    72	  if (__has_value())
+    73	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    74	  __state_ |= __constructed;
+    75	  __thread_local_data()->__make_ready_at_thread_exit(this);
+    76	}
+    77	
+    78	void __assoc_sub_state::set_exception(exception_ptr __p) {
+    79	  unique_lock<mutex> __lk(__mut_);
+    80	  if (__has_value())
+    81	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    82	  __exception_ = __p;
+    83	  __state_ |= ready;
+    84	  __cv_.notify_all();
+    85	}
+    86	
+    87	void __assoc_sub_state::set_exception_at_thread_exit(exception_ptr __p) {
+    88	  unique_lock<mutex> __lk(__mut_);
+    89	  if (__has_value())
+    90	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    91	  __exception_ = __p;
+    92	  __thread_local_data()->__make_ready_at_thread_exit(this);
+    93	}
+    94	
+    95	void __assoc_sub_state::__make_ready() {
+    96	  unique_lock<mutex> __lk(__mut_);
+    97	  __state_ |= ready;
+    98	  __cv_.notify_all();
+    99	}
+   100	
+   101	void __assoc_sub_state::copy() {
+   102	  unique_lock<mutex> __lk(__mut_);
+   103	  __sub_wait(__lk);
+   104	  if (__exception_ != nullptr)
+   105	    rethrow_exception(__exception_);
+   106	}
+   107	
+   108	void __assoc_sub_state::wait() {
+   109	  unique_lock<mutex> __lk(__mut_);
+   110	  __sub_wait(__lk);
+   111	}
+   112	
+   113	void __assoc_sub_state::__sub_wait(unique_lock<mutex>& __lk) {
+   114	  if (!__is_ready()) {
+   115	    if (__state_ & static_cast<unsigned>(deferred)) {
+   116	      __state_ &= ~static_cast<unsigned>(deferred);
+   117	      __lk.unlock();
+   118	      __execute();
+   119	    } else
+   120	      while (!__is_ready())
+   121	        __cv_.wait(__lk);
+   122	  }
+   123	}
+   124	
+   125	void __assoc_sub_state::__execute() { std::__throw_future_error(future_errc::no_state); }
+   126	
+   127	future<void>::future(__assoc_sub_state* __state) : __state_(__state) { __state_->__attach_future(); }
+   128	
+   129	future<void>::~future() {
+   130	  if (__state_)
+   131	    __state_->__release_shared();
+   132	}
+   133	
+   134	void future<void>::get() {
+   135	  unique_ptr<__shared_count, __release_shared_count> __(__state_);
