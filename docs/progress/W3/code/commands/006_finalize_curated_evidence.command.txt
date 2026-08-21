@@ -1,0 +1,43 @@
+set -u
+set -o pipefail
+mkdir -p docs/progress/W3/code/commands docs/progress/W3/code/raw docs/progress/W3/tables
+cp progress/W3/REPORT.md docs/progress/W3/REPORT.md
+cp progress/W3/tools/audit_exception_consumers.py docs/progress/W3/code/audit_exception_consumers.py
+cp progress/W3/commands/*.txt docs/progress/W3/code/commands/
+cp progress/W3/raw/* docs/progress/W3/code/raw/
+cp progress/W3/tables/*.tsv docs/progress/W3/tables/
+python3 - <<'PY'
+import csv
+from pathlib import Path
+
+root = Path('docs/progress/W3')
+rows = []
+import hashlib
+for path in sorted(p for p in root.rglob('*') if p.is_file() and p.name != 'INDEX.tsv'):
+    data = path.read_bytes()
+    rows.append((str(path), hashlib.sha256(data).hexdigest(), len(data)))
+with (root / 'INDEX.tsv').open('w', newline='') as handle:
+    writer = csv.writer(handle, delimiter='\t', lineterminator='\n')
+    writer.writerow(('path', 'sha256', 'bytes'))
+    writer.writerows(rows)
+
+counts = {}
+with (root / 'tables/reviewed_counts.tsv').open(newline='') as handle:
+    for row in csv.DictReader(handle, delimiter='\t'):
+        counts[row['metric']] = row
+assert counts['union_exception_consumers']['confirmed'] == '3'
+assert counts['union_exception_consumers']['conditional'] == '2'
+
+with (root / 'tables/batch_count_scenarios.tsv').open(newline='') as handle:
+    scenarios = {row['scenario']: row for row in csv.DictReader(handle, delimiter='\t')}
+assert scenarios['confirmed_exceptions_only']['library_batch'] == '31'
+assert scenarios['confirmed_exceptions_only']['header_batch'] == '19'
+assert scenarios['confirmed_plus_conditional_build_type']['library_batch'] == '30'
+assert scenarios['confirmed_plus_conditional_build_type']['header_batch'] == '20'
+print('W3_FINAL_TABLE_VALIDATION=PASS')
+print('CONFIRMED_EXCEPTION_SRPM=3/371')
+print('CONDITIONAL_EXCEPTION_SRPM=2/371')
+print('CONFIRMED_BATCH=31/19')
+print('CONDITIONAL_BOUND=30/20')
+PY
+sha256sum docs/progress/W3/REPORT.md docs/progress/W3/tables/*.tsv docs/progress/W3/code/audit_exception_consumers.py
