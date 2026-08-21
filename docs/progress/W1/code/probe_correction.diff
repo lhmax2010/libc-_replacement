@@ -1,0 +1,62 @@
+diff --git a/docs/progress/R60/code/src/r59_probe.cpp b/progress/W1/src/r61_probe.cpp
+index 5e8be0e..aa62fba 100644
+--- a/docs/progress/R60/code/src/r59_probe.cpp
++++ b/progress/W1/src/r61_probe.cpp
+@@ -17,6 +17,7 @@ namespace {
+ 
+ std::atomic<int> ready{0};
+ std::atomic<int> invocations{0};
++std::atomic<int> m2_window_entered{0};
+ 
+ void terminate_marker() noexcept {
+   const char msg[] = "TERMINATE_HANDLER=ENTERED\n";
+@@ -155,17 +156,15 @@ int run_m1() {
+ }
+ 
+ struct AsyncWindowResult {
+-  bool trigger = true;
++  bool hold_worker = true;
+   AsyncWindowResult() = default;
+   AsyncWindowResult(const AsyncWindowResult&) = delete;
+   AsyncWindowResult& operator=(const AsyncWindowResult&) = delete;
+-  AsyncWindowResult(AsyncWindowResult&& other) noexcept : trigger(false) { other.trigger = true; }
++  AsyncWindowResult(AsyncWindowResult&&) noexcept : hold_worker(false) {}
+   ~AsyncWindowResult() noexcept(false) {
+-    if (!trigger)
++    if (!hold_worker)
+       return;
+-    int old_type = 0;
+-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, &old_type);
+-    ready.store(1, std::memory_order_release);
++    m2_window_entered.store(1, std::memory_order_release);
+     for (;;)
+       asm volatile("" ::: "memory");
+   }
+@@ -175,9 +174,11 @@ int run_m2() {
+   std::set_terminate(terminate_marker);
+   auto f = std::async(std::launch::async, [] {
+     m2_worker_thread = pthread_self();
++    int old_type = 0;
++    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, &old_type);
+     return AsyncWindowResult{};
+   });
+-  while (!ready.load(std::memory_order_acquire))
++  while (!m2_window_entered.load(std::memory_order_acquire))
+     usleep(1000);
+   std::cout << "M2_WINDOW=AFTER_SET_VALUE_BEFORE_TRY_EXIT\n" << std::flush;
+   const int cancel_rc = pthread_cancel(m2_worker_thread);
+@@ -186,11 +187,11 @@ int run_m2() {
+   std::cout << "M2_PROCESS_SURVIVED_CANCEL_PROPAGATION=1\n" << std::flush;
+   try {
+     (void)f.get();
+-    std::cout << "M2_FUTURE_GET=VALUE\n";
++    std::cout << "M2_FUTURE_GET=VALUE\n" << std::flush;
+   } catch (const std::exception& e) {
+-    std::cout << "M2_FUTURE_GET=STD_EXCEPTION WHAT=" << e.what() << '\n';
++    std::cout << "M2_FUTURE_GET=STD_EXCEPTION WHAT=" << e.what() << '\n' << std::flush;
+   } catch (...) {
+-    std::cout << "M2_FUTURE_GET=NON_STD_EXCEPTION\n";
++    std::cout << "M2_FUTURE_GET=NON_STD_EXCEPTION\n" << std::flush;
+   }
+   return 0;
+ }

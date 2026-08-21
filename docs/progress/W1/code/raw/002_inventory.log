@@ -1,0 +1,276 @@
+# 周末任务状态（2026-08-22 ~ 08-24）
+
+| 任务 | 状态 | 开始时间 | 结束时间 | 产物路径 | 备注 |
+|---|---|---|---|---|---|
+| W1 / R61 | IN_PROGRESS | 2026-08-21T21:56:21+08:00 | — | `progress/W1/`, `docs/progress/W1/` | 资源检查 medium 通过 |
+| W2 / R62 | NOT_STARTED | — | — | `progress/W2/`, `docs/progress/W2/` | — |
+| W3 / R63 | NOT_STARTED | — | — | `progress/W3/`, `docs/progress/W3/` | — |
+| W4 / R48 | NOT_STARTED | — | — | `progress/W4/`, `docs/progress/W4/` | — |
+
+24f9d79e4b395c91fc3413ad0fde875cebd98fb65973b4cf87019a5a4b7b5526  docs/progress/R60/code/src/r59_probe.cpp
+d0ebfa451467479c9364c31c7127c820eba53039fd49960dcd286071420fbd08  tmp/R60/patch-repo/libcxx/include/future
+004ecd2f870bea2d54441ae94443a774f77467676909345473dbc40aa455c7f3  tmp/R60/patch-repo/libcxx/src/future.cpp
+     1	#include <atomic>
+     2	#include <chrono>
+     3	#include <cstdlib>
+     4	#include <cstring>
+     5	#include <future>
+     6	#include <iostream>
+     7	#include <pthread.h>
+     8	#include <sstream>
+     9	#include <streambuf>
+    10	#include <thread>
+    11	#include <unwind.h>
+    12	#include <unistd.h>
+    13	
+    14	pthread_t m2_worker_thread{};
+    15	
+    16	namespace {
+    17	
+    18	std::atomic<int> ready{0};
+    19	std::atomic<int> invocations{0};
+    20	
+    21	void terminate_marker() noexcept {
+    22	  const char msg[] = "TERMINATE_HANDLER=ENTERED\n";
+    23	  (void)!write(2, msg, sizeof(msg) - 1);
+    24	  _Exit(86);
+    25	}
+    26	
+    27	struct ForeignException {
+    28	  _Unwind_Exception unwind;
+    29	};
+    30	
+    31	void foreign_cleanup(_Unwind_Reason_Code reason, _Unwind_Exception* exc) {
+    32	  std::cerr << "FOREIGN_CLEANUP_REASON=" << static_cast<int>(reason) << '\n';
+    33	  delete reinterpret_cast<ForeignException*>(exc);
+    34	}
+    35	
+    36	[[noreturn]] void raise_foreign() {
+    37	  auto* f = new ForeignException{};
+    38	  std::memcpy(&f->unwind.exception_class, "R59FORGN", 8);
+    39	  f->unwind.exception_cleanup = foreign_cleanup;
+    40	  const auto rc = _Unwind_RaiseException(&f->unwind);
+    41	  std::cerr << "UNWIND_RAISE_RETURN=" << static_cast<int>(rc) << '\n';
+    42	  _Unwind_DeleteException(&f->unwind);
+    43	  std::abort();
+    44	}
+    45	
+    46	class ForeignOutputBuf : public std::streambuf {
+    47	protected:
+    48	  int_type overflow(int_type) override { raise_foreign(); }
+    49	};
+    50	
+    51	int run_f1() {
+    52	  std::set_terminate(terminate_marker);
+    53	  ForeignOutputBuf buf;
+    54	  std::ostream os(&buf);
+    55	  os.exceptions(std::ios::badbit);
+    56	  try {
+    57	    os.put('x');
+    58	    std::cout << "F1_UNEXPECTED_RETURN\n";
+    59	    return 3;
+    60	  } catch (...) {
+    61	    std::cout << "F1_TOP_CATCH=ENTERED STATE_BAD=" << os.bad() << '\n';
+    62	    return os.bad() ? 0 : 4;
+    63	  }
+    64	}
+    65	
+    66	class CancelInputBuf : public std::streambuf {
+    67	protected:
+    68	  int_type underflow() override {
+    69	    ready.store(1, std::memory_order_release);
+    70	    for (;;) {
+    71	      pthread_testcancel();
+    72	      usleep(1000);
+    73	    }
+    74	  }
+    75	};
+    76	
+    77	struct F2Context {
+    78	  std::istream* input;
+    79	  std::streambuf* output;
+    80	};
+    81	
+    82	void* f2_worker(void* opaque) {
+    83	  auto* ctx = static_cast<F2Context*>(opaque);
+    84	  ctx->input->get(*ctx->output, '\n');
+    85	  return reinterpret_cast<void*>(0x52);
+    86	}
+    87	
+    88	int run_f2() {
+    89	  std::set_terminate(terminate_marker);
+    90	  CancelInputBuf source;
+    91	  std::stringbuf sink;
+    92	  std::istream input(&source);
+    93	  F2Context ctx{&input, &sink};
+    94	  pthread_t thread{};
+    95	  const int create_rc = pthread_create(&thread, nullptr, f2_worker, &ctx);
+    96	  while (!ready.load(std::memory_order_acquire))
+    97	    usleep(1000);
+    98	  const int cancel_rc = pthread_cancel(thread);
+    99	  void* result = nullptr;
+   100	  const int join_rc = pthread_join(thread, &result);
+   101	  std::cout << "F2_CREATE_RC=" << create_rc << " CANCEL_RC=" << cancel_rc << " JOIN_RC=" << join_rc
+   102	            << " JOIN_CANCELED=" << (result == PTHREAD_CANCELED) << " RDSTATE=" << input.rdstate()
+   103	            << " BAD=" << input.bad() << " FAIL=" << input.fail() << '\n';
+   104	  return (create_rc == 0 && cancel_rc == 0 && join_rc == 0 && result == PTHREAD_CANCELED && input.bad()) ? 0 : 5;
+   105	}
+   106	
+   107	std::shared_future<int>* deferred_future = nullptr;
+   108	
+   109	void* wait_deferred(void*) {
+   110	  deferred_future->wait();
+   111	  return reinterpret_cast<void*>(0x59);
+   112	}
+   113	
+   114	int run_m1() {
+   115	  std::set_terminate(terminate_marker);
+   116	  auto future = std::async(std::launch::deferred, [] {
+   117	                  const int n = ++invocations;
+   118	                  std::cout << "M1_CALLABLE_INVOCATION=" << n << '\n';
+   119	                  if (n == 1) {
+   120	                    ready.store(1, std::memory_order_release);
+   121	                    for (;;) {
+   122	                      pthread_testcancel();
+   123	                      usleep(1000);
+   124	                    }
+   125	                  }
+   126	                  return 42;
+   127	                }).share();
+   128	  deferred_future = &future;
+   129	  pthread_t first{};
+   130	  pthread_create(&first, nullptr, wait_deferred, nullptr);
+   131	  while (!ready.load(std::memory_order_acquire))
+   132	    usleep(1000);
+   133	  const int cancel_rc = pthread_cancel(first);
+   134	  void* first_result = nullptr;
+   135	  const int first_join = pthread_join(first, &first_result);
+   136	  std::cout << "M1_FIRST_CANCEL_RC=" << cancel_rc << " FIRST_JOIN_RC=" << first_join
+   137	            << " FIRST_CANCELED=" << (first_result == PTHREAD_CANCELED) << '\n';
+   138	
+   139	  std::atomic<int> second_done{0};
+   140	  std::thread second([&] {
+   141	    future.wait();
+   142	    second_done.store(1, std::memory_order_release);
+   143	  });
+   144	  for (int i = 0; i != 2000 && !second_done.load(std::memory_order_acquire); ++i)
+   145	    usleep(1000);
+   146	  if (!second_done.load(std::memory_order_acquire)) {
+   147	    std::cout << "M1_SECOND_WAIT=TIMEOUT INVOCATIONS=" << invocations.load() << '\n' << std::flush;
+   148	    second.detach();
+   149	    _Exit(6);
+   150	  }
+   151	  second.join();
+   152	  const int value = future.get();
+   153	  std::cout << "M1_SECOND_WAIT=RETURNED INVOCATIONS=" << invocations.load() << " VALUE=" << value << '\n';
+   154	  return value == 42 ? 0 : 7;
+   155	}
+   156	
+   157	struct AsyncWindowResult {
+   158	  bool trigger = true;
+   159	  AsyncWindowResult() = default;
+   160	  AsyncWindowResult(const AsyncWindowResult&) = delete;
+   161	  AsyncWindowResult& operator=(const AsyncWindowResult&) = delete;
+   162	  AsyncWindowResult(AsyncWindowResult&& other) noexcept : trigger(false) { other.trigger = true; }
+   163	  ~AsyncWindowResult() noexcept(false) {
+   164	    if (!trigger)
+   165	      return;
+   166	    int old_type = 0;
+   167	    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, &old_type);
+   168	    ready.store(1, std::memory_order_release);
+   169	    for (;;)
+   170	      asm volatile("" ::: "memory");
+   171	  }
+   172	};
+   173	
+   174	int run_m2() {
+   175	  std::set_terminate(terminate_marker);
+   176	  auto f = std::async(std::launch::async, [] {
+   177	    m2_worker_thread = pthread_self();
+   178	    return AsyncWindowResult{};
+   179	  });
+   180	  while (!ready.load(std::memory_order_acquire))
+   181	    usleep(1000);
+   182	  std::cout << "M2_WINDOW=AFTER_SET_VALUE_BEFORE_TRY_EXIT\n" << std::flush;
+   183	  const int cancel_rc = pthread_cancel(m2_worker_thread);
+   184	  std::cout << "M2_CANCEL_RC=" << cancel_rc << '\n' << std::flush;
+   185	  sleep(1);
+   186	  std::cout << "M2_PROCESS_SURVIVED_CANCEL_PROPAGATION=1\n" << std::flush;
+   187	  try {
+   188	    (void)f.get();
+   189	    std::cout << "M2_FUTURE_GET=VALUE\n";
+   190	  } catch (const std::exception& e) {
+   191	    std::cout << "M2_FUTURE_GET=STD_EXCEPTION WHAT=" << e.what() << '\n';
+   192	  } catch (...) {
+   193	    std::cout << "M2_FUTURE_GET=NON_STD_EXCEPTION\n";
+   194	  }
+   195	  return 0;
+   196	}
+   197	
+   198	} // namespace
+   199	
+   200	int main(int argc, char** argv) {
+   201	  if (argc != 2)
+   202	    return 64;
+   203	  if (std::strcmp(argv[1], "f1") == 0)
+   204	    return run_f1();
+   205	  if (std::strcmp(argv[1], "f2") == 0)
+   206	    return run_f2();
+   207	  if (std::strcmp(argv[1], "m1") == 0)
+   208	    return run_m1();
+   209	  if (std::strcmp(argv[1], "m2") == 0)
+   210	    return run_m2();
+   211	  return 65;
+   212	}
+tmp/R60/patch-repo/libcxx/src/future.cpp:66:  __state_ |= __constructed | ready;
+tmp/R60/patch-repo/libcxx/src/future.cpp:70:void __assoc_sub_state::set_value_at_thread_exit() {
+tmp/R60/patch-repo/libcxx/src/future.cpp:74:  __state_ |= __constructed;
+tmp/R60/patch-repo/libcxx/src/future.cpp:173:void promise<void>::set_value_at_thread_exit() {
+tmp/R60/patch-repo/libcxx/src/future.cpp:176:  __state_->set_value_at_thread_exit();
+tmp/R60/patch-repo/libcxx/include/future:83:    void set_value_at_thread_exit(const R& r);
+tmp/R60/patch-repo/libcxx/include/future:84:    void set_value_at_thread_exit(R&& r);
+tmp/R60/patch-repo/libcxx/include/future:112:    void set_value_at_thread_exit(R&);
+tmp/R60/patch-repo/libcxx/include/future:140:    void set_value_at_thread_exit();
+tmp/R60/patch-repo/libcxx/include/future:537:  __handle_forced_unwind(__forced_unwind_action __action, exception_ptr __error = exception_ptr()) _NOEXCEPT {
+tmp/R60/patch-repo/libcxx/include/future:557:  enum { __constructed = 1, __future_attached = 2, ready = 4, deferred = 8 };
+tmp/R60/patch-repo/libcxx/include/future:561:  _LIBCPP_HIDE_FROM_ABI bool __has_value() const { return (__state_ & __constructed) || (__exception_ != nullptr); }
+tmp/R60/patch-repo/libcxx/include/future:578:  void set_value_at_thread_exit();
+tmp/R60/patch-repo/libcxx/include/future:622:  _LIBCPP_HIDE_FROM_ABI void set_value_at_thread_exit(_Arg&& __arg);
+tmp/R60/patch-repo/libcxx/include/future:630:  if (this->__state_ & base::__constructed)
+tmp/R60/patch-repo/libcxx/include/future:642:  this->__state_ |= base::__constructed | base::ready;
+tmp/R60/patch-repo/libcxx/include/future:648:void __assoc_state<_Rp>::set_value_at_thread_exit(_Arg&& __arg) {
+tmp/R60/patch-repo/libcxx/include/future:653:  this->__state_ |= base::__constructed;
+tmp/R60/patch-repo/libcxx/include/future:687:  _LIBCPP_HIDE_FROM_ABI void set_value_at_thread_exit(_Rp& __arg);
+tmp/R60/patch-repo/libcxx/include/future:703:  this->__state_ |= base::__constructed | base::ready;
+tmp/R60/patch-repo/libcxx/include/future:708:void __assoc_state<_Rp&>::set_value_at_thread_exit(_Rp& __arg) {
+tmp/R60/patch-repo/libcxx/include/future:713:  this->__state_ |= base::__constructed;
+tmp/R60/patch-repo/libcxx/include/future:739:  if (this->__state_ & base::__constructed)
+tmp/R60/patch-repo/libcxx/include/future:816:    this->__handle_forced_unwind(base::__forced_unwind_action::__restore_deferred);
+tmp/R60/patch-repo/libcxx/include/future:850:    this->__handle_forced_unwind(base::__forced_unwind_action::__restore_deferred);
+tmp/R60/patch-repo/libcxx/include/future:859:class __async_assoc_state : public __assoc_state<_Rp> {
+tmp/R60/patch-repo/libcxx/include/future:867:  _LIBCPP_HIDE_FROM_ABI explicit __async_assoc_state(_Fp&& __f);
+tmp/R60/patch-repo/libcxx/include/future:873:inline __async_assoc_state<_Rp, _Fp>::__async_assoc_state(_Fp&& __f) : __func_(std::forward<_Fp>(__f)) {}
+tmp/R60/patch-repo/libcxx/include/future:876:void __async_assoc_state<_Rp, _Fp>::__execute() {
+tmp/R60/patch-repo/libcxx/include/future:889:    this->__handle_forced_unwind(base::__forced_unwind_action::__complete_with_error, std::move(__error));
+tmp/R60/patch-repo/libcxx/include/future:898:void __async_assoc_state<_Rp, _Fp>::__on_zero_shared() _NOEXCEPT {
+tmp/R60/patch-repo/libcxx/include/future:904:class __async_assoc_state<void, _Fp> : public __assoc_sub_state {
+tmp/R60/patch-repo/libcxx/include/future:912:  _LIBCPP_HIDE_FROM_ABI explicit __async_assoc_state(_Fp&& __f);
+tmp/R60/patch-repo/libcxx/include/future:918:inline __async_assoc_state<void, _Fp>::__async_assoc_state(_Fp&& __f) : __func_(std::forward<_Fp>(__f)) {}
+tmp/R60/patch-repo/libcxx/include/future:921:void __async_assoc_state<void, _Fp>::__execute() {
+tmp/R60/patch-repo/libcxx/include/future:935:    this->__handle_forced_unwind(base::__forced_unwind_action::__complete_with_error, std::move(__error));
+tmp/R60/patch-repo/libcxx/include/future:944:void __async_assoc_state<void, _Fp>::__on_zero_shared() _NOEXCEPT {
+tmp/R60/patch-repo/libcxx/include/future:1196:  _LIBCPP_HIDE_FROM_ABI void set_value_at_thread_exit(const _Rp& __r);
+tmp/R60/patch-repo/libcxx/include/future:1197:  _LIBCPP_HIDE_FROM_ABI void set_value_at_thread_exit(_Rp&& __r);
+tmp/R60/patch-repo/libcxx/include/future:1255:void promise<_Rp>::set_value_at_thread_exit(const _Rp& __r) {
+tmp/R60/patch-repo/libcxx/include/future:1258:  __state_->set_value_at_thread_exit(__r);
+tmp/R60/patch-repo/libcxx/include/future:1262:void promise<_Rp>::set_value_at_thread_exit(_Rp&& __r) {
+tmp/R60/patch-repo/libcxx/include/future:1265:  __state_->set_value_at_thread_exit(std::move(__r));
+tmp/R60/patch-repo/libcxx/include/future:1312:  _LIBCPP_HIDE_FROM_ABI void set_value_at_thread_exit(_Rp&);
+tmp/R60/patch-repo/libcxx/include/future:1363:void promise<_Rp&>::set_value_at_thread_exit(_Rp& __r) {
+tmp/R60/patch-repo/libcxx/include/future:1366:  __state_->set_value_at_thread_exit(__r);
+tmp/R60/patch-repo/libcxx/include/future:1422:  void set_value_at_thread_exit();
+tmp/R60/patch-repo/libcxx/include/future:1728:    __p_.set_value_at_thread_exit(__f_(std::forward<_ArgTypes>(__args)...));
+tmp/R60/patch-repo/libcxx/include/future:1833:    __p_.set_value_at_thread_exit();
+tmp/R60/patch-repo/libcxx/include/future:1870:  unique_ptr<__async_assoc_state<_Rp, _Fp>, __release_shared_count> __h(
+tmp/R60/patch-repo/libcxx/include/future:1871:      new __async_assoc_state<_Rp, _Fp>(std::forward<_Fp>(__f)));
+tmp/R60/patch-repo/libcxx/include/future:1873:  std::thread(&__async_assoc_state<_Rp, _Fp>::__execute, __h.get()).detach();

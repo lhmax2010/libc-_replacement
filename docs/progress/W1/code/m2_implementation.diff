@@ -1,0 +1,73 @@
+diff --git a/libcxx/include/future b/libcxx/include/future
+index 1ad2cf81c01d..09f2da87fba2 100644
+--- a/libcxx/include/future
++++ b/libcxx/include/future
+@@ -614,6 +614,11 @@ protected:
+ 
+   _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __on_zero_shared() _NOEXCEPT override;
+ 
++  template <class _Arg>
++  _LIBCPP_HIDE_FROM_ABI void __construct_value_unready(_Arg&& __arg);
++
++  _LIBCPP_HIDE_FROM_ABI void __complete_forced_unwind(exception_ptr __error) _NOEXCEPT;
++
+ public:
+   template <class _Arg>
+   _LIBCPP_HIDE_FROM_ABI void set_value(_Arg&& __arg);
+@@ -643,6 +648,37 @@ void __assoc_state<_Rp>::set_value(_Arg&& __arg) {
+   __cv_.notify_all();
+ }
+ 
++template <class _Rp>
++template <class _Arg>
++void __assoc_state<_Rp>::__construct_value_unready(_Arg&& __arg) {
++  unique_lock<mutex> __lk(this->__mut_);
++  if (this->__has_value())
++    std::__throw_future_error(future_errc::promise_already_satisfied);
++  ::new ((void*)std::addressof(__value_)) _Rp(std::forward<_Arg>(__arg));
++  this->__state_ |= base::__constructed;
++}
++
++template <class _Rp>
++void __assoc_state<_Rp>::__complete_forced_unwind(exception_ptr __error) _NOEXCEPT {
++#    if _LIBCPP_HAS_EXCEPTIONS
++  try {
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++    unique_lock<mutex> __lk(this->__mut_);
++    if (!(this->__state_ & base::ready)) {
++      if (this->__state_ & base::__constructed) {
++        reinterpret_cast<_Rp*>(std::addressof(__value_))->~_Rp();
++        this->__state_ &= ~base::__constructed;
++      }
++      this->__exception_ = std::move(__error);
++      this->__state_ |= base::ready;
++      this->__cv_.notify_all();
++    }
++#    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (...) {
++  }
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++}
++
+ template <class _Rp>
+ template <class _Arg>
+ void __assoc_state<_Rp>::set_value_at_thread_exit(_Arg&& __arg) {
+@@ -877,7 +913,8 @@ void __async_assoc_state<_Rp, _Fp>::__execute() {
+ #    if _LIBCPP_HAS_EXCEPTIONS
+   try {
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+-    this->set_value(__func_());
++    this->__construct_value_unready(__func_());
++    this->__make_ready();
+ #    if _LIBCPP_HAS_EXCEPTIONS
+   } catch (const __cxxabiv1::__forced_unwind&) {
+     exception_ptr __error;
+@@ -886,7 +923,7 @@ void __async_assoc_state<_Rp, _Fp>::__execute() {
+     } catch (...) {
+       __error = current_exception();
+     }
+-    this->__handle_forced_unwind(base::__forced_unwind_action::__complete_with_error, std::move(__error));
++    this->__complete_forced_unwind(std::move(__error));
+     throw;
+   } catch (...) {
+     this->set_exception(current_exception());
