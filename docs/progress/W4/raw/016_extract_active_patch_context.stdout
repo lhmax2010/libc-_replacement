@@ -1,0 +1,684 @@
+===== cherry/4508f44af7529dbba8e3762325b2c416ff9f20c6.patch =====
+title=[UPSTREAM] [libunwind] Add CMake option to enable execute-only code generation on AArch64 (#140554)
+de21de005e6f879d225c34d73a45a936848db545d3a17b18c665efc7e083ad18  /home/toolchain/development/libc++_replacement/tmp/W4/android-llvm-toolchain-r596125/patches/cherry/4508f44af7529dbba8e3762325b2c416ff9f20c6.patch
+ libunwind/CMakeLists.txt               |    4 ++++
+ libunwind/src/UnwindRegistersRestore.S |    2 ++
+ libunwind/src/UnwindRegistersSave.S    |    2 ++
+ 3 files changed, 8 insertions(+)
+From 4508f44af7529dbba8e3762325b2c416ff9f20c6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Csan=C3=A1d=20Hajd=C3=BA?= <csanad.hajdu@arm.com>
+Date: Fri, 7 Nov 2025 09:36:32 +0100
+Subject: [PATCH] [libunwind] Add CMake option to enable execute-only code
+ generation on AArch64 (#140554)
+
+For a full toolchain supporting execute-only code generation the runtime
+libraries also need to be pre-compiled with it enabled. The generic
+`RUNTIMES_EXECUTE_ONLY_CODE` CMake option can now be used during build
+configuration to enable execute-only code generation in libunwind.
+
+Related RFC:
+https://discourse.llvm.org/t/rfc-execute-only-code-support-for-runtime-libraries-on-aarch64/86180
+---
+ libunwind/CMakeLists.txt               | 4 ++++
+ libunwind/src/UnwindRegistersRestore.S | 2 ++
+ libunwind/src/UnwindRegistersSave.S    | 2 ++
+ 3 files changed, 8 insertions(+)
+
+diff --git a/libunwind/CMakeLists.txt b/libunwind/CMakeLists.txt
+index 5f4b0902d522..97edff0b87ea 100644
+--- a/libunwind/CMakeLists.txt
++++ b/libunwind/CMakeLists.txt
+@@ -332,6 +332,10 @@ if (C_SUPPORTS_COMMENT_LIB_PRAGMA)
+   endif()
+ endif()
+ 
++if (RUNTIMES_EXECUTE_ONLY_CODE)
++  add_compile_definitions(_LIBUNWIND_EXECUTE_ONLY_CODE)
++endif()
++
+ #===============================================================================
+ # Setup Source Code
+ #===============================================================================
+diff --git a/libunwind/src/UnwindRegistersRestore.S b/libunwind/src/UnwindRegistersRestore.S
+index 198735fa800a..fd306ed8c523 100644
+--- a/libunwind/src/UnwindRegistersRestore.S
++++ b/libunwind/src/UnwindRegistersRestore.S
+@@ -18,6 +18,8 @@
+ 
+ #if defined(_AIX)
+   .toc
++#elif defined(__aarch64__) && defined(__ELF__) && defined(_LIBUNWIND_EXECUTE_ONLY_CODE)
++  .section .text,"axy",@progbits,unique,0
+ #else
+   .text
+ #endif
+diff --git a/libunwind/src/UnwindRegistersSave.S b/libunwind/src/UnwindRegistersSave.S
+index 619a59751151..b7ddd0a621d1 100644
+--- a/libunwind/src/UnwindRegistersSave.S
++++ b/libunwind/src/UnwindRegistersSave.S
+@@ -18,6 +18,8 @@
+ 
+ #if defined(_AIX)
+     .toc
++#elif defined(__aarch64__) && defined(__ELF__) && defined(_LIBUNWIND_EXECUTE_ONLY_CODE)
++    .section .text,"axy",@progbits,unique,0
+ #else
+     .text
+ #endif
+-- 
+2.52.0.rc1.455.g30608eb744-goog
+
+===== cherry/a9633aac31cb1ec42153fb3ada815aa1572eb58f.patch =====
+title=[UPSTREAM] [libc++] Fix __hash_table::erase(iterator, iterator) to update the bucket list correctly when erasing the last bucket (#167865)
+082e16ca119fd0253afbc328f6ba4bfad70e063632bc24151faa0d4239d43897  /home/toolchain/development/libc++_replacement/tmp/W4/android-llvm-toolchain-r596125/patches/cherry/a9633aac31cb1ec42153fb3ada815aa1572eb58f.patch
+ libcxx/include/__hash_table                        |    2 ++
+ .../unord.map.modifiers/erase_range.pass.cpp       |   22 ++++++++++++++++++++
+ .../unord.multimap.modifiers/erase_range.pass.cpp  |   22 ++++++++++++++++++++
+ .../unord/unord.multiset/erase_range.pass.cpp      |   22 ++++++++++++++++++++
+ .../unord/unord.set/erase_range.pass.cpp           |   22 ++++++++++++++++++++
+ 5 files changed, 90 insertions(+)
+From a9633aac31cb1ec42153fb3ada815aa1572eb58f Mon Sep 17 00:00:00 2001
+From: Nikolas Klauser <nikolasklauser@berlin.de>
+Date: Mon, 17 Nov 2025 17:31:55 +0100
+Subject: [PATCH] [libc++] Fix __hash_table::erase(iterator, iterator) to
+ update the bucket list correctly when erasing the last bucket (#167865)
+
+Fixes #167820
+---
+ libcxx/include/__hash_table                   |  2 ++
+ .../unord.map.modifiers/erase_range.pass.cpp  | 22 +++++++++++++++++++
+ .../erase_range.pass.cpp                      | 22 +++++++++++++++++++
+ .../unord/unord.multiset/erase_range.pass.cpp | 22 +++++++++++++++++++
+ .../unord/unord.set/erase_range.pass.cpp      | 22 +++++++++++++++++++
+ 5 files changed, 90 insertions(+)
+
+diff --git a/libcxx/include/__hash_table b/libcxx/include/__hash_table
+index e1897949a47e..ef487fb06dd5 100644
+--- a/libcxx/include/__hash_table
++++ b/libcxx/include/__hash_table
+@@ -1910,6 +1910,8 @@ __hash_table<_Tp, _Hash, _Equal, _Alloc>::erase(const_iterator __first, const_it
+         __bucket_list_[__next_chash] = __before_first;
+         __chash                      = __next_chash;
+       }
++    } else { // When __next is a nullptr we've fully erased the last bucket. Update the bucket list accordingly.
++      __bucket_list_[__chash] = nullptr;
+     }
+   }
+ 
+diff --git a/libcxx/test/std/containers/unord/unord.map/unord.map.modifiers/erase_range.pass.cpp b/libcxx/test/std/containers/unord/unord.map/unord.map.modifiers/erase_range.pass.cpp
+index 532413437f6b..81371638143c 100644
+--- a/libcxx/test/std/containers/unord/unord.map/unord.map.modifiers/erase_range.pass.cpp
++++ b/libcxx/test/std/containers/unord/unord.map/unord.map.modifiers/erase_range.pass.cpp
+@@ -57,6 +57,28 @@ int main(int, char**) {
+     assert(c.size() == 0);
+     assert(k == c.end());
+   }
++  { // Make sure that we're properly updating the bucket list when we're erasing to the end
++    std::unordered_map<int, int> m;
++    m.insert(std::make_pair(1, 1));
++    m.insert(std::make_pair(2, 2));
++
++    {
++      auto pair = m.equal_range(1);
++      assert(pair.first != pair.second);
++      m.erase(pair.first, pair.second);
++    }
++
++    {
++      auto pair = m.equal_range(2);
++      assert(pair.first != pair.second);
++      m.erase(pair.first, pair.second);
++    }
++
++    m.insert(std::make_pair(3, 3));
++    assert(m.size() == 1);
++    assert(*m.begin() == std::make_pair(3, 3));
++    assert(++m.begin() == m.end());
++  }
+ #if TEST_STD_VER >= 11
+   {
+     typedef std::unordered_map<int,
+diff --git a/libcxx/test/std/containers/unord/unord.multimap/unord.multimap.modifiers/erase_range.pass.cpp b/libcxx/test/std/containers/unord/unord.multimap/unord.multimap.modifiers/erase_range.pass.cpp
+index 38b75c0c1986..aa6bc20e4090 100644
+--- a/libcxx/test/std/containers/unord/unord.multimap/unord.multimap.modifiers/erase_range.pass.cpp
++++ b/libcxx/test/std/containers/unord/unord.multimap/unord.multimap.modifiers/erase_range.pass.cpp
+@@ -122,6 +122,28 @@ int main(int, char**) {
+     for (const auto& v : map)
+       assert(v.first == 1 || v.first == collision_val);
+   }
++  { // Make sure that we're properly updating the bucket list when we're erasing to the end
++    std::unordered_multimap<int, int> m;
++    m.insert(std::make_pair(1, 1));
++    m.insert(std::make_pair(2, 2));
++
++    {
++      auto pair = m.equal_range(1);
++      assert(pair.first != pair.second);
++      m.erase(pair.first, pair.second);
++    }
++
+===== cherry/5320cc50b6b4e3684ff4ba93a5c2c2429c09386b.patch =====
+title=[UPSTREAM] [libc++] Update `__mbstate_t.h` to include path to Android's `mbstate_t.h` (#192307)
+d0b0bfada23172bb12e31ed5dd1398acd02bae0d54480948964d38a7fabe7481  /home/toolchain/development/libc++_replacement/tmp/W4/android-llvm-toolchain-r596125/patches/cherry/5320cc50b6b4e3684ff4ba93a5c2c2429c09386b.patch
+ libcxx/include/__mbstate_t.h |    2 ++
+ 1 file changed, 2 insertions(+)
+From 5320cc50b6b4e3684ff4ba93a5c2c2429c09386b Mon Sep 17 00:00:00 2001
+From: finagolfin <finagolfin@tuta.io>
+Date: Tue, 21 Apr 2026 01:26:36 +0530
+Subject: [PATCH] [libc++] Update `__mbstate_t.h` to include path to Android's
+ `mbstate_t.h` (#192307)
+
+Ever since ce4ac9945 started including `__mbstate_t.h` in this C++
+`wchar.h`, the Android NDK sees some redefinition errors with
+`-fmodules`, likely because this Android `mbstate_t.h` was not included.
+Elliot, enh-google from the Android team, suggested this inclusion to
+fix it, and it worked for me in my local testing: see
+swiftlang/swift#85365 for the errors and more info. This fixes
+android/ndk#2230, once it gets into the NDK sysroot.
+---
+ libcxx/include/__mbstate_t.h | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/libcxx/include/__mbstate_t.h b/libcxx/include/__mbstate_t.h
+index c23ea7113ca7..d331ba622d37 100644
+--- a/libcxx/include/__mbstate_t.h
++++ b/libcxx/include/__mbstate_t.h
+@@ -43,6 +43,8 @@
+ #  include <bits/types/mbstate_t.h> // works on most Unixes
+ #elif __has_include(<sys/_types/_mbstate_t.h>)
+ #  include <sys/_types/_mbstate_t.h> // works on Darwin
++#elif __has_include(<bits/mbstate_t.h>)
++#  include <bits/mbstate_t.h> // works for Android
+ #elif __has_include_next(<wchar.h>)
+ #  include_next <wchar.h> // use the C standard provider of mbstate_t if present
+ #elif __has_include_next(<uchar.h>)
+-- 
+2.54.0.rc2.533.g4f5dca5207-goog
+
+===== move-cxa-demangle-into-libcxxdemangle.patch =====
+title=[libc++abi] Optionally move __cxa_demangle into libc++demangle.a
+6a8879953b2133491d4bc6be97332d4d031b837e0175227969f4ef7f7d6ef8b9  /home/toolchain/development/libc++_replacement/tmp/W4/android-llvm-toolchain-r596125/patches/move-cxa-demangle-into-libcxxdemangle.patch
+ libcxxabi/CMakeLists.txt     |    9 +++++++++
+ libcxxabi/src/CMakeLists.txt |   25 ++++++++++++++++++++++++-
+ 2 files changed, 33 insertions(+), 1 deletion(-)
+From cceb020e3497e1af208e546ac971e265f46d2f66 Mon Sep 17 00:00:00 2001
+From: Ryan Prichard <rprichard@google.com>
+Date: Mon, 25 Jul 2022 18:05:30 -0700
+Subject: [PATCH] [libc++abi] Optionally move __cxa_demangle into
+ libc++demangle.a
+
+The motivation is to reduce the size of libc++.so on Android. The flag
+is always used with LIBCXXABI_NON_DEMANGLING_TERMINATE.
+
+Differential Revision: https://reviews.llvm.org/D139493
+---
+ libcxxabi/CMakeLists.txt     |  9 +++++++++
+ libcxxabi/src/CMakeLists.txt | 25 ++++++++++++++++++++++++-
+ 2 files changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/libcxxabi/CMakeLists.txt b/libcxxabi/CMakeLists.txt
+index efe830bd2ad6..17fb41eda1a6 100644
+--- a/libcxxabi/CMakeLists.txt
++++ b/libcxxabi/CMakeLists.txt
+@@ -79,6 +79,7 @@ option(LIBCXXABI_INSTALL_LIBRARY "Install the libc++abi library." ON)
+ 
+ set(LIBCXXABI_SHARED_OUTPUT_NAME "c++abi" CACHE STRING "Output name for the shared libc++abi runtime library.")
+ set(LIBCXXABI_STATIC_OUTPUT_NAME "c++abi" CACHE STRING "Output name for the static libc++abi runtime library.")
++set(LIBCXXABI_DEMANGLE_STATIC_OUTPUT_NAME "c++demangle" CACHE STRING "Output name for the optional libc++demangle runtime library.")
+ 
+ set(LIBCXXABI_INSTALL_INCLUDE_DIR "${CMAKE_INSTALL_INCLUDEDIR}/c++/v1" CACHE STRING "Path to install the libc++abi headers at.")
+ 
+@@ -123,6 +124,14 @@ option(LIBCXXABI_SILENT_TERMINATE "Set this to make the terminate handler defaul
+ option(LIBCXXABI_NON_DEMANGLING_TERMINATE "Set this to make the terminate handler
+ avoid demangling" OFF)
+ 
++# Omit __cxa_demangle to reduce the size of libc++[abi].so. Package it into a
++# separate static library for when it is actually needed.
++option(LIBCXXABI_STATIC_DEMANGLE_LIBRARY "Put __cxa_demangle into a separate static library" OFF)
++
++if (LIBCXXABI_STATIC_DEMANGLE_LIBRARY AND NOT LIBCXXABI_NON_DEMANGLING_TERMINATE)
++  message(FATAL_ERROR "libc++demangle is only supported when libc++abi doesn't use demangling")
++endif()
++
+ if (NOT LIBCXXABI_ENABLE_SHARED AND NOT LIBCXXABI_ENABLE_STATIC)
+   message(FATAL_ERROR "libc++abi must be built as either a shared or static library.")
+ endif()
+diff --git a/libcxxabi/src/CMakeLists.txt b/libcxxabi/src/CMakeLists.txt
+index 4198827203fc..2b77f0b24874 100644
+--- a/libcxxabi/src/CMakeLists.txt
++++ b/libcxxabi/src/CMakeLists.txt
+@@ -3,7 +3,6 @@ set(LIBCXXABI_SOURCES
+   # C++ABI files
+   cxa_aux_runtime.cpp
+   cxa_default_handlers.cpp
+-  cxa_demangle.cpp
+   cxa_exception_storage.cpp
+   cxa_guard.cpp
+   cxa_handlers.cpp
+@@ -19,6 +18,12 @@ set(LIBCXXABI_SOURCES
+   private_typeinfo.cpp
+ )
+ 
++if (NOT LIBCXXABI_STATIC_DEMANGLE_LIBRARY)
++  list(APPEND LIBCXXABI_SOURCES
++    cxa_demangle.cpp
++  )
++endif()
++
+ if (LIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS)
+   list(APPEND LIBCXXABI_SOURCES
+     stdlib_new_delete.cpp
+@@ -154,6 +159,24 @@ endif()
+ 
+ include(WarningFlags)
+ 
++if (LIBCXXABI_STATIC_DEMANGLE_LIBRARY)
++  add_library(cxxabi_demangle_static STATIC abort_message.cpp cxa_demangle.cpp ${LIBCXXABI_HEADERS})
++  target_link_libraries(cxxabi_demangle_static PRIVATE cxx-headers cxxabi-headers)
++  set_target_properties(cxxabi_demangle_static
++    PROPERTIES
++      CXX_EXTENSIONS OFF
++      CXX_STANDARD 20
++      CXX_STANDARD_REQUIRED OFF
++      COMPILE_FLAGS "${LIBCXXABI_COMPILE_FLAGS}"
+===== Disable-std-utilities-charconv-charconv.msvc-test.pa.patch =====
+title=Disable std/utilities/charconv/charconv.msvc/test.pass.cpp test
+a9883b3ca03633dd8fa375d53a163a60e1f79e3f4b9502a04cd069a7d3d0f0fd  /home/toolchain/development/libc++_replacement/tmp/W4/android-llvm-toolchain-r596125/patches/Disable-std-utilities-charconv-charconv.msvc-test.pa.patch
+ .../utilities/charconv/charconv.msvc/test.pass.cpp |    4 ++++
+ 1 file changed, 4 insertions(+)
+From 16a8111d6ab6ea62b090873f2cfb940952606a65 Mon Sep 17 00:00:00 2001
+From: Yi Kong <yikong@google.com>
+Date: Thu, 23 Jan 2025 17:20:32 +0800
+Subject: [PATCH] Disable std/utilities/charconv/charconv.msvc/test.pass.cpp
+
+---
+ .../test/std/utilities/charconv/charconv.msvc/test.pass.cpp   | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/libcxx/test/std/utilities/charconv/charconv.msvc/test.pass.cpp b/libcxx/test/std/utilities/charconv/charconv.msvc/test.pass.cpp
+index 9279511e46b1..82356b03775d 100644
+--- a/libcxx/test/std/utilities/charconv/charconv.msvc/test.pass.cpp
++++ b/libcxx/test/std/utilities/charconv/charconv.msvc/test.pass.cpp
+@@ -6,6 +6,10 @@
+ //
+ //===----------------------------------------------------------------------===//
+ 
++// FIXME: Flaky on Android i386 build
++// https://github.com/llvm/llvm-project/issues/113265
++// UNSUPPORTED: target=i386-unknown-linux-gnu
++
+ // UNSUPPORTED: c++03, c++11, c++14
+ 
+ // TODO Investigate why this fails
+-- 
+2.48.1.262.g85cc9f2d1e-goog
+
+===== Revert-libc-Don-t-implement-stdatomic.h-before-C-23-v3.patch =====
+title=Revert [libc++] Don't implement <stdatomic.h> before C++23 (#123130)
+ba9bbf2be17c8a887a639fa553951d097c7e11f8f741578dfd6408b5bf925851  /home/toolchain/development/libc++_replacement/tmp/W4/android-llvm-toolchain-r596125/patches/Revert-libc-Don-t-implement-stdatomic.h-before-C-23-v3.patch
+ libcxx/include/atomic                              |   10 -------
+ libcxx/include/stdatomic.h                         |   10 ++-----
+ .../compatible_with_stdatomic.compile.pass.cpp     |    8 ++----
+ .../incompatible_with_stdatomic.verify.cpp         |   25 ------------------
+ .../dont_hijack_header.compile.pass.cpp            |   24 -----------------
+ .../dont_hijack_header.cxx23.compile.pass.cpp      |   28 --------------------
+ 6 files changed, 6 insertions(+), 99 deletions(-)
+From 1f8a9d20237317434c01de6f4c0029e37e118197 Mon Sep 17 00:00:00 2001
+From: Ryan Prichard <rprichard@google.com>
+Date: Thu, 20 Mar 2025 16:44:18 -0700
+Subject: [PATCH] Revert "[libc++] Don't implement <stdatomic.h> before C++23
+ (#123130)"
+
+This reverts commit bbd871e2baad2e74dbde202823b3439d2a96d3f8.
+---
+ libcxx/include/atomic                         | 10 -------
+ libcxx/include/stdatomic.h                    | 10 ++-----
+ ...compatible_with_stdatomic.compile.pass.cpp |  8 ++----
+ .../incompatible_with_stdatomic.verify.cpp    | 25 -----------------
+ .../dont_hijack_header.compile.pass.cpp       | 24 ----------------
+ .../dont_hijack_header.cxx23.compile.pass.cpp | 28 -------------------
+ 6 files changed, 6 insertions(+), 99 deletions(-)
+ delete mode 100644 libcxx/test/libcxx/atomics/atomics.syn/incompatible_with_stdatomic.verify.cpp
+ delete mode 100644 libcxx/test/libcxx/atomics/stdatomic.h.syn/dont_hijack_header.compile.pass.cpp
+ delete mode 100644 libcxx/test/libcxx/atomics/stdatomic.h.syn/dont_hijack_header.cxx23.compile.pass.cpp
+
+diff --git a/libcxx/include/atomic b/libcxx/include/atomic
+index 75af5de33..80f9e437b 100644
+--- a/libcxx/include/atomic
++++ b/libcxx/include/atomic
+@@ -592,16 +592,6 @@ template <class T>
+ #else
+ #  include <__config>
+ 
+-#  if defined(_LIBCPP_STDATOMIC_H) || defined(kill_dependency) || defined(atomic_load)
+-#    define _LIBCPP_STDATOMIC_H_HAS_DEFINITELY_BEEN_INCLUDED 1
+-#  else
+-#    define _LIBCPP_STDATOMIC_H_HAS_DEFINITELY_BEEN_INCLUDED 0
+-#  endif
+-
+-#  if _LIBCPP_STD_VER < 23 && _LIBCPP_STDATOMIC_H_HAS_DEFINITELY_BEEN_INCLUDED
+-#    error <atomic> is incompatible with <stdatomic.h> before C++23. Please compile with -std=c++23.
+-#  endif
+-
+ #  include <__atomic/aliases.h>
+ #  include <__atomic/atomic.h>
+ #  include <__atomic/atomic_flag.h>
+diff --git a/libcxx/include/stdatomic.h b/libcxx/include/stdatomic.h
+index 2991030ee..a0b46e3b7 100644
+--- a/libcxx/include/stdatomic.h
++++ b/libcxx/include/stdatomic.h
+@@ -126,7 +126,7 @@ using std::atomic_signal_fence                         // see below
+ #    pragma GCC system_header
+ #  endif
+ 
+-#  if defined(__cplusplus) && _LIBCPP_STD_VER >= 23
++#  if defined(__cplusplus)
+ 
+ #    include <atomic>
+ #    include <version>
+@@ -231,17 +231,13 @@ using std::atomic_store_explicit _LIBCPP_USING_IF_EXISTS;
+ using std::atomic_signal_fence _LIBCPP_USING_IF_EXISTS;
+ using std::atomic_thread_fence _LIBCPP_USING_IF_EXISTS;
+ 
+-#  elif defined(_LIBCPP_COMPILER_CLANG_BASED)
++#  else
+ 
+-// Before C++23, we include the next <stdatomic.h> on the path to avoid hijacking
+-// the header. We do this because Clang has historically shipped a <stdatomic.h>
+-// header that would be available in all Standard modes, and we don't want to
+-// break that use case.
+ #    if __has_include_next(<stdatomic.h>)
+ #      include_next <stdatomic.h>
+ #    endif
+ 
+-#  endif // defined(__cplusplus) && _LIBCPP_STD_VER >= 23
++#  endif // defined(__cplusplus)
+ #endif   // defined(__cplusplus) && __cplusplus < 201103L && defined(_LIBCPP_USE_FROZEN_CXX03_HEADERS)
+ 
+ #endif // _LIBCPP_STDATOMIC_H
+diff --git a/libcxx/test/libcxx/atomics/atomics.syn/compatible_with_stdatomic.compile.pass.cpp b/libcxx/test/libcxx/atomics/atomics.syn/compatible_with_stdatomic.compile.pass.cpp
+index 349dc51aa..c588767b0 100644
+--- a/libcxx/test/libcxx/atomics/atomics.syn/compatible_with_stdatomic.compile.pass.cpp
++++ b/libcxx/test/libcxx/atomics/atomics.syn/compatible_with_stdatomic.compile.pass.cpp
+@@ -7,14 +7,12 @@
+ //===----------------------------------------------------------------------===//
+ 
+===== Disable-integer-sanitizer-for-__libcpp_blsr.patch =====
+title=Disable integer sanitizer for __libcxx_blsr
+83c392d2d95339b7988fb29d041aa9493c65ebd4a2ebf50a77102eaccd739d99  /home/toolchain/development/libc++_replacement/tmp/W4/android-llvm-toolchain-r596125/patches/Disable-integer-sanitizer-for-__libcpp_blsr.patch
+ libcxx/include/__bit/blsr.h |    3 +++
+ 1 file changed, 3 insertions(+)
+From 9e7249d518d59d4c35fab13a5482c75a2648dff1 Mon Sep 17 00:00:00 2001
+From: Yi Kong <yikong@google.com>
+Date: Wed, 28 May 2025 14:53:56 +0900
+Subject: [PATCH] Disable integer sanitizer for __libcpp_blsr
+
+Change-Id: If9c46e0de44635a53a1f57b7e9e2f0913f7eeea5
+---
+ libcxx/include/__bit/blsr.h | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/libcxx/include/__bit/blsr.h b/libcxx/include/__bit/blsr.h
+index 76bd521f5c30..21d4a162524a 100644
+--- a/libcxx/include/__bit/blsr.h
++++ b/libcxx/include/__bit/blsr.h
+@@ -17,14 +17,17 @@
+ 
+ _LIBCPP_BEGIN_NAMESPACE_STD
+ 
++__attribute__((no_sanitize("integer")))
+ inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR unsigned __libcpp_blsr(unsigned __x) _NOEXCEPT {
+   return __x ^ (__x & -__x);
+ }
+ 
++__attribute__((no_sanitize("integer")))
+ inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR unsigned long __libcpp_blsr(unsigned long __x) _NOEXCEPT {
+   return __x ^ (__x & -__x);
+ }
+ 
++__attribute__((no_sanitize("integer")))
+ inline _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR unsigned long long __libcpp_blsr(unsigned long long __x) _NOEXCEPT {
+   return __x ^ (__x & -__x);
+ }
+-- 
+2.49.0.1164.gab81da1b16-goog
+
+===== LFI_Support-Patch-2bc22e.patch =====
+title=LFI Support Patch for r596125
+5fd8d4804991fee7ed8adb849b7c7df71c7582f3a07d6a9260a10d6875718a07  /home/toolchain/development/libc++_replacement/tmp/W4/android-llvm-toolchain-r596125/patches/LFI_Support-Patch-2bc22e.patch
+ clang/lib/Basic/Targets/AArch64.cpp                |    3 
+ clang/lib/Driver/CMakeLists.txt                    |    1 
+ clang/lib/Driver/Driver.cpp                        |    3 
+ clang/lib/Driver/ToolChains/LFILinux.cpp           |   24 
+ clang/lib/Driver/ToolChains/LFILinux.h             |   37 
+ clang/tools/driver/cc1as_main.cpp                  |    3 
+ compiler-rt/cmake/builtin-config-ix.cmake          |    2 
+ compiler-rt/lib/builtins/CMakeLists.txt            |    1 
+ libunwind/src/UnwindRegistersRestore.S             |    6 
+ llvm/docs/CodeGenerator.rst                        |    8 
+ llvm/docs/LFI.rst                                  |  546 +++++
+ llvm/docs/UserGuides.rst                           |    4 
+ llvm/include/llvm/MC/MCLFI.h                       |   22 
+ llvm/include/llvm/MC/MCLFIRewriter.h               |   68 +
+ .../llvm/MC/MCParser/MCAsmParserExtension.h        |   12 
+ llvm/include/llvm/MC/MCStreamer.h                  |    7 
+ llvm/include/llvm/MC/TargetRegistry.h              |   21 
+ llvm/include/llvm/TargetParser/Triple.h            |    7 
+ llvm/lib/MC/CMakeLists.txt                         |    2 
+ llvm/lib/MC/MCAsmStreamer.cpp                      |    4 
+ llvm/lib/MC/MCLFI.cpp                              |   75 +
+ llvm/lib/MC/MCLFIRewriter.cpp                      |   59 
+ llvm/lib/MC/MCObjectStreamer.cpp                   |    4 
+ llvm/lib/MC/MCParser/AsmParser.cpp                 |    9 
+ llvm/lib/MC/MCParser/CMakeLists.txt                |    1 
+ llvm/lib/MC/MCParser/LFIAsmParser.cpp              |   69 +
+ llvm/lib/MC/MCStreamer.cpp                         |    4 
+ llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp      |    5 
+ llvm/lib/Target/AArch64/AArch64Features.td         |   13 
+ llvm/lib/Target/AArch64/AArch64InstrFormats.td     |  180 +-
+ llvm/lib/Target/AArch64/AArch64InstrInfo.cpp       |   14 
+ llvm/lib/Target/AArch64/AArch64InstrInfo.h         |   83 +
+ llvm/lib/Target/AArch64/AArch64RegisterInfo.cpp    |   11 
+ llvm/lib/Target/AArch64/AArch64Subtarget.h         |    1 
+ llvm/lib/Target/AArch64/AArch64TargetMachine.cpp   |    5 
+ .../AArch64/MCTargetDesc/AArch64MCLFIRewriter.cpp  | 2376 ++++++++++++++++++++
+ .../AArch64/MCTargetDesc/AArch64MCLFIRewriter.h    |  158 +
+ .../AArch64/MCTargetDesc/AArch64MCTargetDesc.cpp   |   14 
+ .../lib/Target/AArch64/MCTargetDesc/CMakeLists.txt |    1 
+ llvm/lib/TargetParser/Triple.cpp                   |    6 
+ llvm/test/MC/AArch64/LFI/adrp-opt.s                |   86 +
+ llvm/test/MC/AArch64/LFI/branch.s                  |   20 
+ llvm/test/MC/AArch64/LFI/exclusive.s               |  140 +
+ llvm/test/MC/AArch64/LFI/fp.s                      |  204 ++
+ llvm/test/MC/AArch64/LFI/guard-elim.s              |  154 +
+ llvm/test/MC/AArch64/LFI/literal.s                 |   34 
+ llvm/test/MC/AArch64/LFI/lse.s                     |  160 +
+ llvm/test/MC/AArch64/LFI/mem.s                     |  396 +++
+ llvm/test/MC/AArch64/LFI/other.s                   |    6 
+ llvm/test/MC/AArch64/LFI/pac.s                     |   73 +
+ llvm/test/MC/AArch64/LFI/prefetch.s                |   87 +
+ llvm/test/MC/AArch64/LFI/rcpc.s                    |   19 
+ llvm/test/MC/AArch64/LFI/reserved.s                |   49 
+ llvm/test/MC/AArch64/LFI/return.s                  |   36 
+ llvm/test/MC/AArch64/LFI/rtcall-tls.s              |   66 +
+ llvm/test/MC/AArch64/LFI/simd.s                    |  474 ++++
+ llvm/test/MC/AArch64/LFI/stack.s                   |   37 
+ llvm/test/MC/AArch64/LFI/sys.s                     |   17 
+ llvm/test/MC/AArch64/LFI/tls-reg.s                 |   15 
+ llvm/test/MC/AArch64/LFI/unsupported/literal.s     |   26 
+ llvm/test/MC/AArch64/LFI/unsupported/pac.s         |   13 
+ llvm/tools/llvm-mc/llvm-mc.cpp                     |   14 
+ llvm/unittests/Target/AArch64/CMakeLists.txt       |    1 
+ .../unittests/Target/AArch64/MemOpAddrModeTest.cpp |  164 +
+ 64 files changed, 6152 insertions(+), 8 deletions(-)
+From 8bb6090bd706d1d2145c3313f61819392baa442b Mon Sep 17 00:00:00 2001
+From: Zachary Yedidia <zyedidia@gmail.com>
+Date: Tue, 16 Dec 2025 12:51:02 -0800
+Subject: [PATCH] [LFI] AArch64 LFI Target
+
+---
+ clang/lib/Basic/Targets/AArch64.cpp           |    3 +
+ clang/lib/Driver/CMakeLists.txt               |    1 +
+ clang/lib/Driver/Driver.cpp                   |    3 +
+ clang/lib/Driver/ToolChains/LFILinux.cpp      |   24 +
+ clang/lib/Driver/ToolChains/LFILinux.h        |   37 +
+ clang/tools/driver/cc1as_main.cpp             |    3 +
+ compiler-rt/cmake/builtin-config-ix.cmake     |    2 +-
+ compiler-rt/lib/builtins/CMakeLists.txt       |    1 +
+ libunwind/src/UnwindRegistersRestore.S        |    6 +
+ llvm/docs/CodeGenerator.rst                   |    8 +
+ llvm/docs/LFI.rst                             |  546 ++++
+ llvm/docs/UserGuides.rst                      |    4 +
+ llvm/include/llvm/MC/MCLFI.h                  |   22 +
+ llvm/include/llvm/MC/MCLFIRewriter.h          |   68 +
+ .../llvm/MC/MCParser/MCAsmParserExtension.h   |   12 +-
+ llvm/include/llvm/MC/MCStreamer.h             |    7 +
+ llvm/include/llvm/MC/TargetRegistry.h         |   21 +
+ llvm/include/llvm/TargetParser/Triple.h       |    7 +
+ llvm/lib/MC/CMakeLists.txt                    |    2 +
+ llvm/lib/MC/MCAsmStreamer.cpp                 |    4 +
+ llvm/lib/MC/MCLFI.cpp                         |   75 +
+ llvm/lib/MC/MCLFIRewriter.cpp                 |   59 +
+ llvm/lib/MC/MCObjectStreamer.cpp              |    4 +
+ llvm/lib/MC/MCParser/AsmParser.cpp            |    9 +-
+ llvm/lib/MC/MCParser/CMakeLists.txt           |    1 +
+ llvm/lib/MC/MCParser/LFIAsmParser.cpp         |   69 +
+ llvm/lib/MC/MCStreamer.cpp                    |    4 +
+ llvm/lib/Target/AArch64/AArch64AsmPrinter.cpp |    5 +
+ llvm/lib/Target/AArch64/AArch64Features.td    |   13 +
+ .../lib/Target/AArch64/AArch64InstrFormats.td |  180 +-
+ llvm/lib/Target/AArch64/AArch64InstrInfo.cpp  |   14 +-
+ llvm/lib/Target/AArch64/AArch64InstrInfo.h    |   83 +
+ .../Target/AArch64/AArch64RegisterInfo.cpp    |   11 +
+ llvm/lib/Target/AArch64/AArch64Subtarget.h    |    1 +
+ .../Target/AArch64/AArch64TargetMachine.cpp   |    5 +
+ .../MCTargetDesc/AArch64MCLFIRewriter.cpp     | 2376 +++++++++++++++++
+ .../MCTargetDesc/AArch64MCLFIRewriter.h       |  158 ++
+ .../MCTargetDesc/AArch64MCTargetDesc.cpp      |   14 +
+ .../AArch64/MCTargetDesc/CMakeLists.txt       |    1 +
+ llvm/lib/TargetParser/Triple.cpp              |    6 +
+ llvm/test/MC/AArch64/LFI/adrp-opt.s           |   86 +
+ llvm/test/MC/AArch64/LFI/branch.s             |   20 +
+ llvm/test/MC/AArch64/LFI/exclusive.s          |  140 +
+ llvm/test/MC/AArch64/LFI/fp.s                 |  204 ++
+ llvm/test/MC/AArch64/LFI/guard-elim.s         |  154 ++
+ llvm/test/MC/AArch64/LFI/literal.s            |   34 +
+ llvm/test/MC/AArch64/LFI/lse.s                |  160 ++
+ llvm/test/MC/AArch64/LFI/mem.s                |  396 +++
+ llvm/test/MC/AArch64/LFI/other.s              |    6 +
+ llvm/test/MC/AArch64/LFI/pac.s                |   73 +
+ llvm/test/MC/AArch64/LFI/prefetch.s           |   87 +
+ llvm/test/MC/AArch64/LFI/rcpc.s               |   19 +
+ llvm/test/MC/AArch64/LFI/reserved.s           |   49 +
+ llvm/test/MC/AArch64/LFI/return.s             |   36 +
+ llvm/test/MC/AArch64/LFI/rtcall-tls.s         |   66 +
+ llvm/test/MC/AArch64/LFI/simd.s               |  474 ++++
+ llvm/test/MC/AArch64/LFI/stack.s              |   37 +
+ llvm/test/MC/AArch64/LFI/sys.s                |   17 +
+ llvm/test/MC/AArch64/LFI/tls-reg.s            |   15 +
+ .../test/MC/AArch64/LFI/unsupported/literal.s |   26 +
+ llvm/test/MC/AArch64/LFI/unsupported/pac.s    |   13 +
+ llvm/tools/llvm-mc/llvm-mc.cpp                |   14 +
+ llvm/unittests/Target/AArch64/CMakeLists.txt  |    1 +
+ .../Target/AArch64/MemOpAddrModeTest.cpp      |  164 ++
+ 64 files changed, 6152 insertions(+), 8 deletions(-)
+ create mode 100644 clang/lib/Driver/ToolChains/LFILinux.cpp
+ create mode 100644 clang/lib/Driver/ToolChains/LFILinux.h
+ create mode 100644 llvm/docs/LFI.rst
+ create mode 100644 llvm/include/llvm/MC/MCLFI.h
+ create mode 100644 llvm/include/llvm/MC/MCLFIRewriter.h
+ create mode 100644 llvm/lib/MC/MCLFI.cpp
+ create mode 100644 llvm/lib/MC/MCLFIRewriter.cpp
+ create mode 100644 llvm/lib/MC/MCParser/LFIAsmParser.cpp
+ create mode 100644 llvm/lib/Target/AArch64/MCTargetDesc/AArch64MCLFIRewriter.cpp
+===== Revert-libc-Replace-__resize_default_init-with-resize-v2.patch =====
+title=Revert [libc++] Replace __resize_default_init with
+3f6d3450117fd2fbb7ee7126cd90854bf30fa6b6f61526fea5fc3064bc128d80  /home/toolchain/development/libc++_replacement/tmp/W4/android-llvm-toolchain-r596125/patches/Revert-libc-Replace-__resize_default_init-with-resize-v2.patch
+ libcxx/include/string                              |   40 +++++++++--
+ libcxx/src/filesystem/format_string.h              |   13 ++-
+ libcxx/test/benchmarks/containers/string.bench.cpp |   18 -----
+ .../resize_default_initialized.pass.cpp            |   75 ++++++++++++++++++++
+ .../directory_entry.mods/last_write_time.pass.cpp  |    1 
+ .../filesystems/convert_file_time.pass.cpp         |    1 
+ .../resize_default_initialized.pass.cpp            |   75 ++++++++++++++++++++
+ 7 files changed, 192 insertions(+), 31 deletions(-)
+From cdf12660730fe7950854b57ab0e80d97abe9b99d Mon Sep 17 00:00:00 2001
+From: Sharjeel Khan <sharjeelkhan@google.com>
+Date: Fri, 10 Oct 2025 19:01:39 +0000
+Subject: [PATCH] Revert "[libc++] Replace __resize_default_init with
+ resize_and_overwrite (#157121)"
+
+This reverts commit 92f5d8df361bb1bb6dea88f86faeedfd295ab970.
+---
+ libcxx/include/string                         | 40 ++++++++--
+ libcxx/src/filesystem/format_string.h         | 13 ++--
+ .../benchmarks/containers/string.bench.cpp    | 18 +----
+ .../resize_default_initialized.pass.cpp       | 75 +++++++++++++++++++
+ .../last_write_time.pass.cpp                  |  1 +
+ .../filesystems/convert_file_time.pass.cpp    |  1 +
+ .../resize_default_initialized.pass.cpp       | 75 +++++++++++++++++++
+ 7 files changed, 192 insertions(+), 31 deletions(-)
+ create mode 100644 libcxx/test/libcxx-03/strings/basic.string/string.modifiers/resize_default_initialized.pass.cpp
+ create mode 100644 libcxx/test/libcxx/strings/basic.string/string.modifiers/resize_default_initialized.pass.cpp
+
+diff --git a/libcxx/include/string b/libcxx/include/string
+index 8f80afbc2fd3..0833873d7579 100644
+--- a/libcxx/include/string
++++ b/libcxx/include/string
+@@ -1314,17 +1314,13 @@ public:
+   _LIBCPP_HIDE_FROM_ABI constexpr void resize_and_overwrite(size_type __n, _Op __op) {
+     using __result_type = decltype(std::move(__op)(data(), auto(__n)));
+     static_assert(__integer_like<__result_type>, "Operation return type must be integer-like");
+-    size_type __sz  = size();
+-    size_type __cap = capacity();
+-    if (__n > __cap)
+-      __grow_by_without_replace(__cap, __n - __cap, __sz, __sz, 0);
+-    __annotate_delete();
+-    __set_size(__n);
+-    __annotate_new(__n);
+-    __erase_to_end(std::move(__op)(data(), auto(__n)));
++    __resize_default_init(__n);
++    __erase_to_end(std::move(__op)(data(), _LIBCPP_AUTO_CAST(__n)));
+   }
+ #  endif
+ 
++  _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 void __resize_default_init(size_type __n);
++
+ #  if _LIBCPP_STD_VER < 26 || defined(_LIBCPP_ENABLE_CXX26_REMOVED_STRING_RESERVE)
+   _LIBCPP_DEPRECATED_IN_CXX20 _LIBCPP_HIDE_FROM_ABI void reserve() _NOEXCEPT { shrink_to_fit(); }
+ #  endif
+@@ -1416,6 +1412,8 @@ public:
+   _LIBCPP_CONSTEXPR_SINCE_CXX20 basic_string& append(const value_type* _LIBCPP_DIAGNOSE_NULLPTR __s);
+   _LIBCPP_CONSTEXPR_SINCE_CXX20 basic_string& append(size_type __n, value_type __c);
+ 
++  _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 void __append_default_init(size_type __n);
++
+   template <class _InputIterator, __enable_if_t<__has_exactly_input_iterator_category<_InputIterator>::value, int> = 0>
+   _LIBCPP_HIDE_FROM_ABI _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 basic_string&
+   append(_InputIterator __first, _InputIterator __last) {
+@@ -3041,6 +3039,22 @@ basic_string<_CharT, _Traits, _Allocator>::append(size_type __n, value_type __c)
+   return *this;
+ }
+ 
++template <class _CharT, class _Traits, class _Allocator>
++_LIBCPP_CONSTEXPR_SINCE_CXX20 inline void
++basic_string<_CharT, _Traits, _Allocator>::__append_default_init(size_type __n) {
++  if (__n == 0)
++    return;
++  size_type __cap = capacity();
++  size_type __sz  = size();
++  if (__cap - __sz < __n)
++    __grow_by_without_replace(__cap, __sz + __n - __cap, __sz, __sz, 0);
++  __annotate_increase(__n);
++  pointer __p = __get_pointer();
++  __sz += __n;
++  __set_size(__sz);
++  traits_type::assign(__p[__sz], value_type());
++}
++
+ template <class _CharT, class _Traits, class _Allocator>
+ _LIBCPP_CONSTEXPR_SINCE_CXX20 void basic_string<_CharT, _Traits, _Allocator>::push_back(value_type __c) {
+   bool __is_short = !__is_long();
+@@ -3379,6 +3393,16 @@ _LIBCPP_CONSTEXPR_SINCE_CXX20 void basic_string<_CharT, _Traits, _Allocator>::re
+     __erase_to_end(__n);
+ }

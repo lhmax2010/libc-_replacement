@@ -1,0 +1,404 @@
+commit 0d39be5a3f129cf1f35e7812108a2184e2193315
+Author:     Egor Pasko <pasko@chromium.org>
+AuthorDate: Wed Jun 17 12:31:54 2026 -0700
+Commit:     Copybara-Service <copybara-worker@google.com>
+CommitDate: Wed Jun 17 12:34:46 2026 -0700
+
+    android: Use futex for __cxa_guard_acquire
+    
+    Define _LIBCXXABI_USE_FUTEX on Android and Linux.
+    
+    Currently all initialization of static locals goes through a single
+    global lock via __cxa_guard_acquire. So if an initializer of a single
+    such variable takes time, all other initializers in the same process are
+    waiting. The _LIBCXXABI_USE_FUTEX was implemented in 2019 and aimed at
+    replacing the global lock with a per-object one:
+    
+    https://github.com/llvm/llvm-project/commit/70ebeabfb8330f805a26dbb2f8af77fb0ab0c5f0
+    
+    I ran a couple of Pinpoint jobs on Android for these benchmarks:
+    * startup.mobile
+    * system_health.webview_startup
+    
+    There was only one 'improvement' of 0.3 milliseconds with p-value of
+    0.037, which is (a) on the boundary of significance and (b) not
+    perceptible even if we had 1000x more initialization contention of this
+    type.
+    
+    A less obvious benefit of _LIBCXXABI_USE_FUTEX is not relying on
+    pthread/libc. This can be useful for low level code in Chromium that in
+    certain cases should avoid calling libc to avoid reentrancy. Examples
+    are: PartitionAlloc and base::Lock. Unfortunately, _LIBCXXABI_USE_FUTEX
+    is not supported on MacOS, so this utility is of limited use.
+    
+    I do not know how robust _LIBCXXABI_USE_FUTEX is, assuming it is high
+    quality like most of LLVM.
+    
+    Bug: 524997700
+    Change-Id: I887471239a8140769697357149253418af9b5a9f
+    Reviewed-on: https://chromium-review.googlesource.com/c/chromium/src/+/7928017
+    Reviewed-by: Nico Weber <thakis@chromium.org>
+    Commit-Queue: Egor Pasko <pasko@chromium.org>
+    Cr-Commit-Position: refs/heads/main@{#1648517}
+    NOKEYCHECK=True
+    GitOrigin-RevId: 88635e5ab9cf556c5184cd26e18496091f92f34a
+
+ .gitignore                                         |   22 +
+ DEPS                                               |   66 ++
+ DIR_METADATA                                       |    7 +
+ LICENSE                                            |   27 +
+ OWNERS                                             |   13 +
+ README.txt                                         |   28 +
+ checkdeps/DEPS                                     |    3 +
+ checkdeps/PRESUBMIT.py                             |   22 +
+ checkdeps/README.md                                |  119 +++
+ checkdeps/builddeps.py                             |  440 ++++++++
+ checkdeps/checkdeps.py                             |  303 ++++++
+ checkdeps/checkdeps_test.py                        |  312 ++++++
+ checkdeps/cpp_checker.py                           |  130 +++
+ checkdeps/graphdeps.py                             |  406 +++++++
+ checkdeps/java_checker.py                          |  213 ++++
+ checkdeps/proto_checker.py                         |  123 +++
+ checkdeps/results.py                               |  178 +++
+ checkdeps/rules.py                                 |  209 ++++
+ checkdeps/testdata/DEPS                            |    8 +
+ checkdeps/testdata/allowed/DEPS                    |   12 +
+ checkdeps/testdata/allowed/foo_unittest.cc         |    5 +
+ checkdeps/testdata/allowed/not_a_test.cc           |    8 +
+ checkdeps/testdata/allowed/test.h                  |   11 +
+ checkdeps/testdata/checkdeps_test/DEPS             |    5 +
+ checkdeps/testdata/checkdeps_test/allowed/DEPS     |   11 +
+ .../checkdeps_test/allowed/foo_unittest.cc         |    5 +
+ .../testdata/checkdeps_test/allowed/not_a_test.cc  |    5 +
+ checkdeps/testdata/checkdeps_test/allowed/test.h   |   11 +
+ .../checkdeps_test/disallowed/allowed/DEPS         |    3 +
+ .../disallowed/allowed/skipped/test.h              |    5 +
+ .../checkdeps_test/disallowed/allowed/test.h       |   11 +
+ .../testdata/checkdeps_test/disallowed/test.h      |   12 +
+ checkdeps/testdata/disallowed/allowed/DEPS         |    3 +
+ .../testdata/disallowed/allowed/skipped/test.h     |    5 +
+ checkdeps/testdata/disallowed/allowed/test.h       |   11 +
+ checkdeps/testdata/disallowed/foo_unittest.cc      |   10 +
+ checkdeps/testdata/disallowed/test.h               |   12 +
+ checkdeps/testdata/noparent/DEPS                   |    3 +
+ checkdeps/testdata/noparent/test.h                 |    9 +
+ checkdeps/testdata/requires_review/sub/DEPS        |    1 +
+ checkdeps/testdata/requires_review/sub/sub/DEPS    |    1 +
+ .../requires_review/sub/sub/no_review/DEPS         |    1 +
+ checkdeps/testdata/requires_review_users/DEPS      |    3 +
+ .../requires_review_users/sub/includes_okay/DEPS   |    5 +
+ .../sub/includes_okay/usage.cc                     |   14 +
+ .../sub/includes_only_sub/DEPS                     |    4 +
+ .../sub/includes_only_sub/usage.cc                 |   16 +
+ checkdeps/testdata/requires_review_users/usage.cc  |   12 +
+ clang_format/OWNERS                                |    2 +
+ clang_format/README.chromium                       |   16 +
+ clang_format/README.txt                            |   33 +
+ codereview.settings                                |    4 +
+ deps_revisions.gni                                 |    9 +
+ reclient_cfgs/.gitignore                           |    4 +
+ reclient_cfgs/.style.yapf                          |    3 +
+ reclient_cfgs/OWNERS                               |    2 +
+ reclient_cfgs/README.md                            |    1 +
+ reclient_cfgs/configure_reclient_cfgs.py           |  337 ++++++
+ .../chromium-browser-clang/rewrapper_linux.cfg     |    8 +
+ reclient_cfgs/linux/python/rewrapper_linux.cfg     |    8 +
+ .../chromium-browser-clang/rewrapper_linux.cfg     |   11 +
+ .../linux_chroot/python/rewrapper_linux.cfg        |    9 +
+ .../chromium-browser-clang/rewrapper_linux.cfg     |    9 +
+ .../linux_cros/python/rewrapper_linux.cfg          |    9 +
+ .../reproxy_cfg_templates/reproxy.cfg.template     |   26 +
+ reclient_cfgs/rewrapper_linux.cfg                  |    9 +
+ third_party/libc++/BUILD.gn                        |  599 +++++++++++
+ third_party/libc++/OWNERS                          |    3 +
+ third_party/libc++/__assertion_handler             |   36 +
+ third_party/libc++/__config_site                   |  113 ++
+ third_party/libc++/generate_libcxx_headers.py      |   84 ++
+ third_party/libc++/libcxx_headers.gni              | 1129 ++++++++++++++++++++
+ third_party/libc++/modules.gni                     |  261 +++++
+ third_party/libc++/sync_dir.py                     |   63 ++
+ third_party/libc++abi/BUILD.gn                     |  111 ++
+ third_party/libc++abi/OWNERS                       |    2 +
+ third_party/libc++abi/cxa_demangle_stub.cc         |   25 +
+ third_party/libunwind/BUILD.gn                     |   63 ++
+ third_party/libunwind/OWNERS                       |    3 +
+ third_party/mold/.gitignore                        |    1 +
+ third_party/mold/3pp/3pp.pb                        |   27 +
+ third_party/mold/3pp/install.sh                    |   32 +
+ third_party/mold/LICENSE                           |   21 +
+ third_party/mold/OWNERS                            |    1 +
+ third_party/mold/README.chromium                   |   18 +
+ 85 files changed, 5935 insertions(+)
+commit 17495e454aae81b581e8b3caccbb53054509b280
+Author:     Mike Wittman <wittman@chromium.org>
+AuthorDate: Wed May 27 15:50:53 2026 -0700
+Commit:     Copybara-Service <copybara-worker@google.com>
+CommitDate: Wed May 27 15:53:38 2026 -0700
+
+    Build with filesystem_clock.cpp across platforms
+    
+    An update to the internal repo in components/optimization_guide/internal
+    now requires this functionality across most platforms.
+    
+    Change-Id: I13844ccbe025a5b933e367f8658fd4bd4289448e
+    Reviewed-on: https://chromium-review.googlesource.com/c/chromium/src/+/7871364
+    Commit-Queue: Reilly Grant <reillyg@chromium.org>
+    Reviewed-by: Thomas Anderson <thomasanderson@chromium.org>
+    Cr-Commit-Position: refs/heads/main@{#1637298}
+    NOKEYCHECK=True
+    GitOrigin-RevId: 1aecdd09d5a2c0c47a416c7e91a9e0c3d23ab64c
+
+ .gitignore                                         |   22 +
+ DEPS                                               |   66 ++
+ DIR_METADATA                                       |    7 +
+ LICENSE                                            |   27 +
+ OWNERS                                             |   13 +
+ README.txt                                         |   28 +
+ checkdeps/DEPS                                     |    3 +
+ checkdeps/PRESUBMIT.py                             |   22 +
+ checkdeps/README.md                                |  119 +++
+ checkdeps/builddeps.py                             |  440 ++++++++
+ checkdeps/checkdeps.py                             |  303 ++++++
+ checkdeps/checkdeps_test.py                        |  312 ++++++
+ checkdeps/cpp_checker.py                           |  130 +++
+ checkdeps/graphdeps.py                             |  406 +++++++
+ checkdeps/java_checker.py                          |  213 ++++
+ checkdeps/proto_checker.py                         |  123 +++
+ checkdeps/results.py                               |  178 +++
+ checkdeps/rules.py                                 |  209 ++++
+ checkdeps/testdata/DEPS                            |    8 +
+ checkdeps/testdata/allowed/DEPS                    |   12 +
+ checkdeps/testdata/allowed/foo_unittest.cc         |    5 +
+ checkdeps/testdata/allowed/not_a_test.cc           |    8 +
+ checkdeps/testdata/allowed/test.h                  |   11 +
+ checkdeps/testdata/checkdeps_test/DEPS             |    5 +
+ checkdeps/testdata/checkdeps_test/allowed/DEPS     |   11 +
+ .../checkdeps_test/allowed/foo_unittest.cc         |    5 +
+ .../testdata/checkdeps_test/allowed/not_a_test.cc  |    5 +
+ checkdeps/testdata/checkdeps_test/allowed/test.h   |   11 +
+ .../checkdeps_test/disallowed/allowed/DEPS         |    3 +
+ .../disallowed/allowed/skipped/test.h              |    5 +
+ .../checkdeps_test/disallowed/allowed/test.h       |   11 +
+ .../testdata/checkdeps_test/disallowed/test.h      |   12 +
+ checkdeps/testdata/disallowed/allowed/DEPS         |    3 +
+ .../testdata/disallowed/allowed/skipped/test.h     |    5 +
+ checkdeps/testdata/disallowed/allowed/test.h       |   11 +
+ checkdeps/testdata/disallowed/foo_unittest.cc      |   10 +
+ checkdeps/testdata/disallowed/test.h               |   12 +
+ checkdeps/testdata/noparent/DEPS                   |    3 +
+ checkdeps/testdata/noparent/test.h                 |    9 +
+ checkdeps/testdata/requires_review/sub/DEPS        |    1 +
+ checkdeps/testdata/requires_review/sub/sub/DEPS    |    1 +
+ .../requires_review/sub/sub/no_review/DEPS         |    1 +
+ checkdeps/testdata/requires_review_users/DEPS      |    3 +
+ .../requires_review_users/sub/includes_okay/DEPS   |    5 +
+ .../sub/includes_okay/usage.cc                     |   14 +
+ .../sub/includes_only_sub/DEPS                     |    4 +
+ .../sub/includes_only_sub/usage.cc                 |   16 +
+ checkdeps/testdata/requires_review_users/usage.cc  |   12 +
+ clang_format/OWNERS                                |    2 +
+ clang_format/README.chromium                       |   16 +
+ clang_format/README.txt                            |   33 +
+ codereview.settings                                |    4 +
+ deps_revisions.gni                                 |    9 +
+ reclient_cfgs/.gitignore                           |    4 +
+ reclient_cfgs/.style.yapf                          |    3 +
+ reclient_cfgs/OWNERS                               |    2 +
+ reclient_cfgs/README.md                            |    1 +
+ reclient_cfgs/configure_reclient_cfgs.py           |  337 ++++++
+ .../chromium-browser-clang/rewrapper_linux.cfg     |    8 +
+ reclient_cfgs/linux/python/rewrapper_linux.cfg     |    8 +
+ .../chromium-browser-clang/rewrapper_linux.cfg     |   11 +
+ .../linux_chroot/python/rewrapper_linux.cfg        |    9 +
+ .../chromium-browser-clang/rewrapper_linux.cfg     |    9 +
+ .../linux_cros/python/rewrapper_linux.cfg          |    9 +
+ .../reproxy_cfg_templates/reproxy.cfg.template     |   26 +
+ reclient_cfgs/rewrapper_linux.cfg                  |    9 +
+ third_party/libc++/BUILD.gn                        |  595 +++++++++++
+ third_party/libc++/OWNERS                          |    3 +
+ third_party/libc++/__assertion_handler             |   36 +
+ third_party/libc++/__config_site                   |  113 ++
+ third_party/libc++/generate_libcxx_headers.py      |   84 ++
+ third_party/libc++/libcxx_headers.gni              | 1129 ++++++++++++++++++++
+ third_party/libc++/modules.gni                     |  261 +++++
+ third_party/libc++/sync_dir.py                     |   63 ++
+ third_party/libc++abi/BUILD.gn                     |  107 ++
+ third_party/libc++abi/OWNERS                       |    2 +
+ third_party/libc++abi/cxa_demangle_stub.cc         |   25 +
+ third_party/libunwind/BUILD.gn                     |   63 ++
+ third_party/libunwind/OWNERS                       |    3 +
+ third_party/mold/.gitignore                        |    1 +
+ third_party/mold/3pp/3pp.pb                        |   24 +
+ third_party/mold/3pp/install.sh                    |   32 +
+ third_party/mold/LICENSE                           |   21 +
+ third_party/mold/OWNERS                            |    1 +
+ third_party/mold/README.chromium                   |   16 +
+ 85 files changed, 5922 insertions(+)
+commit 1df2adafaa36e2bcff31e28cd814505382e04df6
+Author:     Mark Mentovai <mark@chromium.org>
+AuthorDate: Tue May 6 10:10:48 2025 -0700
+Commit:     Copybara-Service <copybara-worker@google.com>
+CommitDate: Tue May 6 10:13:10 2025 -0700
+
+    Make libc++ a static_library instead of source_set on non-Windows
+    
+    https://crbug.com/40215211 documents a number of bad things that happen
+    on macOS when the main executable’s size changes. As a result,
+    https://crbug.com/40216333 (2022-02-26) froze the main executable’s size
+    by introducing padding in the __TEXT segment. The size has been
+    maintained ever since by adjusting the amount of padding as necessary.
+    Because there’s almost no code in the main executable aside from a small
+    stub to locate, load, and jump to the framework where the bulk of the
+    application’s code lives, this has been manageable. Between 2022-02-26
+    and 2025-04-11, the padding only needed to be updated 4 times on the
+    main branch for non-DCHECK builds, a 285-day interval on average.
+    
+    Since 2025-04-11, we’ve seen an increase in the rate that the padding
+    needs to change. It has happened 6 times since then, a 4-day interval on
+    average. Many of these changes were just transitioning between two sizes
+    for padding.
+    
+    The size can only accurately be determined to be correct or incorrect
+    after Chrome undergoes signing, so each of these size changes results in
+    a failure of the signing pipeline, which then requires an engineer to
+    investigate, recalculate the padding, and make a code change. At a 4-day
+    interval, this is unsustainable.
+    
+    My team determined that the sizes have been changing as a result of PGO,
+    and in particular, PGO optimizing libc++. Depending on profile feedback,
+    libc++ can be optimized differently, leading the main app executable’s
+    size to fluctuate beyond the ±8kB window that’s permissible to avoid
+    re-triggering any form of https://crbug.com/40215211.
+    
+    The main app doesn’t use much C++ at all. It only links two translation
+    units, and the only use of libc++ I count between them is
+    std::unique_ptr. Despite this, we noted that all of libc++ was
+    being linked into the main executable.
+    
+    The presence of all of libc++ was attributable to its being defined as a
+    source_set rather than a static_library. source_set semantics differ
+    from static_library semantics in that object files (.o) from a
+    static_library (.a) are only loaded by the linker and placed in its
+    output when necessary to resolve a link-time dependency (unresolved
+    symbol). By contrast, a source_set results in object files (.o) being
+    presented directly to the linker, which will always load them and place
+    them in its output, regardless of whether they’re needed to satisfy a
+    dependency. That means that all of libc++ was present in the main app
+    executable, when only a small fraction of it was actually necessary.
+    Combined with the fact that libc++ was being PGO-optimized to very
+    different sizes on successive builds, this was responsible for size
+    fluctuations beyond the ±8kB safe window.
+    
+    To overcome this bug, libc++ and libc++abi are redefined as
+    static_library rather than source_set, restoring expected semantics, and
+    shrinking the size of the main executable by eliminating unnecessary C++
+    library support code. This change is not being brought to Windows, where
+    builds in the static_library configuration failed. The libc++abi change
+    is implemented in a way that tracks the libc++ change, so that libc++abi
+    remains a source_set that winds up appearing in full in libc++ when
+    libc++ is a shared library (such as in the component=shared_library
+    build), and is changed to a static_library when libc++ is also a
+    static_library.
+    
+    The main app executable’s padding is recalculated in line with this
+    change. The new padding size is 216kB, and because the code making it
+    into the executable is now more tightly controlled and does not invoke
+    any DCHECKs, the DCHECK distinction is no longer necessary.
+    
+    Bug: 415689582
+    Change-Id: I2bd7dcc60e23122a5d49995043431139887b90a5
+    Reviewed-on: https://chromium-review.googlesource.com/c/chromium/src/+/6512096
+    Reviewed-by: Thomas Anderson <thomasanderson@chromium.org>
+    Reviewed-by: Leonard Grey <lgrey@chromium.org>
+    Commit-Queue: Mark Mentovai <mark@chromium.org>
+    Cr-Commit-Position: refs/heads/main@{#1456441}
+    NOKEYCHECK=True
+    GitOrigin-RevId: 6c9fdabd30c67d712b056a50b2eb76f727dcc419
+
+ .gitignore                                         |   22 +
+ DEPS                                               |   66 ++
+ DIR_METADATA                                       |    7 +
+ LICENSE                                            |   27 +
+ OWNERS                                             |    9 +
+ README.txt                                         |   28 +
+ checkdeps/DEPS                                     |    3 +
+ checkdeps/PRESUBMIT.py                             |   22 +
+ checkdeps/README.md                                |  119 +++
+ checkdeps/builddeps.py                             |  440 ++++++++
+ checkdeps/checkdeps.py                             |  294 ++++++
+ checkdeps/checkdeps_test.py                        |  262 +++++
+ checkdeps/cpp_checker.py                           |  133 +++
+ checkdeps/graphdeps.py                             |  406 ++++++++
+ checkdeps/java_checker.py                          |  214 ++++
+ checkdeps/proto_checker.py                         |  127 +++
+ checkdeps/results.py                               |  178 ++++
+ checkdeps/rules.py                                 |  209 ++++
+ checkdeps/testdata/DEPS                            |    8 +
+ checkdeps/testdata/allowed/DEPS                    |   12 +
+ checkdeps/testdata/allowed/foo_unittest.cc         |    5 +
+ checkdeps/testdata/allowed/not_a_test.cc           |    8 +
+ checkdeps/testdata/allowed/test.h                  |   11 +
+ checkdeps/testdata/checkdeps_test/DEPS             |    5 +
+ checkdeps/testdata/checkdeps_test/allowed/DEPS     |   11 +
+ .../checkdeps_test/allowed/foo_unittest.cc         |    5 +
+ .../testdata/checkdeps_test/allowed/not_a_test.cc  |    5 +
+ checkdeps/testdata/checkdeps_test/allowed/test.h   |   11 +
+ .../checkdeps_test/disallowed/allowed/DEPS         |    3 +
+ .../disallowed/allowed/skipped/test.h              |    5 +
+ .../checkdeps_test/disallowed/allowed/test.h       |   11 +
+ .../testdata/checkdeps_test/disallowed/test.h      |   12 +
+ checkdeps/testdata/disallowed/allowed/DEPS         |    3 +
+ .../testdata/disallowed/allowed/skipped/test.h     |    5 +
+ checkdeps/testdata/disallowed/allowed/test.h       |   11 +
+ checkdeps/testdata/disallowed/foo_unittest.cc      |   10 +
+ checkdeps/testdata/disallowed/test.h               |   12 +
+ checkdeps/testdata/noparent/DEPS                   |    3 +
+ checkdeps/testdata/noparent/test.h                 |    9 +
+ checkdeps/testdata/requires_review/sub/DEPS        |    1 +
+ checkdeps/testdata/requires_review/sub/sub/DEPS    |    1 +
+ .../requires_review/sub/sub/no_review/DEPS         |    1 +
+ checkdeps/testdata/requires_review_users/DEPS      |    3 +
+ .../requires_review_users/sub/includes_okay/DEPS   |    5 +
+ .../sub/includes_okay/usage.cc                     |   14 +
+ .../sub/includes_only_sub/DEPS                     |    4 +
+ .../sub/includes_only_sub/usage.cc                 |   16 +
+ checkdeps/testdata/requires_review_users/usage.cc  |   12 +
+ clang_format/OWNERS                                |    2 +
+ clang_format/README.chromium                       |   15 +
+ clang_format/README.txt                            |   33 +
+ codereview.settings                                |    4 +
+ deps_revisions.gni                                 |    9 +
+ reclient_cfgs/.gitignore                           |    4 +
+ reclient_cfgs/.style.yapf                          |    3 +
+ reclient_cfgs/OWNERS                               |    2 +
+ reclient_cfgs/README.md                            |    1 +
+ reclient_cfgs/configure_reclient_cfgs.py           |  347 +++++++
+ reclient_cfgs/fetch_reclient_cfgs.py               |   16 +
+ .../chromium-browser-clang/rewrapper_linux.cfg     |    8 +
+ reclient_cfgs/linux/nacl/rewrapper_linux.cfg       |    9 +
+ reclient_cfgs/linux/python/rewrapper_linux.cfg     |    8 +
+ .../chromium-browser-clang/rewrapper_linux.cfg     |    9 +
+ .../linux_chroot/nacl/rewrapper_linux.cfg          |    9 +
+ .../linux_chroot/python/rewrapper_linux.cfg        |    9 +
+ .../chromium-browser-clang/rewrapper_linux.cfg     |    9 +
+ reclient_cfgs/linux_cros/nacl/rewrapper_linux.cfg  |    9 +
+ .../linux_cros/python/rewrapper_linux.cfg          |    9 +
+ reclient_cfgs/nacl/rewrapper_linux.cfg             |   10 +
+ .../reproxy_cfg_templates/reproxy.cfg.template     |   26 +
+ reclient_cfgs/rewrapper_linux.cfg                  |    9 +
+ third_party/eu-strip/OWNERS                        |    2 +
+ third_party/eu-strip/README.chromium               |   12 +
+ third_party/eu-strip/bin/eu-strip                  |  Bin 0 -> 113432 bytes
+ third_party/eu-strip/build.sh                      |   19 +
+ third_party/eu-strip/fix-elf-size.patch            |   61 ++
+ third_party/libc++/BUILD.gn                        |  482 +++++++++
+ third_party/libc++/OWNERS                          |    3 +
+ third_party/libc++/__assertion_handler             |   40 +
+ third_party/libc++/__config_site                   |   92 ++
+ third_party/libc++/libcxx_headers.gni              | 1093 ++++++++++++++++++++
+ third_party/libc++abi/BUILD.gn                     |  105 ++
+ third_party/libc++abi/OWNERS                       |    2 +
+ third_party/libc++abi/cxa_demangle_stub.cc         |   25 +
+ third_party/libunwind/BUILD.gn                     |   62 ++
+ third_party/libunwind/OWNERS                       |    3 +
+ 86 files changed, 5349 insertions(+)
