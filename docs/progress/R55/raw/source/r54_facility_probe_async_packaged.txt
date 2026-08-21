@@ -1,0 +1,75 @@
+    45	    std::cin >> value;
+    46	  }
+    47	  return nullptr;
+    48	}
+    49	
+    50	void packaged_callable() {
+    51	  ready.store(true, std::memory_order_release);
+    52	  for (;;)
+    53	    pthread_testcancel();
+    54	}
+    55	
+    56	void* packaged_worker(void* opaque) {
+    57	  (*static_cast<std::packaged_task<void()>*>(opaque))();
+    58	  return nullptr;
+    59	}
+    60	
+    61	int run_async() {
+    62	  auto future = std::async(std::launch::async, [] {
+    63	    async_thread.store(static_cast<unsigned long>(pthread_self()), std::memory_order_release);
+    64	    ready.store(true, std::memory_order_release);
+    65	    for (;;)
+    66	      pthread_testcancel();
+    67	  });
+    68	  for (int i = 0; i < 500 && !ready.load(std::memory_order_acquire); ++i)
+    69	    usleep(10000);
+    70	  const pthread_t thread = static_cast<pthread_t>(async_thread.load(std::memory_order_acquire));
+    71	  const int cancel_rc = pthread_cancel(thread);
+    72	  std::fprintf(stderr, "MODE=async CANCEL_RC=%d THREAD=%lu\n", cancel_rc,
+    73	               static_cast<unsigned long>(thread));
+    74	  future.wait();
+    75	  std::fprintf(stderr, "MODE=async FUTURE_WAIT_RETURNED=1\n");
+    76	  return cancel_rc == 0 ? 0 : 3;
+    77	}
+    78	} // namespace
+    79	
+    80	int main(int argc, char** argv) {
+    81	  if (argc != 2)
+    82	    return 64;
+    83	  const char* mode = argv[1];
+    84	  ready.store(false, std::memory_order_release);
+    85	  async_thread.store(0, std::memory_order_release);
+    86	  if (std::strcmp(mode, "async") == 0)
+    87	    return run_async();
+    88	  int pipe_fds[2];
+    89	  if (pipe(pipe_fds) != 0)
+    90	    return 10;
+    91	  if (std::strcmp(mode, "cout") == 0) {
+    92	    if (dup2(pipe_fds[1], STDOUT_FILENO) < 0)
+    93	      return 11;
+    94	    close(pipe_fds[1]);
+    95	    pthread_t thread;
+    96	    const int rc = pthread_create(&thread, nullptr, cout_worker, nullptr);
+    97	    std::fprintf(stderr, "MODE=cout CREATE_RC=%d\n", rc);
+    98	    return rc == 0 ? cancel_join(thread, mode) : 12;
+    99	  }
+   100	  if (std::strcmp(mode, "packaged_task") == 0) {
+   101	    std::packaged_task<void()> task(packaged_callable);
+   102	    pthread_t thread;
+   103	    const int rc = pthread_create(&thread, nullptr, packaged_worker, &task);
+   104	    std::fprintf(stderr, "MODE=packaged_task CREATE_RC=%d\n", rc);
+   105	    return rc == 0 ? cancel_join(thread, mode) : 13;
+   106	  }
+   107	  if (std::strcmp(mode, "getline_free") != 0 &&
+   108	      std::strcmp(mode, "getline_member") != 0 &&
+   109	      std::strcmp(mode, "read") != 0 && std::strcmp(mode, "arithmetic") != 0)
+   110	    return 65;
+   111	  if (dup2(pipe_fds[0], STDIN_FILENO) < 0)
+   112	    return 14;
+   113	  close(pipe_fds[0]);
+   114	  pthread_t thread;
+   115	  const int rc = pthread_create(&thread, nullptr, input_worker, argv[1]);
+   116	  std::fprintf(stderr, "MODE=%s CREATE_RC=%d\n", mode, rc);
+   117	  return rc == 0 ? cancel_join(thread, mode) : 15;
+   118	}
+EXIT_CODE=0

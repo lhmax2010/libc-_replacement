@@ -1,0 +1,30 @@
+libcxx: make async state ready before forced-unwind rethrow
+
+The forced-unwind guards in the async associated-state execution paths
+must not rethrow before completing the shared state.  Doing so allows
+the detached worker to terminate while future::wait remains blocked
+forever.
+
+Match libstdc++'s observable semantics by storing a broken_promise in
+the shared state before rethrowing the forced unwind.  This wakes
+waiters without converting cancellation into a normal C++ exception;
+the worker still terminates through the original forced unwind.
+
+The change is limited to the value and void __async_assoc_state
+specializations.  packaged_task, deferred execution, normal async
+completion, and ordinary exception transport keep their existing
+paths.
+
+Validated on native x86_64 and ARMv7l hardware.  Cancellation was
+repeated 20 times per runtime combination.  Normal results, ordinary
+exceptions, the existing forced-unwind regression matrix, and the
+libc++abi forced-unwind tests were also checked.  Not covered:
+AArch64, LTO, mixed-runtime frame traversal, or application-specific
+future implementations.
+
+中文说明：std::async 工作线程在强制展开时，原防护直接重抛，导致
+线程已经结束但共享状态仍未 ready，future 等待方永久阻塞。本修改
+在继续传播强制展开前写入 broken_promise 并唤醒等待方；不改变取消
+传播语义，也不改 packaged_task、deferred、正常返回或普通异常路径。
+
+Author identity is NOT_AVAILABLE and must be amended before submission.

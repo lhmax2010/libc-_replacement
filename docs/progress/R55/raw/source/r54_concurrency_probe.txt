@@ -1,0 +1,114 @@
+     1	#include <atomic>
+     2	#include <cstdio>
+     3	#include <cstring>
+     4	#include <iostream>
+     5	#include <pthread.h>
+     6	#include <stdexcept>
+     7	#include <unistd.h>
+     8	
+     9	namespace {
+    10	constexpr int kThreads = 4;
+    11	std::atomic<int> ready{0};
+    12	
+    13	void* cancel_point_worker(void*) {
+    14	  ready.fetch_add(1, std::memory_order_release);
+    15	  for (;;)
+    16	    pthread_testcancel();
+    17	}
+    18	
+    19	void* cout_worker(void*) {
+    20	  ready.fetch_add(1, std::memory_order_release);
+    21	  for (unsigned long i = 0;; ++i)
+    22	    std::cout << i << std::endl;
+    23	}
+    24	
+    25	void* exception_worker(void* opaque) {
+    26	  const long id = reinterpret_cast<long>(opaque);
+    27	  try {
+    28	    throw std::runtime_error("concurrent-real-exception");
+    29	  } catch (const std::runtime_error& error) {
+    30	    std::fprintf(stderr, "EXCEPTION_THREAD=%ld CAUGHT=%s\n", id, error.what());
+    31	  }
+    32	  return reinterpret_cast<void*>(0x42);
+    33	}
+    34	
+    35	int wait_ready(int expected) {
+    36	  for (int i = 0; i < 1000 && ready.load(std::memory_order_acquire) < expected; ++i)
+    37	    usleep(10000);
+    38	  return ready.load(std::memory_order_acquire) == expected ? 0 : 70;
+    39	}
+    40	
+    41	int cancel_and_join_all(pthread_t* threads, int count, bool repeat) {
+    42	  int failures = 0;
+    43	  for (int i = 0; i < count; ++i) {
+    44	    const int first = pthread_cancel(threads[i]);
+    45	    const int second = repeat ? pthread_cancel(threads[i]) : -1;
+    46	    std::fprintf(stderr, "THREAD=%d CANCEL1=%d CANCEL2=%d\n", i, first, second);
+    47	    failures += first != 0;
+    48	    failures += repeat && second != 0;
+    49	  }
+    50	  for (int i = 0; i < count; ++i) {
+    51	    void* result = nullptr;
+    52	    const int rc = pthread_join(threads[i], &result);
+    53	    std::fprintf(stderr, "THREAD=%d JOIN_RC=%d JOIN_IS_CANCELED=%d JOIN_VALUE=%p\n",
+    54	                 i, rc, result == PTHREAD_CANCELED, result);
+    55	    failures += rc != 0 || result != PTHREAD_CANCELED;
+    56	  }
+    57	  return failures == 0 ? 0 : 71;
+    58	}
+    59	
+    60	int run_cancel_group(void* (*worker)(void*), bool repeat) {
+    61	  pthread_t threads[kThreads];
+    62	  ready.store(0, std::memory_order_release);
+    63	  for (int i = 0; i < kThreads; ++i)
+    64	    if (pthread_create(&threads[i], nullptr, worker, nullptr) != 0)
+    65	      return 72;
+    66	  if (wait_ready(kThreads) != 0)
+    67	    return 73;
+    68	  return cancel_and_join_all(threads, kThreads, repeat);
+    69	}
+    70	
+    71	int run_cancel_and_exception() {
+    72	  pthread_t canceled[kThreads];
+    73	  pthread_t exceptions[kThreads];
+    74	  ready.store(0, std::memory_order_release);
+    75	  for (int i = 0; i < kThreads; ++i) {
+    76	    if (pthread_create(&canceled[i], nullptr, cancel_point_worker, nullptr) != 0)
+    77	      return 74;
+    78	    if (pthread_create(&exceptions[i], nullptr, exception_worker,
+    79	                       reinterpret_cast<void*>(static_cast<long>(i))) != 0)
+    80	      return 75;
+    81	  }
+    82	  if (wait_ready(kThreads) != 0)
+    83	    return 76;
+    84	  int rc = cancel_and_join_all(canceled, kThreads, false);
+    85	  for (int i = 0; i < kThreads; ++i) {
+    86	    void* result = nullptr;
+    87	    const int join_rc = pthread_join(exceptions[i], &result);
+    88	    std::fprintf(stderr, "EXCEPTION_THREAD=%d JOIN_RC=%d VALUE=%p\n", i, join_rc, result);
+    89	    if (join_rc != 0 || result != reinterpret_cast<void*>(0x42))
+    90	      rc = 77;
+    91	  }
+    92	  return rc;
+    93	}
+    94	} // namespace
+    95	
+    96	int main(int argc, char** argv) {
+    97	  if (argc != 2)
+    98	    return 64;
+    99	  if (std::strcmp(argv[1], "multi_cancel") == 0)
+   100	    return run_cancel_group(cancel_point_worker, false);
+   101	  if (std::strcmp(argv[1], "cancel_and_exception") == 0)
+   102	    return run_cancel_and_exception();
+   103	  if (std::strcmp(argv[1], "stdlib_concurrent") == 0) {
+   104	    int pipe_fds[2];
+   105	    if (pipe(pipe_fds) != 0 || dup2(pipe_fds[1], STDOUT_FILENO) < 0)
+   106	      return 78;
+   107	    close(pipe_fds[1]);
+   108	    return run_cancel_group(cout_worker, false);
+   109	  }
+   110	  if (std::strcmp(argv[1], "repeat_cancel") == 0)
+   111	    return run_cancel_group(cancel_point_worker, true);
+   112	  return 65;
+   113	}
+EXIT_CODE=0
