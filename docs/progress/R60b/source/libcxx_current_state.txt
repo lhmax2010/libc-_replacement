@@ -1,0 +1,344 @@
+   520	  _LIBCPP_VERBOSE_ABORT("future_error was thrown in -fno-exceptions mode");
+   521	#    endif
+   522	}
+   523	
+   524	class _LIBCPP_EXPORTED_FROM_ABI __assoc_sub_state : public __shared_count {
+   525	protected:
+   526	  enum class __forced_unwind_action { __restore_deferred, __complete_with_error };
+   527	
+   528	  exception_ptr __exception_;
+   529	  mutable mutex __mut_;
+   530	  mutable condition_variable __cv_;
+   531	  unsigned __state_;
+   532	
+   533	  void __on_zero_shared() _NOEXCEPT override;
+   534	  void __sub_wait(unique_lock<mutex>& __lk);
+   535	
+   536	  _LIBCPP_HIDE_FROM_ABI void
+   537	  __handle_forced_unwind(__forced_unwind_action __action, exception_ptr __error = exception_ptr()) _NOEXCEPT {
+   538	#    if _LIBCPP_HAS_EXCEPTIONS
+   539	    try {
+   540	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   541	      unique_lock<mutex> __lk(__mut_);
+   542	      if (__action == __forced_unwind_action::__restore_deferred) {
+   543	        if (!(__state_ & ready) && !__has_value())
+   544	          __state_ |= deferred;
+   545	      } else if (!(__state_ & ready) && !__has_value()) {
+   546	        __exception_ = std::move(__error);
+   547	        __state_ |= ready;
+   548	      }
+   549	      __cv_.notify_all();
+   550	#    if _LIBCPP_HAS_EXCEPTIONS
+   551	    } catch (...) {
+   552	    }
+   553	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   554	  }
+   555	
+   556	public:
+   557	  enum { __constructed = 1, __future_attached = 2, ready = 4, deferred = 8 };
+   558	
+   559	  _LIBCPP_HIDE_FROM_ABI __assoc_sub_state() : __state_(0) {}
+   560	
+   561	  _LIBCPP_HIDE_FROM_ABI bool __has_value() const { return (__state_ & __constructed) || (__exception_ != nullptr); }
+   562	
+   563	  _LIBCPP_HIDE_FROM_ABI void __attach_future() {
+   564	    lock_guard<mutex> __lk(__mut_);
+   565	    bool __has_future_attached = (__state_ & __future_attached) != 0;
+   566	    if (__has_future_attached)
+   567	      std::__throw_future_error(future_errc::future_already_retrieved);
+   568	    this->__add_shared();
+   569	    __state_ |= __future_attached;
+   570	  }
+   571	
+   572	  _LIBCPP_HIDE_FROM_ABI void __set_deferred() { __state_ |= deferred; }
+   573	
+   574	  void __make_ready();
+   575	  _LIBCPP_HIDE_FROM_ABI bool __is_ready() const { return (__state_ & ready) != 0; }
+   576	
+   577	  void set_value();
+   578	  void set_value_at_thread_exit();
+   579	
+   580	  void set_exception(exception_ptr __p);
+   581	  void set_exception_at_thread_exit(exception_ptr __p);
+   582	
+   583	  void copy();
+   584	
+   585	  void wait();
+   586	  template <class _Rep, class _Period>
+   587	  future_status _LIBCPP_HIDE_FROM_ABI wait_for(const chrono::duration<_Rep, _Period>& __rel_time) const;
+   588	  template <class _Clock, class _Duration>
+   589	  _LIBCPP_HIDE_FROM_ABI future_status wait_until(const chrono::time_point<_Clock, _Duration>& __abs_time) const {
+   590	    unique_lock<mutex> __lk(__mut_);
+   835	
+   836	template <class _Fp>
+   837	inline __deferred_assoc_state<void, _Fp>::__deferred_assoc_state(_Fp&& __f) : __func_(std::forward<_Fp>(__f)) {
+   838	  this->__set_deferred();
+   839	}
+   840	
+   841	template <class _Fp>
+   842	void __deferred_assoc_state<void, _Fp>::__execute() {
+   843	#    if _LIBCPP_HAS_EXCEPTIONS
+   844	  try {
+   845	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   846	    __func_();
+   847	    this->set_value();
+   848	#    if _LIBCPP_HAS_EXCEPTIONS
+   849	  } catch (const __cxxabiv1::__forced_unwind&) {
+   850	    this->__handle_forced_unwind(base::__forced_unwind_action::__restore_deferred);
+   851	    throw;
+   852	  } catch (...) {
+   853	    this->set_exception(current_exception());
+   854	  }
+   855	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   856	}
+   857	
+   858	template <class _Rp, class _Fp>
+   859	class __async_assoc_state : public __assoc_state<_Rp> {
+   860	  typedef __assoc_state<_Rp> base;
+   861	
+   862	  _Fp __func_;
+   863	
+   864	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL virtual void __on_zero_shared() _NOEXCEPT;
+   865	
+   866	public:
+   867	  _LIBCPP_HIDE_FROM_ABI explicit __async_assoc_state(_Fp&& __f);
+   868	
+   869	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL virtual void __execute();
+   870	};
+   871	
+   872	template <class _Rp, class _Fp>
+   873	inline __async_assoc_state<_Rp, _Fp>::__async_assoc_state(_Fp&& __f) : __func_(std::forward<_Fp>(__f)) {}
+   874	
+   875	template <class _Rp, class _Fp>
+   876	void __async_assoc_state<_Rp, _Fp>::__execute() {
+   877	#    if _LIBCPP_HAS_EXCEPTIONS
+   878	  try {
+   879	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   880	    this->set_value(__func_());
+   881	#    if _LIBCPP_HAS_EXCEPTIONS
+   882	  } catch (const __cxxabiv1::__forced_unwind&) {
+   883	    exception_ptr __error;
+   884	    try {
+   885	      std::__throw_future_error(future_errc::broken_promise);
+   886	    } catch (...) {
+   887	      __error = current_exception();
+   888	    }
+   889	    this->__handle_forced_unwind(base::__forced_unwind_action::__complete_with_error, std::move(__error));
+   890	    throw;
+   891	  } catch (...) {
+   892	    this->set_exception(current_exception());
+   893	  }
+   894	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   895	}
+   896	
+   897	template <class _Rp, class _Fp>
+   898	void __async_assoc_state<_Rp, _Fp>::__on_zero_shared() _NOEXCEPT {
+   899	  this->wait();
+   900	  base::__on_zero_shared();
+   901	}
+   902	
+   903	template <class _Fp>
+   904	class __async_assoc_state<void, _Fp> : public __assoc_sub_state {
+   905	  typedef __assoc_sub_state base;
+   906	
+   907	  _Fp __func_;
+   908	
+   909	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __on_zero_shared() _NOEXCEPT override;
+   910	
+   911	public:
+   912	  _LIBCPP_HIDE_FROM_ABI explicit __async_assoc_state(_Fp&& __f);
+   913	
+   914	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __execute() override;
+   915	};
+   916	
+   917	template <class _Fp>
+   918	inline __async_assoc_state<void, _Fp>::__async_assoc_state(_Fp&& __f) : __func_(std::forward<_Fp>(__f)) {}
+   919	
+   920	template <class _Fp>
+   921	void __async_assoc_state<void, _Fp>::__execute() {
+   922	#    if _LIBCPP_HAS_EXCEPTIONS
+   923	  try {
+   924	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   925	    __func_();
+   926	    this->set_value();
+   927	#    if _LIBCPP_HAS_EXCEPTIONS
+   928	  } catch (const __cxxabiv1::__forced_unwind&) {
+   929	    exception_ptr __error;
+   930	    try {
+   931	      std::__throw_future_error(future_errc::broken_promise);
+   932	    } catch (...) {
+   933	      __error = current_exception();
+   934	    }
+   935	    this->__handle_forced_unwind(base::__forced_unwind_action::__complete_with_error, std::move(__error));
+   936	    throw;
+   937	  } catch (...) {
+   938	    this->set_exception(current_exception());
+   939	  }
+   940	#    endif // _LIBCPP_HAS_EXCEPTIONS
+  1840	#    endif // _LIBCPP_HAS_EXCEPTIONS
+  1841	}
+  1842	
+  1843	template <class... _ArgTypes>
+  1844	void packaged_task<void(_ArgTypes...)>::reset() {
+  1845	  if (!valid())
+  1846	    std::__throw_future_error(future_errc::no_state);
+  1847	  __p_ = promise<void>();
+  1848	}
+  1849	
+  1850	template <class _Rp, class... _ArgTypes>
+  1851	inline _LIBCPP_HIDE_FROM_ABI void
+  1852	swap(packaged_task<_Rp(_ArgTypes...)>& __x, packaged_task<_Rp(_ArgTypes...)>& __y) _NOEXCEPT {
+  1853	  __x.swap(__y);
+  1854	}
+  1855	
+  1856	#    if _LIBCPP_STD_VER <= 14
+  1857	template <class _Callable, class _Alloc>
+  1858	struct uses_allocator<packaged_task<_Callable>, _Alloc> : public true_type {};
+  1859	#    endif
+  1860	
+  1861	template <class _Rp, class _Fp>
+  1862	_LIBCPP_HIDE_FROM_ABI future<_Rp> __make_deferred_assoc_state(_Fp&& __f) {
+  1863	  unique_ptr<__deferred_assoc_state<_Rp, _Fp>, __release_shared_count> __h(
+  1864	      new __deferred_assoc_state<_Rp, _Fp>(std::forward<_Fp>(__f)));
+  1865	  return future<_Rp>(__h.get());
+  1866	}
+  1867	
+  1868	template <class _Rp, class _Fp>
+  1869	_LIBCPP_HIDE_FROM_ABI future<_Rp> __make_async_assoc_state(_Fp&& __f) {
+  1870	  unique_ptr<__async_assoc_state<_Rp, _Fp>, __release_shared_count> __h(
+  1871	      new __async_assoc_state<_Rp, _Fp>(std::forward<_Fp>(__f)));
+  1872	  auto __guard = std::__make_exception_guard([&] { __h->__make_ready(); });
+  1873	  std::thread(&__async_assoc_state<_Rp, _Fp>::__execute, __h.get()).detach();
+  1874	  __guard.__complete();
+  1875	  return future<_Rp>(__h.get());
+  1876	}
+  1877	
+  1878	#    ifndef _LIBCPP_CXX03_LANG
+  1879	
+  1880	template <class _Fp, class... _Args>
+  1881	class _LIBCPP_HIDDEN __async_func {
+  1882	  tuple<_Fp, _Args...> __f_;
+  1883	
+  1884	public:
+  1885	  using _Rp _LIBCPP_NODEBUG = __invoke_result_t<_Fp, _Args...>;
+  1886	
+  1887	  template <class _Gp, class... _BArgs>
+  1888	  _LIBCPP_HIDE_FROM_ABI explicit __async_func(_Gp&& __g, _BArgs&&... __bargs)
+  1889	      : __f_(std::forward<_Gp>(__g), std::forward<_BArgs>(__bargs)...) {}
+  1890	
+  1891	  _LIBCPP_HIDE_FROM_ABI __async_func(__async_func&& __f) : __f_(std::move(__f.__f_)) {}
+  1892	
+  1893	  _LIBCPP_HIDE_FROM_ABI _Rp operator()() {
+  1894	    return [&]<size_t... _Indices>(__index_sequence<_Indices...>) -> _Rp {
+  1895	      return std::__invoke(std::move(std::get<_Indices>(__f_))...);
+  1896	    }(__index_sequence_for<_Fp, _Args...>{});
+  1897	  }
+  1898	};
+  1899	
+  1900	inline _LIBCPP_HIDE_FROM_ABI bool __does_policy_contain(launch __policy, launch __value) {
+  1901	  return (int(__policy) & int(__value)) != 0;
+  1902	}
+  1903	
+  1904	template <class _Fp, class... _Args>
+  1905	[[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI future<__invoke_result_t<__decay_t<_Fp>, __decay_t<_Args>...> >
+  1906	async(launch __policy, _Fp&& __f, _Args&&... __args) {
+  1907	  static_assert(is_constructible<__decay_t<_Fp>, _Fp>::value, "");
+  1908	  static_assert(_And<is_constructible<__decay_t<_Args>, _Args>...>::value, "");
+  1909	  static_assert(__is_invocable_v<__decay_t<_Fp>, __decay_t<_Args>...>, "");
+  1910	
+  1911	  typedef __async_func<__decay_t<_Fp>, __decay_t<_Args>...> _BF;
+  1912	  typedef typename _BF::_Rp _Rp;
+  1913	
+  1914	#      if _LIBCPP_HAS_EXCEPTIONS
+  1915	  try {
+  1916	#      endif
+  1917	    if (__does_policy_contain(__policy, launch::async))
+  1918	      return std::__make_async_assoc_state<_Rp>(_BF(std::forward<_Fp>(__f), std::forward<_Args>(__args)...));
+  1919	#      if _LIBCPP_HAS_EXCEPTIONS
+  1920	  } catch (const __cxxabiv1::__forced_unwind&) {
+  1921	    throw;
+  1922	  } catch (...) {
+  1923	    if (__policy == launch::async)
+  1924	      throw;
+  1925	  }
+  1926	#      endif
+  1927	
+  1928	  if (__does_policy_contain(__policy, launch::deferred))
+  1929	    return std::__make_deferred_assoc_state<_Rp>(_BF(std::forward<_Fp>(__f), std::forward<_Args>(__args)...));
+  1930	  return future<_Rp>{};
+  1931	}
+  1932	
+  1933	template <class _Fp, class... _Args>
+  1934	[[__nodiscard__]] inline _LIBCPP_HIDE_FROM_ABI future<__invoke_result_t<__decay_t<_Fp>, __decay_t<_Args>...> >
+  1935	async(_Fp&& __f, _Args&&... __args) {
+  1936	  return std::async(launch::any, std::forward<_Fp>(__f), std::forward<_Args>(__args)...);
+  1937	}
+  1938	
+  1939	#    endif // C++03
+  1940	
+    65	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    66	  __state_ |= __constructed | ready;
+    67	  __cv_.notify_all();
+    68	}
+    69	
+    70	void __assoc_sub_state::set_value_at_thread_exit() {
+    71	  unique_lock<mutex> __lk(__mut_);
+    72	  if (__has_value())
+    73	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    74	  __state_ |= __constructed;
+    75	  __thread_local_data()->__make_ready_at_thread_exit(this);
+    76	}
+    77	
+    78	void __assoc_sub_state::set_exception(exception_ptr __p) {
+    79	  unique_lock<mutex> __lk(__mut_);
+    80	  if (__has_value())
+    81	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    82	  __exception_ = __p;
+    83	  __state_ |= ready;
+    84	  __cv_.notify_all();
+    85	}
+    86	
+    87	void __assoc_sub_state::set_exception_at_thread_exit(exception_ptr __p) {
+    88	  unique_lock<mutex> __lk(__mut_);
+    89	  if (__has_value())
+    90	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    91	  __exception_ = __p;
+    92	  __thread_local_data()->__make_ready_at_thread_exit(this);
+    93	}
+    94	
+    95	void __assoc_sub_state::__make_ready() {
+    96	  unique_lock<mutex> __lk(__mut_);
+    97	  __state_ |= ready;
+    98	  __cv_.notify_all();
+    99	}
+   100	
+   101	void __assoc_sub_state::copy() {
+   102	  unique_lock<mutex> __lk(__mut_);
+   103	  __sub_wait(__lk);
+   104	  if (__exception_ != nullptr)
+   105	    rethrow_exception(__exception_);
+   106	}
+   107	
+   108	void __assoc_sub_state::wait() {
+   109	  unique_lock<mutex> __lk(__mut_);
+   110	  __sub_wait(__lk);
+   111	}
+   112	
+   113	void __assoc_sub_state::__sub_wait(unique_lock<mutex>& __lk) {
+   114	  while (!__is_ready()) {
+   115	    if (__state_ & static_cast<unsigned>(deferred)) {
+   116	      __state_ &= ~static_cast<unsigned>(deferred);
+   117	      __lk.unlock();
+   118	      __execute();
+   119	      if (!__lk.owns_lock())
+   120	        __lk.lock();
+   121	    } else {
+   122	      __cv_.wait(__lk);
+   123	    }
+   124	  }
+   125	}
+   126	
+   127	void __assoc_sub_state::__execute() { std::__throw_future_error(future_errc::no_state); }
+   128	
+   129	future<void>::future(__assoc_sub_state* __state) : __state_(__state) { __state_->__attach_future(); }
+   130	

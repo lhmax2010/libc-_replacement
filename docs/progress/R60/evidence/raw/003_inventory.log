@@ -1,0 +1,384 @@
+148M	tmp/R58/source-full
+39M	tmp/R58/build-full-x86_64
+37M	tmp/R58/build-full-armv7l
+?? ../../../README_UNPACK.md
+?? ../../../docs/hq/
+?? ../../../docs/plan/
+?? ../../../gbs_llvm.conf
+9017093cca625662299c18e129e41d5fd43ecbae986a464aa286efb391549f20  docs/progress/R58/review_package/patches/0001-Layer-A-libc-abi-preserve-foreign-forced-unwind-stat.patch
+5562639277ff71921d18be41a1ed80755e11c0b70378e45567eadc99a57335c5  docs/progress/R58/review_package/patches/0001-Layer-C-header-preserve-forced-unwind-and-ready-async.patch
+fdcb004ca4cb6935efdc24c366757b50cb7916f1d5ad7cc8111dfbf5fd32d7d1  docs/progress/R58/review_package/patches/0001-libcxx-preserve-forced-unwind-in-library-catch-sites.patch
+10cc7e989f40cb176b8cc9110cc1244db2788eb3028be7bd0606e30ba61138f1  docs/progress/R58/review_package/patches/0002-Layer-B-libc-abi-expose-GNU-forced-unwind-marker-typ.patch
+7641632b5bef02af0a0705f3c6e7adcdc6b472ad5066f760eaba1b2db0c55ef9  docs/progress/R59/DESIGN.md
+24f9d79e4b395c91fc3413ad0fde875cebd98fb65973b4cf87019a5a4b7b5526  docs/progress/R59/code/src/r59_probe.cpp
+# R55：修复 `std::async` 等待挂起问题
+
+## 1. 结论
+
+结论：`FIXED`。
+
+两架构的修复前全补丁版均稳定挂起；修复后均在 20/20 次运行中唤醒等待方、退出 0，并由 `future.get()` 取得 `future_errc::broken_promise`，与 libstdc++ 参考侧逐格一致。正常返回和真实 C++ 异常经 future 传递均未改变。R51 回归矩阵与 libc++abi 相关上游测试全部通过。
+
+本结论严格限定于 x86_64 原生宿主和 armv7l 真机；未覆盖范围见第 10 节。
+
+## 2. 输入、基线与口径
+
+- llvm-project 基线：见 `raw/upstream_baseline_commit.txt`。
+- 层 A、层 B、原层 C 头文件批、层 C 库内批及修正版头文件批 SHA256：见 `raw/identity/baseline_and_patches.txt`。
+- 修复对象：层 C 头文件批中的两个 `__async_assoc_state::__execute()` 强制展开 handler；不修改平台源码，不修改 libc++abi，不修改层 C 库内批。
+- `async` 专项分母：每架构、每运行时组合 20 次，共 160 格。
+- 设施矩阵分母：2 架构 × 7 设施 × 4 组合 = 56 格。本任务书称“7 × 3”，同时又要求修复前全补丁对照；为保留该必要对照，实际按 4 组合记录，未合并口径。
+- R51 回归：每架构 18 格；libc++abi 相关测试：每架构 20 格。
+
+资源检查 `medium` 退出 0；构建并行度为 2，未重建 libc++abi。资源原文见 `raw/resources/`。
+
+## 3. 复现与运行时观测
+
+### 3.1 x86_64 复现
+
+R54 全补丁版复现退出 124。独立状态探针取得以下同一时刻事实：
+
+- `pthread_cancel` 返回 0；
+- 工作线程的 `/proc/self/task/<tid>` 已不存在，即工作线程已结束；
+- `future.wait_for(0)` 返回 `timeout`，即共享状态未 ready；
+- 原 R54 等待进程只剩等待线程，内核等待点为 futex。
+
+直接附加调试器受宿主 `ptrace_scope` 限制，记为 `NOT_OBSERVED`；线程状态、task 消失与 future 状态均由无需附加的探针直接观测。原文见 `raw/x86_64/diagnosis/`。
+
+### 3.2 工作线程与 pthread_join 口径
+
+libc++ 的 `__make_async_assoc_state()` 以 `std::thread(...).detach()` 启动内部线程。该线程所有权不暴露给调用方，因此合法的 `pthread_join` 结果为 `NOT_AVAILABLE_STD_ASYNC_OWNS_DETACHED_THREAD`；本任务未对已 detach 的内部线程强行调用 `pthread_join`。线程是否结束由 `/proc` task 消失直接确认。
+
+### 3.3 共享状态
+
+修复前：工作线程结束，但 future 状态为 `timeout`。修复后：`wait()` 返回，`get()` 抛出错误码 4 的 `broken_promise`。因此“共享状态是否 ready”不是源码推断，而是 `wait_for`、`wait` 与 `get` 的直接观测。
+
+## 4. 源码对照与根因
+
+### 4.1 libc++ 修复前
+
+两个 async 关联状态执行函数在普通异常时调用 `set_exception(current_exception())`，该函数会设置 `ready` 并通知条件变量；原层 C 强制展开分支却只执行 `throw;`。工作线程结束后，没有其他对象负责完成该 async 专用共享状态。
+
+等待侧 `__sub_wait()` 在 `ready` 未置位时持续等待条件变量。因此直接挂起原因是：强制展开分支在重抛前没有完成共享状态。
+
+### 4.2 libstdc++
+
+libstdc++ 的 `_Async_state_impl::_M_run()` 在捕获 `__forced_unwind` 后：
+
+1. 若结果对象仍存在，调用 `_M_break_promise()`；
+2. 使共享状态 ready；
+3. 再重抛强制展开。
+
+实测参考侧 `future.get()` 得到错误码 4 的 `broken_promise`。源码原文见 `raw/source/libstdcxx_future.txt`。
+
+### 4.3 两者差异
+
+| 项目 | libc++ 修复前 | libstdc++ | libc++ 修复后 |
+|---|---|---|---|
+| 强制展开继续传播 | 是 | 是 | 是 |
+| 重抛前完成共享状态 | 否 | 是 | 是 |
+| 等待方被唤醒 | 否 | 是 | 是 |
+| `future.get()` | 不返回 | `broken_promise` | `broken_promise` |
+
+### 4.4 涉及的 9 处改动
+
+直接涉及两处：
+
+- `__async_assoc_state<_Rp, _Fp>::__execute()`；
+- `__async_assoc_state<void, _Fp>::__execute()`。
+
+其余 deferred、packaged_task、async 创建失败回退等 forced-unwind handler 不参与本次挂起。
+
+## 5. `packaged_task` 对照的口径修正
+
+R54 的 `packaged_task` 用例只执行取消与 `pthread_join`，没有取得或等待 future。因此它证明了取消传播不再 abort，但没有证明共享状态已经 ready。
+
+本任务补测：当 `packaged_task` 对象仍存活时，取消后工作线程已结束，但 libc++ 全补丁版与 libstdc++ 的 future 均为 `timeout`。这不是本方案特有回归。`packaged_task` 的状态所有者生命周期与 `std::async` 的 detached async state 不同；本修复没有改变 packaged_task 路径。
+
+## 6. 修复设计与实现
+
+在两个 async 强制展开 handler 中：
+
+1. 调用既有 `std::__throw_future_error(future_errc::broken_promise)` 产生标准 future 错误；
+2. 由局部 handler 取得其 `exception_ptr` 并调用既有 `set_exception()`，设置 ready 并通知等待方；
+3. 局部 handler 结束后，以外层 `throw;` 继续原强制展开。
+
+该形态的理由：
+
+- 对齐 libstdc++ 的可观测语义；
+- 兼容旧语言模式下 `future_error` 构造函数的访问限制；
+- 不增加 libc++ 导出符号或虚函数，不改变二进制 ABI；
+- 仅增加两个 async 分支各 5 行逻辑；
+- 不触碰普通异常、正常返回、deferred 或 packaged_task 路径。
+
+修正版补丁：`patches/0001-Layer-C-header-preserve-forced-unwind-and-ready-async.patch`。补丁相对上游基线为 3 文件、57 行新增；相对 R52 原补丁仅增加上述 10 行。署名未由人工指定，暂记 `NOT_AVAILABLE <not-available@invalid>`，提交前须人工 amend。
+
+## 7. `async` 专项结果
+
+完整表见 `tables/async_specialty_20runs.tsv`。
+
+| 架构 | 组合 | 20 次结果 | 等待返回 | `broken_promise` |
+|---|---|---:|---:|---:|
+| x86_64 | 未打补丁 | 6×0、14×134 | 16/20 | 0/20 |
+| x86_64 | 修复前全补丁 | 20×124 | 0/20 | 0/20 |
+| x86_64 | 修复后全补丁 | 20×0 | 20/20 | 20/20 |
+| x86_64 | libstdc++ | 20×0 | 20/20 | 20/20 |
+| armv7l | 未打补丁 | 20×134 | 20/20 | 0/20 |
+| armv7l | 修复前全补丁 | 20×143 | 0/20 | 0/20 |
+| armv7l | 修复后全补丁 | 20×0 | 20/20 | 20/20 |
+| armv7l | libstdc++ | 20×0 | 20/20 | 20/20 |
+
+基线在 x86_64 的 20 次压力重复中出现 134/0 波动，所有样本均打印 glibc 的强制展开未重抛错误；这不改变修复前全补丁稳定挂起与修复后稳定通过的对照结论。
+
+## 8. 回归验证
+
+### 8.1 设施矩阵
+
+完整表见 `tables/facility_matrix.tsv`。除 async 外，修复前与修复后的退出码逐格相同。`packaged_task` 在两架构均保持 0。
+
+本轮 x86_64 `cout` 参考格再次出现已知超时，而修复前/后全补丁均为 0；该设施不经过本次修改的 future 路径，且任务书明确排除该既知不稳定项，故不纳入 async 修复判据。
+
+### 8.2 正常返回与真实异常
+
+`tables/noncancel_async.tsv` 的 2 架构 × 2 场景 × 4 组合共 16 格全部退出 0：
+
+- 正常 async 返回值保持 42；
+- async 中抛出的 `std::runtime_error("async-real-error")` 仍经 future 原样传递。
+
+### 8.3 R51 与 libc++abi 测试
+
+`tables/regression_summary.tsv`：
+
+- R51 回归：x86_64 18/18，armv7l 18/18；
+- libc++abi forced-unwind/unwind 相关测试：x86_64 20/20，armv7l 20/20。
+
+### 8.4 R54 future 并发子集
+
+R54 的并发用例源码不包含 `<future>`、`std::async`、`packaged_task` 或任何 future 状态；可重跑的“与 future 相关部分”分母为 0，记 `NOT_AVAILABLE`，没有把无关的 pthread/cout 并发格冒充 future 回归。该事实见 `raw/source/r54_concurrency_probe.txt` 及交付的 `concurrency_probe.cpp`。
+
+## 9. 板端操作与无效首轮
+
+首轮部署把归档传到 `/var/tmp`，板端安全标签拒绝读取；连接工具仍返回 0，导致首轮所有单元实际为目标不存在。该轮完整保留在 `raw/armv7l/invalid_deploy/`，不参与任何计数。
+
+有效重跑改用已验证的共享传输路径，并在执行前核验文件与运行库 SHA。两轮有效板端工作结束后均执行清理。最终只读核验：
+
+- R55 远端目录名匹配数为 0；
+- 相关进程数为 0；
+- 共享传输归档不存在。
+
+原文见 `commands/023_cleanup_board.log`、`commands/029_cleanup_board_regression.log`、`commands/031_board_final_readonly_verify.log`。
+
+## 10. 未覆盖范围
+
+- aarch64；
+- LTO；
+- 混合运行时帧穿越；
+- 应用自建或第三方 future 实现；
+- std::async 内部线程的 `pthread_join` 返回值：线程由 libc++ detach，不向调用方暴露，合法值不可得；
+- R54 future 并发子集：原套件中不存在，分母为 0。
+
+## 11. 自行判断与尚存疑问
+
+本任务自行判断：
+
+1. 将“7 设施 × 3 组合”扩展记录为 4 组合，以保留任务书另行要求的“修复前全补丁”对照；没有合并或删除任何格。
+2. 未对 std::async 的 detached 内部线程强行执行 `pthread_join`，以 `/proc` task 消失证明线程结束，并明确记 join 为不可得。
+3. 采用两个 async handler 内的局部 broken-promise 设置，不新增 out-of-line ABI；这是在“最小改动、更新头文件批、兼容旧语言模式”约束下的唯一直接对齐形态。
+4. 不把 R54 无 future 内容的并发套件算作已覆盖；分母明确为 0。
+
+尚存疑问：
+
+- 人工作者 name/email 未提供，补丁署名须在对外提交前 amend。
+- 是否需要新增专门的 future 并发回归套件不在本任务授权范围内，本任务没有自行扩展。
+
+本任务未向 Gerrit 或任何外部源码仓推送，未修改平台源码或落章文档。
+# R58 四补丁最终形态的整体复验报告
+
+## 结论
+
+本任务结论为 **`INTEGRATION_VERIFIED`**（限本报告明确覆盖的架构、配置与可达站点）。
+
+R55 修订后的层 C 头文件补丁与层 A、层 B、层 C 库内补丁可按顺序无冲突应用；源码命中与文件 SHA 双重核验均确认四补丁实际进入实验副本。x86_64 与 armv7l 的 libc++abi/libc++ 均构建成功，改动源码未出现新增警告，产物中未检出 R40/R41/R42 诊断字符串。
+
+本轮最重要的新判据 `std::async` 已通过：全补丁版在 x86_64 与 armv7l 各重复 20 次，均为 **20/20 退出 0、20/20 等待方返回**；真实异常仍以 `std::runtime_error("async-real-error")` 经 `future.get()` 原样取得。四补丁当前组合未复现 R54 的等待挂起。
+
+两处既知 `noexcept` 不可达站点仍按任务约定记 `NOT_OBSERVED`。标准库并发输出仍不稳定，但全补丁与 libstdc++ 参考侧均出现，且已由任务背景登记为非本方案独有边界；本轮未将其解释为补丁回归。
+
+## 1. 输入、应用与构建
+
+基线为 `codes/llvm` commit `5ed6c77278dfa7a470667cf1a137723d3c96fe60`。资源工具 `tools/resource_gate.sh --level medium` 退出 0 后才执行其余步骤；实测 `MemAvailable=15275684 KiB`、`load1=9.66`、负载上限 20。构建统一使用 `-j2`、`LLVM_PARALLEL_LINK_JOBS=1`、`nice -n 15`、`ionice -c 3`。
+
+| 顺序 | 补丁 | SHA256 |
+|---:|---|---|
+| 1 | Layer A | `9017093cca625662299c18e129e41d5fd43ecbae986a464aa286efb391549f20` |
+| 2 | Layer B | `10cc7e989f40cb176b8cc9110cc1244db2788eb3028be7bd0606e30ba61138f1` |
+| 3 | Layer C 头文件批（R55） | `5562639277ff71921d18be41a1ed80755e11c0b70378e45567eadc99a57335c5` |
+| 4 | Layer C 库内批 | `fdcb004ca4cb6935efdc24c366757b50cb7916f1d5ad7cc8111dfbf5fd32d7d1` |
+
+应用冲突为 **0/4**。每个补丁均先 `git apply --check`，再实际应用；随后以 12 个功能标记的源码命中及 8 个最终文件 SHA 核验，避免“apply 返回 0 但副本未变”的旧问题。
+
+| 架构 | libc++abi SHA256 | libc++ SHA256 |
+|---|---|---|
+| x86_64 | `26d1c600a7c0eaec53ab45918cb03715cb0fbe5b67c6208df1e0618184fb7b52` | `4681090f94ca1bd1982af5d0acf8936cd2a57d04efc28bdd8c5db72cd8b3d9b1` |
+| armv7l | `1c22a77f964a4519981cf8ae76353c8897fdf0c09a1df70b9eea5efda20fdebd` | `72737d6d2dc3c0ddef7d1eb074e6235bbfedb3c2c1fd02aff0da2ebf4a3d9b2e` |
+
+x86_64 初次 libc++ 编译暴露实验副本缺少 LLVM `libc/shared/fp_bits.h`；补入同一 `codes/llvm/libc` 基线并重新配置后成功。失败与两次重试完整保留，不计为补丁源码失败。成功日志中按改动文件名检索的新警告为 0。
+
+## 2. 层间依赖复验
+
+两架构结果一致：
+
+- 无补丁：catch-all 重抛及标准库路径复现失败。
+- 仅 A：catch-all 重抛恢复；标准库设施仍失败。
+- 仅 A+B：typed 防护恢复；标准库设施仍失败。
+- A+B+C：typed 防护和全部可达设施恢复。
+- B+C 缺 A：typed 防护和标准库路径均以 134 失败。
+- 仅 C 缺 A+B：两架构均在编译期因 `__cxxabiv1::__forced_unwind` 不存在而失败。
+
+与 R54 的层间依赖结论一致。x86_64 cout 在个别独立进程退出阶段出现 124，而同轮 libstdc++ 参考亦出现；线程取消与 join 已完成，属于已登记的退出阶段不稳定，不改变依赖判断。逐格证据见 `tables/layer_matrix.tsv`。
+
+## 3. 设施矩阵
+
+执行口径为 2 架构 × 7 个可执行设施 × 3 组合，共 **42 格**，另有 4 个 `NOT_OBSERVED` 申报格。getline 自由函数、getline 成员、read、packaged_task 的基线均复现 134，全补丁与参考均退出 0。算术输入三侧退出 0，只能证明非回归。cout 的工作线程在全补丁侧正确取消，仍保留上述参考侧共有的退出阶段边界。
+
+`async` 专项另按每架构、每组合重复 20 次：
+
+| 架构 | 全补丁 | libstdc++ 参考 | 判据 |
+|---|---:|---:|---|
+| x86_64 | 20/20 | 20/20 | 退出 0 且 `WAIT_RETURNED=1` |
+| armv7l | 20/20 | 20/20 | 退出 0 且 `WAIT_RETURNED=1` |
+
+取消后的 `get()` 返回 `future_error`，信息为共享状态在 ready 前 promise 被析构；这是 R55 既定修后语义。`std::async` 内部线程由 libc++ detach，因此 join 记 `NOT_AVAILABLE_STD_ASYNC_OWNS_DETACHED_THREAD`，未伪造 join 结果。
+
+## 4. 非取消路径
+
+两架构上未打补丁、全补丁、libstdc++ 参考均通过：async 正常取值、async 真实异常传递、packaged_task 正常取值、packaged_task 真实异常传递、getline 正常/EOF、string 正常路径、算术格式错误状态。关键观察：
+
+- async 真实异常类型为 `std::runtime_error`，内容严格为 `async-real-error`；
+- packaged_task 正常值为 24，异常内容严格为 `packaged-real-error`；
+- 算术格式错误设置 fail 状态且不改写哨兵值。
+
+未观察到由最终四补丁引入的非取消行为变化。
+
+## 5. 既有回归与上游测试
+
+| 测试集 | x86_64 | armv7l | 分母口径 |
+|---|---:|---:|---|
+| R51 回归矩阵 | 18/18 | 18/18 | 9 场景 × 2 运行时 |
+| libc++abi forced_unwind/unwind | 20/20 | 20/20 | 10 测试 × 2 运行时 |
+| 选定 libc++ iostream/future/string | 7/7 | NOT_AVAILABLE | 板上无编译器/lit，且本轮未生成同构预编译集合 |
+
+宿主选定 libc++ 测试是从当前最终头文件和当前最终库重新编译所得，不是沿用旧二进制。
+
+## 6. 并发取消
+
+口径为 2 架构 × 2 运行时 × 4 模式 × 20 次，共 **320 格**。
+
+- 多线程同时取消：80/80 退出 0。
+- 取消与真实异常并发：80/80 退出 0。
+- 重复取消：80/80 退出 0。
+- 标准库并发输出：全补丁 x86_64 16/20、armv7l 10/20；参考 x86_64 7/20、armv7l 3/20。两侧均非确定性超时，失败样本全部保留。
+
+未发现只发生于全补丁侧的并发失败；也未将参考侧共有的不稳定表述为通过。
+
+## 7. 身份、开发板与边界
+
+宿主和开发板均保存库 SHA256、`ldd` 与 `LD_DEBUG=libs` 原文。板端使用 `/var/tmp/r58_20260821`，收尾核验：部署目录不存在、共享归档不存在、相关进程数为 0。未安装 RPM、未修改系统库或配置、未重启。
+
+已验证：x86_64 原生、armv7l 真机；DWARF 与 ARM EHABI；动态 libc++；无 LTO；指定设施、异常与四类并发模式。
+
+未覆盖：aarch64；混合运行时帧穿越；LTO；`dlopen`/插件边界；超过 4 个工作线程和长时间压力；armv7l 的 libc++ 源码测试同构集合；两个 `noexcept` 不可达站点。层 C 条件编译改造仍为已登记待办；R56 已实测“仅前置声明”在语言层不可编译，R57 材料在仓内为 `NOT_AVAILABLE`。
+
+自行判断：算术输入基线未复现缺陷，因此仅按非回归计；参考侧共有的 cout/并发输出超时不归因于本补丁。尚存疑问：条件编译改造采用何种完整类型承载方式，仍待人工另行裁决。
+
+## 8. 证据入口
+
+- 原始命令与退出码：`progress/R58/commands/`
+- 逐格原始输出：`progress/R58/raw/`
+- 汇总表：`progress/R58/tables/`
+- 代码策展副本：`docs/progress/R58/code/`
+- 评审材料包：`docs/progress/R58/review_package/`
+# R59 修复设计（仅设计，未实现）
+
+## F1：`ios.cpp` 两个汇聚函数
+
+现代码先用一次嵌套 `throw;` 分类当前异常，离开内层 `catch (...)` 后再依据异常掩码执行第二次 `throw;`。对非强制外来异常，第一次重抛已完成其 handler 生命周期；第二次裸重抛时不再有活动异常，实测进入 terminate handler。
+
+建议修复文本（badbit；failbit 同构替换位值）：
+
+```cpp
+void ios_base::__set_badbit_and_consider_rethrow() {
+  __rdstate_ |= badbit;
+#if _LIBCPP_HAS_EXCEPTIONS
+  try {
+    throw;
+  } catch (const __cxxabiv1::__forced_unwind&) {
+    throw;
+  } catch (...) {
+    if (__exceptions_ & badbit)
+      throw;
+  }
+#endif
+}
+```
+
+关键点是：需要传播的普通/外来异常必须在内层 handler 仍活跃时重抛；函数尾部不再执行裸 `throw;`。强制展开仍无条件重抛。逐路径等价性见 `tables/f1_path_equivalence.tsv`。改动局限于两个 out-of-line helper，不改变其他头文件站点。
+
+## F2：`get(basic_streambuf&, delim)`
+
+建议把 typed handler 改为：
+
+```cpp
+} catch (const __cxxabiv1::__forced_unwind&) {
+  __state |= ios_base::badbit;
+  this->__setstate_nothrow(__state);
+  throw;
+}
+```
+
+`__setstate_nothrow` 在重抛前提交 `__state`，避免普通 `setstate` 按异常掩码再抛出另一异常并替换强制展开。该形态与同文件相邻 handler 及 libstdc++ `_M_setstate(badbit); rethrow` 对齐。它只触及该 overload 的 typed 分支，不改变 catch-all 的既有规范行为。
+
+## M1：deferred future（待人工选择）
+
+### 选项 M1-A：恢复 deferred 标记，允许重试
+
+- 在 forced handler 中，通过基类新增的加锁、无抛异常内部操作恢复 deferred 标记，再重抛。
+- 后续等待者可再次执行 callable；本次 libstdc++ 参考实测调用次数从 1 增到 2 后得到 42，语义最接近其 `call_once` 失败后可重试的实现。
+- 后果：callable 在第一次被取消前可能已经产生外部副作用，重复执行不保证业务安全；C++ 标准没有为线程取消定义此状态策略。
+- 实现代价：需要在共享状态锁下原子恢复标记，并处理同时到达的其他 waiter；不能直接无锁写 `__state_`。
+
+### 选项 M1-B：以永久错误完成共享状态
+
+- 在 forced handler 中用无抛异常、幂等的内部完成操作写入一个确定错误并置 ready，随后重抛。
+- 后续等待者立即获得错误，不重跑 callable，也不会永久等待。
+- 后果：future 永久失效；与 libstdc++ 的可重试行为不一致。需要裁决错误类别（`broken_promise`、现有 future_error 或新增内部状态）。
+- 实现代价：需要一个不会因已 ready 而抛异常的原子完成接口，以及错误语义和测试契约。
+
+### 选项 M1-C：执行期间屏蔽取消
+
+- 在 deferred callable 执行窗口禁用线程取消，退出后恢复原状态。
+- 后果：避免半执行后的状态选择，但取消会被推迟；callable 若长期不返回，取消请求也无法完成。若 callable 自行重新启用取消，库侧限制还可能失效。
+- 与 libstdc++ 不一致，且引入 pthread 平台耦合；必须以取消状态的可观测测试证明约束真实生效。
+
+## M2：async 完成操作不得替换原传播（待人工选择）
+
+### 选项 M2-A：原子的无抛异常 `try_complete_with_error`
+
+- 增加内部接口：持锁检查 ready；未 ready 时写入 broken-promise 类错误并通知，已 ready 时无操作返回；接口保证不抛异常。
+- forced handler 无条件在该接口之后执行原 `throw;`。
+- 与 libstdc++ 的 `_M_result` 检查加 `_M_break_promise` 方向最接近；本次参考实测完成取消传播，等待方得到 broken promise。
+- 不能用“先 `__has_value()` 再 `set_exception()`”的分离检查替代，否则存在 TOCTOU 窗口。
+
+### 选项 M2-B：隔离完成操作的异常，始终恢复原传播
+
+- 在 forced handler 内把完成操作包在独立 try/catch 中；完成操作的任何异常只记录/丢弃，随后执行原 `throw;`。
+- 优点是改动集中；已 ready 时 `promise_already_satisfied` 不再替换原传播。
+- 后果：未 ready 时若因分配失败等原因未能完成共享状态，等待者可能仍不就绪；因此必须另行定义并测试该失败路径，不能只靠吞异常。
+
+### 选项 M2-C：在库控制的发布窗口施加可验证的取消限制
+
+- 对库控制的共享状态发布临界区禁用取消，并在离开临界区后恢复；以运行时读取取消状态和确定性时序用例验证。
+- 后果：平台耦合、推迟取消，并且用户 callable 可自行改变取消状态；要做到“排除异步取消”必须定义库是否覆盖/拒绝用户修改。仅写文档声明不构成限制。
+- 与 libstdc++ 当前处理方式不一致。
+
+本报告不在上述 M1/M2 选项中作选择。

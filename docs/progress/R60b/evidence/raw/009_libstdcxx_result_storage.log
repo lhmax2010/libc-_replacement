@@ -1,0 +1,421 @@
+212-  template<typename _Fn, typename... _Args>
+213-    future<__async_result_of<_Fn, _Args...>>
+214-    async(_Fn&& __fn, _Args&&... __args);
+215-
+216-#if defined(_GLIBCXX_HAS_GTHREADS)
+217-
+218-  /// @cond undocumented
+219-
+220-  /// Base class and enclosing scope.
+221-  struct __future_base
+222-  {
+223-    /// Base class for results.
+224:    struct _Result_base
+225-    {
+226:      exception_ptr		_M_error;
+227-
+228-      _Result_base(const _Result_base&) = delete;
+229-      _Result_base& operator=(const _Result_base&) = delete;
+230-
+231-      // _M_destroy() allows derived classes to control deallocation
+232-      virtual void _M_destroy() = 0;
+233-
+234-      struct _Deleter
+235-      {
+236-	void operator()(_Result_base* __fr) const { __fr->_M_destroy(); }
+237-      };
+238-
+--
+459-          __throw_future_error(int(future_errc::promise_already_satisfied));
+460-	__mr->_M_shared_state = std::move(__self);
+461-	__mr->_M_set();
+462-	__mr.release();
+463-      }
+464-
+465-      // Abandon this shared state.
+466-      void
+467-      _M_break_promise(_Ptr_type __res)
+468-      {
+469-	if (static_cast<bool>(__res))
+470-	  {
+471:	    __res->_M_error =
+472-	      make_exception_ptr(future_error(future_errc::broken_promise));
+473-	    // This function is only called when the last asynchronous result
+474-	    // provider is abandoning this shared state, so noone can be
+475-	    // trying to make the shared state ready at the same time, and
+476-	    // we can access _M_result directly instead of through call_once.
+477-	    _M_result.swap(__res);
+478-	    // Use release MO to synchronize with observers of the ready state.
+479-	    _M_status._M_store_notify_all(_Status::__ready,
+480-					  memory_order_release);
+481-	  }
+482-      }
+483-
+--
+538-	  promise<_Res>*    _M_promise;
+539-	};
+540-
+541-      struct __exception_ptr_tag { };
+542-
+543-      // set exceptions
+544-      template<typename _Res>
+545-        struct _Setter<_Res, __exception_ptr_tag>
+546-        {
+547-	  // Used by std::promise to store an exception as the result.
+548-          typename promise<_Res>::_Ptr_type operator()() const
+549-          {
+550:            _M_promise->_M_storage->_M_error = *_M_ex;
+551-            return std::move(_M_promise->_M_storage);
+552-          }
+553-
+554-          promise<_Res>*   _M_promise;
+555-          exception_ptr*    _M_ex;
+556-        };
+557-
+558-      template<typename _Res, typename _Arg>
+559-	__attribute__((__always_inline__))
+560-        static _Setter<_Res, _Arg&&>
+561-        __setter(promise<_Res>* __prom, _Arg&& __arg) noexcept
+562-        {
+--
+733-
+734-      template<typename _Clock, typename _Duration>
+735-        future_status
+736-        wait_until(const chrono::time_point<_Clock, _Duration>& __abs) const
+737-        {
+738-          _State_base::_S_check(_M_state);
+739-          return _M_state->wait_until(__abs);
+740-        }
+741-
+742-    protected:
+743-      /// Wait for the state to be ready and rethrow any stored exception
+744-      __result_type
+745:      _M_get_result() const
+746-      {
+747-        _State_base::_S_check(_M_state);
+748-        _Result_base& __res = _M_state->wait();
+749:        if (!(__res._M_error == nullptr))
+750:          rethrow_exception(__res._M_error);
+751-        return static_cast<__result_type>(__res);
+752-      }
+753-
+754-      void _M_swap(__basic_future& __that) noexcept
+755-      {
+756-        _M_state.swap(__that._M_state);
+757-      }
+758-
+759-      // Construction of a future by promise::get_future()
+760-      explicit
+761-      __basic_future(const __state_type& __state) : _M_state(__state)
+762-      {
+--
+822-
+823-      future& operator=(future&& __fut) noexcept
+824-      {
+825-        future(std::move(__fut))._M_swap(*this);
+826-        return *this;
+827-      }
+828-
+829-      /// Retrieving the value
+830-      _Res
+831-      get()
+832-      {
+833-        typename _Base_type::_Reset __reset(*this);
+834:        return std::move(this->_M_get_result()._M_value());
+835-      }
+836-
+837-      shared_future<_Res> share() noexcept;
+838-    };
+839-
+840-  /// Partial specialization for future<R&>
+841-  template<typename _Res>
+842-    class future<_Res&> : public __basic_future<_Res&>
+843-    {
+844-      friend class promise<_Res&>;
+845-      template<typename> friend class packaged_task;
+846-      template<typename _Fn, typename... _Args>
+--
+865-
+866-      future& operator=(future&& __fut) noexcept
+867-      {
+868-        future(std::move(__fut))._M_swap(*this);
+869-        return *this;
+870-      }
+871-
+872-      /// Retrieving the value
+873-      _Res&
+874-      get()
+875-      {
+876-        typename _Base_type::_Reset __reset(*this);
+877:        return this->_M_get_result()._M_get();
+878-      }
+879-
+880-      shared_future<_Res&> share() noexcept;
+881-    };
+882-
+883-  /// Explicit specialization for future<void>
+884-  template<>
+885-    class future<void> : public __basic_future<void>
+886-    {
+887-      friend class promise<void>;
+888-      template<typename> friend class packaged_task;
+889-      template<typename _Fn, typename... _Args>
+--
+908-
+909-      future& operator=(future&& __fut) noexcept
+910-      {
+911-        future(std::move(__fut))._M_swap(*this);
+912-        return *this;
+913-      }
+914-
+915-      /// Retrieving the value
+916-      void
+917-      get()
+918-      {
+919-        typename _Base_type::_Reset __reset(*this);
+920:        this->_M_get_result();
+921-      }
+922-
+923-      shared_future<void> share() noexcept;
+924-    };
+925-
+926-
+927-  /// Primary template for shared_future.
+928-  template<typename _Res>
+929-    class shared_future : public __basic_future<_Res>
+930-    {
+931-      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+932-      // 3458. Is shared_future intended to work with arrays or function types?
+--
+958-        shared_future(__sf)._M_swap(*this);
+959-        return *this;
+960-      }
+961-
+962-      shared_future& operator=(shared_future&& __sf) noexcept
+963-      {
+964-        shared_future(std::move(__sf))._M_swap(*this);
+965-        return *this;
+966-      }
+967-
+968-      /// Retrieving the value
+969-      const _Res&
+970:      get() const { return this->_M_get_result()._M_value(); }
+971-    };
+972-
+973-  /// Partial specialization for shared_future<R&>
+974-  template<typename _Res>
+975-    class shared_future<_Res&> : public __basic_future<_Res&>
+976-    {
+977-      typedef __basic_future<_Res&>           _Base_type;
+978-
+979-    public:
+980-      constexpr shared_future() noexcept : _Base_type() { }
+981-
+982-      /// Copy constructor
+--
+997-        shared_future(__sf)._M_swap(*this);
+998-        return *this;
+999-      }
+1000-
+1001-      shared_future& operator=(shared_future&& __sf) noexcept
+1002-      {
+1003-        shared_future(std::move(__sf))._M_swap(*this);
+1004-        return *this;
+1005-      }
+1006-
+1007-      /// Retrieving the value
+1008-      _Res&
+1009:      get() const { return this->_M_get_result()._M_get(); }
+1010-    };
+1011-
+1012-  /// Explicit specialization for shared_future<void>
+1013-  template<>
+1014-    class shared_future<void> : public __basic_future<void>
+1015-    {
+1016-      typedef __basic_future<void> _Base_type;
+1017-
+1018-    public:
+1019-      constexpr shared_future() noexcept : _Base_type() { }
+1020-
+1021-      /// Copy constructor
+--
+1036-        shared_future(__sf)._M_swap(*this);
+1037-        return *this;
+1038-      }
+1039-
+1040-      shared_future& operator=(shared_future&& __sf) noexcept
+1041-      {
+1042-        shared_future(std::move(__sf))._M_swap(*this);
+1043-        return *this;
+1044-      }
+1045-
+1046-      // Retrieving the value
+1047-      void
+1048:      get() const { this->_M_get_result(); }
+1049-    };
+1050-
+1051-  // Now we can define the protected __basic_future constructors.
+1052-  template<typename _Res>
+1053-    inline __basic_future<_Res>::
+1054-    __basic_future(const shared_future<_Res>& __sf) noexcept
+1055-    : _M_state(__sf._M_state)
+1056-    { }
+1057-
+1058-  template<typename _Res>
+1059-    inline __basic_future<_Res>::
+1060-    __basic_future(shared_future<_Res>&& __sf) noexcept
+--
+1412-      _Ptr_type operator()() const
+1413-      {
+1414-	__try
+1415-	  {
+1416-	    (*_M_result)->_M_set((*_M_fn)());
+1417-	  }
+1418-	__catch(const __cxxabiv1::__forced_unwind&)
+1419-	  {
+1420-	    __throw_exception_again; // will cause broken_promise
+1421-	  }
+1422-	__catch(...)
+1423-	  {
+1424:	    (*_M_result)->_M_error = current_exception();
+1425-	  }
+1426-	return std::move(*_M_result);
+1427-      }
+1428-      _Ptr_type*	_M_result;
+1429-      _Fn*		_M_fn;
+1430-    };
+1431-
+1432-  template<typename _Ptr_type, typename _Fn>
+1433-    struct __future_base::_Task_setter<_Ptr_type, _Fn, void>
+1434-    {
+1435-      _Ptr_type operator()() const
+1436-      {
+1437-	__try
+1438-	  {
+1439-	    (*_M_fn)();
+1440-	  }
+1441-	__catch(const __cxxabiv1::__forced_unwind&)
+1442-	  {
+1443-	    __throw_exception_again; // will cause broken_promise
+1444-	  }
+1445-	__catch(...)
+1446-	  {
+1447:	    (*_M_result)->_M_error = current_exception();
+1448-	  }
+1449-	return std::move(*_M_result);
+1450-      }
+1451-      _Ptr_type*	_M_result;
+1452-      _Fn*		_M_fn;
+1453-    };
+1454-
+1455-  // Holds storage for a packaged_task's result.
+1456-  template<typename _Res, typename... _Args>
+1457-    struct __future_base::_Task_state_base<_Res(_Args...)>
+1458-    : __future_base::_State_base
+1459-    {
+   220	  /// Base class and enclosing scope.
+   221	  struct __future_base
+   222	  {
+   223	    /// Base class for results.
+   224	    struct _Result_base
+   225	    {
+   226	      exception_ptr		_M_error;
+   227	
+   228	      _Result_base(const _Result_base&) = delete;
+   229	      _Result_base& operator=(const _Result_base&) = delete;
+   230	
+   231	      // _M_destroy() allows derived classes to control deallocation
+   232	      virtual void _M_destroy() = 0;
+   233	
+   234	      struct _Deleter
+   235	      {
+   236		void operator()(_Result_base* __fr) const { __fr->_M_destroy(); }
+   237	      };
+   238	
+   239	    protected:
+   240	      _Result_base();
+   241	      virtual ~_Result_base();
+   242	    };
+   243	
+   244	    /// A unique_ptr for result objects.
+   245	    template<typename _Res>
+   246	      using _Ptr = unique_ptr<_Res, _Result_base::_Deleter>;
+   247	
+   248	    /// A result object that has storage for an object of type _Res.
+   249	    template<typename _Res>
+   250	      struct _Result : _Result_base
+   251	      {
+   252	      private:
+   253		__gnu_cxx::__aligned_buffer<_Res>	_M_storage;
+   254		bool 					_M_initialized;
+   255	
+   256	      public:
+   257		typedef _Res result_type;
+   258	
+   259		_Result() noexcept : _M_initialized() { }
+   260	
+   261		~_Result()
+   262		{
+   263		  if (_M_initialized)
+   264		    _M_value().~_Res();
+   265		}
+   266	
+   267		// Return lvalue, future will add const or rvalue-reference
+   268		_Res&
+   269		_M_value() noexcept { return *_M_storage._M_ptr(); }
+   270	
+   271		void
+   272		_M_set(const _Res& __res)
+   273		{
+   274		  ::new (_M_storage._M_addr()) _Res(__res);
+   275		  _M_initialized = true;
+   276		}
+   277	
+   278		void
+   279		_M_set(_Res&& __res)
+   280		{
+   281		  ::new (_M_storage._M_addr()) _Res(std::move(__res));
+   282		  _M_initialized = true;
+   283		}
+   284	
+   285	      private:
+   286		void _M_destroy() { delete this; }
+   287	    };
+   288	
+   289	    /// A result object that uses an allocator.
+   290	    template<typename _Res, typename _Alloc>
+   291	      struct _Result_alloc final : _Result<_Res>, _Alloc
+   292	      {
+   293		using __allocator_type = __alloc_rebind<_Alloc, _Result_alloc>;
+   294	
+   295	        explicit
+   296		_Result_alloc(const _Alloc& __a) : _Result<_Res>(), _Alloc(__a)
+   297		{ }
+   298	
+   299	      private:
+   300		void _M_destroy()
+   301		{
+   302		  __allocator_type __a(*this);
+   303		  __allocated_ptr<__allocator_type> __guard_ptr{ __a, this };
+   304		  this->~_Result_alloc();
+   305		}
+   306	      };
+   307	
+   308	    // Create a result object that uses an allocator.
+   309	    template<typename _Res, typename _Allocator>
+   310	      static _Ptr<_Result_alloc<_Res, _Allocator>>
+   311	      _S_allocate_result(const _Allocator& __a)
+   312	      {
+   313		using __result_type = _Result_alloc<_Res, _Allocator>;
+   314		typename __result_type::__allocator_type __a2(__a);
+   315		auto __guard = std::__allocate_guarded(__a2);
+   316		__result_type* __p = ::new((void*)__guard.get()) __result_type{__a};
+   317		__guard = nullptr;
+   318		return _Ptr<__result_type>(__p);
+   319	      }
+   320	
+   321	    // Keep it simple for std::allocator.
+   322	    template<typename _Res, typename _Tp>
+   323	      static _Ptr<_Result<_Res>>
+   324	      _S_allocate_result(const std::allocator<_Tp>&)
+   325	      {

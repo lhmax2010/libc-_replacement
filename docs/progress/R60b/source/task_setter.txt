@@ -1,0 +1,187 @@
+   490	      }
+   491	
+   492	      template<typename _Res, typename _Arg>
+   493	        struct _Setter;
+   494	
+   495	      // set lvalues
+   496	      template<typename _Res, typename _Arg>
+   497	        struct _Setter<_Res, _Arg&>
+   498	        {
+   499	          // check this is only used by promise<R>::set_value(const R&)
+   500	          // or promise<R&>::set_value(R&)
+   501	          static_assert(is_same<_Res, _Arg&>::value  // promise<R&>
+   502	              || is_same<const _Res, _Arg>::value,   // promise<R>
+   503	              "Invalid specialisation");
+   504	
+   505		  // Used by std::promise to copy construct the result.
+   506	          typename promise<_Res>::_Ptr_type operator()() const
+   507	          {
+   508	            _M_promise->_M_storage->_M_set(*_M_arg);
+   509	            return std::move(_M_promise->_M_storage);
+   510	          }
+   511	          promise<_Res>*    _M_promise;
+   512	          _Arg*             _M_arg;
+   513	        };
+   514	
+   515	      // set rvalues
+   516	      template<typename _Res>
+   517	        struct _Setter<_Res, _Res&&>
+   518	        {
+   519		  // Used by std::promise to move construct the result.
+   520	          typename promise<_Res>::_Ptr_type operator()() const
+   521	          {
+   522	            _M_promise->_M_storage->_M_set(std::move(*_M_arg));
+   523	            return std::move(_M_promise->_M_storage);
+   524	          }
+   525	          promise<_Res>*    _M_promise;
+   526	          _Res*             _M_arg;
+   527	        };
+   528	
+   529	      // set void
+   530	      template<typename _Res>
+   531		struct _Setter<_Res, void>
+   532		{
+   533		  static_assert(is_void<_Res>::value, "Only used for promise<void>");
+   534	
+   535		  typename promise<_Res>::_Ptr_type operator()() const
+   536		  { return std::move(_M_promise->_M_storage); }
+   537	
+   538		  promise<_Res>*    _M_promise;
+   539		};
+   540	
+   541	      struct __exception_ptr_tag { };
+   542	
+   543	      // set exceptions
+   544	      template<typename _Res>
+   545	        struct _Setter<_Res, __exception_ptr_tag>
+   546	        {
+   547		  // Used by std::promise to store an exception as the result.
+   548	          typename promise<_Res>::_Ptr_type operator()() const
+   549	          {
+   550	            _M_promise->_M_storage->_M_error = *_M_ex;
+   551	            return std::move(_M_promise->_M_storage);
+   552	          }
+   553	
+   554	          promise<_Res>*   _M_promise;
+   555	          exception_ptr*    _M_ex;
+   556	        };
+   557	
+   558	      template<typename _Res, typename _Arg>
+   559		__attribute__((__always_inline__))
+   560	        static _Setter<_Res, _Arg&&>
+   561	        __setter(promise<_Res>* __prom, _Arg&& __arg) noexcept
+   562	        {
+   563	          return _Setter<_Res, _Arg&&>{ __prom, std::__addressof(__arg) };
+   564	        }
+   565	
+   566	      template<typename _Res>
+   567		__attribute__((__always_inline__))
+   568	        static _Setter<_Res, __exception_ptr_tag>
+   569	        __setter(exception_ptr& __ex, promise<_Res>* __prom) noexcept
+   570	        {
+   571	          __glibcxx_assert(__ex != nullptr); // LWG 2276
+   572	          return _Setter<_Res, __exception_ptr_tag>{ __prom, &__ex };
+   573	        }
+   574	
+   575	      template<typename _Res>
+   576		__attribute__((__always_inline__))
+   577		static _Setter<_Res, void>
+   578		__setter(promise<_Res>* __prom) noexcept
+   579		{
+   580		  return _Setter<_Res, void>{ __prom };
+  1360	        promise(std::move(__rhs)).swap(*this);
+  1361	        return *this;
+  1362	      }
+  1363	
+  1364	      promise& operator=(const promise&) = delete;
+  1365	
+  1366	      void
+  1367	      swap(promise& __rhs) noexcept
+  1368	      {
+  1369	        _M_future.swap(__rhs._M_future);
+  1370	        _M_storage.swap(__rhs._M_storage);
+  1371	      }
+  1372	
+  1373	      // Retrieving the result
+  1374	      future<void>
+  1375	      get_future()
+  1376	      { return future<void>(_M_future); }
+  1377	
+  1378	      // Setting the result
+  1379	      void
+  1380	      set_value()
+  1381	      { _M_state()._M_set_result(_State::__setter(this)); }
+  1382	
+  1383	      void
+  1384	      set_exception(exception_ptr __p)
+  1385	      { _M_state()._M_set_result(_State::__setter(__p, this)); }
+  1386	
+  1387	      void
+  1388	      set_value_at_thread_exit()
+  1389	      { _M_state()._M_set_delayed_result(_State::__setter(this), _M_future); }
+  1390	
+  1391	      void
+  1392	      set_exception_at_thread_exit(exception_ptr __p)
+  1393	      {
+  1394		_M_state()._M_set_delayed_result(_State::__setter(__p, this),
+  1395						 _M_future);
+  1396	      }
+  1397	
+  1398	    private:
+  1399	      _State&
+  1400	      _M_state()
+  1401	      {
+  1402		__future_base::_State_base::_S_check(_M_future);
+  1403		return *_M_future;
+  1404	      }
+  1405	    };
+  1406	
+  1407	  /// @cond undocumented
+  1408	  template<typename _Ptr_type, typename _Fn, typename _Res>
+  1409	    struct __future_base::_Task_setter
+  1410	    {
+  1411	      // Invoke the function and provide the result to the caller.
+  1412	      _Ptr_type operator()() const
+  1413	      {
+  1414		__try
+  1415		  {
+  1416		    (*_M_result)->_M_set((*_M_fn)());
+  1417		  }
+  1418		__catch(const __cxxabiv1::__forced_unwind&)
+  1419		  {
+  1420		    __throw_exception_again; // will cause broken_promise
+  1421		  }
+  1422		__catch(...)
+  1423		  {
+  1424		    (*_M_result)->_M_error = current_exception();
+  1425		  }
+  1426		return std::move(*_M_result);
+  1427	      }
+  1428	      _Ptr_type*	_M_result;
+  1429	      _Fn*		_M_fn;
+  1430	    };
+  1431	
+  1432	  template<typename _Ptr_type, typename _Fn>
+  1433	    struct __future_base::_Task_setter<_Ptr_type, _Fn, void>
+  1434	    {
+  1435	      _Ptr_type operator()() const
+  1436	      {
+  1437		__try
+  1438		  {
+  1439		    (*_M_fn)();
+  1440		  }
+  1441		__catch(const __cxxabiv1::__forced_unwind&)
+  1442		  {
+  1443		    __throw_exception_again; // will cause broken_promise
+  1444		  }
+  1445		__catch(...)
+  1446		  {
+  1447		    (*_M_result)->_M_error = current_exception();
+  1448		  }
+  1449		return std::move(*_M_result);
+  1450	      }
+  1451	      _Ptr_type*	_M_result;
+  1452	      _Fn*		_M_fn;
+  1453	    };
+  1454	
+  1455	  // Holds storage for a packaged_task's result.

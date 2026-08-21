@@ -1,0 +1,283 @@
+From 3b90c118a24e353f2fe15fb3c54e8216fbdedd79 Mon Sep 17 00:00:00 2001
+From: NOT_AVAILABLE <not-available@invalid>
+Date: Fri, 21 Aug 2026 20:00:06 +0800
+Subject: [PATCH] libcxx: preserve forced unwind in library catch sites
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The out-of-line iostream catch helpers and explicitly instantiated
+istream operations can intercept the foreign forced unwind used by
+pthread cancellation.
+
+Recognize the libc++abi marker before catch-all handlers, commit stream
+state without consulting the exception mask, and rethrow the original
+forced unwind.  For the badbit and failbit aggregation helpers, keep
+ordinary rethrows inside the active catch handler; a second naked throw
+after leaving that handler can terminate for foreign exceptions.
+
+The library-only form lets existing dynamically linked consumers pick
+up these guards without recompilation.  Normal I/O results and ordinary
+exception-mask behavior retain their existing paths.
+
+Validated on native x86_64 and ARMv7l hardware with cancellation,
+stream-state and exception-mask assertions, non-cancellation behavior,
+and the libc++abi forced-unwind tests.  Not covered: AArch64, LTO,
+mixed-runtime frame traversal, non-standard character specializations,
+or statically linked consumers.
+
+中文说明：为 libc++ 库内捕获点补齐强制展开防护。流状态在重抛前
+通过不按异常掩码抛出的路径提交；badbit/failbit 汇聚函数把普通异常
+的条件重抛保留在活动 catch 内，避免离开 handler 后再次裸重抛。
+动态链接消费者只需换库即可获得该修复。
+
+Author identity is NOT_AVAILABLE and must be amended before submission.
+---
+ libcxx/include/istream | 75 ++++++++++++++++++++++++++++++++++++++++++
+ libcxx/src/ios.cpp     | 17 ++++++++--
+ 2 files changed, 90 insertions(+), 2 deletions(-)
+
+diff --git a/libcxx/include/istream b/libcxx/include/istream
+index deccf4e346d5..c39dce589fa0 100644
+--- a/libcxx/include/istream
++++ b/libcxx/include/istream
+@@ -375,6 +375,10 @@ __input_arithmetic(basic_istream<_CharT, _Traits>& __is, _Tp& __n) {
+       typedef num_get<_CharT, _Ip> _Fp;
+       std::use_facet<_Fp>(__is.getloc()).get(_Ip(__is), _Ip(), __is, __state, __n);
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      __is.__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       __is.__setstate_nothrow(__state);
+@@ -466,6 +470,10 @@ __input_arithmetic_with_numeric_limits(basic_istream<_CharT, _Traits>& __is, _Tp
+         __n = static_cast<_Tp>(__temp);
+       }
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      __is.__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       __is.__setstate_nothrow(__state);
+@@ -650,6 +658,12 @@ basic_istream<_CharT, _Traits>::operator>>(basic_streambuf<char_type, traits_typ
+         if (__gc_ == 0)
+           __state |= ios_base::failbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++      } catch (const __cxxabiv1::__forced_unwind&) {
++        __state |= ios_base::badbit;
++        if (__gc_ == 0)
++          __state |= ios_base::failbit;
++        this->__setstate_nothrow(__state);
++        throw;
+       } catch (...) {
+         __state |= ios_base::badbit;
+         if (__gc_ == 0)
+@@ -685,6 +699,9 @@ typename basic_istream<_CharT, _Traits>::int_type basic_istream<_CharT, _Traits>
+       else
+         __gc_ = 1;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      this->__setstate_nothrow(this->rdstate() | ios_base::badbit);
++      throw;
+     } catch (...) {
+       this->__setstate_nothrow(this->rdstate() | ios_base::badbit);
+       if (this->exceptions() & ios_base::badbit) {
+@@ -723,6 +740,12 @@ basic_istream<_CharT, _Traits>& basic_istream<_CharT, _Traits>::get(char_type* _
+         if (__gc_ == 0)
+           __state |= ios_base::failbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++      } catch (const __cxxabiv1::__forced_unwind&) {
++        __state |= ios_base::badbit;
++        this->__setstate_nothrow(__state);
++        if (__n > 0)
++          *__s = char_type();
++        throw;
+       } catch (...) {
+         __state |= ios_base::badbit;
+         this->__setstate_nothrow(__state);
+@@ -771,6 +794,10 @@ basic_istream<_CharT, _Traits>::get(basic_streambuf<char_type, traits_type>& __s
+         this->rdbuf()->sbumpc();
+       }
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       // according to the spec, exceptions here are caught but not rethrown
+@@ -814,6 +841,14 @@ basic_istream<_CharT, _Traits>::getline(char_type* __s, streamsize __n, char_typ
+         __inc_gcount();
+       }
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
++      if (__n > 0)
++        *__s = char_type();
++      if (__gc_ == 0)
++        __state |= ios_base::failbit;
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       this->__setstate_nothrow(__state);
+@@ -868,6 +903,10 @@ basic_istream<_CharT, _Traits>& basic_istream<_CharT, _Traits>::ignore(streamsiz
+         }
+       }
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       this->__setstate_nothrow(__state);
+@@ -895,6 +934,10 @@ typename basic_istream<_CharT, _Traits>::int_type basic_istream<_CharT, _Traits>
+       if (traits_type::eq_int_type(__r, traits_type::eof()))
+         __state |= ios_base::eofbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       this->__setstate_nothrow(__state);
+@@ -921,6 +964,10 @@ basic_istream<_CharT, _Traits>& basic_istream<_CharT, _Traits>::read(char_type*
+       if (__gc_ != __n)
+         __state |= ios_base::failbit | ios_base::eofbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       this->__setstate_nothrow(__state);
+@@ -960,6 +1007,10 @@ streamsize basic_istream<_CharT, _Traits>::readsome(char_type* __s, streamsize _
+         break;
+       }
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       this->__setstate_nothrow(__state);
+@@ -988,6 +1039,10 @@ basic_istream<_CharT, _Traits>& basic_istream<_CharT, _Traits>::putback(char_typ
+       if (this->rdbuf() == nullptr || this->rdbuf()->sputbackc(__c) == traits_type::eof())
+         __state |= ios_base::badbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       this->__setstate_nothrow(__state);
+@@ -1016,6 +1071,10 @@ basic_istream<_CharT, _Traits>& basic_istream<_CharT, _Traits>::unget() {
+       if (this->rdbuf() == nullptr || this->rdbuf()->sungetc() == traits_type::eof())
+         __state |= ios_base::badbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       this->__setstate_nothrow(__state);
+@@ -1048,6 +1107,10 @@ int basic_istream<_CharT, _Traits>::sync() {
+         __r = -1;
+       }
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       this->__setstate_nothrow(__state);
+@@ -1072,6 +1135,10 @@ typename basic_istream<_CharT, _Traits>::pos_type basic_istream<_CharT, _Traits>
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+       __r = this->rdbuf()->pubseekoff(0, ios_base::cur, ios_base::in);
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       this->__setstate_nothrow(__state);
+@@ -1097,6 +1164,10 @@ basic_istream<_CharT, _Traits>& basic_istream<_CharT, _Traits>::seekg(pos_type _
+       if (this->rdbuf()->pubseekpos(__pos, ios_base::in) == pos_type(-1))
+         __state |= ios_base::failbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       this->__setstate_nothrow(__state);
+@@ -1122,6 +1193,10 @@ basic_istream<_CharT, _Traits>& basic_istream<_CharT, _Traits>::seekg(off_type _
+       if (this->rdbuf()->pubseekoff(__off, __dir, ios_base::in) == pos_type(-1))
+         __state |= ios_base::failbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       this->__setstate_nothrow(__state);
+diff --git a/libcxx/src/ios.cpp b/libcxx/src/ios.cpp
+index 02ce4841187f..3aab86189bbc 100644
+--- a/libcxx/src/ios.cpp
++++ b/libcxx/src/ios.cpp
+@@ -9,6 +9,7 @@
+ #include <__config>
+ #include <__locale>
+ #include <algorithm>
++#include <cxxabi.h>
+ #include <ios>
+ #include <limits>
+ #include <memory>
+@@ -362,16 +363,28 @@ void ios_base::swap(ios_base& rhs) noexcept {
+ void ios_base::__set_badbit_and_consider_rethrow() {
+   __rdstate_ |= badbit;
+ #if _LIBCPP_HAS_EXCEPTIONS
+-  if (__exceptions_ & badbit)
++  try {
+     throw;
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
++  } catch (...) {
++    if (__exceptions_ & badbit)
++      throw;
++  }
+ #endif // _LIBCPP_HAS_EXCEPTIONS
+ }
+ 
+ void ios_base::__set_failbit_and_consider_rethrow() {
+   __rdstate_ |= failbit;
+ #if _LIBCPP_HAS_EXCEPTIONS
+-  if (__exceptions_ & failbit)
++  try {
+     throw;
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
++  } catch (...) {
++    if (__exceptions_ & failbit)
++      throw;
++  }
+ #endif // _LIBCPP_HAS_EXCEPTIONS
+ }
+ 
+-- 
+2.43.0
+

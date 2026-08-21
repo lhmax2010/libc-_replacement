@@ -1,0 +1,408 @@
+   320	
+   321	    // Keep it simple for std::allocator.
+   322	    template<typename _Res, typename _Tp>
+   323	      static _Ptr<_Result<_Res>>
+   324	      _S_allocate_result(const std::allocator<_Tp>&)
+   325	      {
+   326		return _Ptr<_Result<_Res>>(new _Result<_Res>);
+   327	      }
+   328	
+   329	    // Base class for various types of shared state created by an
+   330	    // asynchronous provider (such as a std::promise) and shared with one
+   331	    // or more associated futures.
+   332	    class _State_baseV2
+   333	    {
+   334	      typedef _Ptr<_Result_base> _Ptr_type;
+   335	
+   336	      enum _Status : unsigned {
+   337		__not_ready,
+   338		__ready
+   339	      };
+   340	
+   341	      _Ptr_type			_M_result;
+   342	      __atomic_futex_unsigned<>	_M_status;
+   343	      atomic_flag         	_M_retrieved = ATOMIC_FLAG_INIT;
+   344	      once_flag			_M_once;
+   345	
+   346	    public:
+   347	      _State_baseV2() noexcept : _M_result(), _M_status(_Status::__not_ready)
+   348		{ }
+   349	      _State_baseV2(const _State_baseV2&) = delete;
+   350	      _State_baseV2& operator=(const _State_baseV2&) = delete;
+   351	      virtual ~_State_baseV2() = default;
+   352	
+   353	      _Result_base&
+   354	      wait()
+   355	      {
+   356		// Run any deferred function or join any asynchronous thread:
+   357		_M_complete_async();
+   358		// Acquire MO makes sure this synchronizes with the thread that made
+   359		// the future ready.
+   360		_M_status._M_load_when_equal(_Status::__ready, memory_order_acquire);
+   361		return *_M_result;
+   362	      }
+   363	
+   364	      template<typename _Rep, typename _Period>
+   365	        future_status
+   366	        wait_for(const chrono::duration<_Rep, _Period>& __rel)
+   367	        {
+   368		  // First, check if the future has been made ready.  Use acquire MO
+   369		  // to synchronize with the thread that made it ready.
+   370		  if (_M_status._M_load(memory_order_acquire) == _Status::__ready)
+   371		    return future_status::ready;
+   372	
+   373		  if (_M_is_deferred_future())
+   374		    return future_status::deferred;
+   375	
+   376		  // Don't wait unless the relative time is greater than zero.
+   377		  if (__rel > __rel.zero()
+   378		      && _M_status._M_load_when_equal_for(_Status::__ready,
+   379							  memory_order_acquire,
+   380							  __rel))
+   381		    {
+   382		      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+   383		      // 2100.  timed waiting functions must also join
+   384		      // This call is a no-op by default except on an async future,
+   385		      // in which case the async thread is joined.  It's also not a
+   386		      // no-op for a deferred future, but such a future will never
+   387		      // reach this point because it returns future_status::deferred
+   388		      // instead of waiting for the future to become ready (see
+   389		      // above).  Async futures synchronize in this call, so we need
+   390		      // no further synchronization here.
+   391		      _M_complete_async();
+   392	
+   393		      return future_status::ready;
+   394		    }
+   395		  return future_status::timeout;
+   396		}
+   397	
+   398	      template<typename _Clock, typename _Duration>
+   399	        future_status
+   400	        wait_until(const chrono::time_point<_Clock, _Duration>& __abs)
+   401	        {
+   402	#if __cplusplus > 201703L
+   403		  static_assert(chrono::is_clock_v<_Clock>);
+   404	#endif
+   405		  // First, check if the future has been made ready.  Use acquire MO
+   406		  // to synchronize with the thread that made it ready.
+   407		  if (_M_status._M_load(memory_order_acquire) == _Status::__ready)
+   408		    return future_status::ready;
+   409	
+   410		  if (_M_is_deferred_future())
+   411		    return future_status::deferred;
+   412	
+   413		  if (_M_status._M_load_when_equal_until(_Status::__ready,
+   414							 memory_order_acquire,
+   415							 __abs))
+   416		    {
+   417		      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+   418		      // 2100.  timed waiting functions must also join
+   419		      // See wait_for(...) above.
+   420		      _M_complete_async();
+   421	
+   422		      return future_status::ready;
+   423		    }
+   424		  return future_status::timeout;
+   425		}
+   426	
+   427	      // Provide a result to the shared state and make it ready.
+   428	      // Calls at most once: _M_result = __res();
+   429	      void
+   430	      _M_set_result(function<_Ptr_type()> __res, bool __ignore_failure = false)
+   431	      {
+   432		bool __did_set = false;
+   433	        // all calls to this function are serialized,
+   434	        // side-effects of invoking __res only happen once
+   435		call_once(_M_once, &_State_baseV2::_M_do_set, this,
+   436			  std::__addressof(__res), std::__addressof(__did_set));
+   437		if (__did_set)
+   438		  // Use release MO to synchronize with observers of the ready state.
+   439		  _M_status._M_store_notify_all(_Status::__ready,
+   440						memory_order_release);
+   441		else if (!__ignore_failure)
+   442	          __throw_future_error(int(future_errc::promise_already_satisfied));
+   443	      }
+   444	
+   445	      // Provide a result to the shared state but delay making it ready
+   446	      // until the calling thread exits.
+   447	      // Calls at most once: _M_result = __res();
+   448	      void
+   449	      _M_set_delayed_result(function<_Ptr_type()> __res,
+   450				    weak_ptr<_State_baseV2> __self)
+   451	      {
+   452		bool __did_set = false;
+   453		unique_ptr<_Make_ready> __mr{new _Make_ready};
+   454	        // all calls to this function are serialized,
+   455	        // side-effects of invoking __res only happen once
+   456		call_once(_M_once, &_State_baseV2::_M_do_set, this,
+   457			  std::__addressof(__res), std::__addressof(__did_set));
+   458		if (!__did_set)
+   459	          __throw_future_error(int(future_errc::promise_already_satisfied));
+   460		__mr->_M_shared_state = std::move(__self);
+   461		__mr->_M_set();
+   462		__mr.release();
+   463	      }
+   464	
+   465	      // Abandon this shared state.
+   466	      void
+   467	      _M_break_promise(_Ptr_type __res)
+   468	      {
+   469		if (static_cast<bool>(__res))
+   470		  {
+   471		    __res->_M_error =
+   472		      make_exception_ptr(future_error(future_errc::broken_promise));
+   473		    // This function is only called when the last asynchronous result
+   474		    // provider is abandoning this shared state, so noone can be
+   475		    // trying to make the shared state ready at the same time, and
+   476		    // we can access _M_result directly instead of through call_once.
+   477		    _M_result.swap(__res);
+   478		    // Use release MO to synchronize with observers of the ready state.
+   479		    _M_status._M_store_notify_all(_Status::__ready,
+   480						  memory_order_release);
+   481		  }
+   482	      }
+   483	
+   484	      // Called when this object is first passed to a future.
+   485	      void
+   486	      _M_set_retrieved_flag()
+   487	      {
+   488		if (_M_retrieved.test_and_set())
+   489		  __throw_future_error(int(future_errc::future_already_retrieved));
+   490	      }
+   491	
+   492	      template<typename _Res, typename _Arg>
+   493	        struct _Setter;
+   494	
+   495	      // set lvalues
+   496	      template<typename _Res, typename _Arg>
+   497	        struct _Setter<_Res, _Arg&>
+   498	        {
+   499	          // check this is only used by promise<R>::set_value(const R&)
+   500	          // or promise<R&>::set_value(R&)
+  1450	      }
+  1451	      _Ptr_type*	_M_result;
+  1452	      _Fn*		_M_fn;
+  1453	    };
+  1454	
+  1455	  // Holds storage for a packaged_task's result.
+  1456	  template<typename _Res, typename... _Args>
+  1457	    struct __future_base::_Task_state_base<_Res(_Args...)>
+  1458	    : __future_base::_State_base
+  1459	    {
+  1460	      typedef _Res _Res_type;
+  1461	
+  1462	      template<typename _Alloc>
+  1463		_Task_state_base(const _Alloc& __a)
+  1464		: _M_result(_S_allocate_result<_Res>(__a))
+  1465		{ }
+  1466	
+  1467	      // Invoke the stored task and make the state ready.
+  1468	      virtual void
+  1469	      _M_run(_Args&&... __args) = 0;
+  1470	
+  1471	      // Invoke the stored task and make the state ready at thread exit.
+  1472	      virtual void
+  1473	      _M_run_delayed(_Args&&... __args, weak_ptr<_State_base>) = 0;
+  1474	
+  1475	      virtual shared_ptr<_Task_state_base>
+  1476	      _M_reset() = 0;
+  1477	
+  1478	      typedef __future_base::_Ptr<_Result<_Res>> _Ptr_type;
+  1479	      _Ptr_type _M_result;
+  1480	    };
+  1481	
+  1482	  // Holds a packaged_task's stored task.
+  1483	  template<typename _Fn, typename _Alloc, typename _Res, typename... _Args>
+  1484	    struct __future_base::_Task_state<_Fn, _Alloc, _Res(_Args...)> final
+  1485	    : __future_base::_Task_state_base<_Res(_Args...)>
+  1486	    {
+  1487	      template<typename _Fn2>
+  1488		_Task_state(_Fn2&& __fn, const _Alloc& __a)
+  1489		: _Task_state_base<_Res(_Args...)>(__a),
+  1490		  _M_impl(std::forward<_Fn2>(__fn), __a)
+  1491		{ }
+  1492	
+  1493	    private:
+  1494	      virtual void
+  1495	      _M_run(_Args&&... __args)
+  1496	      {
+  1497		auto __boundfn = [&] () -> _Res {
+  1498		    return std::__invoke_r<_Res>(_M_impl._M_fn,
+  1499						 std::forward<_Args>(__args)...);
+  1500		};
+  1501		this->_M_set_result(_S_task_setter(this->_M_result, __boundfn));
+  1502	      }
+  1503	
+  1504	      virtual void
+  1505	      _M_run_delayed(_Args&&... __args, weak_ptr<_State_base> __self)
+  1506	      {
+  1507		auto __boundfn = [&] () -> _Res {
+  1508		    return std::__invoke_r<_Res>(_M_impl._M_fn,
+  1509						 std::forward<_Args>(__args)...);
+  1510		};
+  1511		this->_M_set_delayed_result(_S_task_setter(this->_M_result, __boundfn),
+  1512					    std::move(__self));
+  1513	      }
+  1514	
+  1515	      virtual shared_ptr<_Task_state_base<_Res(_Args...)>>
+  1516	      _M_reset();
+  1517	
+  1518	      struct _Impl : _Alloc
+  1519	      {
+  1520		template<typename _Fn2>
+  1521		  _Impl(_Fn2&& __fn, const _Alloc& __a)
+  1522		  : _Alloc(__a), _M_fn(std::forward<_Fn2>(__fn)) { }
+  1523		_Fn _M_fn;
+  1524	      } _M_impl;
+  1525	    };
+  1660	
+  1661	  template<typename _Fun, typename _Signature
+  1662		     = __function_guide_t<_Fun, decltype(&_Fun::operator())>>
+  1663	    packaged_task(_Fun) -> packaged_task<_Signature>;
+  1664	#endif
+  1665	
+  1666	  /// swap
+  1667	  template<typename _Res, typename... _ArgTypes>
+  1668	    inline void
+  1669	    swap(packaged_task<_Res(_ArgTypes...)>& __x,
+  1670		 packaged_task<_Res(_ArgTypes...)>& __y) noexcept
+  1671	    { __x.swap(__y); }
+  1672	
+  1673	#if __cplusplus < 201703L
+  1674	  // _GLIBCXX_RESOLVE_LIB_DEFECTS
+  1675	  // 2976. Dangling uses_allocator specialization for packaged_task
+  1676	  template<typename _Res, typename _Alloc>
+  1677	    struct uses_allocator<packaged_task<_Res>, _Alloc>
+  1678	    : public true_type { };
+  1679	#endif
+  1680	
+  1681	  /// @cond undocumented
+  1682	
+  1683	  // Shared state created by std::async().
+  1684	  // Holds a deferred function and storage for its result.
+  1685	  template<typename _BoundFn, typename _Res>
+  1686	    class __future_base::_Deferred_state final
+  1687	    : public __future_base::_State_base
+  1688	    {
+  1689	    public:
+  1690	      template<typename... _Args>
+  1691		explicit
+  1692		_Deferred_state(_Args&&... __args)
+  1693		: _M_result(new _Result<_Res>()),
+  1694		  _M_fn(std::forward<_Args>(__args)...)
+  1695		{ }
+  1696	
+  1697	    private:
+  1698	      typedef __future_base::_Ptr<_Result<_Res>> _Ptr_type;
+  1699	      _Ptr_type _M_result;
+  1700	      _BoundFn _M_fn;
+  1701	
+  1702	      // Run the deferred function.
+  1703	      virtual void
+  1704	      _M_complete_async()
+  1705	      {
+  1706		// Multiple threads can call a waiting function on the future and
+  1707		// reach this point at the same time. The call_once in _M_set_result
+  1708		// ensures only the first one run the deferred function, stores the
+  1709		// result in _M_result, swaps that with the base _M_result and makes
+  1710		// the state ready. Tell _M_set_result to ignore failure so all later
+  1711		// calls do nothing.
+  1712	        _M_set_result(_S_task_setter(_M_result, _M_fn), true);
+  1713	      }
+  1714	
+  1715	      // Caller should check whether the state is ready first, because this
+  1716	      // function will return true even after the deferred function has run.
+  1717	      virtual bool _M_is_deferred_future() const { return true; }
+  1718	    };
+  1719	
+  1720	  // Common functionality hoisted out of the _Async_state_impl template.
+  1721	  class __future_base::_Async_state_commonV2
+  1722	    : public __future_base::_State_base
+  1723	  {
+  1724	  protected:
+  1725	    ~_Async_state_commonV2() = default;
+  1726	
+  1727	    // Make waiting functions block until the thread completes, as if joined.
+  1728	    //
+  1729	    // This function is used by wait() to satisfy the first requirement below
+  1730	    // and by wait_for() / wait_until() to satisfy the second.
+  1731	    //
+  1732	    // [futures.async]:
+  1733	    //
+  1734	    // - a call to a waiting function on an asynchronous return object that
+  1735	    // shares the shared state created by this async call shall block until
+  1736	    // the associated thread has completed, as if joined, or else time out.
+  1737	    //
+  1738	    // - the associated thread completion synchronizes with the return from
+  1739	    // the first function that successfully detects the ready status of the
+  1740	    // shared state or with the return from the last function that releases
+  1741	    // the shared state, whichever happens first.
+  1742	    virtual void _M_complete_async() { _M_join(); }
+  1743	
+  1744	    void _M_join() { std::call_once(_M_once, &thread::join, &_M_thread); }
+  1745	
+  1746	    thread _M_thread;
+  1747	    once_flag _M_once;
+  1748	  };
+  1749	
+  1750	  // Shared state created by std::async().
+  1751	  // Starts a new thread that runs a function and makes the shared state ready.
+  1752	  template<typename _BoundFn, typename _Res>
+  1753	    class __future_base::_Async_state_impl final
+  1754	    : public __future_base::_Async_state_commonV2
+  1755	    {
+  1756	    public:
+  1757	      template<typename... _Args>
+  1758		explicit
+  1759		_Async_state_impl(_Args&&... __args)
+  1760		: _M_result(new _Result<_Res>()),
+  1761		  _M_fn(std::forward<_Args>(__args)...)
+  1762		{
+  1763		  _M_thread = std::thread{&_Async_state_impl::_M_run, this};
+  1764		}
+  1765	
+  1766	      // Must not destroy _M_result and _M_fn until the thread finishes.
+  1767	      // Call join() directly rather than through _M_join() because no other
+  1768	      // thread can be referring to this state if it is being destroyed.
+  1769	      ~_Async_state_impl()
+  1770	      {
+  1771		if (_M_thread.joinable())
+  1772		  _M_thread.join();
+  1773	      }
+  1774	
+  1775	    private:
+  1776	      void
+  1777	      _M_run()
+  1778	      {
+  1779		__try
+  1780		  {
+  1781		    _M_set_result(_S_task_setter(_M_result, _M_fn));
+  1782		  }
+  1783		__catch (const __cxxabiv1::__forced_unwind&)
+  1784		  {
+  1785		    // make the shared state ready on thread cancellation
+  1786		    if (static_cast<bool>(_M_result))
+  1787		      this->_M_break_promise(std::move(_M_result));
+  1788		    __throw_exception_again;
+  1789		  }
+  1790	      }
+  1791	
+  1792	      typedef __future_base::_Ptr<_Result<_Res>> _Ptr_type;
+  1793	      _Ptr_type _M_result;
+  1794	      _BoundFn _M_fn;
+  1795	    };
+  1796	  /// @endcond
+  1797	
+  1798	  /// async
+  1799	  template<typename _Fn, typename... _Args>
+  1800	    _GLIBCXX_NODISCARD future<__async_result_of<_Fn, _Args...>>
+  1801	    async(launch __policy, _Fn&& __fn, _Args&&... __args)
+  1802	    {
+  1803	      using _Wr = std::thread::_Call_wrapper<_Fn, _Args...>;
+  1804	      using _As = __future_base::_Async_state_impl<_Wr>;
+  1805	      using _Ds = __future_base::_Deferred_state<_Wr>;
+  1806	
+  1807	      std::shared_ptr<__future_base::_State_base> __state;
+  1808	      if ((__policy & launch::async) == launch::async)
+  1809		{
+  1810		  __try

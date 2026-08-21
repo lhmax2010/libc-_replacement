@@ -1,0 +1,1060 @@
+docs/progress/R59/code/src/r59_probe.cpp-10-#include <thread>
+docs/progress/R59/code/src/r59_probe.cpp-11-#include <unwind.h>
+docs/progress/R59/code/src/r59_probe.cpp-12-#include <unistd.h>
+docs/progress/R59/code/src/r59_probe.cpp-13-
+docs/progress/R59/code/src/r59_probe.cpp-14-pthread_t m2_worker_thread{};
+docs/progress/R59/code/src/r59_probe.cpp-15-
+docs/progress/R59/code/src/r59_probe.cpp-16-namespace {
+docs/progress/R59/code/src/r59_probe.cpp-17-
+docs/progress/R59/code/src/r59_probe.cpp:18:std::atomic<int> ready{0};
+docs/progress/R59/code/src/r59_probe.cpp-19-std::atomic<int> invocations{0};
+docs/progress/R59/code/src/r59_probe.cpp-20-
+docs/progress/R59/code/src/r59_probe.cpp-21-void terminate_marker() noexcept {
+docs/progress/R59/code/src/r59_probe.cpp-22-  const char msg[] = "TERMINATE_HANDLER=ENTERED\n";
+docs/progress/R59/code/src/r59_probe.cpp-23-  (void)!write(2, msg, sizeof(msg) - 1);
+docs/progress/R59/code/src/r59_probe.cpp-24-  _Exit(86);
+docs/progress/R59/code/src/r59_probe.cpp-25-}
+docs/progress/R59/code/src/r59_probe.cpp-26-
+--
+docs/progress/R59/code/src/r59_probe.cpp-50-
+docs/progress/R59/code/src/r59_probe.cpp-51-int run_f1() {
+docs/progress/R59/code/src/r59_probe.cpp-52-  std::set_terminate(terminate_marker);
+docs/progress/R59/code/src/r59_probe.cpp-53-  ForeignOutputBuf buf;
+docs/progress/R59/code/src/r59_probe.cpp-54-  std::ostream os(&buf);
+docs/progress/R59/code/src/r59_probe.cpp-55-  os.exceptions(std::ios::badbit);
+docs/progress/R59/code/src/r59_probe.cpp-56-  try {
+docs/progress/R59/code/src/r59_probe.cpp-57-    os.put('x');
+docs/progress/R59/code/src/r59_probe.cpp:58:    std::cout << "F1_UNEXPECTED_RETURN\n";
+docs/progress/R59/code/src/r59_probe.cpp-59-    return 3;
+docs/progress/R59/code/src/r59_probe.cpp-60-  } catch (...) {
+docs/progress/R59/code/src/r59_probe.cpp:61:    std::cout << "F1_TOP_CATCH=ENTERED STATE_BAD=" << os.bad() << '\n';
+docs/progress/R59/code/src/r59_probe.cpp-62-    return os.bad() ? 0 : 4;
+docs/progress/R59/code/src/r59_probe.cpp-63-  }
+docs/progress/R59/code/src/r59_probe.cpp-64-}
+docs/progress/R59/code/src/r59_probe.cpp-65-
+docs/progress/R59/code/src/r59_probe.cpp-66-class CancelInputBuf : public std::streambuf {
+docs/progress/R59/code/src/r59_probe.cpp-67-protected:
+docs/progress/R59/code/src/r59_probe.cpp-68-  int_type underflow() override {
+docs/progress/R59/code/src/r59_probe.cpp:69:    ready.store(1, std::memory_order_release);
+docs/progress/R59/code/src/r59_probe.cpp-70-    for (;;) {
+docs/progress/R59/code/src/r59_probe.cpp-71-      pthread_testcancel();
+docs/progress/R59/code/src/r59_probe.cpp-72-      usleep(1000);
+docs/progress/R59/code/src/r59_probe.cpp-73-    }
+docs/progress/R59/code/src/r59_probe.cpp-74-  }
+docs/progress/R59/code/src/r59_probe.cpp-75-};
+docs/progress/R59/code/src/r59_probe.cpp-76-
+docs/progress/R59/code/src/r59_probe.cpp:77:struct F2Context {
+docs/progress/R59/code/src/r59_probe.cpp-78-  std::istream* input;
+docs/progress/R59/code/src/r59_probe.cpp-79-  std::streambuf* output;
+docs/progress/R59/code/src/r59_probe.cpp-80-};
+docs/progress/R59/code/src/r59_probe.cpp-81-
+docs/progress/R59/code/src/r59_probe.cpp-82-void* f2_worker(void* opaque) {
+docs/progress/R59/code/src/r59_probe.cpp:83:  auto* ctx = static_cast<F2Context*>(opaque);
+docs/progress/R59/code/src/r59_probe.cpp-84-  ctx->input->get(*ctx->output, '\n');
+docs/progress/R59/code/src/r59_probe.cpp-85-  return reinterpret_cast<void*>(0x52);
+docs/progress/R59/code/src/r59_probe.cpp-86-}
+docs/progress/R59/code/src/r59_probe.cpp-87-
+docs/progress/R59/code/src/r59_probe.cpp-88-int run_f2() {
+docs/progress/R59/code/src/r59_probe.cpp-89-  std::set_terminate(terminate_marker);
+docs/progress/R59/code/src/r59_probe.cpp-90-  CancelInputBuf source;
+docs/progress/R59/code/src/r59_probe.cpp-91-  std::stringbuf sink;
+docs/progress/R59/code/src/r59_probe.cpp-92-  std::istream input(&source);
+docs/progress/R59/code/src/r59_probe.cpp:93:  F2Context ctx{&input, &sink};
+docs/progress/R59/code/src/r59_probe.cpp-94-  pthread_t thread{};
+docs/progress/R59/code/src/r59_probe.cpp-95-  const int create_rc = pthread_create(&thread, nullptr, f2_worker, &ctx);
+docs/progress/R59/code/src/r59_probe.cpp:96:  while (!ready.load(std::memory_order_acquire))
+docs/progress/R59/code/src/r59_probe.cpp-97-    usleep(1000);
+docs/progress/R59/code/src/r59_probe.cpp-98-  const int cancel_rc = pthread_cancel(thread);
+docs/progress/R59/code/src/r59_probe.cpp-99-  void* result = nullptr;
+docs/progress/R59/code/src/r59_probe.cpp-100-  const int join_rc = pthread_join(thread, &result);
+docs/progress/R59/code/src/r59_probe.cpp:101:  std::cout << "F2_CREATE_RC=" << create_rc << " CANCEL_RC=" << cancel_rc << " JOIN_RC=" << join_rc
+docs/progress/R59/code/src/r59_probe.cpp-102-            << " JOIN_CANCELED=" << (result == PTHREAD_CANCELED) << " RDSTATE=" << input.rdstate()
+docs/progress/R59/code/src/r59_probe.cpp-103-            << " BAD=" << input.bad() << " FAIL=" << input.fail() << '\n';
+docs/progress/R59/code/src/r59_probe.cpp-104-  return (create_rc == 0 && cancel_rc == 0 && join_rc == 0 && result == PTHREAD_CANCELED && input.bad()) ? 0 : 5;
+docs/progress/R59/code/src/r59_probe.cpp-105-}
+docs/progress/R59/code/src/r59_probe.cpp-106-
+docs/progress/R59/code/src/r59_probe.cpp:107:std::shared_future<int>* deferred_future = nullptr;
+docs/progress/R59/code/src/r59_probe.cpp-108-
+docs/progress/R59/code/src/r59_probe.cpp:109:void* wait_deferred(void*) {
+docs/progress/R59/code/src/r59_probe.cpp:110:  deferred_future->wait();
+docs/progress/R59/code/src/r59_probe.cpp-111-  return reinterpret_cast<void*>(0x59);
+docs/progress/R59/code/src/r59_probe.cpp-112-}
+docs/progress/R59/code/src/r59_probe.cpp-113-
+docs/progress/R59/code/src/r59_probe.cpp-114-int run_m1() {
+docs/progress/R59/code/src/r59_probe.cpp-115-  std::set_terminate(terminate_marker);
+docs/progress/R59/code/src/r59_probe.cpp:116:  auto future = std::async(std::launch::deferred, [] {
+docs/progress/R59/code/src/r59_probe.cpp-117-                  const int n = ++invocations;
+docs/progress/R59/code/src/r59_probe.cpp:118:                  std::cout << "M1_CALLABLE_INVOCATION=" << n << '\n';
+docs/progress/R59/code/src/r59_probe.cpp-119-                  if (n == 1) {
+docs/progress/R59/code/src/r59_probe.cpp:120:                    ready.store(1, std::memory_order_release);
+docs/progress/R59/code/src/r59_probe.cpp-121-                    for (;;) {
+docs/progress/R59/code/src/r59_probe.cpp-122-                      pthread_testcancel();
+docs/progress/R59/code/src/r59_probe.cpp-123-                      usleep(1000);
+docs/progress/R59/code/src/r59_probe.cpp-124-                    }
+docs/progress/R59/code/src/r59_probe.cpp-125-                  }
+docs/progress/R59/code/src/r59_probe.cpp-126-                  return 42;
+docs/progress/R59/code/src/r59_probe.cpp-127-                }).share();
+docs/progress/R59/code/src/r59_probe.cpp:128:  deferred_future = &future;
+docs/progress/R59/code/src/r59_probe.cpp-129-  pthread_t first{};
+docs/progress/R59/code/src/r59_probe.cpp:130:  pthread_create(&first, nullptr, wait_deferred, nullptr);
+docs/progress/R59/code/src/r59_probe.cpp:131:  while (!ready.load(std::memory_order_acquire))
+docs/progress/R59/code/src/r59_probe.cpp-132-    usleep(1000);
+docs/progress/R59/code/src/r59_probe.cpp-133-  const int cancel_rc = pthread_cancel(first);
+docs/progress/R59/code/src/r59_probe.cpp-134-  void* first_result = nullptr;
+docs/progress/R59/code/src/r59_probe.cpp-135-  const int first_join = pthread_join(first, &first_result);
+docs/progress/R59/code/src/r59_probe.cpp:136:  std::cout << "M1_FIRST_CANCEL_RC=" << cancel_rc << " FIRST_JOIN_RC=" << first_join
+docs/progress/R59/code/src/r59_probe.cpp-137-            << " FIRST_CANCELED=" << (first_result == PTHREAD_CANCELED) << '\n';
+docs/progress/R59/code/src/r59_probe.cpp-138-
+docs/progress/R59/code/src/r59_probe.cpp-139-  std::atomic<int> second_done{0};
+docs/progress/R59/code/src/r59_probe.cpp-140-  std::thread second([&] {
+docs/progress/R59/code/src/r59_probe.cpp-141-    future.wait();
+docs/progress/R59/code/src/r59_probe.cpp-142-    second_done.store(1, std::memory_order_release);
+docs/progress/R59/code/src/r59_probe.cpp-143-  });
+docs/progress/R59/code/src/r59_probe.cpp-144-  for (int i = 0; i != 2000 && !second_done.load(std::memory_order_acquire); ++i)
+docs/progress/R59/code/src/r59_probe.cpp-145-    usleep(1000);
+docs/progress/R59/code/src/r59_probe.cpp-146-  if (!second_done.load(std::memory_order_acquire)) {
+docs/progress/R59/code/src/r59_probe.cpp:147:    std::cout << "M1_SECOND_WAIT=TIMEOUT INVOCATIONS=" << invocations.load() << '\n' << std::flush;
+docs/progress/R59/code/src/r59_probe.cpp-148-    second.detach();
+docs/progress/R59/code/src/r59_probe.cpp-149-    _Exit(6);
+docs/progress/R59/code/src/r59_probe.cpp-150-  }
+docs/progress/R59/code/src/r59_probe.cpp-151-  second.join();
+docs/progress/R59/code/src/r59_probe.cpp-152-  const int value = future.get();
+docs/progress/R59/code/src/r59_probe.cpp:153:  std::cout << "M1_SECOND_WAIT=RETURNED INVOCATIONS=" << invocations.load() << " VALUE=" << value << '\n';
+docs/progress/R59/code/src/r59_probe.cpp-154-  return value == 42 ? 0 : 7;
+docs/progress/R59/code/src/r59_probe.cpp-155-}
+docs/progress/R59/code/src/r59_probe.cpp-156-
+docs/progress/R59/code/src/r59_probe.cpp-157-struct AsyncWindowResult {
+docs/progress/R59/code/src/r59_probe.cpp-158-  bool trigger = true;
+docs/progress/R59/code/src/r59_probe.cpp-159-  AsyncWindowResult() = default;
+docs/progress/R59/code/src/r59_probe.cpp-160-  AsyncWindowResult(const AsyncWindowResult&) = delete;
+docs/progress/R59/code/src/r59_probe.cpp-161-  AsyncWindowResult& operator=(const AsyncWindowResult&) = delete;
+docs/progress/R59/code/src/r59_probe.cpp-162-  AsyncWindowResult(AsyncWindowResult&& other) noexcept : trigger(false) { other.trigger = true; }
+docs/progress/R59/code/src/r59_probe.cpp-163-  ~AsyncWindowResult() noexcept(false) {
+docs/progress/R59/code/src/r59_probe.cpp-164-    if (!trigger)
+docs/progress/R59/code/src/r59_probe.cpp-165-      return;
+docs/progress/R59/code/src/r59_probe.cpp-166-    int old_type = 0;
+docs/progress/R59/code/src/r59_probe.cpp-167-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, &old_type);
+docs/progress/R59/code/src/r59_probe.cpp:168:    ready.store(1, std::memory_order_release);
+docs/progress/R59/code/src/r59_probe.cpp-169-    for (;;)
+docs/progress/R59/code/src/r59_probe.cpp-170-      asm volatile("" ::: "memory");
+docs/progress/R59/code/src/r59_probe.cpp-171-  }
+docs/progress/R59/code/src/r59_probe.cpp-172-};
+docs/progress/R59/code/src/r59_probe.cpp-173-
+docs/progress/R59/code/src/r59_probe.cpp-174-int run_m2() {
+docs/progress/R59/code/src/r59_probe.cpp-175-  std::set_terminate(terminate_marker);
+docs/progress/R59/code/src/r59_probe.cpp-176-  auto f = std::async(std::launch::async, [] {
+docs/progress/R59/code/src/r59_probe.cpp-177-    m2_worker_thread = pthread_self();
+docs/progress/R59/code/src/r59_probe.cpp-178-    return AsyncWindowResult{};
+docs/progress/R59/code/src/r59_probe.cpp-179-  });
+docs/progress/R59/code/src/r59_probe.cpp:180:  while (!ready.load(std::memory_order_acquire))
+docs/progress/R59/code/src/r59_probe.cpp-181-    usleep(1000);
+docs/progress/R59/code/src/r59_probe.cpp:182:  std::cout << "M2_WINDOW=AFTER_SET_VALUE_BEFORE_TRY_EXIT\n" << std::flush;
+docs/progress/R59/code/src/r59_probe.cpp-183-  const int cancel_rc = pthread_cancel(m2_worker_thread);
+docs/progress/R59/code/src/r59_probe.cpp:184:  std::cout << "M2_CANCEL_RC=" << cancel_rc << '\n' << std::flush;
+docs/progress/R59/code/src/r59_probe.cpp-185-  sleep(1);
+docs/progress/R59/code/src/r59_probe.cpp:186:  std::cout << "M2_PROCESS_SURVIVED_CANCEL_PROPAGATION=1\n" << std::flush;
+docs/progress/R59/code/src/r59_probe.cpp-187-  try {
+docs/progress/R59/code/src/r59_probe.cpp-188-    (void)f.get();
+docs/progress/R59/code/src/r59_probe.cpp:189:    std::cout << "M2_FUTURE_GET=VALUE\n";
+docs/progress/R59/code/src/r59_probe.cpp-190-  } catch (const std::exception& e) {
+docs/progress/R59/code/src/r59_probe.cpp:191:    std::cout << "M2_FUTURE_GET=STD_EXCEPTION WHAT=" << e.what() << '\n';
+docs/progress/R59/code/src/r59_probe.cpp-192-  } catch (...) {
+docs/progress/R59/code/src/r59_probe.cpp:193:    std::cout << "M2_FUTURE_GET=NON_STD_EXCEPTION\n";
+docs/progress/R59/code/src/r59_probe.cpp-194-  }
+docs/progress/R59/code/src/r59_probe.cpp-195-  return 0;
+docs/progress/R59/code/src/r59_probe.cpp-196-}
+docs/progress/R59/code/src/r59_probe.cpp-197-
+docs/progress/R59/code/src/r59_probe.cpp-198-} // namespace
+docs/progress/R59/code/src/r59_probe.cpp-199-
+docs/progress/R59/code/src/r59_probe.cpp-200-int main(int argc, char** argv) {
+docs/progress/R59/code/src/r59_probe.cpp-201-  if (argc != 2)
+--
+docs/progress/R59/REPORT.md-1-# R59 四项代码缺陷的定位与修复设计
+docs/progress/R59/REPORT.md-2-
+docs/progress/R59/REPORT.md-3-## 结论摘要
+docs/progress/R59/REPORT.md-4-
+docs/progress/R59/REPORT.md:5:四项均成立。三方 x86_64 原生矩阵为：F1 `86/0/0`、F2 `5/134/0`、M1 `6/134/0`、M2 `86/86/0`（顺序为当前全补丁版/未打补丁 libc++/libstdc++）。完整定义和原始输出见 `tables/defect_verdicts.tsv` 与 `raw/matrix/`。
+docs/progress/R59/REPORT.md-6-
+docs/progress/R59/REPORT.md:7:- F1：补丁引入的明确回归。
+docs/progress/R59/REPORT.md:8:- F2：typed 分支新增后产生的状态提交缺陷；未打补丁版另有吞取消并 abort 的既有问题。
+docs/progress/R59/REPORT.md:9:- M1：typed 分支新增后产生的永久非就绪形态；未打补丁版另有吞取消并 abort 的既有问题。
+docs/progress/R59/REPORT.md:10:- M2：缺陷成立，但三方对照显示相同失败在未打补丁 libc++ 已存在；当前补丁保留了该问题，不是相对基线的新回归。
+docs/progress/R59/REPORT.md-11-
+docs/progress/R59/REPORT.md-12-本任务未修改四个补丁、平台源码或任何运行库。
+docs/progress/R59/REPORT.md-13-
+docs/progress/R59/REPORT.md-14-## 输入与身份
+docs/progress/R59/REPORT.md-15-
+docs/progress/R59/REPORT.md-16-当前代码取自 `docs/progress/R58/code/current/`，未打补丁基线取自 `docs/progress/R58/code/baseline/`。三份关键当前文件 SHA256：
+docs/progress/R59/REPORT.md-17-
+docs/progress/R59/REPORT.md-18-- `ios.cpp`: `6734c4d2fbe5b9708c318a083e41f74633010a17a850c411dacd126e0b6964a4`
+docs/progress/R59/REPORT.md-19-- `istream`: `4111af1754590455948aaa3e14a90a742445e852485322771bb923c80281bd7c`
+docs/progress/R59/REPORT.md-20-- `future`: `80a837cdda19397af933d28f1ed611e9bf27504df2b17fd645f685bef9ac6a9d`
+docs/progress/R59/REPORT.md-21-
+docs/progress/R59/REPORT.md-22-基线 SHA、运行库 SHA、`ldd` 与加载记录分别见 `raw/001_source_sha256.txt`、`raw/identity/sha256.txt`、`raw/identity/ldd_current.txt`、`raw/identity/ld_debug_current.log`。构建命令逐字保存在 `raw/build/*.log`。
+docs/progress/R59/REPORT.md-23-
+docs/progress/R59/REPORT.md-24-## 独立复核
+docs/progress/R59/REPORT.md-25-
+docs/progress/R59/REPORT.md:26:### F1
+docs/progress/R59/REPORT.md-27-
+docs/progress/R59/REPORT.md-28-当前 `ios.cpp:363-388` 的两个 helper 都先在嵌套 try 中重抛并捕获，再在 helper 尾部按掩码裸重抛。自定义 `exception_class` 的非强制外来异常探针设置 `exceptions(badbit)` 后：当前版先打印外来异常清理，再进入 terminate handler（86）；基线和 libstdc++ 均进入顶层 catch、`badbit=1`、退出 0。评审推演与实测一致。
+docs/progress/R59/REPORT.md-29-
+docs/progress/R59/REPORT.md:30:### F2
+docs/progress/R59/REPORT.md-31-
+docs/progress/R59/REPORT.md-32-当前 `istream:797-800` 只执行 `__state |= badbit; throw;`，`istream:807` 的 `setstate` 不可达。实测当前版线程取消和 join 均成功，但 `rdstate=0/bad=0/fail=0`，探针以 5 报错；libstdc++ 为 `rdstate=1/bad=1/fail=1`。基线在 catch-all 吞取消后以 134 结束，无法形成正确状态对照。修复形态由相邻 handler 与 libstdc++ `istream.tcc:414-417` 共同支持。
+docs/progress/R59/REPORT.md-33-
+docs/progress/R59/REPORT.md:34:### M1
+docs/progress/R59/REPORT.md-35-
+docs/progress/R59/REPORT.md:36:`future.cpp:113-121` 在执行 deferred callable 前清除 deferred 位并解锁；当前 `future:793-794,826-827` 捕获后只重抛，没有恢复标记或完成状态。实测第一等待线程被取消后，第二等待线程超时，callable 调用次数仍为 1（退出 6）。libstdc++ 的 `_M_set_result(..., true)` 依赖 `call_once`，异常退出不会完成 once；参考实测第二次执行 callable 并返回 42。基线因吞取消退出 134。
+docs/progress/R59/REPORT.md-37-
+docs/progress/R59/REPORT.md:38:### M2
+docs/progress/R59/REPORT.md-39-
+docs/progress/R59/REPORT.md:40:当前 `future:858-864,902-908` 在 typed handler 中先构造 broken-promise 异常并调用 `set_exception`，最后才重抛；`future.cpp:80-82` 表明状态已有值时会抛 `promise_already_satisfied`。确定性窗口探针在 `set_value` 已完成、外层 try 尚未退出时发起异步取消：当前版和基线均进入 terminate handler（86），libstdc++ 传播阶段存活，等待方收到 broken promise，退出 0。
+docs/progress/R59/REPORT.md-41-
+docs/progress/R59/REPORT.md:42:调试器原始记录 `raw/m2_gdb_trace.log` 直接显示当前版依次抛出 `broken_promise`，随后 `set_exception` 从 `future.cpp:81` 抛出 `promise_already_satisfied`，末尾原重抛未执行。
+docs/progress/R59/REPORT.md-43-
+docs/progress/R59/REPORT.md-44-## 复现夹具校正记录
+docs/progress/R59/REPORT.md-45-
+docs/progress/R59/REPORT.md:46:为避免把测试件缺陷冒充产品结论，保留了三轮无效/不完整 M2 记录：
+docs/progress/R59/REPORT.md-47-
+docs/progress/R59/REPORT.md-48-1. `raw/matrix_initial_invalid_m2/`：链接器 wrapper 无法截获共享库内部建线程，线程句柄无效。
+docs/progress/R59/REPORT.md-49-2. `raw/matrix_m2_noexcept_invalid/`：窗口对象析构默认 `noexcept`，三方均因该帧终止。
+docs/progress/R59/REPORT.md-50-3. `raw/matrix_m2_uncaught_result/`：libstdc++ 已完成传播，但主线程未捕获 `future.get()` 的普通 broken-promise 异常，导致结果读取阶段 terminate。
+docs/progress/R59/REPORT.md-51-
+docs/progress/R59/REPORT.md-52-最终夹具把析构显式设为 `noexcept(false)`，并只在主线程结果读取处记录普通异常；被取消线程中没有新增 catch。最终结果只取 `raw/matrix/`。
+docs/progress/R59/REPORT.md-53-
+docs/progress/R59/REPORT.md-54-## 同类问题检查
+docs/progress/R59/REPORT.md-55-
+docs/progress/R59/REPORT.md-56-检查范围为补丁实际改动的 `istream`、`future`、`ios.cpp`，共 23/9/2 个 typed handler。结果见 `tables/same_class_review.tsv`：没有发现评审四项之外的新同类站点。这里的“未发现”只覆盖上述三个文件，不外推到整个 libc++ 源码树。
+docs/progress/R59/REPORT.md-57-
+docs/progress/R59/REPORT.md-58-## 修复设计与验证盲区
+docs/progress/R59/REPORT.md-59-
+docs/progress/R59/REPORT.md:60:F1/F2 的具体修复文本及 M1/M2 待裁决选项见 `DESIGN.md`。三条既有盲区及新增的 M2 竞态格见 `tables/blind_spot_regression_design.tsv`。这些格均设计为可重复脚本，后续升版门禁应检查语义结果与状态，不再只检查进程退出码。
+docs/progress/R59/REPORT.md-61-
+docs/progress/R59/REPORT.md-62-## 自行判断与尚存疑问
+docs/progress/R59/REPORT.md-63-
+docs/progress/R59/REPORT.md:64:- 自行判断：M2 探针必须把窗口对象析构声明为 `noexcept(false)`；否则测到的是语言层 terminate，而不是共享状态问题。该判断由“三方均 86”反证并已保留原始证据。
+docs/progress/R59/REPORT.md-65-- 自行判断：在主线程捕获 `future.get()` 的普通异常只用于区分“worker 传播失败”和“等待方收到错误”，不改变 worker 的取消路径。
+docs/progress/R59/REPORT.md:66:- 尚存疑问（待人工裁决）：M1 采用重试、永久错误还是取消屏蔽策略。
+docs/progress/R59/REPORT.md:67:- 尚存疑问（待人工裁决）：M2 采用原子无抛完成、隔离完成异常还是施加可验证的取消限制。
+docs/progress/R59/REPORT.md:68:- 尚存疑问：M1/M2 的最终策略应定义到何种跨实现一致性；ISO C++ 未规定 pthread 取消进入 future 状态机后的结果。
+docs/progress/R59/REPORT.md-69-
+docs/progress/R59/REPORT.md-70-## 未覆盖范围
+docs/progress/R59/REPORT.md-71-
+docs/progress/R59/REPORT.md-72-- armv7l、aarch64；本任务按要求只做 x86_64 原生。
+docs/progress/R59/REPORT.md:73:- 多等待者同时竞争 deferred 重试的状态机压力测试。
+docs/progress/R59/REPORT.md:74:- M2 在不同优化级别、LTO 和其他 ABI 运行库下的竞态窗口。
+docs/progress/R59/REPORT.md-75-- 内存分配失败时“完成共享状态”接口的行为。
+docs/progress/R59/REPORT.md-76-
+docs/progress/R59/REPORT.md-77-## 纪律符合性
+docs/progress/R59/REPORT.md-78-
+docs/progress/R59/REPORT.md-79-资源门禁 light 通过；只编译独立测试件，未重建 libc++/libc++abi；未连接开发板；未修改正式补丁；未推送外部源码仓。命令与退出码见 `commands/`。`003_source_context.command.txt` 如实登记了一次未在调用时保存命令原文的证据缺口，未重建后冒充原件。
+--
+docs/progress/R59/README.md-1-# R59 交付索引
+docs/progress/R59/README.md-2-
+docs/progress/R59/README.md-3-- `REPORT.md`：复核结论、来源属性、夹具校正和未覆盖范围。
+docs/progress/R59/README.md:4:- `DESIGN.md`：F1/F2 修复文本，M1/M2 待人工裁决选项。
+docs/progress/R59/README.md-5-- `tables/defect_verdicts.tsv`：四项三方判定。
+docs/progress/R59/README.md:6:- `tables/f1_path_equivalence.tsv`：F1 路径等价性。
+docs/progress/R59/README.md-7-- `tables/same_class_review.tsv`：同类站点检查。
+docs/progress/R59/README.md-8-- `tables/blind_spot_regression_design.tsv`：回归门禁设计。
+docs/progress/R59/README.md-9-- `tables/reproduction_matrix.tsv`：最终 12 格结果。
+docs/progress/R59/README.md-10-- `src/r59_probe.cpp`：最终复现用例。
+docs/progress/R59/README.md-11-- `tools/`：构建、运行、源码取证和调试器命令。
+docs/progress/R59/README.md-12-- `raw/matrix/`：最终逐格完整输出；三个 `matrix_*` 目录保留夹具校正过程。
+docs/progress/R59/README.md-13-- `raw/source/`：当前、基线与 libstdc++ 对照片段及 SHA256。
+docs/progress/R59/README.md-14-- `commands/`：命令原文与退出码。
+--
+docs/progress/R59/DESIGN.md-1-# R59 修复设计（仅设计，未实现）
+docs/progress/R59/DESIGN.md-2-
+docs/progress/R59/DESIGN.md:3:## F1：`ios.cpp` 两个汇聚函数
+docs/progress/R59/DESIGN.md-4-
+docs/progress/R59/DESIGN.md-5-现代码先用一次嵌套 `throw;` 分类当前异常，离开内层 `catch (...)` 后再依据异常掩码执行第二次 `throw;`。对非强制外来异常，第一次重抛已完成其 handler 生命周期；第二次裸重抛时不再有活动异常，实测进入 terminate handler。
+docs/progress/R59/DESIGN.md-6-
+docs/progress/R59/DESIGN.md-7-建议修复文本（badbit；failbit 同构替换位值）：
+docs/progress/R59/DESIGN.md-8-
+docs/progress/R59/DESIGN.md-9-```cpp
+docs/progress/R59/DESIGN.md-10-void ios_base::__set_badbit_and_consider_rethrow() {
+docs/progress/R59/DESIGN.md-11-  __rdstate_ |= badbit;
+--
+docs/progress/R59/DESIGN.md-19-      throw;
+docs/progress/R59/DESIGN.md-20-  }
+docs/progress/R59/DESIGN.md-21-#endif
+docs/progress/R59/DESIGN.md-22-}
+docs/progress/R59/DESIGN.md-23-```
+docs/progress/R59/DESIGN.md-24-
+docs/progress/R59/DESIGN.md-25-关键点是：需要传播的普通/外来异常必须在内层 handler 仍活跃时重抛；函数尾部不再执行裸 `throw;`。强制展开仍无条件重抛。逐路径等价性见 `tables/f1_path_equivalence.tsv`。改动局限于两个 out-of-line helper，不改变其他头文件站点。
+docs/progress/R59/DESIGN.md-26-
+docs/progress/R59/DESIGN.md:27:## F2：`get(basic_streambuf&, delim)`
+docs/progress/R59/DESIGN.md-28-
+docs/progress/R59/DESIGN.md-29-建议把 typed handler 改为：
+docs/progress/R59/DESIGN.md-30-
+docs/progress/R59/DESIGN.md-31-```cpp
+docs/progress/R59/DESIGN.md-32-} catch (const __cxxabiv1::__forced_unwind&) {
+docs/progress/R59/DESIGN.md-33-  __state |= ios_base::badbit;
+docs/progress/R59/DESIGN.md-34-  this->__setstate_nothrow(__state);
+docs/progress/R59/DESIGN.md-35-  throw;
+docs/progress/R59/DESIGN.md-36-}
+docs/progress/R59/DESIGN.md-37-```
+docs/progress/R59/DESIGN.md-38-
+docs/progress/R59/DESIGN.md-39-`__setstate_nothrow` 在重抛前提交 `__state`，避免普通 `setstate` 按异常掩码再抛出另一异常并替换强制展开。该形态与同文件相邻 handler 及 libstdc++ `_M_setstate(badbit); rethrow` 对齐。它只触及该 overload 的 typed 分支，不改变 catch-all 的既有规范行为。
+docs/progress/R59/DESIGN.md-40-
+docs/progress/R59/DESIGN.md:41:## M1：deferred future（待人工选择）
+docs/progress/R59/DESIGN.md-42-
+docs/progress/R59/DESIGN.md:43:### 选项 M1-A：恢复 deferred 标记，允许重试
+docs/progress/R59/DESIGN.md-44-
+docs/progress/R59/DESIGN.md:45:- 在 forced handler 中，通过基类新增的加锁、无抛异常内部操作恢复 deferred 标记，再重抛。
+docs/progress/R59/DESIGN.md-46-- 后续等待者可再次执行 callable；本次 libstdc++ 参考实测调用次数从 1 增到 2 后得到 42，语义最接近其 `call_once` 失败后可重试的实现。
+docs/progress/R59/DESIGN.md-47-- 后果：callable 在第一次被取消前可能已经产生外部副作用，重复执行不保证业务安全；C++ 标准没有为线程取消定义此状态策略。
+docs/progress/R59/DESIGN.md-48-- 实现代价：需要在共享状态锁下原子恢复标记，并处理同时到达的其他 waiter；不能直接无锁写 `__state_`。
+docs/progress/R59/DESIGN.md-49-
+docs/progress/R59/DESIGN.md:50:### 选项 M1-B：以永久错误完成共享状态
+docs/progress/R59/DESIGN.md-51-
+docs/progress/R59/DESIGN.md:52:- 在 forced handler 中用无抛异常、幂等的内部完成操作写入一个确定错误并置 ready，随后重抛。
+docs/progress/R59/DESIGN.md-53-- 后续等待者立即获得错误，不重跑 callable，也不会永久等待。
+docs/progress/R59/DESIGN.md-54-- 后果：future 永久失效；与 libstdc++ 的可重试行为不一致。需要裁决错误类别（`broken_promise`、现有 future_error 或新增内部状态）。
+docs/progress/R59/DESIGN.md:55:- 实现代价：需要一个不会因已 ready 而抛异常的原子完成接口，以及错误语义和测试契约。
+docs/progress/R59/DESIGN.md-56-
+docs/progress/R59/DESIGN.md:57:### 选项 M1-C：执行期间屏蔽取消
+docs/progress/R59/DESIGN.md-58-
+docs/progress/R59/DESIGN.md:59:- 在 deferred callable 执行窗口禁用线程取消，退出后恢复原状态。
+docs/progress/R59/DESIGN.md-60-- 后果：避免半执行后的状态选择，但取消会被推迟；callable 若长期不返回，取消请求也无法完成。若 callable 自行重新启用取消，库侧限制还可能失效。
+docs/progress/R59/DESIGN.md-61-- 与 libstdc++ 不一致，且引入 pthread 平台耦合；必须以取消状态的可观测测试证明约束真实生效。
+docs/progress/R59/DESIGN.md-62-
+docs/progress/R59/DESIGN.md:63:## M2：async 完成操作不得替换原传播（待人工选择）
+docs/progress/R59/DESIGN.md-64-
+docs/progress/R59/DESIGN.md:65:### 选项 M2-A：原子的无抛异常 `try_complete_with_error`
+docs/progress/R59/DESIGN.md-66-
+docs/progress/R59/DESIGN.md:67:- 增加内部接口：持锁检查 ready；未 ready 时写入 broken-promise 类错误并通知，已 ready 时无操作返回；接口保证不抛异常。
+docs/progress/R59/DESIGN.md-68-- forced handler 无条件在该接口之后执行原 `throw;`。
+docs/progress/R59/DESIGN.md-69-- 与 libstdc++ 的 `_M_result` 检查加 `_M_break_promise` 方向最接近；本次参考实测完成取消传播，等待方得到 broken promise。
+docs/progress/R59/DESIGN.md:70:- 不能用“先 `__has_value()` 再 `set_exception()`”的分离检查替代，否则存在 TOCTOU 窗口。
+docs/progress/R59/DESIGN.md-71-
+docs/progress/R59/DESIGN.md:72:### 选项 M2-B：隔离完成操作的异常，始终恢复原传播
+docs/progress/R59/DESIGN.md-73-
+docs/progress/R59/DESIGN.md-74-- 在 forced handler 内把完成操作包在独立 try/catch 中；完成操作的任何异常只记录/丢弃，随后执行原 `throw;`。
+docs/progress/R59/DESIGN.md:75:- 优点是改动集中；已 ready 时 `promise_already_satisfied` 不再替换原传播。
+docs/progress/R59/DESIGN.md:76:- 后果：未 ready 时若因分配失败等原因未能完成共享状态，等待者可能仍不就绪；因此必须另行定义并测试该失败路径，不能只靠吞异常。
+docs/progress/R59/DESIGN.md-77-
+docs/progress/R59/DESIGN.md:78:### 选项 M2-C：在库控制的发布窗口施加可验证的取消限制
+docs/progress/R59/DESIGN.md-79-
+docs/progress/R59/DESIGN.md-80-- 对库控制的共享状态发布临界区禁用取消，并在离开临界区后恢复；以运行时读取取消状态和确定性时序用例验证。
+docs/progress/R59/DESIGN.md-81-- 后果：平台耦合、推迟取消，并且用户 callable 可自行改变取消状态；要做到“排除异步取消”必须定义库是否覆盖/拒绝用户修改。仅写文档声明不构成限制。
+docs/progress/R59/DESIGN.md-82-- 与 libstdc++ 当前处理方式不一致。
+docs/progress/R59/DESIGN.md-83-
+docs/progress/R59/DESIGN.md:84:本报告不在上述 M1/M2 选项中作选择。
+--
+docs/progress/R59/code/tools/verify_delivery.sh-20-
+docs/progress/R59/code/tools/verify_delivery.sh-21-awk -F '\t' 'NR > 1 {print $4 "  " $3}' docs/progress/R59/code/INDEX.tsv | sha256sum -c -
+docs/progress/R59/code/tools/verify_delivery.sh-22-
+docs/progress/R59/code/tools/verify_delivery.sh-23-diff -u progress/R59/src/r59_probe.cpp docs/progress/R59/code/src/r59_probe.cpp
+docs/progress/R59/code/tools/verify_delivery.sh-24-diff -u progress/R59/tables/reproduction_matrix.tsv docs/progress/R59/tables/reproduction_matrix.tsv
+docs/progress/R59/code/tools/verify_delivery.sh-25-
+docs/progress/R59/code/tools/verify_delivery.sh-26-awk -F '\t' '
+docs/progress/R59/code/tools/verify_delivery.sh-27-  NR == 1 {next}
+docs/progress/R59/code/tools/verify_delivery.sh:28:  $1 == "F1" && $2 == "current" && $3 == 86 {ok[1]=1}
+docs/progress/R59/code/tools/verify_delivery.sh:29:  $1 == "F1" && $2 == "baseline" && $3 == 0 {ok[2]=1}
+docs/progress/R59/code/tools/verify_delivery.sh:30:  $1 == "F1" && $2 == "reference" && $3 == 0 {ok[3]=1}
+docs/progress/R59/code/tools/verify_delivery.sh:31:  $1 == "F2" && $2 == "current" && $3 == 5 {ok[4]=1}
+docs/progress/R59/code/tools/verify_delivery.sh:32:  $1 == "F2" && $2 == "baseline" && $3 == 134 {ok[5]=1}
+docs/progress/R59/code/tools/verify_delivery.sh:33:  $1 == "F2" && $2 == "reference" && $3 == 0 {ok[6]=1}
+docs/progress/R59/code/tools/verify_delivery.sh:34:  $1 == "M1" && $2 == "current" && $3 == 6 {ok[7]=1}
+docs/progress/R59/code/tools/verify_delivery.sh:35:  $1 == "M1" && $2 == "baseline" && $3 == 134 {ok[8]=1}
+docs/progress/R59/code/tools/verify_delivery.sh:36:  $1 == "M1" && $2 == "reference" && $3 == 0 {ok[9]=1}
+docs/progress/R59/code/tools/verify_delivery.sh:37:  $1 == "M2" && $2 == "current" && $3 == 86 {ok[10]=1}
+docs/progress/R59/code/tools/verify_delivery.sh:38:  $1 == "M2" && $2 == "baseline" && $3 == 86 {ok[11]=1}
+docs/progress/R59/code/tools/verify_delivery.sh:39:  $1 == "M2" && $2 == "reference" && $3 == 0 {ok[12]=1}
+docs/progress/R59/code/tools/verify_delivery.sh-40-  END {for (i=1;i<=12;i++) if (!ok[i]) exit 1; print "MATRIX_EXPECTED_ROWS=12 PASS"}
+docs/progress/R59/code/tools/verify_delivery.sh-41-' progress/R59/tables/reproduction_matrix.tsv
+docs/progress/R59/code/tools/verify_delivery.sh-42-
+docs/progress/R59/code/tools/verify_delivery.sh-43-if git status --porcelain -- codes docs/patches | grep -v '^?? docs/progress/R59/' | grep -q .; then
+docs/progress/R59/code/tools/verify_delivery.sh-44-  printf 'FORBIDDEN_SOURCE_OR_PATCH_CHANGE=FOUND\n'
+docs/progress/R59/code/tools/verify_delivery.sh-45-  exit 1
+docs/progress/R59/code/tools/verify_delivery.sh-46-fi
+docs/progress/R59/code/tools/verify_delivery.sh-47-printf 'FORBIDDEN_SOURCE_OR_PATCH_CHANGE=NONE\n'
+--
+progress/R59/DESIGN.md-1-# R59 修复设计（仅设计，未实现）
+progress/R59/DESIGN.md-2-
+progress/R59/DESIGN.md:3:## F1：`ios.cpp` 两个汇聚函数
+progress/R59/DESIGN.md-4-
+progress/R59/DESIGN.md-5-现代码先用一次嵌套 `throw;` 分类当前异常，离开内层 `catch (...)` 后再依据异常掩码执行第二次 `throw;`。对非强制外来异常，第一次重抛已完成其 handler 生命周期；第二次裸重抛时不再有活动异常，实测进入 terminate handler。
+progress/R59/DESIGN.md-6-
+progress/R59/DESIGN.md-7-建议修复文本（badbit；failbit 同构替换位值）：
+progress/R59/DESIGN.md-8-
+progress/R59/DESIGN.md-9-```cpp
+progress/R59/DESIGN.md-10-void ios_base::__set_badbit_and_consider_rethrow() {
+progress/R59/DESIGN.md-11-  __rdstate_ |= badbit;
+--
+progress/R59/DESIGN.md-19-      throw;
+progress/R59/DESIGN.md-20-  }
+progress/R59/DESIGN.md-21-#endif
+progress/R59/DESIGN.md-22-}
+progress/R59/DESIGN.md-23-```
+progress/R59/DESIGN.md-24-
+progress/R59/DESIGN.md-25-关键点是：需要传播的普通/外来异常必须在内层 handler 仍活跃时重抛；函数尾部不再执行裸 `throw;`。强制展开仍无条件重抛。逐路径等价性见 `tables/f1_path_equivalence.tsv`。改动局限于两个 out-of-line helper，不改变其他头文件站点。
+progress/R59/DESIGN.md-26-
+progress/R59/DESIGN.md:27:## F2：`get(basic_streambuf&, delim)`
+progress/R59/DESIGN.md-28-
+progress/R59/DESIGN.md-29-建议把 typed handler 改为：
+progress/R59/DESIGN.md-30-
+progress/R59/DESIGN.md-31-```cpp
+progress/R59/DESIGN.md-32-} catch (const __cxxabiv1::__forced_unwind&) {
+progress/R59/DESIGN.md-33-  __state |= ios_base::badbit;
+progress/R59/DESIGN.md-34-  this->__setstate_nothrow(__state);
+progress/R59/DESIGN.md-35-  throw;
+progress/R59/DESIGN.md-36-}
+progress/R59/DESIGN.md-37-```
+progress/R59/DESIGN.md-38-
+progress/R59/DESIGN.md-39-`__setstate_nothrow` 在重抛前提交 `__state`，避免普通 `setstate` 按异常掩码再抛出另一异常并替换强制展开。该形态与同文件相邻 handler 及 libstdc++ `_M_setstate(badbit); rethrow` 对齐。它只触及该 overload 的 typed 分支，不改变 catch-all 的既有规范行为。
+progress/R59/DESIGN.md-40-
+progress/R59/DESIGN.md:41:## M1：deferred future（待人工选择）
+progress/R59/DESIGN.md-42-
+progress/R59/DESIGN.md:43:### 选项 M1-A：恢复 deferred 标记，允许重试
+progress/R59/DESIGN.md-44-
+progress/R59/DESIGN.md:45:- 在 forced handler 中，通过基类新增的加锁、无抛异常内部操作恢复 deferred 标记，再重抛。
+progress/R59/DESIGN.md-46-- 后续等待者可再次执行 callable；本次 libstdc++ 参考实测调用次数从 1 增到 2 后得到 42，语义最接近其 `call_once` 失败后可重试的实现。
+progress/R59/DESIGN.md-47-- 后果：callable 在第一次被取消前可能已经产生外部副作用，重复执行不保证业务安全；C++ 标准没有为线程取消定义此状态策略。
+progress/R59/DESIGN.md-48-- 实现代价：需要在共享状态锁下原子恢复标记，并处理同时到达的其他 waiter；不能直接无锁写 `__state_`。
+progress/R59/DESIGN.md-49-
+progress/R59/DESIGN.md:50:### 选项 M1-B：以永久错误完成共享状态
+progress/R59/DESIGN.md-51-
+progress/R59/DESIGN.md:52:- 在 forced handler 中用无抛异常、幂等的内部完成操作写入一个确定错误并置 ready，随后重抛。
+progress/R59/DESIGN.md-53-- 后续等待者立即获得错误，不重跑 callable，也不会永久等待。
+progress/R59/DESIGN.md-54-- 后果：future 永久失效；与 libstdc++ 的可重试行为不一致。需要裁决错误类别（`broken_promise`、现有 future_error 或新增内部状态）。
+progress/R59/DESIGN.md:55:- 实现代价：需要一个不会因已 ready 而抛异常的原子完成接口，以及错误语义和测试契约。
+progress/R59/DESIGN.md-56-
+progress/R59/DESIGN.md:57:### 选项 M1-C：执行期间屏蔽取消
+progress/R59/DESIGN.md-58-
+progress/R59/DESIGN.md:59:- 在 deferred callable 执行窗口禁用线程取消，退出后恢复原状态。
+progress/R59/DESIGN.md-60-- 后果：避免半执行后的状态选择，但取消会被推迟；callable 若长期不返回，取消请求也无法完成。若 callable 自行重新启用取消，库侧限制还可能失效。
+progress/R59/DESIGN.md-61-- 与 libstdc++ 不一致，且引入 pthread 平台耦合；必须以取消状态的可观测测试证明约束真实生效。
+progress/R59/DESIGN.md-62-
+progress/R59/DESIGN.md:63:## M2：async 完成操作不得替换原传播（待人工选择）
+progress/R59/DESIGN.md-64-
+progress/R59/DESIGN.md:65:### 选项 M2-A：原子的无抛异常 `try_complete_with_error`
+progress/R59/DESIGN.md-66-
+progress/R59/DESIGN.md:67:- 增加内部接口：持锁检查 ready；未 ready 时写入 broken-promise 类错误并通知，已 ready 时无操作返回；接口保证不抛异常。
+progress/R59/DESIGN.md-68-- forced handler 无条件在该接口之后执行原 `throw;`。
+progress/R59/DESIGN.md-69-- 与 libstdc++ 的 `_M_result` 检查加 `_M_break_promise` 方向最接近；本次参考实测完成取消传播，等待方得到 broken promise。
+progress/R59/DESIGN.md:70:- 不能用“先 `__has_value()` 再 `set_exception()`”的分离检查替代，否则存在 TOCTOU 窗口。
+progress/R59/DESIGN.md-71-
+progress/R59/DESIGN.md:72:### 选项 M2-B：隔离完成操作的异常，始终恢复原传播
+progress/R59/DESIGN.md-73-
+progress/R59/DESIGN.md-74-- 在 forced handler 内把完成操作包在独立 try/catch 中；完成操作的任何异常只记录/丢弃，随后执行原 `throw;`。
+progress/R59/DESIGN.md:75:- 优点是改动集中；已 ready 时 `promise_already_satisfied` 不再替换原传播。
+progress/R59/DESIGN.md:76:- 后果：未 ready 时若因分配失败等原因未能完成共享状态，等待者可能仍不就绪；因此必须另行定义并测试该失败路径，不能只靠吞异常。
+progress/R59/DESIGN.md-77-
+progress/R59/DESIGN.md:78:### 选项 M2-C：在库控制的发布窗口施加可验证的取消限制
+progress/R59/DESIGN.md-79-
+progress/R59/DESIGN.md-80-- 对库控制的共享状态发布临界区禁用取消，并在离开临界区后恢复；以运行时读取取消状态和确定性时序用例验证。
+progress/R59/DESIGN.md-81-- 后果：平台耦合、推迟取消，并且用户 callable 可自行改变取消状态；要做到“排除异步取消”必须定义库是否覆盖/拒绝用户修改。仅写文档声明不构成限制。
+progress/R59/DESIGN.md-82-- 与 libstdc++ 当前处理方式不一致。
+progress/R59/DESIGN.md-83-
+progress/R59/DESIGN.md:84:本报告不在上述 M1/M2 选项中作选择。
+--
+docs/progress/R59/code/tools/capture_source_evidence.sh-19-capture current_istream_f2.txt "$root/docs/progress/R58/code/current/libcxx/include/istream" '760,815p'
+docs/progress/R59/code/tools/capture_source_evidence.sh-20-capture baseline_istream_f2.txt "$root/docs/progress/R58/code/baseline/libcxx/include/istream" '760,810p'
+docs/progress/R59/code/tools/capture_source_evidence.sh-21-capture current_future_m1_m2.txt "$root/docs/progress/R58/code/current/libcxx/include/future" '760,925p'
+docs/progress/R59/code/tools/capture_source_evidence.sh-22-capture baseline_future_m1_m2.txt "$root/docs/progress/R58/code/baseline/libcxx/include/future" '760,905p'
+docs/progress/R59/code/tools/capture_source_evidence.sh-23-capture libcxx_future_state.txt "$root/codes/llvm/libcxx/src/future.cpp" '55,135p'
+docs/progress/R59/code/tools/capture_source_evidence.sh-24-capture libstdcxx_istream_reference.txt "$root/codes/gcc/libstdc++-v3/include/bits/istream.tcc" '370,430p'
+docs/progress/R59/code/tools/capture_source_evidence.sh-25-capture libstdcxx_future_state_core.txt "$root/codes/gcc/libstdc++-v3/include/std/future" '420,485p'
+docs/progress/R59/code/tools/capture_source_evidence.sh-26-capture libstdcxx_future_task_setter.txt "$root/codes/gcc/libstdc++-v3/include/std/future" '1390,1460p'
+docs/progress/R59/code/tools/capture_source_evidence.sh:27:capture libstdcxx_future_deferred.txt "$root/codes/gcc/libstdc++-v3/include/std/future" '1660,1730p'
+docs/progress/R59/code/tools/capture_source_evidence.sh-28-capture libstdcxx_future_async.txt "$root/codes/gcc/libstdc++-v3/include/std/future" '1750,1810p'
+docs/progress/R59/code/tools/capture_source_evidence.sh-29-
+docs/progress/R59/code/tools/capture_source_evidence.sh-30-sha256sum "$out"/*.txt > "$out/SHA256SUMS"
+--
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv-1-defect	variant	exit_code
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:2:F1	current	86
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:3:F1	baseline	0
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:4:F1	reference	0
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:5:F2	current	5
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:6:F2	baseline	134
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:7:F2	reference	0
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:8:M1	current	6
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:9:M1	baseline	134
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:10:M1	reference	0
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:11:M2	current	86
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:12:M2	baseline	0
+docs/progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:13:M2	reference	139
+--
+docs/progress/R59/tables/same_class_review.tsv-1-scope	forced_handler_count	finding
+docs/progress/R59/tables/same_class_review.tsv:2:libcxx/include/istream	23	F2 的 get(streambuf&,delim) 是唯一“只改局部状态后立即重抛、未先提交到流对象”的 typed handler；其余同类站点在重抛前调用 __setstate_nothrow，或不持有待提交局部状态
+docs/progress/R59/tables/same_class_review.tsv:3:libcxx/include/future	9	M1 覆盖 deferred 的有值/void 两个特化；M2 覆盖 async 的有值/void 两个特化；四个 packaged_task handler 与 async 创建外层 handler 直接重抛且不存在同样的中间状态完成操作
+docs/progress/R59/tables/same_class_review.tsv:4:libcxx/src/ios.cpp	2	badbit/failbit 两个同构 helper 均受 F1 影响，已作为同一缺陷的两个站点计入；未发现第三个同构 helper
+--
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv-1-defect	variant	exit_code
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:2:F1	current	86
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:3:F1	baseline	0
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:4:F1	reference	0
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:5:F2	current	5
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:6:F2	baseline	134
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:7:F2	reference	0
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:8:M1	current	6
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:9:M1	baseline	134
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:10:M1	reference	0
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:11:M2	current	86
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:12:M2	baseline	86
+docs/progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:13:M2	reference	86
+--
+docs/progress/R59/tables/blind_spot_regression_design.tsv-1-blind_spot	new_matrix_case	assertions	upgrade_gate
+docs/progress/R59/tables/blind_spot_regression_design.tsv-2-exceptions 掩码	badbit/failbit helper × 原生异常/外来异常/强制展开 × mask on/off	退出路径、顶层捕获类型、rdstate、是否 terminate	每次 libc++ 升版在 x86_64 与 armv7l 跑路径表；任一当前基线等价路径变化即失败
+docs/progress/R59/tables/blind_spot_regression_design.tsv:3:deferred 状态机	launch::deferred 第一次执行者被取消，第二等待者重入	首次 join=PTHREAD_CANCELED、第二等待有界返回、callable 调用次数、最终值/异常	固定超时并至少重复 20 次；出现永久等待或未声明的重复副作用即失败
+docs/progress/R59/tables/blind_spot_regression_design.tsv-4-流状态位	get(streambuf&,delim) 与相邻输入设施在取消后检查对象	join、rdstate、bad/fail/eof、gcount	不能只看退出码；状态位须逐格与 libstdc++ 参考对照
+docs/progress/R59/tables/blind_spot_regression_design.tsv:5:异步完成竞态	共享状态完成后、worker 退出 try 前到达异步取消	原强制展开是否完成、是否出现 promise_already_satisfied、future 的 ready/value/error	采用确定性握手窗口并重复 20 次；完成操作不得替换原传播
+--
+docs/progress/R59/tables/reproduction_matrix.tsv-1-defect	variant	exit_code
+docs/progress/R59/tables/reproduction_matrix.tsv:2:F1	current	86
+docs/progress/R59/tables/reproduction_matrix.tsv:3:F1	baseline	0
+docs/progress/R59/tables/reproduction_matrix.tsv:4:F1	reference	0
+docs/progress/R59/tables/reproduction_matrix.tsv:5:F2	current	5
+docs/progress/R59/tables/reproduction_matrix.tsv:6:F2	baseline	134
+docs/progress/R59/tables/reproduction_matrix.tsv:7:F2	reference	0
+docs/progress/R59/tables/reproduction_matrix.tsv:8:M1	current	6
+docs/progress/R59/tables/reproduction_matrix.tsv:9:M1	baseline	134
+docs/progress/R59/tables/reproduction_matrix.tsv:10:M1	reference	0
+docs/progress/R59/tables/reproduction_matrix.tsv:11:M2	current	86
+docs/progress/R59/tables/reproduction_matrix.tsv:12:M2	baseline	86
+docs/progress/R59/tables/reproduction_matrix.tsv:13:M2	reference	0
+--
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv-1-defect	variant	exit_code
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:2:F1	current	86
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:3:F1	baseline	0
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:4:F1	reference	0
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:5:F2	current	5
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:6:F2	baseline	134
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:7:F2	reference	0
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:8:M1	current	6
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:9:M1	baseline	134
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:10:M1	reference	0
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:11:M2	current	86
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:12:M2	baseline	86
+docs/progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:13:M2	reference	86
+--
+docs/progress/R59/tables/defect_verdicts.tsv-1-id	current_exit	baseline_exit	libstdcxx_exit	verdict	origin	observed_fact
+docs/progress/R59/tables/defect_verdicts.tsv:2:F1	86	0	0	成立	补丁引入的回归	当前版进入 terminate handler；基线与 libstdc++ 均把外来异常传播到顶层 catch，且 badbit=1
+docs/progress/R59/tables/defect_verdicts.tsv:3:F2	5	134	0	成立	补丁 typed 分支引入的状态提交缺陷；基线另有吞取消后 abort 的既有缺陷	当前版取消正常完成但 rdstate=0/bad=0；libstdc++ 为 rdstate=1/bad=1
+docs/progress/R59/tables/defect_verdicts.tsv:4:M1	6	134	0	成立	补丁 typed 分支引入的新挂起形态；基线另有吞取消后 abort 的既有缺陷	当前版第二等待者超时且 callable 只执行一次；libstdc++ 第二次执行并返回 42
+docs/progress/R59/tables/defect_verdicts.tsv:5:M2	86	86	0	成立	上游 libc++ 既有问题被补丁保留，并非相对基线的新回归	当前版与基线均在已就绪窗口进入 terminate；libstdc++ 完成取消传播，future.get 报 broken_promise
+--
+progress/R59/src/r59_probe.cpp-10-#include <thread>
+progress/R59/src/r59_probe.cpp-11-#include <unwind.h>
+progress/R59/src/r59_probe.cpp-12-#include <unistd.h>
+progress/R59/src/r59_probe.cpp-13-
+progress/R59/src/r59_probe.cpp-14-pthread_t m2_worker_thread{};
+progress/R59/src/r59_probe.cpp-15-
+progress/R59/src/r59_probe.cpp-16-namespace {
+progress/R59/src/r59_probe.cpp-17-
+progress/R59/src/r59_probe.cpp:18:std::atomic<int> ready{0};
+progress/R59/src/r59_probe.cpp-19-std::atomic<int> invocations{0};
+progress/R59/src/r59_probe.cpp-20-
+progress/R59/src/r59_probe.cpp-21-void terminate_marker() noexcept {
+progress/R59/src/r59_probe.cpp-22-  const char msg[] = "TERMINATE_HANDLER=ENTERED\n";
+progress/R59/src/r59_probe.cpp-23-  (void)!write(2, msg, sizeof(msg) - 1);
+progress/R59/src/r59_probe.cpp-24-  _Exit(86);
+progress/R59/src/r59_probe.cpp-25-}
+progress/R59/src/r59_probe.cpp-26-
+--
+progress/R59/src/r59_probe.cpp-50-
+progress/R59/src/r59_probe.cpp-51-int run_f1() {
+progress/R59/src/r59_probe.cpp-52-  std::set_terminate(terminate_marker);
+progress/R59/src/r59_probe.cpp-53-  ForeignOutputBuf buf;
+progress/R59/src/r59_probe.cpp-54-  std::ostream os(&buf);
+progress/R59/src/r59_probe.cpp-55-  os.exceptions(std::ios::badbit);
+progress/R59/src/r59_probe.cpp-56-  try {
+progress/R59/src/r59_probe.cpp-57-    os.put('x');
+progress/R59/src/r59_probe.cpp:58:    std::cout << "F1_UNEXPECTED_RETURN\n";
+progress/R59/src/r59_probe.cpp-59-    return 3;
+progress/R59/src/r59_probe.cpp-60-  } catch (...) {
+progress/R59/src/r59_probe.cpp:61:    std::cout << "F1_TOP_CATCH=ENTERED STATE_BAD=" << os.bad() << '\n';
+progress/R59/src/r59_probe.cpp-62-    return os.bad() ? 0 : 4;
+progress/R59/src/r59_probe.cpp-63-  }
+progress/R59/src/r59_probe.cpp-64-}
+progress/R59/src/r59_probe.cpp-65-
+progress/R59/src/r59_probe.cpp-66-class CancelInputBuf : public std::streambuf {
+progress/R59/src/r59_probe.cpp-67-protected:
+progress/R59/src/r59_probe.cpp-68-  int_type underflow() override {
+progress/R59/src/r59_probe.cpp:69:    ready.store(1, std::memory_order_release);
+progress/R59/src/r59_probe.cpp-70-    for (;;) {
+progress/R59/src/r59_probe.cpp-71-      pthread_testcancel();
+progress/R59/src/r59_probe.cpp-72-      usleep(1000);
+progress/R59/src/r59_probe.cpp-73-    }
+progress/R59/src/r59_probe.cpp-74-  }
+progress/R59/src/r59_probe.cpp-75-};
+progress/R59/src/r59_probe.cpp-76-
+progress/R59/src/r59_probe.cpp:77:struct F2Context {
+progress/R59/src/r59_probe.cpp-78-  std::istream* input;
+progress/R59/src/r59_probe.cpp-79-  std::streambuf* output;
+progress/R59/src/r59_probe.cpp-80-};
+progress/R59/src/r59_probe.cpp-81-
+progress/R59/src/r59_probe.cpp-82-void* f2_worker(void* opaque) {
+progress/R59/src/r59_probe.cpp:83:  auto* ctx = static_cast<F2Context*>(opaque);
+progress/R59/src/r59_probe.cpp-84-  ctx->input->get(*ctx->output, '\n');
+progress/R59/src/r59_probe.cpp-85-  return reinterpret_cast<void*>(0x52);
+progress/R59/src/r59_probe.cpp-86-}
+progress/R59/src/r59_probe.cpp-87-
+progress/R59/src/r59_probe.cpp-88-int run_f2() {
+progress/R59/src/r59_probe.cpp-89-  std::set_terminate(terminate_marker);
+progress/R59/src/r59_probe.cpp-90-  CancelInputBuf source;
+progress/R59/src/r59_probe.cpp-91-  std::stringbuf sink;
+progress/R59/src/r59_probe.cpp-92-  std::istream input(&source);
+progress/R59/src/r59_probe.cpp:93:  F2Context ctx{&input, &sink};
+progress/R59/src/r59_probe.cpp-94-  pthread_t thread{};
+progress/R59/src/r59_probe.cpp-95-  const int create_rc = pthread_create(&thread, nullptr, f2_worker, &ctx);
+progress/R59/src/r59_probe.cpp:96:  while (!ready.load(std::memory_order_acquire))
+progress/R59/src/r59_probe.cpp-97-    usleep(1000);
+progress/R59/src/r59_probe.cpp-98-  const int cancel_rc = pthread_cancel(thread);
+progress/R59/src/r59_probe.cpp-99-  void* result = nullptr;
+progress/R59/src/r59_probe.cpp-100-  const int join_rc = pthread_join(thread, &result);
+progress/R59/src/r59_probe.cpp:101:  std::cout << "F2_CREATE_RC=" << create_rc << " CANCEL_RC=" << cancel_rc << " JOIN_RC=" << join_rc
+progress/R59/src/r59_probe.cpp-102-            << " JOIN_CANCELED=" << (result == PTHREAD_CANCELED) << " RDSTATE=" << input.rdstate()
+progress/R59/src/r59_probe.cpp-103-            << " BAD=" << input.bad() << " FAIL=" << input.fail() << '\n';
+progress/R59/src/r59_probe.cpp-104-  return (create_rc == 0 && cancel_rc == 0 && join_rc == 0 && result == PTHREAD_CANCELED && input.bad()) ? 0 : 5;
+progress/R59/src/r59_probe.cpp-105-}
+progress/R59/src/r59_probe.cpp-106-
+progress/R59/src/r59_probe.cpp:107:std::shared_future<int>* deferred_future = nullptr;
+progress/R59/src/r59_probe.cpp-108-
+progress/R59/src/r59_probe.cpp:109:void* wait_deferred(void*) {
+progress/R59/src/r59_probe.cpp:110:  deferred_future->wait();
+progress/R59/src/r59_probe.cpp-111-  return reinterpret_cast<void*>(0x59);
+progress/R59/src/r59_probe.cpp-112-}
+progress/R59/src/r59_probe.cpp-113-
+progress/R59/src/r59_probe.cpp-114-int run_m1() {
+progress/R59/src/r59_probe.cpp-115-  std::set_terminate(terminate_marker);
+progress/R59/src/r59_probe.cpp:116:  auto future = std::async(std::launch::deferred, [] {
+progress/R59/src/r59_probe.cpp-117-                  const int n = ++invocations;
+progress/R59/src/r59_probe.cpp:118:                  std::cout << "M1_CALLABLE_INVOCATION=" << n << '\n';
+progress/R59/src/r59_probe.cpp-119-                  if (n == 1) {
+progress/R59/src/r59_probe.cpp:120:                    ready.store(1, std::memory_order_release);
+progress/R59/src/r59_probe.cpp-121-                    for (;;) {
+progress/R59/src/r59_probe.cpp-122-                      pthread_testcancel();
+progress/R59/src/r59_probe.cpp-123-                      usleep(1000);
+progress/R59/src/r59_probe.cpp-124-                    }
+progress/R59/src/r59_probe.cpp-125-                  }
+progress/R59/src/r59_probe.cpp-126-                  return 42;
+progress/R59/src/r59_probe.cpp-127-                }).share();
+progress/R59/src/r59_probe.cpp:128:  deferred_future = &future;
+progress/R59/src/r59_probe.cpp-129-  pthread_t first{};
+progress/R59/src/r59_probe.cpp:130:  pthread_create(&first, nullptr, wait_deferred, nullptr);
+progress/R59/src/r59_probe.cpp:131:  while (!ready.load(std::memory_order_acquire))
+progress/R59/src/r59_probe.cpp-132-    usleep(1000);
+progress/R59/src/r59_probe.cpp-133-  const int cancel_rc = pthread_cancel(first);
+progress/R59/src/r59_probe.cpp-134-  void* first_result = nullptr;
+progress/R59/src/r59_probe.cpp-135-  const int first_join = pthread_join(first, &first_result);
+progress/R59/src/r59_probe.cpp:136:  std::cout << "M1_FIRST_CANCEL_RC=" << cancel_rc << " FIRST_JOIN_RC=" << first_join
+progress/R59/src/r59_probe.cpp-137-            << " FIRST_CANCELED=" << (first_result == PTHREAD_CANCELED) << '\n';
+progress/R59/src/r59_probe.cpp-138-
+progress/R59/src/r59_probe.cpp-139-  std::atomic<int> second_done{0};
+progress/R59/src/r59_probe.cpp-140-  std::thread second([&] {
+progress/R59/src/r59_probe.cpp-141-    future.wait();
+progress/R59/src/r59_probe.cpp-142-    second_done.store(1, std::memory_order_release);
+progress/R59/src/r59_probe.cpp-143-  });
+progress/R59/src/r59_probe.cpp-144-  for (int i = 0; i != 2000 && !second_done.load(std::memory_order_acquire); ++i)
+progress/R59/src/r59_probe.cpp-145-    usleep(1000);
+progress/R59/src/r59_probe.cpp-146-  if (!second_done.load(std::memory_order_acquire)) {
+progress/R59/src/r59_probe.cpp:147:    std::cout << "M1_SECOND_WAIT=TIMEOUT INVOCATIONS=" << invocations.load() << '\n' << std::flush;
+progress/R59/src/r59_probe.cpp-148-    second.detach();
+progress/R59/src/r59_probe.cpp-149-    _Exit(6);
+progress/R59/src/r59_probe.cpp-150-  }
+progress/R59/src/r59_probe.cpp-151-  second.join();
+progress/R59/src/r59_probe.cpp-152-  const int value = future.get();
+progress/R59/src/r59_probe.cpp:153:  std::cout << "M1_SECOND_WAIT=RETURNED INVOCATIONS=" << invocations.load() << " VALUE=" << value << '\n';
+progress/R59/src/r59_probe.cpp-154-  return value == 42 ? 0 : 7;
+progress/R59/src/r59_probe.cpp-155-}
+progress/R59/src/r59_probe.cpp-156-
+progress/R59/src/r59_probe.cpp-157-struct AsyncWindowResult {
+progress/R59/src/r59_probe.cpp-158-  bool trigger = true;
+progress/R59/src/r59_probe.cpp-159-  AsyncWindowResult() = default;
+progress/R59/src/r59_probe.cpp-160-  AsyncWindowResult(const AsyncWindowResult&) = delete;
+progress/R59/src/r59_probe.cpp-161-  AsyncWindowResult& operator=(const AsyncWindowResult&) = delete;
+progress/R59/src/r59_probe.cpp-162-  AsyncWindowResult(AsyncWindowResult&& other) noexcept : trigger(false) { other.trigger = true; }
+progress/R59/src/r59_probe.cpp-163-  ~AsyncWindowResult() noexcept(false) {
+progress/R59/src/r59_probe.cpp-164-    if (!trigger)
+progress/R59/src/r59_probe.cpp-165-      return;
+progress/R59/src/r59_probe.cpp-166-    int old_type = 0;
+progress/R59/src/r59_probe.cpp-167-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, &old_type);
+progress/R59/src/r59_probe.cpp:168:    ready.store(1, std::memory_order_release);
+progress/R59/src/r59_probe.cpp-169-    for (;;)
+progress/R59/src/r59_probe.cpp-170-      asm volatile("" ::: "memory");
+progress/R59/src/r59_probe.cpp-171-  }
+progress/R59/src/r59_probe.cpp-172-};
+progress/R59/src/r59_probe.cpp-173-
+progress/R59/src/r59_probe.cpp-174-int run_m2() {
+progress/R59/src/r59_probe.cpp-175-  std::set_terminate(terminate_marker);
+progress/R59/src/r59_probe.cpp-176-  auto f = std::async(std::launch::async, [] {
+progress/R59/src/r59_probe.cpp-177-    m2_worker_thread = pthread_self();
+progress/R59/src/r59_probe.cpp-178-    return AsyncWindowResult{};
+progress/R59/src/r59_probe.cpp-179-  });
+progress/R59/src/r59_probe.cpp:180:  while (!ready.load(std::memory_order_acquire))
+progress/R59/src/r59_probe.cpp-181-    usleep(1000);
+progress/R59/src/r59_probe.cpp:182:  std::cout << "M2_WINDOW=AFTER_SET_VALUE_BEFORE_TRY_EXIT\n" << std::flush;
+progress/R59/src/r59_probe.cpp-183-  const int cancel_rc = pthread_cancel(m2_worker_thread);
+progress/R59/src/r59_probe.cpp:184:  std::cout << "M2_CANCEL_RC=" << cancel_rc << '\n' << std::flush;
+progress/R59/src/r59_probe.cpp-185-  sleep(1);
+progress/R59/src/r59_probe.cpp:186:  std::cout << "M2_PROCESS_SURVIVED_CANCEL_PROPAGATION=1\n" << std::flush;
+progress/R59/src/r59_probe.cpp-187-  try {
+progress/R59/src/r59_probe.cpp-188-    (void)f.get();
+progress/R59/src/r59_probe.cpp:189:    std::cout << "M2_FUTURE_GET=VALUE\n";
+progress/R59/src/r59_probe.cpp-190-  } catch (const std::exception& e) {
+progress/R59/src/r59_probe.cpp:191:    std::cout << "M2_FUTURE_GET=STD_EXCEPTION WHAT=" << e.what() << '\n';
+progress/R59/src/r59_probe.cpp-192-  } catch (...) {
+progress/R59/src/r59_probe.cpp:193:    std::cout << "M2_FUTURE_GET=NON_STD_EXCEPTION\n";
+progress/R59/src/r59_probe.cpp-194-  }
+progress/R59/src/r59_probe.cpp-195-  return 0;
+progress/R59/src/r59_probe.cpp-196-}
+progress/R59/src/r59_probe.cpp-197-
+progress/R59/src/r59_probe.cpp-198-} // namespace
+progress/R59/src/r59_probe.cpp-199-
+progress/R59/src/r59_probe.cpp-200-int main(int argc, char** argv) {
+progress/R59/src/r59_probe.cpp-201-  if (argc != 2)
+--
+progress/R59/tables/reproduction_matrix.tsv-1-defect	variant	exit_code
+progress/R59/tables/reproduction_matrix.tsv:2:F1	current	86
+progress/R59/tables/reproduction_matrix.tsv:3:F1	baseline	0
+progress/R59/tables/reproduction_matrix.tsv:4:F1	reference	0
+progress/R59/tables/reproduction_matrix.tsv:5:F2	current	5
+progress/R59/tables/reproduction_matrix.tsv:6:F2	baseline	134
+progress/R59/tables/reproduction_matrix.tsv:7:F2	reference	0
+progress/R59/tables/reproduction_matrix.tsv:8:M1	current	6
+progress/R59/tables/reproduction_matrix.tsv:9:M1	baseline	134
+progress/R59/tables/reproduction_matrix.tsv:10:M1	reference	0
+progress/R59/tables/reproduction_matrix.tsv:11:M2	current	86
+progress/R59/tables/reproduction_matrix.tsv:12:M2	baseline	86
+progress/R59/tables/reproduction_matrix.tsv:13:M2	reference	0
+--
+progress/R59/REPORT.md-1-# R59 四项代码缺陷的定位与修复设计
+progress/R59/REPORT.md-2-
+progress/R59/REPORT.md-3-## 结论摘要
+progress/R59/REPORT.md-4-
+progress/R59/REPORT.md:5:四项均成立。三方 x86_64 原生矩阵为：F1 `86/0/0`、F2 `5/134/0`、M1 `6/134/0`、M2 `86/86/0`（顺序为当前全补丁版/未打补丁 libc++/libstdc++）。完整定义和原始输出见 `tables/defect_verdicts.tsv` 与 `raw/matrix/`。
+progress/R59/REPORT.md-6-
+progress/R59/REPORT.md:7:- F1：补丁引入的明确回归。
+progress/R59/REPORT.md:8:- F2：typed 分支新增后产生的状态提交缺陷；未打补丁版另有吞取消并 abort 的既有问题。
+progress/R59/REPORT.md:9:- M1：typed 分支新增后产生的永久非就绪形态；未打补丁版另有吞取消并 abort 的既有问题。
+progress/R59/REPORT.md:10:- M2：缺陷成立，但三方对照显示相同失败在未打补丁 libc++ 已存在；当前补丁保留了该问题，不是相对基线的新回归。
+progress/R59/REPORT.md-11-
+progress/R59/REPORT.md-12-本任务未修改四个补丁、平台源码或任何运行库。
+progress/R59/REPORT.md-13-
+progress/R59/REPORT.md-14-## 输入与身份
+progress/R59/REPORT.md-15-
+progress/R59/REPORT.md-16-当前代码取自 `docs/progress/R58/code/current/`，未打补丁基线取自 `docs/progress/R58/code/baseline/`。三份关键当前文件 SHA256：
+progress/R59/REPORT.md-17-
+progress/R59/REPORT.md-18-- `ios.cpp`: `6734c4d2fbe5b9708c318a083e41f74633010a17a850c411dacd126e0b6964a4`
+progress/R59/REPORT.md-19-- `istream`: `4111af1754590455948aaa3e14a90a742445e852485322771bb923c80281bd7c`
+progress/R59/REPORT.md-20-- `future`: `80a837cdda19397af933d28f1ed611e9bf27504df2b17fd645f685bef9ac6a9d`
+progress/R59/REPORT.md-21-
+progress/R59/REPORT.md-22-基线 SHA、运行库 SHA、`ldd` 与加载记录分别见 `raw/001_source_sha256.txt`、`raw/identity/sha256.txt`、`raw/identity/ldd_current.txt`、`raw/identity/ld_debug_current.log`。构建命令逐字保存在 `raw/build/*.log`。
+progress/R59/REPORT.md-23-
+progress/R59/REPORT.md-24-## 独立复核
+progress/R59/REPORT.md-25-
+progress/R59/REPORT.md:26:### F1
+progress/R59/REPORT.md-27-
+progress/R59/REPORT.md-28-当前 `ios.cpp:363-388` 的两个 helper 都先在嵌套 try 中重抛并捕获，再在 helper 尾部按掩码裸重抛。自定义 `exception_class` 的非强制外来异常探针设置 `exceptions(badbit)` 后：当前版先打印外来异常清理，再进入 terminate handler（86）；基线和 libstdc++ 均进入顶层 catch、`badbit=1`、退出 0。评审推演与实测一致。
+progress/R59/REPORT.md-29-
+progress/R59/REPORT.md:30:### F2
+progress/R59/REPORT.md-31-
+progress/R59/REPORT.md-32-当前 `istream:797-800` 只执行 `__state |= badbit; throw;`，`istream:807` 的 `setstate` 不可达。实测当前版线程取消和 join 均成功，但 `rdstate=0/bad=0/fail=0`，探针以 5 报错；libstdc++ 为 `rdstate=1/bad=1/fail=1`。基线在 catch-all 吞取消后以 134 结束，无法形成正确状态对照。修复形态由相邻 handler 与 libstdc++ `istream.tcc:414-417` 共同支持。
+progress/R59/REPORT.md-33-
+progress/R59/REPORT.md:34:### M1
+progress/R59/REPORT.md-35-
+progress/R59/REPORT.md:36:`future.cpp:113-121` 在执行 deferred callable 前清除 deferred 位并解锁；当前 `future:793-794,826-827` 捕获后只重抛，没有恢复标记或完成状态。实测第一等待线程被取消后，第二等待线程超时，callable 调用次数仍为 1（退出 6）。libstdc++ 的 `_M_set_result(..., true)` 依赖 `call_once`，异常退出不会完成 once；参考实测第二次执行 callable 并返回 42。基线因吞取消退出 134。
+progress/R59/REPORT.md-37-
+progress/R59/REPORT.md:38:### M2
+progress/R59/REPORT.md-39-
+progress/R59/REPORT.md:40:当前 `future:858-864,902-908` 在 typed handler 中先构造 broken-promise 异常并调用 `set_exception`，最后才重抛；`future.cpp:80-82` 表明状态已有值时会抛 `promise_already_satisfied`。确定性窗口探针在 `set_value` 已完成、外层 try 尚未退出时发起异步取消：当前版和基线均进入 terminate handler（86），libstdc++ 传播阶段存活，等待方收到 broken promise，退出 0。
+progress/R59/REPORT.md-41-
+progress/R59/REPORT.md:42:调试器原始记录 `raw/m2_gdb_trace.log` 直接显示当前版依次抛出 `broken_promise`，随后 `set_exception` 从 `future.cpp:81` 抛出 `promise_already_satisfied`，末尾原重抛未执行。
+progress/R59/REPORT.md-43-
+progress/R59/REPORT.md-44-## 复现夹具校正记录
+progress/R59/REPORT.md-45-
+progress/R59/REPORT.md:46:为避免把测试件缺陷冒充产品结论，保留了三轮无效/不完整 M2 记录：
+progress/R59/REPORT.md-47-
+progress/R59/REPORT.md-48-1. `raw/matrix_initial_invalid_m2/`：链接器 wrapper 无法截获共享库内部建线程，线程句柄无效。
+progress/R59/REPORT.md-49-2. `raw/matrix_m2_noexcept_invalid/`：窗口对象析构默认 `noexcept`，三方均因该帧终止。
+progress/R59/REPORT.md-50-3. `raw/matrix_m2_uncaught_result/`：libstdc++ 已完成传播，但主线程未捕获 `future.get()` 的普通 broken-promise 异常，导致结果读取阶段 terminate。
+progress/R59/REPORT.md-51-
+progress/R59/REPORT.md-52-最终夹具把析构显式设为 `noexcept(false)`，并只在主线程结果读取处记录普通异常；被取消线程中没有新增 catch。最终结果只取 `raw/matrix/`。
+progress/R59/REPORT.md-53-
+progress/R59/REPORT.md-54-## 同类问题检查
+progress/R59/REPORT.md-55-
+progress/R59/REPORT.md-56-检查范围为补丁实际改动的 `istream`、`future`、`ios.cpp`，共 23/9/2 个 typed handler。结果见 `tables/same_class_review.tsv`：没有发现评审四项之外的新同类站点。这里的“未发现”只覆盖上述三个文件，不外推到整个 libc++ 源码树。
+progress/R59/REPORT.md-57-
+progress/R59/REPORT.md-58-## 修复设计与验证盲区
+progress/R59/REPORT.md-59-
+progress/R59/REPORT.md:60:F1/F2 的具体修复文本及 M1/M2 待裁决选项见 `DESIGN.md`。三条既有盲区及新增的 M2 竞态格见 `tables/blind_spot_regression_design.tsv`。这些格均设计为可重复脚本，后续升版门禁应检查语义结果与状态，不再只检查进程退出码。
+progress/R59/REPORT.md-61-
+progress/R59/REPORT.md-62-## 自行判断与尚存疑问
+progress/R59/REPORT.md-63-
+progress/R59/REPORT.md:64:- 自行判断：M2 探针必须把窗口对象析构声明为 `noexcept(false)`；否则测到的是语言层 terminate，而不是共享状态问题。该判断由“三方均 86”反证并已保留原始证据。
+progress/R59/REPORT.md-65-- 自行判断：在主线程捕获 `future.get()` 的普通异常只用于区分“worker 传播失败”和“等待方收到错误”，不改变 worker 的取消路径。
+progress/R59/REPORT.md:66:- 尚存疑问（待人工裁决）：M1 采用重试、永久错误还是取消屏蔽策略。
+progress/R59/REPORT.md:67:- 尚存疑问（待人工裁决）：M2 采用原子无抛完成、隔离完成异常还是施加可验证的取消限制。
+progress/R59/REPORT.md:68:- 尚存疑问：M1/M2 的最终策略应定义到何种跨实现一致性；ISO C++ 未规定 pthread 取消进入 future 状态机后的结果。
+progress/R59/REPORT.md-69-
+progress/R59/REPORT.md-70-## 未覆盖范围
+progress/R59/REPORT.md-71-
+progress/R59/REPORT.md-72-- armv7l、aarch64；本任务按要求只做 x86_64 原生。
+progress/R59/REPORT.md:73:- 多等待者同时竞争 deferred 重试的状态机压力测试。
+progress/R59/REPORT.md:74:- M2 在不同优化级别、LTO 和其他 ABI 运行库下的竞态窗口。
+progress/R59/REPORT.md-75-- 内存分配失败时“完成共享状态”接口的行为。
+progress/R59/REPORT.md-76-
+progress/R59/REPORT.md-77-## 纪律符合性
+progress/R59/REPORT.md-78-
+progress/R59/REPORT.md-79-资源门禁 light 通过；只编译独立测试件，未重建 libc++/libc++abi；未连接开发板；未修改正式补丁；未推送外部源码仓。命令与退出码见 `commands/`。`003_source_context.command.txt` 如实登记了一次未在调用时保存命令原文的证据缺口，未重建后冒充原件。
+--
+progress/R59/README.md-1-# R59 交付索引
+progress/R59/README.md-2-
+progress/R59/README.md-3-- `REPORT.md`：复核结论、来源属性、夹具校正和未覆盖范围。
+progress/R59/README.md:4:- `DESIGN.md`：F1/F2 修复文本，M1/M2 待人工裁决选项。
+progress/R59/README.md-5-- `tables/defect_verdicts.tsv`：四项三方判定。
+progress/R59/README.md:6:- `tables/f1_path_equivalence.tsv`：F1 路径等价性。
+progress/R59/README.md-7-- `tables/same_class_review.tsv`：同类站点检查。
+progress/R59/README.md-8-- `tables/blind_spot_regression_design.tsv`：回归门禁设计。
+progress/R59/README.md-9-- `tables/reproduction_matrix.tsv`：最终 12 格结果。
+progress/R59/README.md-10-- `src/r59_probe.cpp`：最终复现用例。
+progress/R59/README.md-11-- `tools/`：构建、运行、源码取证和调试器命令。
+progress/R59/README.md-12-- `raw/matrix/`：最终逐格完整输出；三个 `matrix_*` 目录保留夹具校正过程。
+progress/R59/README.md-13-- `raw/source/`：当前、基线与 libstdc++ 对照片段及 SHA256。
+progress/R59/README.md-14-- `commands/`：命令原文与退出码。
+--
+docs/progress/R59/code/INDEX.tsv-47-R59	progress/R59/commands/021_make_code_index.command.txt	docs/progress/R59/code/commands/021_make_code_index.command.txt	d9eed9682196dba9923169ed38f5a985ac9c62150633a749cedbd613ac9ecca6
+docs/progress/R59/code/INDEX.tsv-48-R59	progress/R59/commands/021_make_code_index.exit.txt	docs/progress/R59/code/commands/021_make_code_index.exit.txt	1ca4a13146b2891c0e462123ac0cb848f92e6221f18b870a1b78c232d1956c35
+docs/progress/R59/code/INDEX.tsv-49-R59	progress/R59/commands/022_verify_delivery.command.txt	docs/progress/R59/code/commands/022_verify_delivery.command.txt	4b95dc993b58bce468554f3ded506eba089bae530b7ed396809db369a06fc3d8
+docs/progress/R59/code/INDEX.tsv-50-R59	progress/R59/commands/022_verify_delivery.exit.txt	docs/progress/R59/code/commands/022_verify_delivery.exit.txt	0aac2256ca135e9e2ce682d26e680d8ec767e0c2897215d636113386fbc768af
+docs/progress/R59/code/INDEX.tsv-51-R59	progress/R59/raw/identity/ld_debug_current.log	docs/progress/R59/code/output/identity/ld_debug_current.log	add83215f2ab3d9b4309a491e0262ed1fbfa9a7a4b4afad93639241b4ad77671
+docs/progress/R59/code/INDEX.tsv-52-R59	progress/R59/raw/identity/ldd_current.txt	docs/progress/R59/code/output/identity/ldd_current.txt	2cdf1c4aa44e835098dfe7147980db3f239ba88dc471ee091caedb78d3402fc8
+docs/progress/R59/code/INDEX.tsv-53-R59	progress/R59/raw/identity/sha256.txt	docs/progress/R59/code/output/identity/sha256.txt	1033a18203b11e5b5e079b5965e6e5bf18c7e6df47f21025cca9f8a2ccddac73
+docs/progress/R59/code/INDEX.tsv-54-R59	progress/R59/raw/m2_gdb_trace.log	docs/progress/R59/code/output/m2_gdb_trace.log	2fa76942fa81af12cb24dc1fa9f860e753ac3a83d21a380dbb3f2407334b5a3c
+docs/progress/R59/code/INDEX.tsv:55:R59	progress/R59/raw/matrix/F1_baseline.log	docs/progress/R59/code/output/matrix/F1_baseline.log	caf0c2c7b666d218d9737d4731a349e4a988432cedaa34b4162f4532686c3686
+docs/progress/R59/code/INDEX.tsv:56:R59	progress/R59/raw/matrix/F1_current.log	docs/progress/R59/code/output/matrix/F1_current.log	9a910b91053bef7683f1f9e6254c32f6bdaeff9493468c9abcb2fbbf482354c5
+docs/progress/R59/code/INDEX.tsv:57:R59	progress/R59/raw/matrix/F1_reference.log	docs/progress/R59/code/output/matrix/F1_reference.log	6bab173cb8f813593cf5f804eef909eccb3a0252340a244ebfa5928188e3c74f
+docs/progress/R59/code/INDEX.tsv:58:R59	progress/R59/raw/matrix/F2_baseline.log	docs/progress/R59/code/output/matrix/F2_baseline.log	81aa5fc5b99ffb1fed757726db6d93a0c663d0469dc97dc2e4a25913244c8670
+docs/progress/R59/code/INDEX.tsv:59:R59	progress/R59/raw/matrix/F2_current.log	docs/progress/R59/code/output/matrix/F2_current.log	f6920b54481cd6d5cf91f7840c14b87dab30d6c5f5b497e1dbc3f4b3490b0817
+docs/progress/R59/code/INDEX.tsv:60:R59	progress/R59/raw/matrix/F2_reference.log	docs/progress/R59/code/output/matrix/F2_reference.log	75ba84bf91366f0eb2f5037be8ba3b072c1f5172fc18ac04638a3cc0ae42809f
+docs/progress/R59/code/INDEX.tsv:61:R59	progress/R59/raw/matrix/M1_baseline.log	docs/progress/R59/code/output/matrix/M1_baseline.log	1897d2e8a7e7396ffae07d63e62621d87e3e2741eb5a126cec5b7f0ce37f7251
+docs/progress/R59/code/INDEX.tsv:62:R59	progress/R59/raw/matrix/M1_current.log	docs/progress/R59/code/output/matrix/M1_current.log	8c08a68a7a0536f2ecf07292db27dd38a580789936cf8c3bd09e3b47aad92ce6
+docs/progress/R59/code/INDEX.tsv:63:R59	progress/R59/raw/matrix/M1_reference.log	docs/progress/R59/code/output/matrix/M1_reference.log	1ab8299f424674865cf0043636d45199204b0efc360213495d96e40ba48a3766
+docs/progress/R59/code/INDEX.tsv:64:R59	progress/R59/raw/matrix/M2_baseline.log	docs/progress/R59/code/output/matrix/M2_baseline.log	9066ef8a522ff4c3b016ba4b81b16c10c62fb61f1811279700e3fe9558170889
+docs/progress/R59/code/INDEX.tsv:65:R59	progress/R59/raw/matrix/M2_current.log	docs/progress/R59/code/output/matrix/M2_current.log	c4a5647792f2c01d85819a215d69fb1700a6cbc0830dfe4a9d53ad2e618171ca
+docs/progress/R59/code/INDEX.tsv:66:R59	progress/R59/raw/matrix/M2_reference.log	docs/progress/R59/code/output/matrix/M2_reference.log	f5853009f1e349e95f2ddce3b615566bfc15aa6f7f6604a1ef67b754bc09e57f
+docs/progress/R59/code/INDEX.tsv-67-R59	progress/R59/src/r59_probe.cpp	docs/progress/R59/code/src/r59_probe.cpp	24f9d79e4b395c91fc3413ad0fde875cebd98fb65973b4cf87019a5a4b7b5526
+docs/progress/R59/code/INDEX.tsv-68-R59	progress/R59/tools/build_probes.sh	docs/progress/R59/code/tools/build_probes.sh	9ab7915cbdeb5c14b16a36d30c568f8448196c80f1a628e86fd35cdc5b7d154b
+docs/progress/R59/code/INDEX.tsv-69-R59	progress/R59/tools/capture_source_evidence.sh	docs/progress/R59/code/tools/capture_source_evidence.sh	9d1f15c76e7e7d466560a3fb5cda4c0fdbebea06c7d625b085a38fdecf6c37d0
+docs/progress/R59/code/INDEX.tsv-70-R59	progress/R59/tools/m2_gdb_commands.txt	docs/progress/R59/code/tools/m2_gdb_commands.txt	7b7d2d862a3c8e5c593e321d094524a245547a03875c9f8d5edf789cd41e65a8
+docs/progress/R59/code/INDEX.tsv-71-R59	progress/R59/tools/make_code_index.sh	docs/progress/R59/code/tools/make_code_index.sh	1ae78c8eb82a2b023c798b307a9c4daf243fe9dd8ea5b273f55d6b480f2aece0
+docs/progress/R59/code/INDEX.tsv-72-R59	progress/R59/tools/make_delivery_index.sh	docs/progress/R59/code/tools/make_delivery_index.sh	1bd91cbf3865f07864106bf3c8cd8564c9c7661b7353093a933214d3a0ab5dc2
+docs/progress/R59/code/INDEX.tsv-73-R59	progress/R59/tools/run_matrix.sh	docs/progress/R59/code/tools/run_matrix.sh	39078fe66a815da95acef76e1d1c0c0d1da84e0fbd8e9a41b0137563b19690dd
+docs/progress/R59/code/INDEX.tsv-74-R59	progress/R59/tools/verify_delivery.sh	docs/progress/R59/code/tools/verify_delivery.sh	a828b9f3730e86740ce456bf6565176f166848a4ee98a8eda5ccf9192c4ed8cc
+--
+progress/R59/tools/verify_delivery.sh-20-
+progress/R59/tools/verify_delivery.sh-21-awk -F '\t' 'NR > 1 {print $4 "  " $3}' docs/progress/R59/code/INDEX.tsv | sha256sum -c -
+progress/R59/tools/verify_delivery.sh-22-
+progress/R59/tools/verify_delivery.sh-23-diff -u progress/R59/src/r59_probe.cpp docs/progress/R59/code/src/r59_probe.cpp
+progress/R59/tools/verify_delivery.sh-24-diff -u progress/R59/tables/reproduction_matrix.tsv docs/progress/R59/tables/reproduction_matrix.tsv
+progress/R59/tools/verify_delivery.sh-25-
+progress/R59/tools/verify_delivery.sh-26-awk -F '\t' '
+progress/R59/tools/verify_delivery.sh-27-  NR == 1 {next}
+progress/R59/tools/verify_delivery.sh:28:  $1 == "F1" && $2 == "current" && $3 == 86 {ok[1]=1}
+progress/R59/tools/verify_delivery.sh:29:  $1 == "F1" && $2 == "baseline" && $3 == 0 {ok[2]=1}
+progress/R59/tools/verify_delivery.sh:30:  $1 == "F1" && $2 == "reference" && $3 == 0 {ok[3]=1}
+progress/R59/tools/verify_delivery.sh:31:  $1 == "F2" && $2 == "current" && $3 == 5 {ok[4]=1}
+progress/R59/tools/verify_delivery.sh:32:  $1 == "F2" && $2 == "baseline" && $3 == 134 {ok[5]=1}
+progress/R59/tools/verify_delivery.sh:33:  $1 == "F2" && $2 == "reference" && $3 == 0 {ok[6]=1}
+progress/R59/tools/verify_delivery.sh:34:  $1 == "M1" && $2 == "current" && $3 == 6 {ok[7]=1}
+progress/R59/tools/verify_delivery.sh:35:  $1 == "M1" && $2 == "baseline" && $3 == 134 {ok[8]=1}
+progress/R59/tools/verify_delivery.sh:36:  $1 == "M1" && $2 == "reference" && $3 == 0 {ok[9]=1}
+progress/R59/tools/verify_delivery.sh:37:  $1 == "M2" && $2 == "current" && $3 == 86 {ok[10]=1}
+progress/R59/tools/verify_delivery.sh:38:  $1 == "M2" && $2 == "baseline" && $3 == 86 {ok[11]=1}
+progress/R59/tools/verify_delivery.sh:39:  $1 == "M2" && $2 == "reference" && $3 == 0 {ok[12]=1}
+progress/R59/tools/verify_delivery.sh-40-  END {for (i=1;i<=12;i++) if (!ok[i]) exit 1; print "MATRIX_EXPECTED_ROWS=12 PASS"}
+progress/R59/tools/verify_delivery.sh-41-' progress/R59/tables/reproduction_matrix.tsv
+progress/R59/tools/verify_delivery.sh-42-
+progress/R59/tools/verify_delivery.sh-43-if git status --porcelain -- codes docs/patches | grep -v '^?? docs/progress/R59/' | grep -q .; then
+progress/R59/tools/verify_delivery.sh-44-  printf 'FORBIDDEN_SOURCE_OR_PATCH_CHANGE=FOUND\n'
+progress/R59/tools/verify_delivery.sh-45-  exit 1
+progress/R59/tools/verify_delivery.sh-46-fi
+progress/R59/tools/verify_delivery.sh-47-printf 'FORBIDDEN_SOURCE_OR_PATCH_CHANGE=NONE\n'
+--
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv-1-defect	variant	exit_code
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:2:F1	current	86
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:3:F1	baseline	0
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:4:F1	reference	0
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:5:F2	current	5
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:6:F2	baseline	134
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:7:F2	reference	0
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:8:M1	current	6
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:9:M1	baseline	134
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:10:M1	reference	0
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:11:M2	current	86
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:12:M2	baseline	86
+progress/R59/tables/reproduction_matrix_m2_noexcept_invalid.tsv:13:M2	reference	86
+--
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv-1-defect	variant	exit_code
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:2:F1	current	86
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:3:F1	baseline	0
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:4:F1	reference	0
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:5:F2	current	5
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:6:F2	baseline	134
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:7:F2	reference	0
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:8:M1	current	6
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:9:M1	baseline	134
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:10:M1	reference	0
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:11:M2	current	86
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:12:M2	baseline	86
+progress/R59/tables/reproduction_matrix_m2_uncaught_result.tsv:13:M2	reference	86
+--
+progress/R59/tools/capture_source_evidence.sh-19-capture current_istream_f2.txt "$root/docs/progress/R58/code/current/libcxx/include/istream" '760,815p'
+progress/R59/tools/capture_source_evidence.sh-20-capture baseline_istream_f2.txt "$root/docs/progress/R58/code/baseline/libcxx/include/istream" '760,810p'
+progress/R59/tools/capture_source_evidence.sh-21-capture current_future_m1_m2.txt "$root/docs/progress/R58/code/current/libcxx/include/future" '760,925p'
+progress/R59/tools/capture_source_evidence.sh-22-capture baseline_future_m1_m2.txt "$root/docs/progress/R58/code/baseline/libcxx/include/future" '760,905p'
+progress/R59/tools/capture_source_evidence.sh-23-capture libcxx_future_state.txt "$root/codes/llvm/libcxx/src/future.cpp" '55,135p'
+progress/R59/tools/capture_source_evidence.sh-24-capture libstdcxx_istream_reference.txt "$root/codes/gcc/libstdc++-v3/include/bits/istream.tcc" '370,430p'
+progress/R59/tools/capture_source_evidence.sh-25-capture libstdcxx_future_state_core.txt "$root/codes/gcc/libstdc++-v3/include/std/future" '420,485p'
+progress/R59/tools/capture_source_evidence.sh-26-capture libstdcxx_future_task_setter.txt "$root/codes/gcc/libstdc++-v3/include/std/future" '1390,1460p'
+progress/R59/tools/capture_source_evidence.sh:27:capture libstdcxx_future_deferred.txt "$root/codes/gcc/libstdc++-v3/include/std/future" '1660,1730p'
+progress/R59/tools/capture_source_evidence.sh-28-capture libstdcxx_future_async.txt "$root/codes/gcc/libstdc++-v3/include/std/future" '1750,1810p'
+progress/R59/tools/capture_source_evidence.sh-29-
+progress/R59/tools/capture_source_evidence.sh-30-sha256sum "$out"/*.txt > "$out/SHA256SUMS"
+--
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv-1-defect	variant	exit_code
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:2:F1	current	86
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:3:F1	baseline	0
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:4:F1	reference	0
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:5:F2	current	5
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:6:F2	baseline	134
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:7:F2	reference	0
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:8:M1	current	6
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:9:M1	baseline	134
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:10:M1	reference	0
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:11:M2	current	86
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:12:M2	baseline	0
+progress/R59/tables/reproduction_matrix_initial_invalid_m2.tsv:13:M2	reference	139
+--
+progress/R59/tables/same_class_review.tsv-1-scope	forced_handler_count	finding
+progress/R59/tables/same_class_review.tsv:2:libcxx/include/istream	23	F2 的 get(streambuf&,delim) 是唯一“只改局部状态后立即重抛、未先提交到流对象”的 typed handler；其余同类站点在重抛前调用 __setstate_nothrow，或不持有待提交局部状态
+progress/R59/tables/same_class_review.tsv:3:libcxx/include/future	9	M1 覆盖 deferred 的有值/void 两个特化；M2 覆盖 async 的有值/void 两个特化；四个 packaged_task handler 与 async 创建外层 handler 直接重抛且不存在同样的中间状态完成操作
+progress/R59/tables/same_class_review.tsv:4:libcxx/src/ios.cpp	2	badbit/failbit 两个同构 helper 均受 F1 影响，已作为同一缺陷的两个站点计入；未发现第三个同构 helper
+--
+progress/R59/tables/blind_spot_regression_design.tsv-1-blind_spot	new_matrix_case	assertions	upgrade_gate
+progress/R59/tables/blind_spot_regression_design.tsv-2-exceptions 掩码	badbit/failbit helper × 原生异常/外来异常/强制展开 × mask on/off	退出路径、顶层捕获类型、rdstate、是否 terminate	每次 libc++ 升版在 x86_64 与 armv7l 跑路径表；任一当前基线等价路径变化即失败
+progress/R59/tables/blind_spot_regression_design.tsv:3:deferred 状态机	launch::deferred 第一次执行者被取消，第二等待者重入	首次 join=PTHREAD_CANCELED、第二等待有界返回、callable 调用次数、最终值/异常	固定超时并至少重复 20 次；出现永久等待或未声明的重复副作用即失败
+progress/R59/tables/blind_spot_regression_design.tsv-4-流状态位	get(streambuf&,delim) 与相邻输入设施在取消后检查对象	join、rdstate、bad/fail/eof、gcount	不能只看退出码；状态位须逐格与 libstdc++ 参考对照
+progress/R59/tables/blind_spot_regression_design.tsv:5:异步完成竞态	共享状态完成后、worker 退出 try 前到达异步取消	原强制展开是否完成、是否出现 promise_already_satisfied、future 的 ready/value/error	采用确定性握手窗口并重复 20 次；完成操作不得替换原传播
+--
+progress/R59/tables/defect_verdicts.tsv-1-id	current_exit	baseline_exit	libstdcxx_exit	verdict	origin	observed_fact
+progress/R59/tables/defect_verdicts.tsv:2:F1	86	0	0	成立	补丁引入的回归	当前版进入 terminate handler；基线与 libstdc++ 均把外来异常传播到顶层 catch，且 badbit=1
+progress/R59/tables/defect_verdicts.tsv:3:F2	5	134	0	成立	补丁 typed 分支引入的状态提交缺陷；基线另有吞取消后 abort 的既有缺陷	当前版取消正常完成但 rdstate=0/bad=0；libstdc++ 为 rdstate=1/bad=1
+progress/R59/tables/defect_verdicts.tsv:4:M1	6	134	0	成立	补丁 typed 分支引入的新挂起形态；基线另有吞取消后 abort 的既有缺陷	当前版第二等待者超时且 callable 只执行一次；libstdc++ 第二次执行并返回 42
+progress/R59/tables/defect_verdicts.tsv:5:M2	86	86	0	成立	上游 libc++ 既有问题被补丁保留，并非相对基线的新回归	当前版与基线均在已就绪窗口进入 terminate；libstdc++ 完成取消传播，future.get 报 broken_promise
+--
+docs/progress/R59/INDEX.tsv-50-docs/progress/R59/code/commands/021_make_code_index.command.txt	d9eed9682196dba9923169ed38f5a985ac9c62150633a749cedbd613ac9ecca6	197
+docs/progress/R59/INDEX.tsv-51-docs/progress/R59/code/commands/021_make_code_index.exit.txt	1ca4a13146b2891c0e462123ac0cb848f92e6221f18b870a1b78c232d1956c35	12
+docs/progress/R59/INDEX.tsv-52-docs/progress/R59/code/commands/022_verify_delivery.command.txt	4b95dc993b58bce468554f3ded506eba089bae530b7ed396809db369a06fc3d8	298
+docs/progress/R59/INDEX.tsv-53-docs/progress/R59/code/commands/022_verify_delivery.exit.txt	0aac2256ca135e9e2ce682d26e680d8ec767e0c2897215d636113386fbc768af	12
+docs/progress/R59/INDEX.tsv-54-docs/progress/R59/code/output/identity/ld_debug_current.log	add83215f2ab3d9b4309a491e0262ed1fbfa9a7a4b4afad93639241b4ad77671	10046
+docs/progress/R59/INDEX.tsv-55-docs/progress/R59/code/output/identity/ldd_current.txt	2cdf1c4aa44e835098dfe7147980db3f239ba88dc471ee091caedb78d3402fc8	705
+docs/progress/R59/INDEX.tsv-56-docs/progress/R59/code/output/identity/sha256.txt	1033a18203b11e5b5e079b5965e6e5bf18c7e6df47f21025cca9f8a2ccddac73	1026
+docs/progress/R59/INDEX.tsv-57-docs/progress/R59/code/output/m2_gdb_trace.log	2fa76942fa81af12cb24dc1fa9f860e753ac3a83d21a380dbb3f2407334b5a3c	7423
+docs/progress/R59/INDEX.tsv:58:docs/progress/R59/code/output/matrix/F1_baseline.log	caf0c2c7b666d218d9737d4731a349e4a988432cedaa34b4162f4532686c3686	434
+docs/progress/R59/INDEX.tsv:59:docs/progress/R59/code/output/matrix/F1_current.log	9a910b91053bef7683f1f9e6254c32f6bdaeff9493468c9abcb2fbbf482354c5	422
+docs/progress/R59/INDEX.tsv:60:docs/progress/R59/code/output/matrix/F1_reference.log	6bab173cb8f813593cf5f804eef909eccb3a0252340a244ebfa5928188e3c74f	161
+docs/progress/R59/INDEX.tsv:61:docs/progress/R59/code/output/matrix/F2_baseline.log	81aa5fc5b99ffb1fed757726db6d93a0c663d0469dc97dc2e4a25913244c8670	451
+docs/progress/R59/INDEX.tsv:62:docs/progress/R59/code/output/matrix/F2_current.log	f6920b54481cd6d5cf91f7840c14b87dab30d6c5f5b497e1dbc3f4b3490b0817	446
+docs/progress/R59/INDEX.tsv:63:docs/progress/R59/code/output/matrix/F2_reference.log	75ba84bf91366f0eb2f5037be8ba3b072c1f5172fc18ac04638a3cc0ae42809f	179
+docs/progress/R59/INDEX.tsv:64:docs/progress/R59/code/output/matrix/M1_baseline.log	1897d2e8a7e7396ffae07d63e62621d87e3e2741eb5a126cec5b7f0ce37f7251	451
+docs/progress/R59/INDEX.tsv:65:docs/progress/R59/code/output/matrix/M1_current.log	8c08a68a7a0536f2ecf07292db27dd38a580789936cf8c3bd09e3b47aad92ce6	486
+docs/progress/R59/INDEX.tsv:66:docs/progress/R59/code/output/matrix/M1_reference.log	1ab8299f424674865cf0043636d45199204b0efc360213495d96e40ba48a3766	254
+docs/progress/R59/INDEX.tsv:67:docs/progress/R59/code/output/matrix/M2_baseline.log	9066ef8a522ff4c3b016ba4b81b16c10c62fb61f1811279700e3fe9558170889	460
+docs/progress/R59/INDEX.tsv:68:docs/progress/R59/code/output/matrix/M2_current.log	c4a5647792f2c01d85819a215d69fb1700a6cbc0830dfe4a9d53ad2e618171ca	454
+docs/progress/R59/INDEX.tsv:69:docs/progress/R59/code/output/matrix/M2_reference.log	f5853009f1e349e95f2ddce3b615566bfc15aa6f7f6604a1ef67b754bc09e57f	268
+docs/progress/R59/INDEX.tsv-70-docs/progress/R59/code/src/r59_probe.cpp	24f9d79e4b395c91fc3413ad0fde875cebd98fb65973b4cf87019a5a4b7b5526	6383
+docs/progress/R59/INDEX.tsv-71-docs/progress/R59/code/tools/build_probes.sh	9ab7915cbdeb5c14b16a36d30c568f8448196c80f1a628e86fd35cdc5b7d154b	1495
+docs/progress/R59/INDEX.tsv-72-docs/progress/R59/code/tools/capture_source_evidence.sh	9d1f15c76e7e7d466560a3fb5cda4c0fdbebea06c7d625b085a38fdecf6c37d0	1598
+docs/progress/R59/INDEX.tsv-73-docs/progress/R59/code/tools/m2_gdb_commands.txt	7b7d2d862a3c8e5c593e321d094524a245547a03875c9f8d5edf789cd41e65a8	389
+docs/progress/R59/INDEX.tsv-74-docs/progress/R59/code/tools/make_code_index.sh	1ae78c8eb82a2b023c798b307a9c4daf243fe9dd8ea5b273f55d6b480f2aece0	1192
+docs/progress/R59/INDEX.tsv-75-docs/progress/R59/code/tools/make_delivery_index.sh	1bd91cbf3865f07864106bf3c8cd8564c9c7661b7353093a933214d3a0ab5dc2	501
+docs/progress/R59/INDEX.tsv-76-docs/progress/R59/code/tools/run_matrix.sh	39078fe66a815da95acef76e1d1c0c0d1da84e0fbd8e9a41b0137563b19690dd	1754
+docs/progress/R59/INDEX.tsv-77-docs/progress/R59/code/tools/verify_delivery.sh	a828b9f3730e86740ce456bf6565176f166848a4ee98a8eda5ccf9192c4ed8cc	2059
+--
+docs/progress/R59/INDEX.tsv-142-docs/progress/R59/raw/build_initial/reference_compile.log	2c03cd802b70ed0d29f6c978bbe8118bcdf464a29e25a13c1e0e85958f170cbd	331
+docs/progress/R59/INDEX.tsv-143-docs/progress/R59/raw/build_syntax.log	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0
+docs/progress/R59/INDEX.tsv-144-docs/progress/R59/raw/final_verification.log	ec94c604622743a77d0ed3b129eef8145fd6536057aaf03bb07d0325b4771d78	18662
+docs/progress/R59/INDEX.tsv-145-docs/progress/R59/raw/handler_counts.txt	7234ab4453f79e533c06949d66dd50bb35ad525e5096a4d3cec5dad2a0fecc48	164
+docs/progress/R59/INDEX.tsv-146-docs/progress/R59/raw/identity/ld_debug_current.log	add83215f2ab3d9b4309a491e0262ed1fbfa9a7a4b4afad93639241b4ad77671	10046
+docs/progress/R59/INDEX.tsv-147-docs/progress/R59/raw/identity/ldd_current.txt	2cdf1c4aa44e835098dfe7147980db3f239ba88dc471ee091caedb78d3402fc8	705
+docs/progress/R59/INDEX.tsv-148-docs/progress/R59/raw/identity/sha256.txt	1033a18203b11e5b5e079b5965e6e5bf18c7e6df47f21025cca9f8a2ccddac73	1026
+docs/progress/R59/INDEX.tsv-149-docs/progress/R59/raw/m2_gdb_trace.log	2fa76942fa81af12cb24dc1fa9f860e753ac3a83d21a380dbb3f2407334b5a3c	7423
+docs/progress/R59/INDEX.tsv:150:docs/progress/R59/raw/matrix/F1_baseline.log	caf0c2c7b666d218d9737d4731a349e4a988432cedaa34b4162f4532686c3686	434
+docs/progress/R59/INDEX.tsv:151:docs/progress/R59/raw/matrix/F1_current.log	9a910b91053bef7683f1f9e6254c32f6bdaeff9493468c9abcb2fbbf482354c5	422
+docs/progress/R59/INDEX.tsv:152:docs/progress/R59/raw/matrix/F1_reference.log	6bab173cb8f813593cf5f804eef909eccb3a0252340a244ebfa5928188e3c74f	161
+docs/progress/R59/INDEX.tsv:153:docs/progress/R59/raw/matrix/F2_baseline.log	81aa5fc5b99ffb1fed757726db6d93a0c663d0469dc97dc2e4a25913244c8670	451
+docs/progress/R59/INDEX.tsv:154:docs/progress/R59/raw/matrix/F2_current.log	f6920b54481cd6d5cf91f7840c14b87dab30d6c5f5b497e1dbc3f4b3490b0817	446
+docs/progress/R59/INDEX.tsv:155:docs/progress/R59/raw/matrix/F2_reference.log	75ba84bf91366f0eb2f5037be8ba3b072c1f5172fc18ac04638a3cc0ae42809f	179
+docs/progress/R59/INDEX.tsv:156:docs/progress/R59/raw/matrix/M1_baseline.log	1897d2e8a7e7396ffae07d63e62621d87e3e2741eb5a126cec5b7f0ce37f7251	451
+docs/progress/R59/INDEX.tsv:157:docs/progress/R59/raw/matrix/M1_current.log	8c08a68a7a0536f2ecf07292db27dd38a580789936cf8c3bd09e3b47aad92ce6	486
+docs/progress/R59/INDEX.tsv:158:docs/progress/R59/raw/matrix/M1_reference.log	1ab8299f424674865cf0043636d45199204b0efc360213495d96e40ba48a3766	254
+docs/progress/R59/INDEX.tsv:159:docs/progress/R59/raw/matrix/M2_baseline.log	9066ef8a522ff4c3b016ba4b81b16c10c62fb61f1811279700e3fe9558170889	460
+docs/progress/R59/INDEX.tsv:160:docs/progress/R59/raw/matrix/M2_current.log	c4a5647792f2c01d85819a215d69fb1700a6cbc0830dfe4a9d53ad2e618171ca	454
+docs/progress/R59/INDEX.tsv:161:docs/progress/R59/raw/matrix/M2_reference.log	f5853009f1e349e95f2ddce3b615566bfc15aa6f7f6604a1ef67b754bc09e57f	268
+docs/progress/R59/INDEX.tsv:162:docs/progress/R59/raw/matrix_initial_invalid_m2/F1_baseline.log	caf0c2c7b666d218d9737d4731a349e4a988432cedaa34b4162f4532686c3686	434
+docs/progress/R59/INDEX.tsv:163:docs/progress/R59/raw/matrix_initial_invalid_m2/F1_current.log	9a910b91053bef7683f1f9e6254c32f6bdaeff9493468c9abcb2fbbf482354c5	422
+docs/progress/R59/INDEX.tsv:164:docs/progress/R59/raw/matrix_initial_invalid_m2/F1_reference.log	6bab173cb8f813593cf5f804eef909eccb3a0252340a244ebfa5928188e3c74f	161
+docs/progress/R59/INDEX.tsv:165:docs/progress/R59/raw/matrix_initial_invalid_m2/F2_baseline.log	81aa5fc5b99ffb1fed757726db6d93a0c663d0469dc97dc2e4a25913244c8670	451
+docs/progress/R59/INDEX.tsv:166:docs/progress/R59/raw/matrix_initial_invalid_m2/F2_current.log	f6920b54481cd6d5cf91f7840c14b87dab30d6c5f5b497e1dbc3f4b3490b0817	446
+docs/progress/R59/INDEX.tsv:167:docs/progress/R59/raw/matrix_initial_invalid_m2/F2_reference.log	75ba84bf91366f0eb2f5037be8ba3b072c1f5172fc18ac04638a3cc0ae42809f	179
+docs/progress/R59/INDEX.tsv:168:docs/progress/R59/raw/matrix_initial_invalid_m2/M1_baseline.log	1897d2e8a7e7396ffae07d63e62621d87e3e2741eb5a126cec5b7f0ce37f7251	451
+docs/progress/R59/INDEX.tsv:169:docs/progress/R59/raw/matrix_initial_invalid_m2/M1_current.log	8c08a68a7a0536f2ecf07292db27dd38a580789936cf8c3bd09e3b47aad92ce6	486
+docs/progress/R59/INDEX.tsv:170:docs/progress/R59/raw/matrix_initial_invalid_m2/M1_reference.log	1ab8299f424674865cf0043636d45199204b0efc360213495d96e40ba48a3766	254
+docs/progress/R59/INDEX.tsv:171:docs/progress/R59/raw/matrix_initial_invalid_m2/M2_baseline.log	8f62d0adb7d6f0c5c714926e5137e071c6f6bfe928f3525f10e361bd2ae40c20	454
+docs/progress/R59/INDEX.tsv:172:docs/progress/R59/raw/matrix_initial_invalid_m2/M2_current.log	a037efa9aaf04cf8be8e4e55b69f6dea2b8eb048d89cd2cc011bd62d223f7283	475
+docs/progress/R59/INDEX.tsv:173:docs/progress/R59/raw/matrix_initial_invalid_m2/M2_reference.log	b12ecf5f64f4f1c4abc9873122c548100430ce1cedeb711cb9570c0c9f974c3f	190
+docs/progress/R59/INDEX.tsv:174:docs/progress/R59/raw/matrix_m2_noexcept_invalid/F1_baseline.log	caf0c2c7b666d218d9737d4731a349e4a988432cedaa34b4162f4532686c3686	434
+docs/progress/R59/INDEX.tsv:175:docs/progress/R59/raw/matrix_m2_noexcept_invalid/F1_current.log	9a910b91053bef7683f1f9e6254c32f6bdaeff9493468c9abcb2fbbf482354c5	422
+docs/progress/R59/INDEX.tsv:176:docs/progress/R59/raw/matrix_m2_noexcept_invalid/F1_reference.log	6bab173cb8f813593cf5f804eef909eccb3a0252340a244ebfa5928188e3c74f	161
+docs/progress/R59/INDEX.tsv:177:docs/progress/R59/raw/matrix_m2_noexcept_invalid/F2_baseline.log	81aa5fc5b99ffb1fed757726db6d93a0c663d0469dc97dc2e4a25913244c8670	451
+docs/progress/R59/INDEX.tsv:178:docs/progress/R59/raw/matrix_m2_noexcept_invalid/F2_current.log	f6920b54481cd6d5cf91f7840c14b87dab30d6c5f5b497e1dbc3f4b3490b0817	446
+docs/progress/R59/INDEX.tsv:179:docs/progress/R59/raw/matrix_m2_noexcept_invalid/F2_reference.log	75ba84bf91366f0eb2f5037be8ba3b072c1f5172fc18ac04638a3cc0ae42809f	179
+docs/progress/R59/INDEX.tsv:180:docs/progress/R59/raw/matrix_m2_noexcept_invalid/M1_baseline.log	1897d2e8a7e7396ffae07d63e62621d87e3e2741eb5a126cec5b7f0ce37f7251	451
+docs/progress/R59/INDEX.tsv:181:docs/progress/R59/raw/matrix_m2_noexcept_invalid/M1_current.log	8c08a68a7a0536f2ecf07292db27dd38a580789936cf8c3bd09e3b47aad92ce6	486
+docs/progress/R59/INDEX.tsv:182:docs/progress/R59/raw/matrix_m2_noexcept_invalid/M1_reference.log	1ab8299f424674865cf0043636d45199204b0efc360213495d96e40ba48a3766	254
+docs/progress/R59/INDEX.tsv:183:docs/progress/R59/raw/matrix_m2_noexcept_invalid/M2_baseline.log	9066ef8a522ff4c3b016ba4b81b16c10c62fb61f1811279700e3fe9558170889	460
+docs/progress/R59/INDEX.tsv:184:docs/progress/R59/raw/matrix_m2_noexcept_invalid/M2_current.log	c4a5647792f2c01d85819a215d69fb1700a6cbc0830dfe4a9d53ad2e618171ca	454
+docs/progress/R59/INDEX.tsv:185:docs/progress/R59/raw/matrix_m2_noexcept_invalid/M2_reference.log	67c7e50cfe105a652dc66ec6b71cea496d6f9ea88390e30d05f7cf0de19ef08d	187
+docs/progress/R59/INDEX.tsv:186:docs/progress/R59/raw/matrix_m2_uncaught_result/F1_baseline.log	caf0c2c7b666d218d9737d4731a349e4a988432cedaa34b4162f4532686c3686	434
+docs/progress/R59/INDEX.tsv:187:docs/progress/R59/raw/matrix_m2_uncaught_result/F1_current.log	9a910b91053bef7683f1f9e6254c32f6bdaeff9493468c9abcb2fbbf482354c5	422
+docs/progress/R59/INDEX.tsv:188:docs/progress/R59/raw/matrix_m2_uncaught_result/F1_reference.log	6bab173cb8f813593cf5f804eef909eccb3a0252340a244ebfa5928188e3c74f	161
+docs/progress/R59/INDEX.tsv:189:docs/progress/R59/raw/matrix_m2_uncaught_result/F2_baseline.log	81aa5fc5b99ffb1fed757726db6d93a0c663d0469dc97dc2e4a25913244c8670	451
+docs/progress/R59/INDEX.tsv:190:docs/progress/R59/raw/matrix_m2_uncaught_result/F2_current.log	f6920b54481cd6d5cf91f7840c14b87dab30d6c5f5b497e1dbc3f4b3490b0817	446
+docs/progress/R59/INDEX.tsv:191:docs/progress/R59/raw/matrix_m2_uncaught_result/F2_reference.log	75ba84bf91366f0eb2f5037be8ba3b072c1f5172fc18ac04638a3cc0ae42809f	179
+docs/progress/R59/INDEX.tsv:192:docs/progress/R59/raw/matrix_m2_uncaught_result/M1_baseline.log	1897d2e8a7e7396ffae07d63e62621d87e3e2741eb5a126cec5b7f0ce37f7251	451
+docs/progress/R59/INDEX.tsv:193:docs/progress/R59/raw/matrix_m2_uncaught_result/M1_current.log	8c08a68a7a0536f2ecf07292db27dd38a580789936cf8c3bd09e3b47aad92ce6	486
+docs/progress/R59/INDEX.tsv:194:docs/progress/R59/raw/matrix_m2_uncaught_result/M1_reference.log	1ab8299f424674865cf0043636d45199204b0efc360213495d96e40ba48a3766	254
+docs/progress/R59/INDEX.tsv:195:docs/progress/R59/raw/matrix_m2_uncaught_result/M2_baseline.log	9066ef8a522ff4c3b016ba4b81b16c10c62fb61f1811279700e3fe9558170889	460
+docs/progress/R59/INDEX.tsv:196:docs/progress/R59/raw/matrix_m2_uncaught_result/M2_current.log	c4a5647792f2c01d85819a215d69fb1700a6cbc0830dfe4a9d53ad2e618171ca	454
+docs/progress/R59/INDEX.tsv:197:docs/progress/R59/raw/matrix_m2_uncaught_result/M2_reference.log	823fc26627879ce5283962a4c38d093ba8dadcb3cf7e4019e549e96a503fcbe6	228
+docs/progress/R59/INDEX.tsv-198-docs/progress/R59/raw/resources/001_resource_gate_light.log	356c7ce4672d38db5c3fe974a945f37ad4abf7df16111469574d9e2c85e7b218	178
+docs/progress/R59/INDEX.tsv-199-docs/progress/R59/raw/resources/002_preflight.log	f7508e8a320fa0c857b1e7cd0526db0fff55c77b7fabf311ebd770a7a0cf63ba	1590
+docs/progress/R59/INDEX.tsv-200-docs/progress/R59/raw/reverification.log	bf5f9db80f73830ab783c95daf47e640f7b826a6eca377c0ef968286a8bbe5e1	4801
+docs/progress/R59/INDEX.tsv-201-docs/progress/R59/raw/run_corrected_matrix.stderr	a6be3b34665f61868df0823fb9a53de7708c495444519c194fc176a18c1a648d	292
+docs/progress/R59/INDEX.tsv-202-docs/progress/R59/raw/run_final2_matrix.stderr	e2097e8ae536dcc41c29571cedf75573e9a0fa2be514f8bffe96cb26c6c3a12e	292
+docs/progress/R59/INDEX.tsv-203-docs/progress/R59/raw/run_final_matrix.stderr	cabd1107253bb5dd09e43c5a683610efe76b43a7de67f6c936865086f6e3dc9f	292
+docs/progress/R59/INDEX.tsv-204-docs/progress/R59/raw/run_matrix_syntax.log	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0
+docs/progress/R59/INDEX.tsv-205-docs/progress/R59/raw/same_class_static_scan.txt	4ca61e34d2d45139e8004f40376abb28d3abdd1cfa689e2ce29a63dad3f338a5	41763
+--
+docs/progress/R59/INDEX.tsv-207-docs/progress/R59/raw/source/baseline_future_m1_m2.txt	6943e60ac302bc2877ba5725bfb41490ebd7d0b505f379653b6625d630a0a4b4	5049
+docs/progress/R59/INDEX.tsv-208-docs/progress/R59/raw/source/baseline_ios.txt	a3baa6ef4041d31b3acec0da82805bd2c0e75b3500b4ac7e1084e39964efe6ee	1739
+docs/progress/R59/INDEX.tsv-209-docs/progress/R59/raw/source/baseline_istream_f2.txt	82bad331d7f998b17c7bd9ed6f2c7fb96e6e32dcd0d42e220d2f81d6f7fb5f64	2023
+docs/progress/R59/INDEX.tsv-210-docs/progress/R59/raw/source/current_future_m1_m2.txt	b7c1651ab4eb4bc2766c50edde5e4d28f2ca249a5868a3cc16d43cae49ad073c	5790
+docs/progress/R59/INDEX.tsv-211-docs/progress/R59/raw/source/current_ios.txt	ab5a4e3c2b5711facca4d474d61961ef52edc3b263944699db3fb2461be1b07a	2068
+docs/progress/R59/INDEX.tsv-212-docs/progress/R59/raw/source/current_istream_f2.txt	4a8ae24c7f879c5ea28cc789ef56dd2ac5dbb534c3c461d2a952812c6180d244	2244
+docs/progress/R59/INDEX.tsv-213-docs/progress/R59/raw/source/libcxx_future_state.txt	4730fc2cd3db54785c4885fa08a7d6e3c79b466cd84afc7a0c5c27cf25590a58	3013
+docs/progress/R59/INDEX.tsv-214-docs/progress/R59/raw/source/libstdcxx_future_async.txt	bb7a89388a8e37ff0dbfe595aeec78261b0a9e097ecbc3c8ded64c41c7509277	2402
+docs/progress/R59/INDEX.tsv:215:docs/progress/R59/raw/source/libstdcxx_future_deferred.txt	9c220a66f004ad16cfbff7e41bc745dbd96d500c76dcf9bc5ff7ba74ca3c8f9e	3061
+docs/progress/R59/INDEX.tsv-216-docs/progress/R59/raw/source/libstdcxx_future_state_core.txt	97d0e46d767d346e45dc0a1262c125442cb4df50b648a8400c41ee2706cd58d1	3013
+docs/progress/R59/INDEX.tsv-217-docs/progress/R59/raw/source/libstdcxx_future_task_setter.txt	9a175ded8d65ff54fbcfdf50e689412e3efda745ae1e0826e647fc25b2749e77	2240
+docs/progress/R59/INDEX.tsv-218-docs/progress/R59/raw/source/libstdcxx_istream_reference.txt	0ec5403ab9e91a43f122cfc1e7dbd533fdc748654f50c34835f23453169a80d2	2369
+docs/progress/R59/INDEX.tsv-219-docs/progress/R59/raw/source_capture_driver.log	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0
+docs/progress/R59/INDEX.tsv-220-docs/progress/R59/raw/source_capture_driver_final.log	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0
+docs/progress/R59/INDEX.tsv-221-docs/progress/R59/raw/verification.log	f908fb0045d4ebdd6cb636cb4f147b4a74231180476bb8f0a6626d455dcbbe8e	94
+docs/progress/R59/INDEX.tsv-222-docs/progress/R59/tables/blind_spot_regression_design.tsv	bce8f2dba1d241e0cef3b0b47b553a4be2b1466d08c77a31179c35a81cb1e4be	1048
+docs/progress/R59/INDEX.tsv-223-docs/progress/R59/tables/defect_verdicts.tsv	efeccdd90121d2ac38c7e69b851710369da27c41d05fbdef049dcc756a72aace	839
