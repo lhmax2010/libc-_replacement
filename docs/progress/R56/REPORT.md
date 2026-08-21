@@ -87,6 +87,16 @@ tools/resource_gate.sh --level medium
 - 尚存疑问：若继续消除 libc++ 头文件对 `cxxabi.h` 的直接依赖，需要为 catch 点提供某种完整类型声明；采用何种承载位置或条件化机制超出本任务范围，留待人工裁决。
 - 署名：人工未提供 name/email；由于本任务在实现前停车、没有生成补丁，`--amend` 事项不适用。
 
-## 7. 证据索引
+## 7. 提交与上传
+
+- 项目分支：`codex/r5-ehabi-diagnosis`。
+- 内容提交：`6df7749eb078b985345a08ee23f9e258c201ac2e`。
+- `git push origin codex/r5-ehabi-diagnosis` 退出 0。
+- 首次上传后的 `git ls-remote` 返回同一 SHA，本地与远端匹配。
+- 没有向 Gerrit 或任何外部源码仓推送；上述远端仅为本项目 GitHub 仓。
+
+提交、推送与核验原文见 `commands/024_*` 至 `commands/026_*`、`raw/git_commit.log`、`raw/git_push.log`、`raw/git_ls_remote.log` 与 `tables/publication.tsv`。
+
+## 8. 证据索引
 
 策展副本的逐文件来源与 SHA256 见 `docs/progress/R56/INDEX.tsv`。原始输出、命令原文和退出码均保存在 `progress/R56/`，策展副本收录本轮全部小文件；不存在超过 5 MB 的排除项。
