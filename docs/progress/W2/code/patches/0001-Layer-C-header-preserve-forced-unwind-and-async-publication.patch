@@ -1,0 +1,370 @@
+From ab0405adae8361e5e331eafd3830c51537e0ad42 Mon Sep 17 00:00:00 2001
+From: He Fangyu <fangyu.he@samsung.com>
+Date: Fri, 21 Aug 2026 22:10:06 +0800
+Subject: [PATCH] libcxx: preserve forced unwind in header catch sites
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The iostream, future, and string catch-all paths can intercept the
+foreign forced unwind used by pthread cancellation. Preserve the
+observable libstdc++ behavior by recognizing the libc++abi marker type
+before catch-all handlers and rethrowing it after committing any stream
+state required by the corresponding operation.
+
+Deferred futures restore the deferred bit under the shared-state lock
+when execution is cancelled, allowing a waiter to retry the callable.
+
+For async results, split value construction from readiness publication.
+If forced unwind interrupts the callable result temporary in that
+pre-publication window, destroy the stored value, clear the constructed
+marker, publish broken_promise, notify waiters, and rethrow the original
+unwind. This matches libstdc++'s observable behavior without changing
+ordinary exception transport or already-published results.
+
+中文说明：
+为 libc++ 头文件中的 iostream、future 和 string 捕获点补齐强制展开
+防护。deferred 执行被取消时恢复 deferred 标记；async 将结果构造与
+ready 发布拆开，在“已构造、未发布”窗口取消时销毁暂存值、发布
+broken_promise、唤醒等待者，并继续传播原始强制展开。
+
+Validated on native x86_64 for the directed async cancellation window,
+concurrent waiters, wait_for, void results, ordinary exceptions, stream
+state, deferred retry, and libc++abi forced-unwind tests. armv7l is
+validated separately. AArch64, LTO, mixed-runtime frame traversal, and
+dynamic-loading boundaries are not covered here.
+
+Author identity is NOT_AVAILABLE and must be amended before submission.
+---
+ libcxx/include/future  | 96 +++++++++++++++++++++++++++++++++++++++++-
+ libcxx/include/istream | 25 +++++++++++
+ libcxx/include/string  |  3 ++
+ libcxx/src/future.cpp  | 10 +++--
+ 4 files changed, 129 insertions(+), 5 deletions(-)
+
+diff --git a/libcxx/include/future b/libcxx/include/future
+index 4cd5e8ab2aec..09f2da87fba2 100644
+--- a/libcxx/include/future
++++ b/libcxx/include/future
+@@ -367,6 +367,7 @@ template <class R, class Alloc> struct uses_allocator<packaged_task<R>, Alloc>;
+ 
+ #  if _LIBCPP_HAS_THREADS
+ 
++#    include <cxxabi.h>
+ #    include <__assert>
+ #    include <__chrono/duration.h>
+ #    include <__chrono/steady_clock.h>
+@@ -522,6 +523,8 @@ void __throw_future_error(future_errc __ev) {
+ 
+ class _LIBCPP_EXPORTED_FROM_ABI __assoc_sub_state : public __shared_count {
+ protected:
++  enum class __forced_unwind_action { __restore_deferred, __complete_with_error };
++
+   exception_ptr __exception_;
+   mutable mutex __mut_;
+   mutable condition_variable __cv_;
+@@ -530,6 +533,26 @@ protected:
+   void __on_zero_shared() _NOEXCEPT override;
+   void __sub_wait(unique_lock<mutex>& __lk);
+ 
++  _LIBCPP_HIDE_FROM_ABI void
++  __handle_forced_unwind(__forced_unwind_action __action, exception_ptr __error = exception_ptr()) _NOEXCEPT {
++#    if _LIBCPP_HAS_EXCEPTIONS
++    try {
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++      unique_lock<mutex> __lk(__mut_);
++      if (__action == __forced_unwind_action::__restore_deferred) {
++        if (!(__state_ & ready) && !__has_value())
++          __state_ |= deferred;
++      } else if (!(__state_ & ready) && !__has_value()) {
++        __exception_ = std::move(__error);
++        __state_ |= ready;
++      }
++      __cv_.notify_all();
++#    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (...) {
++    }
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++  }
++
+ public:
+   enum { __constructed = 1, __future_attached = 2, ready = 4, deferred = 8 };
+ 
+@@ -591,6 +614,11 @@ protected:
+ 
+   _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __on_zero_shared() _NOEXCEPT override;
+ 
++  template <class _Arg>
++  _LIBCPP_HIDE_FROM_ABI void __construct_value_unready(_Arg&& __arg);
++
++  _LIBCPP_HIDE_FROM_ABI void __complete_forced_unwind(exception_ptr __error) _NOEXCEPT;
++
+ public:
+   template <class _Arg>
+   _LIBCPP_HIDE_FROM_ABI void set_value(_Arg&& __arg);
+@@ -620,6 +648,37 @@ void __assoc_state<_Rp>::set_value(_Arg&& __arg) {
+   __cv_.notify_all();
+ }
+ 
++template <class _Rp>
++template <class _Arg>
++void __assoc_state<_Rp>::__construct_value_unready(_Arg&& __arg) {
++  unique_lock<mutex> __lk(this->__mut_);
++  if (this->__has_value())
++    std::__throw_future_error(future_errc::promise_already_satisfied);
++  ::new ((void*)std::addressof(__value_)) _Rp(std::forward<_Arg>(__arg));
++  this->__state_ |= base::__constructed;
++}
++
++template <class _Rp>
++void __assoc_state<_Rp>::__complete_forced_unwind(exception_ptr __error) _NOEXCEPT {
++#    if _LIBCPP_HAS_EXCEPTIONS
++  try {
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++    unique_lock<mutex> __lk(this->__mut_);
++    if (!(this->__state_ & base::ready)) {
++      if (this->__state_ & base::__constructed) {
++        reinterpret_cast<_Rp*>(std::addressof(__value_))->~_Rp();
++        this->__state_ &= ~base::__constructed;
++      }
++      this->__exception_ = std::move(__error);
++      this->__state_ |= base::ready;
++      this->__cv_.notify_all();
++    }
++#    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (...) {
++  }
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++}
++
+ template <class _Rp>
+ template <class _Arg>
+ void __assoc_state<_Rp>::set_value_at_thread_exit(_Arg&& __arg) {
+@@ -789,6 +848,9 @@ void __deferred_assoc_state<_Rp, _Fp>::__execute() {
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+     this->set_value(__func_());
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    this->__handle_forced_unwind(base::__forced_unwind_action::__restore_deferred);
++    throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+   }
+@@ -820,6 +882,9 @@ void __deferred_assoc_state<void, _Fp>::__execute() {
+     __func_();
+     this->set_value();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    this->__handle_forced_unwind(base::__forced_unwind_action::__restore_deferred);
++    throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+   }
+@@ -848,8 +913,18 @@ void __async_assoc_state<_Rp, _Fp>::__execute() {
+ #    if _LIBCPP_HAS_EXCEPTIONS
+   try {
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+-    this->set_value(__func_());
++    this->__construct_value_unready(__func_());
++    this->__make_ready();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    exception_ptr __error;
++    try {
++      std::__throw_future_error(future_errc::broken_promise);
++    } catch (...) {
++      __error = current_exception();
++    }
++    this->__complete_forced_unwind(std::move(__error));
++    throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+   }
+@@ -887,6 +962,15 @@ void __async_assoc_state<void, _Fp>::__execute() {
+     __func_();
+     this->set_value();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    exception_ptr __error;
++    try {
++      std::__throw_future_error(future_errc::broken_promise);
++    } catch (...) {
++      __error = current_exception();
++    }
++    this->__handle_forced_unwind(base::__forced_unwind_action::__complete_with_error, std::move(__error));
++    throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+   }
+@@ -1661,6 +1745,8 @@ void packaged_task<_Rp(_ArgTypes...)>::operator()(_ArgTypes... __args) {
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+     __p_.set_value(__f_(std::forward<_ArgTypes>(__args)...));
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     __p_.set_exception(current_exception());
+   }
+@@ -1678,6 +1764,8 @@ void packaged_task<_Rp(_ArgTypes...)>::make_ready_at_thread_exit(_ArgTypes... __
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+     __p_.set_value_at_thread_exit(__f_(std::forward<_ArgTypes>(__args)...));
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     __p_.set_exception_at_thread_exit(current_exception());
+   }
+@@ -1761,6 +1849,8 @@ void packaged_task<void(_ArgTypes...)>::operator()(_ArgTypes... __args) {
+     __f_(std::forward<_ArgTypes>(__args)...);
+     __p_.set_value();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     __p_.set_exception(current_exception());
+   }
+@@ -1779,6 +1869,8 @@ void packaged_task<void(_ArgTypes...)>::make_ready_at_thread_exit(_ArgTypes... _
+     __f_(std::forward<_ArgTypes>(__args)...);
+     __p_.set_value_at_thread_exit();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     __p_.set_exception_at_thread_exit(current_exception());
+   }
+@@ -1862,6 +1954,8 @@ async(launch __policy, _Fp&& __f, _Args&&... __args) {
+     if (__does_policy_contain(__policy, launch::async))
+       return std::__make_async_assoc_state<_Rp>(_BF(std::forward<_Fp>(__f), std::forward<_Args>(__args)...));
+ #      if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     if (__policy == launch::async)
+       throw;
+diff --git a/libcxx/include/istream b/libcxx/include/istream
+index dfa22e9f3bfb..deccf4e346d5 100644
+--- a/libcxx/include/istream
++++ b/libcxx/include/istream
+@@ -166,6 +166,7 @@ template <class Stream, class T>
+ 
+ #  if _LIBCPP_HAS_LOCALIZATION
+ 
++#    include <cxxabi.h>
+ #    include <__fwd/istream.h>
+ #    include <__iterator/istreambuf_iterator.h>
+ #    include <__locale_dir/num.h>
+@@ -516,6 +517,10 @@ __input_c_string(basic_istream<_CharT, _Traits>& __is, _CharT* __p, size_t __n)
+       if (__s == __p)
+         __state |= ios_base::failbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      __is.__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       __is.__setstate_nothrow(__state);
+@@ -591,6 +596,10 @@ _LIBCPP_HIDE_FROM_ABI basic_istream<_CharT, _Traits>& operator>>(basic_istream<_
+       else
+         __c = _Traits::to_char_type(__i);
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      __is.__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       __is.__setstate_nothrow(__state);
+@@ -1146,6 +1155,10 @@ _LIBCPP_HIDE_FROM_ABI basic_istream<_CharT, _Traits>& ws(basic_istream<_CharT, _
+         __is.rdbuf()->sbumpc();
+       }
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      __is.__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       __is.__setstate_nothrow(__state);
+@@ -1252,6 +1265,10 @@ operator>>(basic_istream<_CharT, _Traits>& __is, basic_string<_CharT, _Traits, _
+       if (__c == 0)
+         __state |= ios_base::failbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      __is.__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       __is.__setstate_nothrow(__state);
+@@ -1325,6 +1342,10 @@ getline(basic_istream<_CharT, _Traits>& __is, basic_string<_CharT, _Traits, _All
+       __state |= ios_base::eofbit | (__str.empty() ? ios_base::failbit : ios_base::goodbit);
+ 
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    __state |= ios_base::badbit;
++    __is.__setstate_nothrow(__state);
++    throw;
+   } catch (...) {
+     __state |= ios_base::badbit;
+     __is.__setstate_nothrow(__state);
+@@ -1386,6 +1407,10 @@ operator>>(basic_istream<_CharT, _Traits>& __is, bitset<_Size>& __x) {
+       if (_Size > 0 && __c == 0)
+         __state |= ios_base::failbit;
+ #    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (const __cxxabiv1::__forced_unwind&) {
++      __state |= ios_base::badbit;
++      __is.__setstate_nothrow(__state);
++      throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+       __is.__setstate_nothrow(__state);
+diff --git a/libcxx/include/string b/libcxx/include/string
+index 34af7efb5665..37a95c0225b9 100644
+--- a/libcxx/include/string
++++ b/libcxx/include/string
+@@ -649,6 +649,7 @@ basic_string<char32_t> operator""s( const char32_t *str, size_t len );
+ #  include <climits>
+ #  include <cstdio> // EOF
+ #  include <cstring>
++#  include <cxxabi.h>
+ #  include <limits>
+ #  include <stdexcept>
+ #  include <string_view>
+@@ -3463,6 +3464,8 @@ inline _LIBCPP_CONSTEXPR_SINCE_CXX20 void basic_string<_CharT, _Traits, _Allocat
+     traits_type::copy(std::__to_address(__buffer.__data_), std::__to_address(__get_long_pointer()), __size + 1);
+     __reset_internal_buffer(__buffer);
+ #  if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     return;
+   }
+diff --git a/libcxx/src/future.cpp b/libcxx/src/future.cpp
+index 7bba635e9006..2d1aae641cb7 100644
+--- a/libcxx/src/future.cpp
++++ b/libcxx/src/future.cpp
+@@ -111,14 +111,16 @@ void __assoc_sub_state::wait() {
+ }
+ 
+ void __assoc_sub_state::__sub_wait(unique_lock<mutex>& __lk) {
+-  if (!__is_ready()) {
++  while (!__is_ready()) {
+     if (__state_ & static_cast<unsigned>(deferred)) {
+       __state_ &= ~static_cast<unsigned>(deferred);
+       __lk.unlock();
+       __execute();
+-    } else
+-      while (!__is_ready())
+-        __cv_.wait(__lk);
++      if (!__lk.owns_lock())
++        __lk.lock();
++    } else {
++      __cv_.wait(__lk);
++    }
+   }
+ }
+ 
+-- 
+2.43.0
+
