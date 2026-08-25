@@ -1,5 +1,7 @@
 # W2 / R62：armv7l 全平台验证
 
+> **勘误提示：** M2 的三项 armv7l 失败后来确认由探针夹具造成，详见 [ERRATUM-M2-ARMV7L-FIXTURE.md](ERRATUM-M2-ARMV7L-FIXTURE.md)。原报告结论文字保留，用于记录当时的观测状态。
+
 ## 结论
 
 结论为 `PARTIAL`。
