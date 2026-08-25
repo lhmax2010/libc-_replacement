@@ -1,0 +1,354 @@
+# W3 / R63：例外形态消费者审计
+
+## 结论
+
+口径为既有、已解包且状态为 `SCAN_OK` 的 371 个 SRPM 身份（347 个去重包名），不下载、不构建、不扫描平台仓。宽口径文本扫描产生 45 个自动“确认”身份，但人工复核证明该自动标签不可直接使用：大量命中只是工具链能力定义、测试配置或泛型模板参数。
+
+复核后确认 3 个例外消费者（分母 371，0.81%）：`capi-context-motion` 与 `ncnn` 启用 C++ LTO，`boost` 使用具体的 `basic_ostream<char16_t/char32_t>` 特化。另有 2 个条件命中：`app-installers` 与 `tpk-backend` 只在 Release/空 `CMAKE_BUILD_TYPE` 下启用 LTO，而既有材料未保存 `%{build_type}` 的实际展开值，因此不得判作已确认或未命中。
+
+确认例外触及 R47 的 `S16`、`S17`、`S33` 三个库内站点，按任务给定规则转入头文件批后，34/16 变为 **31/19（确认下界）**。条件包中只有 `app-installers` 观察到命中 `S08`；若其实际按启用 LTO 的配置构建，则变为 **30/20**。因此本次只读语料不能给出唯一精确值，精确结果记 `NOT_DETERMINED`，而不是在 31/19 与 30/20 之间猜测。
+
+## 数据来源与扫描口径
+
+- 分母：`progress/R32/tables/scan_status.tsv` 中 371 行 `SCAN_OK` SRPM 身份；去重包名 347。
+- 语料：`tmp/corpus/extracted/<source_rpm>/` 的既有解包内容。
+- 基线：R47 的 34 个非汇聚站点分类表；其中 18 个原为库交付、16 个原为消费者头文件。加 `ios.cpp` 的 16 个汇聚站点后形成落章的 34/16。
+- 宽扫描：C/C++ 源与头、spec、CMake/Meson/Autotools/GN/Bazel 等构建文件；排除路径名明确为 test/tests/testing/testsuite、benchmark、doc、example/sample 的目录。
+- 复核：只有平台 spec 能到达的无条件设置、或 spec 明确开启的架构条件，才记 `CONFIRMED`。仅定义能力、默认关闭、其他操作系统/工具链、测试配置、注释均不计。非标准字符只接受具体类型（本次为 `char16_t/char32_t`），不把 `Char`、`CharType`、`Ch` 等模板参数当作具体特化。
+- 输入 SHA256 见 `tables/input_sha256.tsv`。原始候选保留在 `tables/raw_hits.tsv`，最终判定以 `tables/reviewed_exception_consumers.tsv` 为准。
+
+## 五类结果
+
+| 条件 | 已确认 SRPM | 条件 SRPM | 分母 | 说明 |
+|---|---:|---:|---:|---|
+| 静态链接 libc++ | 0 | 0 | 371 | 12 条原始候选均为 provider/test、WASI 或非 Tizen 工具链材料 |
+| LTO | 2 | 2 | 371 | 确认 `capi-context-motion`、`ncnn`；条件为 `app-installers`、`tpk-backend` |
+| 同名符号插入 | 0 | 0 | 371 | 未观察到活动的显式实例化或同名定义 |
+| 关闭 extern-template | 0 | 0 | 371 | 两个禁用宏均零命中 |
+| 非标准字符特化 | 1 | 0 | 371 | `boost` 的 10 行具体 `char16_t/char32_t` 流证据 |
+
+逐包证据、架构/条件范围与站点见 `tables/reviewed_exception_consumers.tsv`；自动假阳性收敛过程见 `tables/automatic_false_positive_review.tsv`。
+
+## 逐包事实
+
+- `capi-context-motion`：顶层 CMake 对目标编译和链接无条件加入 `-flto`，spec 直接执行该 `%cmake`。扫描未观察到 R47 34 个站点的明确调用，故它计入例外消费者数，但不据此移动站点。
+- `ncnn`：spec 对 aarch64/i586/x86_64 明确设置 `NCNN_ENABLE_LTO=ON`，对其他架构设为 OFF；源码观察到算术输入，触及 `S16/S17`。
+- `boost`：Boost.Log 有 10 行具体 `basic_ostream<char16_t/char32_t>` 声明/定义；相关实现调用 `write`，后者构造该特化的 `basic_ostream::sentry`，故 `S33` 不再由 `char/wchar_t` 的库内显式实例化覆盖。
+- `app-installers`：C++ Release flags 含 `-flto`，观察到 `std::ifstream::read`（`S08`）；实际 `%{build_type}` 未保存，故为条件命中。
+- `tpk-backend`：C++ Release flags 含 `-flto`，实际 `%{build_type}` 未保存；生产源码未观察到对应层 C 站点，故即使 LTO 生效也不据此移动站点。
+
+## 影响评估
+
+| 场景 | 库内批 | 头文件批 | 状态 |
+|---|---:|---:|---|
+| R47 基线 | 34 | 16 | 已有实测基线 |
+| 只计确认例外 | 31 | 19 | `S16/S17/S33` 转入头文件批 |
+| 同时计入条件配置 | 30 | 20 | 再加入 `app-installers` 的 `S08` |
+| 平台精确值 | `NOT_DETERMINED` | `NOT_DETERMINED` | 缺实际 `%{build_type}` 展开 |
+
+本表按站点去重，不按消费者包数重复计数；两批分母始终为 50 个层 C 站点，库内批与头文件批之和均为 50。
+
+## 无法覆盖的情形
+
+- 未保存的宏展开、实际 configure/CMakeCache、编译数据库和最终链接命令，导致两个条件包不能定性。
+- 既有语料没有迁移后 libc++ 消费者 ELF；源码扫描无法验证链接器最终选取、LTO 后的实际内联、符号插入或隐藏符号。
+- 运行时 `dlopen` 选择、外部生成源码、下载期生成物、私有未解包源码不可见。
+- 泛型模板声明只证明“可接受某字符类型”，不证明平台实际实例化了非标准字符，因此全部从确认计数剔除。
+- 文本级设施识别可能漏掉宏、别名和封装调用；无法明确映射到 R47 站点的包只计消费者例外，不移动站点。
+
+## 过程异常申报
+
+最初两个扫描版本因逐包重复启动 `rg` 或未过滤大型测试/文档树而耗时过长，被显式终止；退出与终止记录完整保留在 `commands/003*`、`commands/004*`。最终扫描使用单次全语料 `rg`、2 线程及目录过滤，退出 0。未把被终止的输出用于最终计数。
+--- docs/progress/W3/tables/summary.tsv
+metric	value
+denominator_srpm_identities	371
+denominator_unique_package_names	347
+confirmed_exception_srpm_identities	45
+confirmed_exception_unique_package_names	39
+static_libcxx_srpm_identities	3
+static_libcxx_unique_package_names	3
+static_libcxx_evidence_lines	9
+lto_srpm_identities	33
+lto_unique_package_names	28
+lto_evidence_lines	300
+same_symbol_definition_srpm_identities	0
+same_symbol_definition_unique_package_names	0
+same_symbol_definition_evidence_lines	0
+extern_template_disabled_srpm_identities	0
+extern_template_disabled_unique_package_names	0
+extern_template_disabled_evidence_lines	0
+nonstandard_char_srpm_identities	20
+nonstandard_char_unique_package_names	18
+nonstandard_char_evidence_lines	775
+--- docs/progress/W3/tables/batch_count_scenarios.tsv
+scenario	library_batch	header_batch	moved_from_library_to_header	status
+R47_baseline	34	16	0	OBSERVED_BASELINE
+confirmed_exceptions_only	31	19	3	CONFIRMED_LOWER_BOUND
+confirmed_plus_conditional_build_type	30	20	4	CONDITIONAL_BOUND
+exact_platform_result	NOT_DETERMINED	NOT_DETERMINED	NOT_DETERMINED	build-time %{build_type} expansion for app-installers/tpk-backend is absent; tpk-backend has no observed affected site, app-installers controls S08
+--- docs/progress/W3/tables/reviewed_exception_consumers.tsv
+condition	source_rpm	package	verdict	architecture_or_condition	evidence	basis	impacted_layer_c_sites
+STATIC_LIBCXX	-	-	NOT_OBSERVED	371/371 SRPM identities	progress/W3/tables/raw_hits.tsv	12 raw lines were comments, provider/test/build recipes, WASI-only code, or non-Tizen toolchains; no platform consumer linkage was confirmed	-
+LTO	capi-context-motion-2.0.3-1.src.rpm	capi-context-motion	CONFIRMED	all configured platform architectures	unpacked/capi-context-motion-2.0.3.tar.gz/capi-context-motion-2.0.3/CMakeLists.txt:19,32; payload/capi-context-motion.spec:47	unconditional -flto compile and link settings reached by the package %cmake invocation	NOT_OBSERVED
+LTO	ncnn-20240102-1e88fb8.src.rpm	ncnn	CONFIRMED	aarch64,x86_64; explicitly OFF on other architectures	payload/ncnn.spec:65-69,77; unpacked/ncnn-20240102.tar/ncnn-20240102/CMakeLists.txt:105-112,src/CMakeLists.txt:370-371	spec explicitly sets NCNN_ENABLE_LTO=ON on aarch64/i586/x86_64 and builds the configured tree	S16,S17
+LTO	app-installers-1.37.2-1.src.rpm	app-installers	CONDITIONAL	Release or empty CMAKE_BUILD_TYPE; actual macro expansion NOT_AVAILABLE	unpacked/app-installers-1.37.2.tar.gz/app-installers-1.37.2/CMakeLists.txt:9-10,18,24-25; payload/app-installers.spec:102	C++ Release flags contain -flto; saved evidence does not contain the build-time value of %{build_type}	S08
+LTO	tpk-backend-1.11.4-1.src.rpm	tpk-backend	CONDITIONAL	Release or empty CMAKE_BUILD_TYPE; actual macro expansion NOT_AVAILABLE	unpacked/tpk-backend-1.11.4.tar.gz/tpk-backend-1.11.4/CMakeLists.txt:9-11,19-20; payload/tpk-backend.spec:69	C++ Release flags contain -flto; saved evidence does not contain the build-time value of %{build_type}	NOT_OBSERVED
+SAME_SYMBOL_DEFINITION	-	-	NOT_OBSERVED	371/371 SRPM identities	progress/W3/tables/raw_hits.tsv	no active explicit instantiation or same-name definition hit outside standard-library provider sources	-
+EXTERN_TEMPLATE_DISABLED	-	-	NOT_OBSERVED	371/371 SRPM identities	progress/W3/tables/raw_hits.tsv	no _LIBCPP_DISABLE_EXTERN_TEMPLATE or _LIBCPP_HAS_NO_EXTERN_TEMPLATES hit	-
+NONSTANDARD_CHAR	boost-1.83.0-2.2.src.rpm	boost	CONFIRMED	char16_t and char32_t	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/log/utility/manipulators/dump.hpp:48,50,57,59; libs/log/src/dump_avx2.cpp:325,339; libs/log/src/dump_ssse3.cpp:432,446,484,498	10 concrete basic_ostream<char16_t/char32_t> declarations or definitions; boost-log is built and packaged by payload/boost.spec:484-526,770-773	S33
+--- docs/progress/W3/tables/site_impact.tsv
+site	baseline_batch	confirmed_packages	conditional_packages	evidence	classification_result
+S08	LIBRARY	-	app-installers	app-installers file_util.cc:908,914 uses std::ifstream::read; LTO depends on unavailable build_type expansion	CONDITIONAL_MOVE_TO_HEADER
+S16	LIBRARY	ncnn	-	ncnn ir.cpp:973,983,997 and related sites perform arithmetic extraction under architecture-enabled LTO	MOVE_TO_HEADER
+S17	LIBRARY	ncnn	-	ncnn ir.cpp:973,983,997 and related sites perform short/int extraction under architecture-enabled LTO	MOVE_TO_HEADER
+S33	LIBRARY	boost	-	Boost concrete char16_t/char32_t streams call basic_ostream::write, which creates basic_ostream<CharT>::sentry; nonstandard specialization is not covered by char/wchar_t explicit instantiation	MOVE_TO_HEADER
+=== build_type references ===
+docs/progress/W3/REPORT.md-3-## 结论
+docs/progress/W3/REPORT.md-4-
+docs/progress/W3/REPORT.md-5-口径为既有、已解包且状态为 `SCAN_OK` 的 371 个 SRPM 身份（347 个去重包名），不下载、不构建、不扫描平台仓。宽口径文本扫描产生 45 个自动“确认”身份，但人工复核证明该自动标签不可直接使用：大量命中只是工具链能力定义、测试配置或泛型模板参数。
+docs/progress/W3/REPORT.md-6-
+docs/progress/W3/REPORT.md:7:复核后确认 3 个例外消费者（分母 371，0.81%）：`capi-context-motion` 与 `ncnn` 启用 C++ LTO，`boost` 使用具体的 `basic_ostream<char16_t/char32_t>` 特化。另有 2 个条件命中：`app-installers` 与 `tpk-backend` 只在 Release/空 `CMAKE_BUILD_TYPE` 下启用 LTO，而既有材料未保存 `%{build_type}` 的实际展开值，因此不得判作已确认或未命中。
+docs/progress/W3/REPORT.md-8-
+docs/progress/W3/REPORT.md:9:确认例外触及 R47 的 `S16`、`S17`、`S33` 三个库内站点，按任务给定规则转入头文件批后，34/16 变为 **31/19（确认下界）**。条件包中只有 `app-installers` 观察到命中 `S08`；若其实际按启用 LTO 的配置构建，则变为 **30/20**。因此本次只读语料不能给出唯一精确值，精确结果记 `NOT_DETERMINED`，而不是在 31/19 与 30/20 之间猜测。
+docs/progress/W3/REPORT.md-10-
+docs/progress/W3/REPORT.md-11-## 数据来源与扫描口径
+docs/progress/W3/REPORT.md-12-
+docs/progress/W3/REPORT.md-13-- 分母：`progress/R32/tables/scan_status.tsv` 中 371 行 `SCAN_OK` SRPM 身份；去重包名 347。
+--
+docs/progress/W3/REPORT.md-33-
+docs/progress/W3/REPORT.md-34-- `capi-context-motion`：顶层 CMake 对目标编译和链接无条件加入 `-flto`，spec 直接执行该 `%cmake`。扫描未观察到 R47 34 个站点的明确调用，故它计入例外消费者数，但不据此移动站点。
+docs/progress/W3/REPORT.md-35-- `ncnn`：spec 对 aarch64/i586/x86_64 明确设置 `NCNN_ENABLE_LTO=ON`，对其他架构设为 OFF；源码观察到算术输入，触及 `S16/S17`。
+docs/progress/W3/REPORT.md-36-- `boost`：Boost.Log 有 10 行具体 `basic_ostream<char16_t/char32_t>` 声明/定义；相关实现调用 `write`，后者构造该特化的 `basic_ostream::sentry`，故 `S33` 不再由 `char/wchar_t` 的库内显式实例化覆盖。
+docs/progress/W3/REPORT.md:37:- `app-installers`：C++ Release flags 含 `-flto`，观察到 `std::ifstream::read`（`S08`）；实际 `%{build_type}` 未保存，故为条件命中。
+docs/progress/W3/REPORT.md:38:- `tpk-backend`：C++ Release flags 含 `-flto`，实际 `%{build_type}` 未保存；生产源码未观察到对应层 C 站点，故即使 LTO 生效也不据此移动站点。
+docs/progress/W3/REPORT.md-39-
+docs/progress/W3/REPORT.md-40-## 影响评估
+docs/progress/W3/REPORT.md-41-
+docs/progress/W3/REPORT.md-42-| 场景 | 库内批 | 头文件批 | 状态 |
+docs/progress/W3/REPORT.md-43-|---|---:|---:|---|
+docs/progress/W3/REPORT.md-44-| R47 基线 | 34 | 16 | 已有实测基线 |
+docs/progress/W3/REPORT.md-45-| 只计确认例外 | 31 | 19 | `S16/S17/S33` 转入头文件批 |
+docs/progress/W3/REPORT.md-46-| 同时计入条件配置 | 30 | 20 | 再加入 `app-installers` 的 `S08` |
+docs/progress/W3/REPORT.md:47:| 平台精确值 | `NOT_DETERMINED` | `NOT_DETERMINED` | 缺实际 `%{build_type}` 展开 |
+docs/progress/W3/REPORT.md-48-
+docs/progress/W3/REPORT.md-49-本表按站点去重，不按消费者包数重复计数；两批分母始终为 50 个层 C 站点，库内批与头文件批之和均为 50。
+docs/progress/W3/REPORT.md-50-
+docs/progress/W3/REPORT.md-51-## 无法覆盖的情形
+--
+docs/progress/W3/tables/batch_count_scenarios.tsv-1-scenario	library_batch	header_batch	moved_from_library_to_header	status
+docs/progress/W3/tables/batch_count_scenarios.tsv-2-R47_baseline	34	16	0	OBSERVED_BASELINE
+docs/progress/W3/tables/batch_count_scenarios.tsv-3-confirmed_exceptions_only	31	19	3	CONFIRMED_LOWER_BOUND
+docs/progress/W3/tables/batch_count_scenarios.tsv:4:confirmed_plus_conditional_build_type	30	20	4	CONDITIONAL_BOUND
+docs/progress/W3/tables/batch_count_scenarios.tsv:5:exact_platform_result	NOT_DETERMINED	NOT_DETERMINED	NOT_DETERMINED	build-time %{build_type} expansion for app-installers/tpk-backend is absent; tpk-backend has no observed affected site, app-installers controls S08
+--
+docs/progress/W3/tables/site_impact.tsv:1:site	baseline_batch	confirmed_packages	conditional_packages	evidence	classification_result
+docs/progress/W3/tables/site_impact.tsv:2:S08	LIBRARY	-	app-installers	app-installers file_util.cc:908,914 uses std::ifstream::read; LTO depends on unavailable build_type expansion	CONDITIONAL_MOVE_TO_HEADER
+docs/progress/W3/tables/site_impact.tsv-3-S16	LIBRARY	ncnn	-	ncnn ir.cpp:973,983,997 and related sites perform arithmetic extraction under architecture-enabled LTO	MOVE_TO_HEADER
+docs/progress/W3/tables/site_impact.tsv-4-S17	LIBRARY	ncnn	-	ncnn ir.cpp:973,983,997 and related sites perform short/int extraction under architecture-enabled LTO	MOVE_TO_HEADER
+docs/progress/W3/tables/site_impact.tsv-5-S33	LIBRARY	boost	-	Boost concrete char16_t/char32_t streams call basic_ostream::write, which creates basic_ostream<CharT>::sentry; nonstandard specialization is not covered by char/wchar_t explicit instantiation	MOVE_TO_HEADER
+--
+docs/progress/W3/tables/reviewed_exception_consumers.tsv:1:condition	source_rpm	package	verdict	architecture_or_condition	evidence	basis	impacted_layer_c_sites
+docs/progress/W3/tables/reviewed_exception_consumers.tsv-2-STATIC_LIBCXX	-	-	NOT_OBSERVED	371/371 SRPM identities	progress/W3/tables/raw_hits.tsv	12 raw lines were comments, provider/test/build recipes, WASI-only code, or non-Tizen toolchains; no platform consumer linkage was confirmed	-
+docs/progress/W3/tables/reviewed_exception_consumers.tsv:3:LTO	capi-context-motion-2.0.3-1.src.rpm	capi-context-motion	CONFIRMED	all configured platform architectures	unpacked/capi-context-motion-2.0.3.tar.gz/capi-context-motion-2.0.3/CMakeLists.txt:19,32; payload/capi-context-motion.spec:47	unconditional -flto compile and link settings reached by the package %cmake invocation	NOT_OBSERVED
+docs/progress/W3/tables/reviewed_exception_consumers.tsv-4-LTO	ncnn-20240102-1e88fb8.src.rpm	ncnn	CONFIRMED	aarch64,x86_64; explicitly OFF on other architectures	payload/ncnn.spec:65-69,77; unpacked/ncnn-20240102.tar/ncnn-20240102/CMakeLists.txt:105-112,src/CMakeLists.txt:370-371	spec explicitly sets NCNN_ENABLE_LTO=ON on aarch64/i586/x86_64 and builds the configured tree	S16,S17
+docs/progress/W3/tables/reviewed_exception_consumers.tsv:5:LTO	app-installers-1.37.2-1.src.rpm	app-installers	CONDITIONAL	Release or empty CMAKE_BUILD_TYPE; actual macro expansion NOT_AVAILABLE	unpacked/app-installers-1.37.2.tar.gz/app-installers-1.37.2/CMakeLists.txt:9-10,18,24-25; payload/app-installers.spec:102	C++ Release flags contain -flto; saved evidence does not contain the build-time value of %{build_type}	S08
+docs/progress/W3/tables/reviewed_exception_consumers.tsv:6:LTO	tpk-backend-1.11.4-1.src.rpm	tpk-backend	CONDITIONAL	Release or empty CMAKE_BUILD_TYPE; actual macro expansion NOT_AVAILABLE	unpacked/tpk-backend-1.11.4.tar.gz/tpk-backend-1.11.4/CMakeLists.txt:9-11,19-20; payload/tpk-backend.spec:69	C++ Release flags contain -flto; saved evidence does not contain the build-time value of %{build_type}	NOT_OBSERVED
+docs/progress/W3/tables/reviewed_exception_consumers.tsv-7-SAME_SYMBOL_DEFINITION	-	-	NOT_OBSERVED	371/371 SRPM identities	progress/W3/tables/raw_hits.tsv	no active explicit instantiation or same-name definition hit outside standard-library provider sources	-
+docs/progress/W3/tables/reviewed_exception_consumers.tsv-8-EXTERN_TEMPLATE_DISABLED	-	-	NOT_OBSERVED	371/371 SRPM identities	progress/W3/tables/raw_hits.tsv	no _LIBCPP_DISABLE_EXTERN_TEMPLATE or _LIBCPP_HAS_NO_EXTERN_TEMPLATES hit	-
+docs/progress/W3/tables/reviewed_exception_consumers.tsv-9-NONSTANDARD_CHAR	boost-1.83.0-2.2.src.rpm	boost	CONFIRMED	char16_t and char32_t	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/log/utility/manipulators/dump.hpp:48,50,57,59; libs/log/src/dump_avx2.cpp:325,339; libs/log/src/dump_ssse3.cpp:432,446,484,498	10 concrete basic_ostream<char16_t/char32_t> declarations or definitions; boost-log is built and packaged by payload/boost.spec:484-526,770-773	S33
+--
+docs/progress/W3/tables/automatic_false_positive_review.tsv:1:automatic_group	automatic_srpm_identities	retained_confirmed	retained_conditional	rejected_or_not_active	review_basis
+docs/progress/W3/tables/automatic_false_positive_review.tsv-2-STATIC_LIBCXX	3	0	0	3	LLVM provider/test recipes, coreclr WASI-only target, and rive non-Tizen Bazel toolchains are not confirmed platform consumers
+docs/progress/W3/tables/automatic_false_positive_review.tsv:3:LTO	33	2	2	29	retained only unconditional platform configuration or explicit architecture enablement; capability definitions, tests, other-OS branches, disabled options, and explicit -fno-lto were rejected
+docs/progress/W3/tables/automatic_false_positive_review.tsv-4-NONSTANDARD_CHAR	20	1	0	19	retained only concrete char16_t/char32_t; Char, CharType, Ch, Allocator and similar template parameters are generic rather than concrete specializations
+docs/progress/W3/tables/automatic_false_positive_review.tsv-5-SAME_SYMBOL_DEFINITION	0	0	0	0	no automatic hit
+docs/progress/W3/tables/automatic_false_positive_review.tsv-6-EXTERN_TEMPLATE_DISABLED	0	0	0	0	no automatic hit
+--
+docs/progress/W3/code/audit_exception_consumers.py-190-        raise SystemExit(f"expected 371 SCAN_OK packages, got {len(rows)}")
+docs/progress/W3/code/audit_exception_consumers.py-191-
+docs/progress/W3/code/audit_exception_consumers.py-192-    raw_hits = []
+docs/progress/W3/code/audit_exception_consumers.py-193-    confirmed = []
+docs/progress/W3/code/audit_exception_consumers.py:194:    package_conditions = defaultdict(set)
+docs/progress/W3/code/audit_exception_consumers.py-195-    package_identity = {}
+docs/progress/W3/code/audit_exception_consumers.py-196-
+docs/progress/W3/code/audit_exception_consumers.py-197-    for row in rows:
+docs/progress/W3/code/audit_exception_consumers.py-198-        srpm = row["source_rpm"]
+--
+docs/progress/W3/code/audit_exception_consumers.py-233-        for kind, verdict in kinds:
+docs/progress/W3/code/audit_exception_consumers.py-234-            raw_hits.append((srpm, package, kind, verdict, str(rel), line, text.strip()))
+docs/progress/W3/code/audit_exception_consumers.py-235-            if verdict == "CONFIRMED":
+docs/progress/W3/code/audit_exception_consumers.py-236-                base_kind = kind.split(":", 1)[0]
+docs/progress/W3/code/audit_exception_consumers.py:237:                package_conditions[srpm].add(base_kind)
+docs/progress/W3/code/audit_exception_consumers.py-238-                confirmed.append((srpm, package, base_kind, str(rel), line, text.strip()))
+docs/progress/W3/code/audit_exception_consumers.py-239-        if match_index % 10000 == 0:
+docs/progress/W3/code/audit_exception_consumers.py-240-            print(f"matched lines processed={match_index}", flush=True)
+docs/progress/W3/code/audit_exception_consumers.py-241-
+docs/progress/W3/code/audit_exception_consumers.py-242-    facility_rows = []
+docs/progress/W3/code/audit_exception_consumers.py-243-    impacted_sites = set()
+docs/progress/W3/code/audit_exception_consumers.py:244:    for srpm in sorted(package_conditions):
+docs/progress/W3/code/audit_exception_consumers.py-245-        package = package_identity[srpm]
+docs/progress/W3/code/audit_exception_consumers.py:246:        conditions = sorted(package_conditions[srpm])
+docs/progress/W3/code/audit_exception_consumers.py-247-        sites, scan_status = facility_sites(CORPUS / srpm)
+docs/progress/W3/code/audit_exception_consumers.py-248-        for site, evidence in sorted(sites.items()):
+docs/progress/W3/code/audit_exception_consumers.py-249-            impacted_sites.update(site.split("_"))
+docs/progress/W3/code/audit_exception_consumers.py-250-            first_path, first_line, first_text = evidence[0]
+docs/progress/W3/code/audit_exception_consumers.py:251:            facility_rows.append((srpm, package, ",".join(conditions), site, len(evidence), str(first_path.relative_to(CORPUS / srpm)), first_line, first_text.strip(), scan_status))
+docs/progress/W3/code/audit_exception_consumers.py-252-        if not sites:
+docs/progress/W3/code/audit_exception_consumers.py:253:            facility_rows.append((srpm, package, ",".join(conditions), "NOT_OBSERVED", 0, "", 0, "", scan_status))
+docs/progress/W3/code/audit_exception_consumers.py-254-
+docs/progress/W3/code/audit_exception_consumers.py-255-    all_package_rows = []
+docs/progress/W3/code/audit_exception_consumers.py-256-    for row in rows:
+docs/progress/W3/code/audit_exception_consumers.py-257-        srpm = row["source_rpm"]
+docs/progress/W3/code/audit_exception_consumers.py-258-        package = row["package_name"]
+docs/progress/W3/code/audit_exception_consumers.py:259:        conditions = package_conditions.get(srpm, set())
+docs/progress/W3/code/audit_exception_consumers.py:260:        all_package_rows.append((srpm, package) + tuple("CONFIRMED" if kind in conditions else "NOT_OBSERVED" for kind in (
+docs/progress/W3/code/audit_exception_consumers.py-261-            "STATIC_LIBCXX", "LTO", "SAME_SYMBOL_DEFINITION", "EXTERN_TEMPLATE_DISABLED", "NONSTANDARD_CHAR"
+docs/progress/W3/code/audit_exception_consumers.py-262-        )))
+docs/progress/W3/code/audit_exception_consumers.py-263-
+docs/progress/W3/code/audit_exception_consumers.py-264-    write_tsv(OUT / "raw_hits.tsv", ["source_rpm", "package", "kind", "verdict", "file", "line", "text"], raw_hits)
+docs/progress/W3/code/audit_exception_consumers.py-265-    write_tsv(OUT / "confirmed_hits.tsv", ["source_rpm", "package", "kind", "file", "line", "text"], confirmed)
+docs/progress/W3/code/audit_exception_consumers.py-266-    write_tsv(OUT / "package_audit.tsv", ["source_rpm", "package", "static_libcxx", "lto", "same_symbol_definition", "extern_template_disabled", "nonstandard_char"], all_package_rows)
+docs/progress/W3/code/audit_exception_consumers.py:267:    write_tsv(OUT / "facility_site_evidence.tsv", ["source_rpm", "package", "conditions", "site_or_group", "hit_count", "first_file", "first_line", "first_text", "scan_status"], facility_rows)
+docs/progress/W3/code/audit_exception_consumers.py-268-
+docs/progress/W3/code/audit_exception_consumers.py-269-    confirmed_counts = Counter(row[2] for row in confirmed)
+docs/progress/W3/code/audit_exception_consumers.py:270:    unique_packages = {package_identity[srpm] for srpm in package_conditions}
+docs/progress/W3/code/audit_exception_consumers.py-271-    summary = [
+docs/progress/W3/code/audit_exception_consumers.py-272-        ("denominator_srpm_identities", 371),
+docs/progress/W3/code/audit_exception_consumers.py-273-        ("denominator_unique_package_names", len({row["package_name"] for row in rows})),
+docs/progress/W3/code/audit_exception_consumers.py:274:        ("confirmed_exception_srpm_identities", len(package_conditions)),
+docs/progress/W3/code/audit_exception_consumers.py-275-        ("confirmed_exception_unique_package_names", len(unique_packages)),
+docs/progress/W3/code/audit_exception_consumers.py-276-    ]
+docs/progress/W3/code/audit_exception_consumers.py-277-    for kind in ("STATIC_LIBCXX", "LTO", "SAME_SYMBOL_DEFINITION", "EXTERN_TEMPLATE_DISABLED", "NONSTANDARD_CHAR"):
+docs/progress/W3/code/audit_exception_consumers.py-278-        srpms = {row[0] for row in confirmed if row[2] == kind}
+--
+docs/progress/W3/code/audit_exception_consumers.py-280-        summary.append((f"{kind.lower()}_srpm_identities", len(srpms)))
+docs/progress/W3/code/audit_exception_consumers.py-281-        summary.append((f"{kind.lower()}_unique_package_names", len(names)))
+docs/progress/W3/code/audit_exception_consumers.py-282-        summary.append((f"{kind.lower()}_evidence_lines", confirmed_counts[kind]))
+docs/progress/W3/code/audit_exception_consumers.py-283-    write_tsv(OUT / "summary.tsv", ["metric", "value"], summary)
+docs/progress/W3/code/audit_exception_consumers.py:284:    print(f"confirmed_srpms={len(package_conditions)} unique_names={len(unique_packages)} raw_hits={len(raw_hits)} confirmed_lines={len(confirmed)}")
+docs/progress/W3/code/audit_exception_consumers.py-285-
+docs/progress/W3/code/audit_exception_consumers.py-286-
+docs/progress/W3/code/audit_exception_consumers.py-287-if __name__ == "__main__":
+docs/progress/W3/code/audit_exception_consumers.py-288-    main()
+--
+docs/progress/W3/tables/reviewed_counts.tsv:1:metric	confirmed	conditional	not_observed	denominator	unit
+docs/progress/W3/tables/reviewed_counts.tsv-2-static_libcxx	0	0	371	371	SRPM identities
+docs/progress/W3/tables/reviewed_counts.tsv-3-lto	2	2	367	371	SRPM identities
+docs/progress/W3/tables/reviewed_counts.tsv-4-same_symbol_definition	0	0	371	371	SRPM identities
+docs/progress/W3/tables/reviewed_counts.tsv-5-extern_template_disabled	0	0	371	371	SRPM identities
+--
+docs/progress/W3/tables/facility_site_evidence.tsv:1:source_rpm	package	conditions	site_or_group	hit_count	first_file	first_line	first_text	scan_status
+docs/progress/W3/tables/facility_site_evidence.tsv-2-angle-2.1-1.src.rpm	angle	LTO	S02	1370	unpacked/angle-2.1.tar/angle-2.1/third_party/vulkan_memory_allocator/src/Common.cpp	225	int result = MultiByteToWideChar(codePage, 0, s.data(), (int)s.length(), buf.get(), size);	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-3-angle-2.1-1.src.rpm	angle	LTO	S03_S04	1654	unpacked/angle-2.1.tar/angle-2.1/third_party/vulkan_memory_allocator/src/Common.cpp	225	int result = MultiByteToWideChar(codePage, 0, s.data(), (int)s.length(), buf.get(), size);	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-4-angle-2.1-1.src.rpm	angle	LTO	S08	21	unpacked/angle-2.1.tar/angle-2.1/third_party/vulkan_memory_allocator/src/VulkanSample.cpp	302	file.read(out.data(), fileSize);	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-5-angle-2.1-1.src.rpm	angle	LTO	S11	1	unpacked/angle-2.1.tar/angle-2.1/src/compiler/preprocessor/MacroExpander.cpp	226	context.unget();	OK
+--
+docs/progress/W3/tables/facility_site_evidence.tsv-69-cmake-3.31.2-1.12.src.rpm	cmake	LTO	S02	368	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmComputeTargetDepends.cxx	183	this->TargetIndex[ti.get()] = index;	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-70-cmake-3.31.2-1.12.src.rpm	cmake	LTO	S03_S04	380	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmComputeTargetDepends.cxx	183	this->TargetIndex[ti.get()] = index;	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-71-cmake-3.31.2-1.12.src.rpm	cmake	LTO	S05	3	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/CTest/cmCTestTestHandler.cxx	2192	fin.getline(buff.get(), filelen);	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-72-cmake-3.31.2-1.12.src.rpm	cmake	LTO	S07	2	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Utilities/std/cm/bits/fs_path.cxx	813	return parser.peek(internals::path_parser::peek_fragment::remainder);	OK
+docs/progress/W3/tables/facility_site_evidence.tsv:73:cmake-3.31.2-1.12.src.rpm	cmake	LTO	S08	38	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmCryptoHash.cxx	169	// incorrect to not check the error condition on the fin.read()	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-74-cmake-3.31.2-1.12.src.rpm	cmake	LTO	S10	3	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmFileCommand.cxx	505	fin.putback(static_cast<char>(c1));	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-75-cmake-3.31.2-1.12.src.rpm	cmake	LTO	S13	5	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmMachO.cxx	50	std::streampos p = fin.tellg();	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-76-cmake-3.31.2-1.12.src.rpm	cmake	LTO	S14_S15	14	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmDependsFortran.cxx	658	finModFile.seekg(0);	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-77-cmake-3.31.2-1.12.src.rpm	cmake	LTO	S16_S17	537	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmLinkItemGraphVisitor.h	57	std::set<std::pair<std::string, std::string>> VisitedLinks;	OK
+--
+docs/progress/W3/tables/facility_site_evidence.tsv-79-cmake-3.31.2-1.14.src.rpm	cmake	LTO	S02	368	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmComputeTargetDepends.cxx	183	this->TargetIndex[ti.get()] = index;	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-80-cmake-3.31.2-1.14.src.rpm	cmake	LTO	S03_S04	380	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmComputeTargetDepends.cxx	183	this->TargetIndex[ti.get()] = index;	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-81-cmake-3.31.2-1.14.src.rpm	cmake	LTO	S05	3	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/CTest/cmCTestTestHandler.cxx	2192	fin.getline(buff.get(), filelen);	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-82-cmake-3.31.2-1.14.src.rpm	cmake	LTO	S07	2	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Utilities/std/cm/bits/fs_path.cxx	813	return parser.peek(internals::path_parser::peek_fragment::remainder);	OK
+docs/progress/W3/tables/facility_site_evidence.tsv:83:cmake-3.31.2-1.14.src.rpm	cmake	LTO	S08	38	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmCryptoHash.cxx	169	// incorrect to not check the error condition on the fin.read()	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-84-cmake-3.31.2-1.14.src.rpm	cmake	LTO	S10	3	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmFileCommand.cxx	505	fin.putback(static_cast<char>(c1));	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-85-cmake-3.31.2-1.14.src.rpm	cmake	LTO	S13	5	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmMachO.cxx	50	std::streampos p = fin.tellg();	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-86-cmake-3.31.2-1.14.src.rpm	cmake	LTO	S14_S15	14	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmDependsFortran.cxx	658	finModFile.seekg(0);	OK
+docs/progress/W3/tables/facility_site_evidence.tsv-87-cmake-3.31.2-1.14.src.rpm	cmake	LTO	S16_S17	537	unpacked/cmake-3.31.2.tar.gz/cmake-3.31.2/Source/cmLinkItemGraphVisitor.h	57	std::set<std::pair<std::string, std::string>> VisitedLinks;	OK
+--
+docs/progress/W3/tables/raw_hits.tsv-680-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Ch	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/result.hpp	638	template<class Ch, class Tr, class E> std::basic_ostream<Ch, Tr>& operator<<( std::basic_ostream<Ch, Tr>& os, result<void, E> const & r )
+docs/progress/W3/tables/raw_hits.tsv-681-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Ch	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/result.hpp	638	template<class Ch, class Tr, class E> std::basic_ostream<Ch, Tr>& operator<<( std::basic_ostream<Ch, Tr>& os, result<void, E> const & r )
+docs/progress/W3/tables/raw_hits.tsv-682-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Ch	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/detail/error_code.hpp	632	inline friend std::basic_ostream<Ch, Tr>&
+docs/progress/W3/tables/raw_hits.tsv-683-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Ch	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/detail/error_code.hpp	633	operator<< (std::basic_ostream<Ch, Tr>& os, error_code const & ec)
+docs/progress/W3/tables/raw_hits.tsv:684:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Ch	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/detail/error_condition.hpp	337	inline friend std::basic_ostream<Ch, Tr>&
+docs/progress/W3/tables/raw_hits.tsv:685:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Ch	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/detail/error_condition.hpp	338	operator<< (std::basic_ostream<Ch, Tr>& os, error_condition const & en)
+docs/progress/W3/tables/raw_hits.tsv-686-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:CharType	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/locale/format.hpp	37	typedef std::basic_ostream<CharType> stream_type;
+docs/progress/W3/tables/raw_hits.tsv-687-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:CharType	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/locale/format.hpp	192	typedef std::basic_ostream<CharType> stream_type; ///< output stream type for this type of character
+docs/progress/W3/tables/raw_hits.tsv-688-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:CharType	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/locale/format.hpp	408	std::basic_ostream<CharType>& operator<<(std::basic_ostream<CharType>& out, const basic_format<CharType>& fmt)
+docs/progress/W3/tables/raw_hits.tsv-689-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:CharType	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/locale/format.hpp	408	std::basic_ostream<CharType>& operator<<(std::basic_ostream<CharType>& out, const basic_format<CharType>& fmt)
+--
+docs/progress/W3/tables/raw_hits.tsv-716-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Elem	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/assign/list_of.hpp	350	inline std::basic_ostream<Elem,Traits>&
+docs/progress/W3/tables/raw_hits.tsv-717-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Elem	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/assign/list_of.hpp	351	operator<<( std::basic_ostream<Elem, Traits>& Os,
+docs/progress/W3/tables/raw_hits.tsv-718-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/write_at.hpp	275	uint64_t offset, basic_streambuf<Allocator>& b);
+docs/progress/W3/tables/raw_hits.tsv-719-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/write_at.hpp	308	uint64_t offset, basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/raw_hits.tsv:720:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/write_at.hpp	352	basic_streambuf<Allocator>& b, CompletionCondition completion_condition);
+docs/progress/W3/tables/raw_hits.tsv:721:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/write_at.hpp	396	basic_streambuf<Allocator>& b, CompletionCondition completion_condition,
+docs/progress/W3/tables/raw_hits.tsv-722-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/write_at.hpp	687	uint64_t offset, basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/raw_hits.tsv:723:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/write_at.hpp	783	basic_streambuf<Allocator>& b, CompletionCondition completion_condition,
+docs/progress/W3/tables/raw_hits.tsv-724-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/basic_streambuf.hpp	373	typedef typename basic_streambuf<Allocator>::const_buffers_type
+docs/progress/W3/tables/raw_hits.tsv-725-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/basic_streambuf.hpp	377	typedef typename basic_streambuf<Allocator>::mutable_buffers_type
+docs/progress/W3/tables/raw_hits.tsv-726-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/basic_streambuf.hpp	381	explicit basic_streambuf_ref(basic_streambuf<Allocator>& sb)
+docs/progress/W3/tables/raw_hits.tsv-727-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/basic_streambuf.hpp	444	basic_streambuf<Allocator>& sb_;
+--
+docs/progress/W3/tables/raw_hits.tsv-785-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	431	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/raw_hits.tsv-786-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	439	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/raw_hits.tsv-787-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	449	boost::asio::basic_streambuf<Allocator>& b, const boost::regex& expr)
+docs/progress/W3/tables/raw_hits.tsv-788-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	456	boost::asio::basic_streambuf<Allocator>& b, const boost::regex& expr,
+docs/progress/W3/tables/raw_hits.tsv:789:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	466	boost::asio::basic_streambuf<Allocator>& b, MatchCondition match_condition,
+docs/progress/W3/tables/raw_hits.tsv-790-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	474	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/raw_hits.tsv-791-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	2089	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/raw_hits.tsv-792-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	2105	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/raw_hits.tsv-793-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	2124	boost::asio::basic_streambuf<Allocator>& b, const boost::regex& expr,
+--
+docs/progress/W3/tables/raw_hits.tsv-815-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	790	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/raw_hits.tsv-816-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	848	boost::asio::basic_streambuf<Allocator>& b, const boost::regex& expr);
+docs/progress/W3/tables/raw_hits.tsv-817-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	885	boost::asio::basic_streambuf<Allocator>& b, const boost::regex& expr,
+docs/progress/W3/tables/raw_hits.tsv-818-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	917	* @code buffers_iterator<basic_streambuf<Allocator>::const_buffers_type>
+docs/progress/W3/tables/raw_hits.tsv:819:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	993	boost::asio::basic_streambuf<Allocator>& b, MatchCondition match_condition,
+docs/progress/W3/tables/raw_hits.tsv-820-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	1022	* @code buffers_iterator<basic_streambuf<Allocator>::const_buffers_type>
+docs/progress/W3/tables/raw_hits.tsv-821-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	1049	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/raw_hits.tsv-822-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	2217	boost::asio::basic_streambuf<Allocator>& b, char delim,
+docs/progress/W3/tables/raw_hits.tsv-823-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR:Allocator	CONFIRMED	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	2328	boost::asio::basic_streambuf<Allocator>& b,
+--
+docs/progress/W3/tables/confirmed_hits.tsv-581-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/result.hpp	638	template<class Ch, class Tr, class E> std::basic_ostream<Ch, Tr>& operator<<( std::basic_ostream<Ch, Tr>& os, result<void, E> const & r )
+docs/progress/W3/tables/confirmed_hits.tsv-582-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/result.hpp	638	template<class Ch, class Tr, class E> std::basic_ostream<Ch, Tr>& operator<<( std::basic_ostream<Ch, Tr>& os, result<void, E> const & r )
+docs/progress/W3/tables/confirmed_hits.tsv-583-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/detail/error_code.hpp	632	inline friend std::basic_ostream<Ch, Tr>&
+docs/progress/W3/tables/confirmed_hits.tsv-584-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/detail/error_code.hpp	633	operator<< (std::basic_ostream<Ch, Tr>& os, error_code const & ec)
+docs/progress/W3/tables/confirmed_hits.tsv:585:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/detail/error_condition.hpp	337	inline friend std::basic_ostream<Ch, Tr>&
+docs/progress/W3/tables/confirmed_hits.tsv:586:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/detail/error_condition.hpp	338	operator<< (std::basic_ostream<Ch, Tr>& os, error_condition const & en)
+docs/progress/W3/tables/confirmed_hits.tsv-587-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/locale/format.hpp	37	typedef std::basic_ostream<CharType> stream_type;
+docs/progress/W3/tables/confirmed_hits.tsv-588-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/locale/format.hpp	192	typedef std::basic_ostream<CharType> stream_type; ///< output stream type for this type of character
+docs/progress/W3/tables/confirmed_hits.tsv-589-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/locale/format.hpp	408	std::basic_ostream<CharType>& operator<<(std::basic_ostream<CharType>& out, const basic_format<CharType>& fmt)
+docs/progress/W3/tables/confirmed_hits.tsv-590-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/locale/format.hpp	408	std::basic_ostream<CharType>& operator<<(std::basic_ostream<CharType>& out, const basic_format<CharType>& fmt)
+--
+docs/progress/W3/tables/confirmed_hits.tsv-617-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/assign/list_of.hpp	350	inline std::basic_ostream<Elem,Traits>&
+docs/progress/W3/tables/confirmed_hits.tsv-618-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/assign/list_of.hpp	351	operator<<( std::basic_ostream<Elem, Traits>& Os,
+docs/progress/W3/tables/confirmed_hits.tsv-619-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/write_at.hpp	275	uint64_t offset, basic_streambuf<Allocator>& b);
+docs/progress/W3/tables/confirmed_hits.tsv-620-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/write_at.hpp	308	uint64_t offset, basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/confirmed_hits.tsv:621:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/write_at.hpp	352	basic_streambuf<Allocator>& b, CompletionCondition completion_condition);
+docs/progress/W3/tables/confirmed_hits.tsv:622:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/write_at.hpp	396	basic_streambuf<Allocator>& b, CompletionCondition completion_condition,
+docs/progress/W3/tables/confirmed_hits.tsv-623-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/write_at.hpp	687	uint64_t offset, basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/confirmed_hits.tsv:624:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/write_at.hpp	783	basic_streambuf<Allocator>& b, CompletionCondition completion_condition,
+docs/progress/W3/tables/confirmed_hits.tsv-625-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/basic_streambuf.hpp	373	typedef typename basic_streambuf<Allocator>::const_buffers_type
+docs/progress/W3/tables/confirmed_hits.tsv-626-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/basic_streambuf.hpp	377	typedef typename basic_streambuf<Allocator>::mutable_buffers_type
+docs/progress/W3/tables/confirmed_hits.tsv-627-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/basic_streambuf.hpp	381	explicit basic_streambuf_ref(basic_streambuf<Allocator>& sb)
+docs/progress/W3/tables/confirmed_hits.tsv-628-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/basic_streambuf.hpp	444	basic_streambuf<Allocator>& sb_;
+--
+docs/progress/W3/tables/confirmed_hits.tsv-686-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	431	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/confirmed_hits.tsv-687-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	439	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/confirmed_hits.tsv-688-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	449	boost::asio::basic_streambuf<Allocator>& b, const boost::regex& expr)
+docs/progress/W3/tables/confirmed_hits.tsv-689-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	456	boost::asio::basic_streambuf<Allocator>& b, const boost::regex& expr,
+docs/progress/W3/tables/confirmed_hits.tsv:690:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	466	boost::asio::basic_streambuf<Allocator>& b, MatchCondition match_condition,
+docs/progress/W3/tables/confirmed_hits.tsv-691-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	474	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/confirmed_hits.tsv-692-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	2089	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/confirmed_hits.tsv-693-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	2105	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/confirmed_hits.tsv-694-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/read_until.hpp	2124	boost::asio::basic_streambuf<Allocator>& b, const boost::regex& expr,
+--
+docs/progress/W3/tables/confirmed_hits.tsv-716-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	790	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/confirmed_hits.tsv-717-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	848	boost::asio::basic_streambuf<Allocator>& b, const boost::regex& expr);
+docs/progress/W3/tables/confirmed_hits.tsv-718-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	885	boost::asio::basic_streambuf<Allocator>& b, const boost::regex& expr,
+docs/progress/W3/tables/confirmed_hits.tsv-719-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	917	* @code buffers_iterator<basic_streambuf<Allocator>::const_buffers_type>
+docs/progress/W3/tables/confirmed_hits.tsv:720:boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	993	boost::asio::basic_streambuf<Allocator>& b, MatchCondition match_condition,
+docs/progress/W3/tables/confirmed_hits.tsv-721-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	1022	* @code buffers_iterator<basic_streambuf<Allocator>::const_buffers_type>
+docs/progress/W3/tables/confirmed_hits.tsv-722-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	1049	boost::asio::basic_streambuf<Allocator>& b,
+docs/progress/W3/tables/confirmed_hits.tsv-723-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	2217	boost::asio::basic_streambuf<Allocator>& b, char delim,
+docs/progress/W3/tables/confirmed_hits.tsv-724-boost-1.83.0-2.2.src.rpm	boost	NONSTANDARD_CHAR	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/read_until.hpp	2328	boost::asio::basic_streambuf<Allocator>& b,
+*** Add File: /home/toolchain/development/libc++_replacement/progress/R64/raw/004_w3_primary_evidence.stderr
+

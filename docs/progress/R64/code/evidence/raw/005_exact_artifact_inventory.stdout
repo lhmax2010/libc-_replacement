@@ -1,0 +1,207 @@
+PRESENT\ttmp/W2/build-armv7l/lib/libc++.so.1\t13\t2026-08-21 22:18:14.778652747 +0800
+PRESENT\ttmp/W2/build-armv7l/lib/libc++abi.so.1\t16\t2026-08-21 22:16:04.007647559 +0800
+PRESENT\ttmp/W2/probes/armv7l/m2_fixed\t577032\t2026-08-21 22:19:35.935655967 +0800
+PRESENT\ttmp/W2/probes/armv7l/m2_reference\t1042744\t2026-08-21 22:19:41.620656193 +0800
+PRESENT\ttmp/W2/payload/lib/libc++.so.1\t5661220\t2026-08-21 22:20:58.580659246 +0800
+PRESENT\ttmp/W2/payload/lib/libc++abi.so.1\t1096872\t2026-08-21 22:20:58.582185261 +0800
+PRESENT\ttmp/W2/payload/bin/m2_fixed\t577032\t2026-08-21 22:20:58.577052744 +0800
+PRESENT\ttmp/W2/payload/bin/m2_reference\t1042744\t2026-08-21 22:20:58.578073775 +0800
+PRESENT\ttmp/W1/patch-repo/libcxx/include/future\t70177\t2026-08-21 22:10:06.436633374 +0800
+22d9ee51df953c470587d10c785567635b3a719b1456529db9cba99da61e6fc9  tmp/W2/build-armv7l/lib/libc++.so.1
+f63b9604b9a9490d62e2b87b0a8c8fd84e1a5d8947f2594bff2a656b2b175c46  tmp/W2/build-armv7l/lib/libc++abi.so.1
+f82f58dce381689de4d490d167e0e63a52ff693ee135988931006aea1e0fee9a  tmp/W2/probes/armv7l/m2_fixed
+5c2883368f75b3975fb4f3954cabee296edf809087baaed18d3c9bbcaa319fe9  tmp/W2/probes/armv7l/m2_reference
+=== exact W2 scripts ===
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+cxx="$workspace/progress/R36/tools/armv7l-clang++"
+sysroot="$workspace/tmp/GBS-ROOT/LIBCXX-2218-armv7l-20260806-c2/local/BUILD-ROOTS/scratch.armv7l.0"
+baseline="$sysroot/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build"
+headers="$workspace/tmp/W2/build-armv7l/include/c++/v1"
+libs="$workspace/tmp/W2/build-armv7l/lib"
+out="$workspace/tmp/W2/probes/armv7l"
+raw="$workspace/progress/W2/raw/build_probes"
+mkdir -p "$out" "$raw"
+
+run_logged() {
+  local log=$1
+  shift
+  printf 'COMMAND=' > "$log"
+  printf '%q ' "$@" >> "$log"
+  printf '\n' >> "$log"
+  set +e
+  nice -n 15 ionice -c 3 "$@" >> "$log" 2>&1
+  local rc=$?
+  set -e
+  printf 'EXIT_CODE=%d\n' "$rc" >> "$log"
+  return "$rc"
+}
+
+build_libcxx() {
+  local name=$1 source=$2
+  run_logged "$raw/${name}_compile.log" "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+    -nostdinc++ -I"$headers" -c "$source" -o "$out/$name.o"
+  run_logged "$raw/${name}_link.log" "$cxx" "$out/$name.o" -nostdlib++ -L"$libs" -L"$baseline/lib" \
+    -Wl,-z,now -lc++ -lc++abi -lpthread -ldl -lm -latomic -lc -lgcc_s -lgcc -o "$out/$name"
+}
+
+build_libstdcxx() {
+  local name=$1 source=$2
+  run_logged "$raw/${name}_compile.log" "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -c "$source" -o "$out/$name.o"
+  run_logged "$raw/${name}_link.log" "$cxx" "$out/$name.o" -pthread -Wl,-z,now -o "$out/$name"
+}
+
+build_pair() {
+  local stem=$1 source=$2
+  build_libcxx "${stem}_fixed" "$source"
+  build_libstdcxx "${stem}_reference" "$source"
+}
+
+build_pair r61 "$workspace/progress/W1/src/r61_probe.cpp"
+build_pair m2 "$workspace/progress/W1/src/r61_m2_matrix.cpp"
+build_pair m1_concurrency "$workspace/progress/R60/src/m1_concurrency_probe.cpp"
+build_pair facility "$workspace/progress/R54/src/facility_probe.cpp"
+build_pair async "$workspace/progress/R55/src/async_probe.cpp"
+build_pair noncancel "$workspace/progress/R52/src/noncancel_probe.cpp"
+build_pair normal "$workspace/progress/R58/src/normal_paths_probe.cpp"
+
+sha256sum "$out"/* > "$raw/artifact_sha256.txt"
+for binary in "$out"/*; do
+  [[ -x $binary ]] || continue
+  file "$binary"
+  readelf -dW "$binary"
+done > "$raw/elf_identity.txt"
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+sdb=/home/toolchain/.local/bin/sdb
+serial=192.168.108.26:26101
+remote=/var/tmp/w2_r62_20260821
+raw="$workspace/progress/W2/raw/board"
+mkdir -p "$raw"/{directed,concurrency,facility,regression,upstream,noncancel,identity}
+
+run_case() {
+  local group=$1 name=$2 runtime=$3 binary=$4 mode=${5:-} seconds=${6:-15}
+  local log="$raw/$group/$name.log" cmd carrier=0 remote_rc libpath
+  if [[ $runtime == fixed ]]; then
+    libpath="LD_LIBRARY_PATH='$remote/lib'"
+  else
+    libpath='env'
+  fi
+  cmd="set +e; cd '$remote'; $libpath '$remote/$binary' '$mode' & pid=\$!; (sleep $seconds; kill -TERM \$pid 2>/dev/null; sleep 1; kill -KILL \$pid 2>/dev/null) & guard=\$!; wait \$pid; rc=\$?; kill \$guard 2>/dev/null; wait \$guard 2>/dev/null; printf 'REMOTE_CELL_EXIT_CODE=%d\\n' \"\$rc\"; exit 0"
+  printf 'COMMAND=' > "$log"
+  printf '%q ' "$sdb" -s "$serial" shell "$cmd" >> "$log"
+  printf '\n' >> "$log"
+  "$sdb" -s "$serial" shell "$cmd" >> "$log" 2>&1 || carrier=$?
+  printf 'SDB_CARRIER_EXIT_CODE=%d\n' "$carrier" >> "$log"
+  ((carrier == 0)) || return 90
+  remote_rc=$(awk -F= '/^REMOTE_CELL_EXIT_CODE=/{v=$2} END{gsub(/[^0-9]/,"",v); print v}' "$log")
+  [[ $remote_rc =~ ^[0-9]+$ ]] || return 91
+  printf '%s\t%s\t%s\t%s\n' "$group" "$name" "$runtime" "$remote_rc"
+}
+
+printf 'group\tcase\truntime\texit_code\n'
+
+for mode in f1 f2 m1 m2; do
+  run_case directed "fixed_$mode" fixed bin/r61_fixed "$mode"
+  run_case directed "reference_$mode" reference bin/r61_reference "$mode"
+done
+for mode in m2 wait_for void exception; do
+  run_case directed "m2_fixed_$mode" fixed bin/m2_fixed "$mode"
+  run_case directed "m2_reference_$mode" reference bin/m2_reference "$mode"
+done
+
+for iteration in $(seq 1 20); do
+  run_case concurrency "deferred_fixed_$iteration" fixed bin/m1_concurrency_fixed '' 20
+  run_case concurrency "deferred_reference_$iteration" reference bin/m1_concurrency_reference '' 20
+  run_case concurrency "async_fixed_$iteration" fixed bin/m2_fixed multi_waiters 20
+  run_case concurrency "async_reference_$iteration" reference bin/m2_reference multi_waiters 20
+done
+
+for mode in cout getline_free getline_member read arithmetic packaged_task async; do
+  run_case facility "fixed_$mode" fixed bin/facility_fixed "$mode" 20
+  run_case facility "reference_$mode" reference bin/facility_reference "$mode" 20
+done
+
+for runtime in fixed reference; do
+  for mode in cancel exit real foreign cancel-no-catch cancel-nested cancel-catchall-rethrow exit-catchall-rethrow exit-no-catch; do
+    run_case regression "${runtime}_$mode" "$runtime" "regression/$([[ $runtime == fixed ]] && printf libcxx || printf libstdcxx)" "$mode" 20
+  done
+done
+
+for runtime in fixed reference; do
+  suite=$([[ $runtime == fixed ]] && printf libcxx || printf libstdcxx)
+  for test in forced_unwind{1,2,3,4} unwind_0{1,2,3,4,5,6}; do
+    run_case upstream "${runtime}_$test" "$runtime" "upstream/$suite/$test" '' 20
+  done
+done
+
+for mode in normal exception; do
+  run_case noncancel "async_fixed_$mode" fixed bin/async_fixed "$mode"
+  run_case noncancel "async_reference_$mode" reference bin/async_reference "$mode"
+done
+for mode in getline_success getline_failure packaged_exception string_normal; do
+  run_case noncancel "fixed_$mode" fixed bin/noncancel_fixed "$mode"
+  run_case noncancel "reference_$mode" reference bin/noncancel_reference "$mode"
+done
+for mode in packaged_normal packaged_exception arithmetic_format_error; do
+  run_case noncancel "normal_fixed_$mode" fixed bin/normal_fixed "$mode"
+  run_case noncancel "normal_reference_$mode" reference bin/normal_reference "$mode"
+done
+
+identity="set +e; cd '$remote'; sha256sum lib/libc++.so.1 lib/libc++abi.so.1 bin/r61_fixed bin/m2_fixed; echo LDD_FIXED; LD_LIBRARY_PATH='$remote/lib' ldd bin/m2_fixed; echo LDD_REFERENCE; ldd bin/m2_reference; echo LD_DEBUG_FIXED; LD_DEBUG=libs LD_LIBRARY_PATH='$remote/lib' bin/m2_fixed exception; echo LD_DEBUG_EXIT=\$?; exit 0"
+identity_log="$raw/identity/runtime.log"
+printf 'COMMAND=' > "$identity_log"
+printf '%q ' "$sdb" -s "$serial" shell "$identity" >> "$identity_log"
+printf '\n' >> "$identity_log"
+carrier=0
+"$sdb" -s "$serial" shell "$identity" >> "$identity_log" 2>&1 || carrier=$?
+printf 'SDB_CARRIER_EXIT_CODE=%d\n' "$carrier" >> "$identity_log"
+((carrier == 0)) || exit 90
+=== exact W1 build/run ===
+nice -n 15 ionice -c 3 /home/toolchain/development/libc++_replacement/progress/R33/tools/tizen-clang++ -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ -nostdinc++ -I/home/toolchain/development/libc++_replacement/tmp/W1/build-x86_64/include/c++/v1 /home/toolchain/development/libc++_replacement/progress/W1/src/r61_m2_matrix.cpp -L/home/toolchain/development/libc++_replacement/tmp/W1/build-x86_64/lib -L/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib -Wl,-z,now -Wl,-rpath-link,/home/toolchain/development/libc++_replacement/tmp/W1/build-x86_64/lib -Wl,-rpath-link,/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib -lc++ -lc++abi -o /home/toolchain/development/libc++_replacement/tmp/W1/probes/x86_64/m2_fixed
+nice -n 15 ionice -c 3 /home/toolchain/development/libc++_replacement/progress/R33/tools/tizen-clang++ -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ -nostdinc++ -I/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/include/c++/v1 /home/toolchain/development/libc++_replacement/progress/W1/src/r61_m2_matrix.cpp -L/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib -Wl,-z,now -lc++ -lc++abi -o /home/toolchain/development/libc++_replacement/tmp/W1/probes/x86_64/m2_baseline
+nice -n 15 ionice -c 3 /home/toolchain/development/libc++_replacement/progress/R33/tools/tizen-clang++ -std=c++17 -O0 -g -fexceptions -pthread /home/toolchain/development/libc++_replacement/progress/W1/src/r61_m2_matrix.cpp -Wl,-z,now -o /home/toolchain/development/libc++_replacement/tmp/W1/probes/x86_64/m2_reference
+bash -n /home/toolchain/development/libc++_replacement/progress/W1/tools/run_m2_matrix.sh
+bash /home/toolchain/development/libc++_replacement/progress/W1/tools/run_m2_matrix.sh
+#!/usr/bin/env bash
+set -u -o pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+binary_dir="$workspace/tmp/W1/probes/x86_64"
+fixed_libs="$workspace/tmp/W1/build-x86_64/lib"
+baseline_libs="$workspace/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib"
+raw="$workspace/progress/W1/raw/m2_matrix"
+mkdir -p "$raw"
+
+run_case() {
+  local name=$1 binary=$2 mode=$3 library_path=${4:-} rc=0
+  local log="$raw/$name.log"
+  if [[ -n $library_path ]]; then
+    printf 'COMMAND=env LD_LIBRARY_PATH=%q timeout 12s %q %q\n' "$library_path" "$binary" "$mode" > "$log"
+    env LD_LIBRARY_PATH="$library_path" timeout 12s "$binary" "$mode" >> "$log" 2>&1 || rc=$?
+  else
+    printf 'COMMAND=timeout 12s %q %q\n' "$binary" "$mode" > "$log"
+    timeout 12s "$binary" "$mode" >> "$log" 2>&1 || rc=$?
+  fi
+  printf 'EXIT_CODE=%d\n' "$rc" >> "$log"
+  printf '%s\t%s\t%s\t%d\n' "$name" "$mode" "$binary" "$rc"
+}
+
+printf 'case\tmode\tbinary\texit_code\n' > "$raw/results.tsv"
+run_case baseline_m2 "$binary_dir/m2_baseline" m2 "$baseline_libs" >> "$raw/results.tsv"
+
+for mode in m2 multi_waiters wait_for void exception; do
+  for iteration in $(seq 1 20); do
+    run_case "fixed_${mode}_${iteration}" "$binary_dir/m2_fixed" "$mode" "$fixed_libs:$baseline_libs" \
+      >> "$raw/results.tsv"
+    run_case "reference_${mode}_${iteration}" "$binary_dir/m2_reference" "$mode" >> "$raw/results.tsv"
+  done
+done
+
+exit 0
+*** Add File: /home/toolchain/development/libc++_replacement/progress/R64/raw/005_exact_artifact_inventory.stderr
+
