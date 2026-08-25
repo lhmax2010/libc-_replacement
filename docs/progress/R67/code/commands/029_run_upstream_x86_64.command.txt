@@ -1,0 +1,29 @@
+set -u -o pipefail
+workspace=/home/toolchain/development/libc++_replacement
+root="$workspace/tmp/R67/upstream/x86_64"
+libs="$workspace/tmp/R67/build-x86_64/lib"
+baseline="$workspace/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib"
+raw="$workspace/progress/R67/raw/x86_64/upstream"
+mkdir -p "$raw"
+run_case() {
+  local group=$1 name=$2 binary=$3 library_path=${4:-} rc=0
+  local log="$raw/${group}_${name}.log"
+  if [[ -n $library_path ]]; then
+    printf 'COMMAND=env LD_LIBRARY_PATH=%q timeout 30s %q\n' "$library_path" "$binary" > "$log"
+    env LD_LIBRARY_PATH="$library_path" timeout 30s "$binary" >> "$log" 2>&1 || rc=$?
+  else
+    printf 'COMMAND=timeout 30s %q\n' "$binary" > "$log"
+    timeout 30s "$binary" >> "$log" 2>&1 || rc=$?
+  fi
+  printf 'EXIT_CODE=%d\n' "$rc" >> "$log"
+  printf '%s\t%s\t%d\n' "$group" "$name" "$rc"
+}
+printf 'group\ttest\texit_code\n'
+for name in forced_unwind1 forced_unwind2 forced_unwind3 forced_unwind4 unwind_01 unwind_02 unwind_03 unwind_04 unwind_05 unwind_06; do
+  run_case libcxxabi "$name" "$root/libcxxabi/$name" "$libs:$baseline"
+  run_case libstdcxx "$name" "$root/libstdcxx/$name"
+done
+for binary in "$root"/libcxx/*; do
+  run_case libcxx "$(basename "$binary")" "$binary" "$libs:$baseline"
+done
+exit 0

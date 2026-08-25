@@ -1,0 +1,30 @@
+set -euo pipefail
+workspace=/home/toolchain/development/libc++_replacement
+source="$workspace/progress/R67/code/m2_lock_outside_probe.cpp"
+for arch in x86_64 armv7l; do
+  if [[ $arch == x86_64 ]]; then
+    cxx="$workspace/progress/R33/tools/tizen-clang++"
+    sysroot="$workspace/tmp/GBS-ROOT/LIBCXX-2218-x86_64-20260806-c2/local/BUILD-ROOTS/scratch.x86_64.0"
+  else
+    cxx="$workspace/progress/R36/tools/armv7l-clang++"
+    sysroot="$workspace/tmp/GBS-ROOT/LIBCXX-2218-armv7l-20260806-c2/local/BUILD-ROOTS/scratch.armv7l.0"
+  fi
+  out="$workspace/tmp/R67/probes/$arch"
+  headers="$workspace/tmp/R67/build-$arch/include/c++/v1"
+  libs="$workspace/tmp/R67/build-$arch/lib"
+  baseline="$sysroot/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build"
+  if [[ $arch == x86_64 ]]; then
+    nice -n 15 ionice -c 3 "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+      -nostdinc++ -I"$headers" "$source" -L"$libs" -L"$baseline/lib" -Wl,-z,now \
+      -Wl,-rpath-link,"$libs" -Wl,-rpath-link,"$baseline/lib" -lc++ -lc++abi -o "$out/m2_lock_fixed"
+    nice -n 15 ionice -c 3 "$cxx" -std=c++17 -O0 -g -fexceptions -pthread "$source" -Wl,-z,now \
+      -o "$out/m2_lock_reference"
+  else
+    nice -n 15 ionice -c 3 "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ \
+      -nostdinc++ -I"$headers" -c "$source" -o "$out/m2_lock_fixed.o"
+    nice -n 15 ionice -c 3 "$cxx" "$out/m2_lock_fixed.o" -nostdlib++ -L"$libs" -L"$baseline/lib" \
+      -Wl,-z,now -lc++ -lc++abi -lpthread -ldl -lm -latomic -lc -lgcc_s -lgcc -o "$out/m2_lock_fixed"
+    nice -n 15 ionice -c 3 "$cxx" -std=c++17 -O0 -g -fexceptions -pthread -c "$source" -o "$out/m2_lock_reference.o"
+    nice -n 15 ionice -c 3 "$cxx" "$out/m2_lock_reference.o" -pthread -Wl,-z,now -o "$out/m2_lock_reference"
+  fi
+done

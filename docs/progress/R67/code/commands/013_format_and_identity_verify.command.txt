@@ -1,0 +1,23 @@
+set -euo pipefail
+workspace=/home/toolchain/development/libc++_replacement
+repo="$workspace/tmp/R67/patchset"
+experiment="$workspace/tmp/R67/experiment"
+patchdir="$workspace/progress/R67/code/patches"
+verify="$workspace/tmp/R67/verify-apply"
+mkdir -p "$patchdir"
+git -C "$repo" format-patch --no-signature --zero-commit --output-directory "$patchdir" 5ed6c77278df..HEAD
+sha256sum "$patchdir"/*.patch
+printf '%s\n' 'HEADER_FORCED_HANDLER_COUNT'
+git -C "$repo" show --format= 5f5c9dbf70ce | rg '^\+.*catch.*__forced_unwind' | wc -l
+printf '%s\n' 'LIBRARY_FORCED_HANDLER_COUNT'
+git -C "$repo" show --format= d011670c9969 | rg '^\+.*catch.*__forced_unwind' | wc -l
+git -C "$repo" diff --name-only 5ed6c77278df..HEAD | sort > "$workspace/progress/R67/raw/013_changed_files.txt"
+git clone --shared "$repo" "$verify"
+git -C "$verify" checkout -b r67-verify 5ed6c77278df
+git -C "$verify" am "$patchdir"/*.patch
+git -C "$verify" status --short
+while IFS= read -r file; do
+  sha256sum "$experiment/$file" "$repo/$file" "$verify/$file"
+  cmp "$experiment/$file" "$repo/$file"
+  cmp "$repo/$file" "$verify/$file"
+done < "$workspace/progress/R67/raw/013_changed_files.txt"
