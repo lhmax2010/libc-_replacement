@@ -1,0 +1,526 @@
+$ nl -ba codes/llvm/libcxx/include/future | sed -n 500,570p; nl -ba codes/llvm/libcxx/include/future | sed -n 1880,1930p; nl -ba codes/llvm/libcxx/src/future.cpp | sed -n 88,130p; nl -ba codes/llvm/libcxx/include/__condition_variable/condition_variable.h | sed -n 85,120p; nl -ba codes/llvm/libcxx/src/condition_variable.cpp | sed -n 25,48p; nl -ba codes/llvm/libcxx/include/__thread/support/pthread.h | sed -n 112,128p
+   500	  friend class promise;
+   501	
+   502	public:
+   503	#    if _LIBCPP_STD_VER >= 17
+   504	  _LIBCPP_HIDE_FROM_ABI explicit future_error(future_errc __ec) : future_error(std::make_error_code(__ec)) {}
+   505	#    endif
+   506	
+   507	  [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI const error_code& code() const _NOEXCEPT { return __ec_; }
+   508	
+   509	  _LIBCPP_HIDE_FROM_ABI future_error(const future_error&) _NOEXCEPT = default;
+   510	  ~future_error() _NOEXCEPT override;
+   511	};
+   512	
+   513	// Declared above std::future_error
+   514	void __throw_future_error(future_errc __ev) {
+   515	#    if _LIBCPP_HAS_EXCEPTIONS
+   516	  throw future_error(make_error_code(__ev));
+   517	#    else
+   518	  (void)__ev;
+   519	  _LIBCPP_VERBOSE_ABORT("future_error was thrown in -fno-exceptions mode");
+   520	#    endif
+   521	}
+   522	
+   523	class _LIBCPP_EXPORTED_FROM_ABI __assoc_sub_state : public __shared_count {
+   524	protected:
+   525	  exception_ptr __exception_;
+   526	  mutable mutex __mut_;
+   527	  mutable condition_variable __cv_;
+   528	  unsigned __state_;
+   529	
+   530	  void __on_zero_shared() _NOEXCEPT override;
+   531	  void __sub_wait(unique_lock<mutex>& __lk);
+   532	
+   533	public:
+   534	  enum { __constructed = 1, __future_attached = 2, ready = 4, deferred = 8 };
+   535	
+   536	  _LIBCPP_HIDE_FROM_ABI __assoc_sub_state() : __state_(0) {}
+   537	
+   538	  _LIBCPP_HIDE_FROM_ABI bool __has_value() const { return (__state_ & __constructed) || (__exception_ != nullptr); }
+   539	
+   540	  _LIBCPP_HIDE_FROM_ABI void __attach_future() {
+   541	    lock_guard<mutex> __lk(__mut_);
+   542	    bool __has_future_attached = (__state_ & __future_attached) != 0;
+   543	    if (__has_future_attached)
+   544	      std::__throw_future_error(future_errc::future_already_retrieved);
+   545	    this->__add_shared();
+   546	    __state_ |= __future_attached;
+   547	  }
+   548	
+   549	  _LIBCPP_HIDE_FROM_ABI void __set_deferred() { __state_ |= deferred; }
+   550	
+   551	  void __make_ready();
+   552	  _LIBCPP_HIDE_FROM_ABI bool __is_ready() const { return (__state_ & ready) != 0; }
+   553	
+   554	  void set_value();
+   555	  void set_value_at_thread_exit();
+   556	
+   557	  void set_exception(exception_ptr __p);
+   558	  void set_exception_at_thread_exit(exception_ptr __p);
+   559	
+   560	  void copy();
+   561	
+   562	  void wait();
+   563	  template <class _Rep, class _Period>
+   564	  future_status _LIBCPP_HIDE_FROM_ABI wait_for(const chrono::duration<_Rep, _Period>& __rel_time) const;
+   565	  template <class _Clock, class _Duration>
+   566	  _LIBCPP_HIDE_FROM_ABI future_status wait_until(const chrono::time_point<_Clock, _Duration>& __abs_time) const {
+   567	    unique_lock<mutex> __lk(__mut_);
+   568	    if (__state_ & deferred)
+   569	      return future_status::deferred;
+   570	    while (!(__state_ & ready) && _Clock::now() < __abs_time)
+  1880	}
+  1881	
+  1882	#    endif // C++03
+  1883	
+  1884	// shared_future
+  1885	
+  1886	template <class _Rp>
+  1887	class shared_future {
+  1888	  __assoc_state<_Rp>* __state_;
+  1889	
+  1890	public:
+  1891	  _LIBCPP_HIDE_FROM_ABI shared_future() _NOEXCEPT : __state_(nullptr) {}
+  1892	  _LIBCPP_HIDE_FROM_ABI shared_future(const shared_future& __rhs) _NOEXCEPT : __state_(__rhs.__state_) {
+  1893	    if (__state_)
+  1894	      __state_->__add_shared();
+  1895	  }
+  1896	  _LIBCPP_HIDE_FROM_ABI shared_future(future<_Rp>&& __f) _NOEXCEPT : __state_(__f.__state_) { __f.__state_ = nullptr; }
+  1897	  _LIBCPP_HIDE_FROM_ABI shared_future(shared_future&& __rhs) _NOEXCEPT : __state_(__rhs.__state_) {
+  1898	    __rhs.__state_ = nullptr;
+  1899	  }
+  1900	  _LIBCPP_HIDE_FROM_ABI ~shared_future();
+  1901	  _LIBCPP_HIDE_FROM_ABI shared_future& operator=(const shared_future& __rhs) _NOEXCEPT;
+  1902	  _LIBCPP_HIDE_FROM_ABI shared_future& operator=(shared_future&& __rhs) _NOEXCEPT {
+  1903	    shared_future(std::move(__rhs)).swap(*this);
+  1904	    return *this;
+  1905	  }
+  1906	
+  1907	  // retrieving the value
+  1908	  [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI const _Rp& get() const { return __state_->copy(); }
+  1909	
+  1910	  _LIBCPP_HIDE_FROM_ABI void swap(shared_future& __rhs) _NOEXCEPT { std::swap(__state_, __rhs.__state_); }
+  1911	
+  1912	  // functions to check state
+  1913	  [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI bool valid() const _NOEXCEPT { return __state_ != nullptr; }
+  1914	
+  1915	  _LIBCPP_HIDE_FROM_ABI void wait() const { __state_->wait(); }
+  1916	  template <class _Rep, class _Period>
+  1917	  _LIBCPP_HIDE_FROM_ABI future_status wait_for(const chrono::duration<_Rep, _Period>& __rel_time) const {
+  1918	    return __state_->wait_for(__rel_time);
+  1919	  }
+  1920	  template <class _Clock, class _Duration>
+  1921	  _LIBCPP_HIDE_FROM_ABI future_status wait_until(const chrono::time_point<_Clock, _Duration>& __abs_time) const {
+  1922	    return __state_->wait_until(__abs_time);
+  1923	  }
+  1924	};
+  1925	
+  1926	template <class _Rp>
+  1927	shared_future<_Rp>::~shared_future() {
+  1928	  if (__state_)
+  1929	    __state_->__release_shared();
+  1930	}
+    88	  unique_lock<mutex> __lk(__mut_);
+    89	  if (__has_value())
+    90	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    91	  __exception_ = __p;
+    92	  __thread_local_data()->__make_ready_at_thread_exit(this);
+    93	}
+    94	
+    95	void __assoc_sub_state::__make_ready() {
+    96	  unique_lock<mutex> __lk(__mut_);
+    97	  __state_ |= ready;
+    98	  __cv_.notify_all();
+    99	}
+   100	
+   101	void __assoc_sub_state::copy() {
+   102	  unique_lock<mutex> __lk(__mut_);
+   103	  __sub_wait(__lk);
+   104	  if (__exception_ != nullptr)
+   105	    rethrow_exception(__exception_);
+   106	}
+   107	
+   108	void __assoc_sub_state::wait() {
+   109	  unique_lock<mutex> __lk(__mut_);
+   110	  __sub_wait(__lk);
+   111	}
+   112	
+   113	void __assoc_sub_state::__sub_wait(unique_lock<mutex>& __lk) {
+   114	  if (!__is_ready()) {
+   115	    if (__state_ & static_cast<unsigned>(deferred)) {
+   116	      __state_ &= ~static_cast<unsigned>(deferred);
+   117	      __lk.unlock();
+   118	      __execute();
+   119	    } else
+   120	      while (!__is_ready())
+   121	        __cv_.wait(__lk);
+   122	  }
+   123	}
+   124	
+   125	void __assoc_sub_state::__execute() { std::__throw_future_error(future_errc::no_state); }
+   126	
+   127	future<void>::future(__assoc_sub_state* __state) : __state_(__state) { __state_->__attach_future(); }
+   128	
+   129	future<void>::~future() {
+   130	  if (__state_)
+    85	
+    86	  return nanoseconds(__result);
+    87	}
+    88	
+    89	class _LIBCPP_EXPORTED_FROM_ABI condition_variable {
+    90	  __libcpp_condvar_t __cv_ = _LIBCPP_CONDVAR_INITIALIZER;
+    91	
+    92	public:
+    93	  _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR condition_variable() _NOEXCEPT = default;
+    94	
+    95	#  if _LIBCPP_HAS_TRIVIAL_CONDVAR_DESTRUCTION
+    96	  ~condition_variable() = default;
+    97	#  else
+    98	  ~condition_variable();
+    99	#  endif
+   100	
+   101	  condition_variable(const condition_variable&)            = delete;
+   102	  condition_variable& operator=(const condition_variable&) = delete;
+   103	
+   104	  void notify_one() _NOEXCEPT;
+   105	  void notify_all() _NOEXCEPT;
+   106	
+   107	  void wait(unique_lock<mutex>& __lk) _NOEXCEPT;
+   108	
+   109	  template <class _Predicate>
+   110	  _LIBCPP_HIDE_FROM_ABI void wait(unique_lock<mutex>& __lk, _Predicate __pred) {
+   111	    while (!__pred())
+   112	      wait(__lk);
+   113	  }
+   114	
+   115	  template <class _Clock, class _Duration>
+   116	  _LIBCPP_HIDE_FROM_ABI cv_status
+   117	  wait_until(unique_lock<mutex>& __lk, const chrono::time_point<_Clock, _Duration>& __t) {
+   118	    using namespace chrono;
+   119	    using __clock_tp_ns = time_point<_Clock, nanoseconds>;
+   120	
+    25	_LIBCPP_BEGIN_NAMESPACE_STD
+    26	
+    27	// ~condition_variable is defined elsewhere.
+    28	
+    29	void condition_variable::notify_one() noexcept { __libcpp_condvar_signal(&__cv_); }
+    30	
+    31	void condition_variable::notify_all() noexcept { __libcpp_condvar_broadcast(&__cv_); }
+    32	
+    33	void condition_variable::wait(unique_lock<mutex>& lk) noexcept {
+    34	  if (!lk.owns_lock())
+    35	    std::__throw_system_error(EPERM, "condition_variable::wait: mutex not locked");
+    36	  int ec = __libcpp_condvar_wait(&__cv_, lk.mutex()->native_handle());
+    37	  if (ec)
+    38	    std::__throw_system_error(ec, "condition_variable wait failed");
+    39	}
+    40	
+    41	void condition_variable::__do_timed_wait(unique_lock<mutex>& lk,
+    42	                                         chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) noexcept {
+    43	  using namespace chrono;
+    44	  if (!lk.owns_lock())
+    45	    std::__throw_system_error(EPERM, "condition_variable::timed wait: mutex not locked");
+    46	  nanoseconds d = tp.time_since_epoch();
+    47	  if (d > nanoseconds(0x59682F000000E941))
+    48	    d = nanoseconds(0x59682F000000E941);
+   112	#define _LIBCPP_CONDVAR_INITIALIZER PTHREAD_COND_INITIALIZER
+   113	
+   114	inline _LIBCPP_HIDE_FROM_ABI int __libcpp_condvar_signal(__libcpp_condvar_t* __cv) { return pthread_cond_signal(__cv); }
+   115	
+   116	inline _LIBCPP_HIDE_FROM_ABI int __libcpp_condvar_broadcast(__libcpp_condvar_t* __cv) {
+   117	  return pthread_cond_broadcast(__cv);
+   118	}
+   119	
+   120	_LIBCPP_NO_THREAD_SAFETY_ANALYSIS inline _LIBCPP_HIDE_FROM_ABI int
+   121	__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m) {
+   122	  return pthread_cond_wait(__cv, __m);
+   123	}
+   124	
+   125	_LIBCPP_NO_THREAD_SAFETY_ANALYSIS inline _LIBCPP_HIDE_FROM_ABI int
+   126	__libcpp_condvar_timedwait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m, __libcpp_timespec_t* __ts) {
+   127	  return pthread_cond_timedwait(__cv, __m, __ts);
+   128	}
+exit_code=0
+$ nl -ba codes/gcc/libstdc++-v3/include/std/future | sed -n 300,430p; nl -ba codes/gcc/libstdc++-v3/include/std/future | sed -n 700,765p; nl -ba codes/gcc/libstdc++-v3/include/std/future | sed -n 920,970p
+   300		void _M_destroy()
+   301		{
+   302		  __allocator_type __a(*this);
+   303		  __allocated_ptr<__allocator_type> __guard_ptr{ __a, this };
+   304		  this->~_Result_alloc();
+   305		}
+   306	      };
+   307	
+   308	    // Create a result object that uses an allocator.
+   309	    template<typename _Res, typename _Allocator>
+   310	      static _Ptr<_Result_alloc<_Res, _Allocator>>
+   311	      _S_allocate_result(const _Allocator& __a)
+   312	      {
+   313		using __result_type = _Result_alloc<_Res, _Allocator>;
+   314		typename __result_type::__allocator_type __a2(__a);
+   315		auto __guard = std::__allocate_guarded(__a2);
+   316		__result_type* __p = ::new((void*)__guard.get()) __result_type{__a};
+   317		__guard = nullptr;
+   318		return _Ptr<__result_type>(__p);
+   319	      }
+   320	
+   321	    // Keep it simple for std::allocator.
+   322	    template<typename _Res, typename _Tp>
+   323	      static _Ptr<_Result<_Res>>
+   324	      _S_allocate_result(const std::allocator<_Tp>&)
+   325	      {
+   326		return _Ptr<_Result<_Res>>(new _Result<_Res>);
+   327	      }
+   328	
+   329	    // Base class for various types of shared state created by an
+   330	    // asynchronous provider (such as a std::promise) and shared with one
+   331	    // or more associated futures.
+   332	    class _State_baseV2
+   333	    {
+   334	      typedef _Ptr<_Result_base> _Ptr_type;
+   335	
+   336	      enum _Status : unsigned {
+   337		__not_ready,
+   338		__ready
+   339	      };
+   340	
+   341	      _Ptr_type			_M_result;
+   342	      __atomic_futex_unsigned<>	_M_status;
+   343	      atomic_flag         	_M_retrieved = ATOMIC_FLAG_INIT;
+   344	      once_flag			_M_once;
+   345	
+   346	    public:
+   347	      _State_baseV2() noexcept : _M_result(), _M_status(_Status::__not_ready)
+   348		{ }
+   349	      _State_baseV2(const _State_baseV2&) = delete;
+   350	      _State_baseV2& operator=(const _State_baseV2&) = delete;
+   351	      virtual ~_State_baseV2() = default;
+   352	
+   353	      _Result_base&
+   354	      wait()
+   355	      {
+   356		// Run any deferred function or join any asynchronous thread:
+   357		_M_complete_async();
+   358		// Acquire MO makes sure this synchronizes with the thread that made
+   359		// the future ready.
+   360		_M_status._M_load_when_equal(_Status::__ready, memory_order_acquire);
+   361		return *_M_result;
+   362	      }
+   363	
+   364	      template<typename _Rep, typename _Period>
+   365	        future_status
+   366	        wait_for(const chrono::duration<_Rep, _Period>& __rel)
+   367	        {
+   368		  // First, check if the future has been made ready.  Use acquire MO
+   369		  // to synchronize with the thread that made it ready.
+   370		  if (_M_status._M_load(memory_order_acquire) == _Status::__ready)
+   371		    return future_status::ready;
+   372	
+   373		  if (_M_is_deferred_future())
+   374		    return future_status::deferred;
+   375	
+   376		  // Don't wait unless the relative time is greater than zero.
+   377		  if (__rel > __rel.zero()
+   378		      && _M_status._M_load_when_equal_for(_Status::__ready,
+   379							  memory_order_acquire,
+   380							  __rel))
+   381		    {
+   382		      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+   383		      // 2100.  timed waiting functions must also join
+   384		      // This call is a no-op by default except on an async future,
+   385		      // in which case the async thread is joined.  It's also not a
+   386		      // no-op for a deferred future, but such a future will never
+   387		      // reach this point because it returns future_status::deferred
+   388		      // instead of waiting for the future to become ready (see
+   389		      // above).  Async futures synchronize in this call, so we need
+   390		      // no further synchronization here.
+   391		      _M_complete_async();
+   392	
+   393		      return future_status::ready;
+   394		    }
+   395		  return future_status::timeout;
+   396		}
+   397	
+   398	      template<typename _Clock, typename _Duration>
+   399	        future_status
+   400	        wait_until(const chrono::time_point<_Clock, _Duration>& __abs)
+   401	        {
+   402	#if __cplusplus > 201703L
+   403		  static_assert(chrono::is_clock_v<_Clock>);
+   404	#endif
+   405		  // First, check if the future has been made ready.  Use acquire MO
+   406		  // to synchronize with the thread that made it ready.
+   407		  if (_M_status._M_load(memory_order_acquire) == _Status::__ready)
+   408		    return future_status::ready;
+   409	
+   410		  if (_M_is_deferred_future())
+   411		    return future_status::deferred;
+   412	
+   413		  if (_M_status._M_load_when_equal_until(_Status::__ready,
+   414							 memory_order_acquire,
+   415							 __abs))
+   416		    {
+   417		      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+   418		      // 2100.  timed waiting functions must also join
+   419		      // See wait_for(...) above.
+   420		      _M_complete_async();
+   421	
+   422		      return future_status::ready;
+   423		    }
+   424		  return future_status::timeout;
+   425		}
+   426	
+   427	      // Provide a result to the shared state and make it ready.
+   428	      // Calls at most once: _M_result = __res();
+   429	      void
+   430	      _M_set_result(function<_Ptr_type()> __res, bool __ignore_failure = false)
+   700	  /// Common implementation for future and shared_future.
+   701	  template<typename _Res>
+   702	    class __basic_future : public __future_base
+   703	    {
+   704	    protected:
+   705	      typedef shared_ptr<_State_base>		__state_type;
+   706	      typedef __future_base::_Result<_Res>&	__result_type;
+   707	
+   708	    private:
+   709	      __state_type 		_M_state;
+   710	
+   711	    public:
+   712	      // Disable copying.
+   713	      __basic_future(const __basic_future&) = delete;
+   714	      __basic_future& operator=(const __basic_future&) = delete;
+   715	
+   716	      bool
+   717	      valid() const noexcept { return static_cast<bool>(_M_state); }
+   718	
+   719	      void
+   720	      wait() const
+   721	      {
+   722	        _State_base::_S_check(_M_state);
+   723	        _M_state->wait();
+   724	      }
+   725	
+   726	      template<typename _Rep, typename _Period>
+   727	        future_status
+   728	        wait_for(const chrono::duration<_Rep, _Period>& __rel) const
+   729	        {
+   730	          _State_base::_S_check(_M_state);
+   731	          return _M_state->wait_for(__rel);
+   732	        }
+   733	
+   734	      template<typename _Clock, typename _Duration>
+   735	        future_status
+   736	        wait_until(const chrono::time_point<_Clock, _Duration>& __abs) const
+   737	        {
+   738	          _State_base::_S_check(_M_state);
+   739	          return _M_state->wait_until(__abs);
+   740	        }
+   741	
+   742	    protected:
+   743	      /// Wait for the state to be ready and rethrow any stored exception
+   744	      __result_type
+   745	      _M_get_result() const
+   746	      {
+   747	        _State_base::_S_check(_M_state);
+   748	        _Result_base& __res = _M_state->wait();
+   749	        if (!(__res._M_error == nullptr))
+   750	          rethrow_exception(__res._M_error);
+   751	        return static_cast<__result_type>(__res);
+   752	      }
+   753	
+   754	      void _M_swap(__basic_future& __that) noexcept
+   755	      {
+   756	        _M_state.swap(__that._M_state);
+   757	      }
+   758	
+   759	      // Construction of a future by promise::get_future()
+   760	      explicit
+   761	      __basic_future(const __state_type& __state) : _M_state(__state)
+   762	      {
+   763	        _State_base::_S_check(_M_state);
+   764	        _M_state->_M_set_retrieved_flag();
+   765	      }
+   920	        this->_M_get_result();
+   921	      }
+   922	
+   923	      shared_future<void> share() noexcept;
+   924	    };
+   925	
+   926	
+   927	  /// Primary template for shared_future.
+   928	  template<typename _Res>
+   929	    class shared_future : public __basic_future<_Res>
+   930	    {
+   931	      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+   932	      // 3458. Is shared_future intended to work with arrays or function types?
+   933	      static_assert(!is_array<_Res>{}, "result type must not be an array");
+   934	      static_assert(!is_function<_Res>{}, "result type must not be a function");
+   935	      static_assert(is_destructible<_Res>{},
+   936			    "result type must be destructible");
+   937	
+   938	      typedef __basic_future<_Res> _Base_type;
+   939	
+   940	    public:
+   941	      constexpr shared_future() noexcept : _Base_type() { }
+   942	
+   943	      /// Copy constructor
+   944	      shared_future(const shared_future& __sf) noexcept : _Base_type(__sf) { }
+   945	
+   946	      /// Construct from a future rvalue
+   947	      shared_future(future<_Res>&& __uf) noexcept
+   948	      : _Base_type(std::move(__uf))
+   949	      { }
+   950	
+   951	      /// Construct from a shared_future rvalue
+   952	      shared_future(shared_future&& __sf) noexcept
+   953	      : _Base_type(std::move(__sf))
+   954	      { }
+   955	
+   956	      shared_future& operator=(const shared_future& __sf) noexcept
+   957	      {
+   958	        shared_future(__sf)._M_swap(*this);
+   959	        return *this;
+   960	      }
+   961	
+   962	      shared_future& operator=(shared_future&& __sf) noexcept
+   963	      {
+   964	        shared_future(std::move(__sf))._M_swap(*this);
+   965	        return *this;
+   966	      }
+   967	
+   968	      /// Retrieving the value
+   969	      const _Res&
+   970	      get() const { return this->_M_get_result()._M_value(); }
+exit_code=0
+$ rg -n "class __atomic_futex_unsigned|_M_load_when_equal|_M_futex_wait|_M_load_and_test_until" codes/gcc/libstdc++-v3/include codes/gcc/libstdc++-v3/src
+codes/gcc/libstdc++-v3/src/c++11/futex.cc:113:  _M_futex_wait_until(unsigned *__addr, unsigned __val, bool __has_timeout,
+codes/gcc/libstdc++-v3/src/c++11/futex.cc:188:  _M_futex_wait_until_steady(unsigned *__addr, unsigned __val,
+codes/gcc/libstdc++-v3/include/std/future:360:	_M_status._M_load_when_equal(_Status::__ready, memory_order_acquire);
+codes/gcc/libstdc++-v3/include/std/future:378:	      && _M_status._M_load_when_equal_for(_Status::__ready,
+codes/gcc/libstdc++-v3/include/std/future:413:	  if (_M_status._M_load_when_equal_until(_Status::__ready,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:57:    _M_futex_wait_until(unsigned *__addr, unsigned __val, bool __has_timeout,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:63:    _M_futex_wait_until_steady(unsigned *__addr, unsigned __val,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:71:  class __atomic_futex_unsigned : __atomic_futex_unsigned_base
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:97:    _M_load_and_test_until(unsigned __assumed, unsigned __operand,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:109:	  bool __ret = _M_futex_wait_until((unsigned*)(void*)&_M_data,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:127:    _M_load_and_test_until_steady(unsigned __assumed, unsigned __operand,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:139:	  bool __ret = _M_futex_wait_until_steady((unsigned*)(void*)&_M_data,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:158:      return _M_load_and_test_until(__assumed, __operand, __equal, __mo,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:169:    _M_load_and_test_until_impl(unsigned __assumed, unsigned __operand,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:176:      return _M_load_and_test_until(__assumed, __operand, __equal, __mo,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:182:    _M_load_and_test_until_impl(unsigned __assumed, unsigned __operand,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:189:      return _M_load_and_test_until_steady(__assumed, __operand, __equal, __mo,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:206:    _M_load_when_equal(unsigned __val, memory_order __mo)
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:218:      _M_load_when_equal_for(unsigned __val, memory_order __mo,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:222:	return _M_load_when_equal_until(__val, __mo,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:229:      _M_load_when_equal_until(unsigned __val, memory_order __mo,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:238:	  if (_M_load_when_equal_until(__val, __mo, __s_atime))
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:248:    _M_load_when_equal_until(unsigned __val, memory_order __mo,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:255:      __i = _M_load_and_test_until_impl(__i, __val, true, __mo, __atime);
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:262:    _M_load_when_equal_until(unsigned __val, memory_order __mo,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:269:      __i = _M_load_and_test_until_impl(__i, __val, true, __mo, __atime);
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:288:  class __atomic_futex_unsigned
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:318:    _M_load_when_equal(unsigned __val, memory_order __mo)
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:327:      _M_load_when_equal_for(unsigned __val, memory_order __mo,
+codes/gcc/libstdc++-v3/include/bits/atomic_futex.h:337:      _M_load_when_equal_until(unsigned __val, memory_order __mo,
+exit_code=0

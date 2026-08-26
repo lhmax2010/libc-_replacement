@@ -1,0 +1,103 @@
+$ nl -ba progress/R69/src/r69_new_cases.cpp | sed -n 110,160p
+   110	            << " VALUE=" << value << '\n';
+   111	  return cancel_rc[0] == 0 && cancel_rc[1] == 0 && join_rc[0] == 0 && join_rc[1] == 0 &&
+   112	                 canceled[0] && canceled[1] && calls == 3 && value == 42
+   113	             ? 0
+   114	             : 24;
+   115	}
+   116	
+   117	std::atomic<int> async_started{0};
+   118	std::atomic<int> async_release{0};
+   119	std::atomic<int> waiter_started{0};
+   120	std::shared_future<int>* waiting_future = nullptr;
+   121	
+   122	int async_callable() {
+   123	  async_started.store(1, std::memory_order_release);
+   124	  while (!async_release.load(std::memory_order_acquire))
+   125	    sched_yield();
+   126	  return 42;
+   127	}
+   128	
+   129	void* waiting_side(void*) {
+   130	  waiter_started.store(1, std::memory_order_release);
+   131	  waiting_future->wait();
+   132	  return reinterpret_cast<void*>(1);
+   133	}
+   134	
+   135	int waiting_side_cancel_case() {
+   136	  std::shared_future<int> future = std::async(std::launch::async, async_callable).share();
+   137	  waiting_future                 = &future;
+   138	  if (!wait_until_at_least(async_started, 1))
+   139	    return 30;
+   140	  pthread_t waiter{};
+   141	  if (pthread_create(&waiter, nullptr, waiting_side, nullptr) != 0)
+   142	    return 31;
+   143	  if (!wait_until_at_least(waiter_started, 1))
+   144	    return 32;
+   145	  const int cancel_rc = pthread_cancel(waiter);
+   146	  void* joined        = nullptr;
+   147	  const int join_rc   = pthread_join(waiter, &joined);
+   148	  async_release.store(1, std::memory_order_release);
+   149	  const int value     = future.get();
+   150	  const bool canceled = joined == PTHREAD_CANCELED;
+   151	  std::cout << "CASE=waiting_side_cancel CANCEL_RC=" << cancel_rc << " JOIN_RC=" << join_rc
+   152	            << " JOIN_CANCELED=" << canceled << " VALUE=" << value << '\n';
+   153	  return cancel_rc == 0 && join_rc == 0 && canceled && value == 42 ? 0 : 33;
+   154	}
+   155	
+   156	} // namespace
+   157	
+   158	int main(int argc, char** argv) {
+   159	  if (argc != 2) {
+   160	    std::cerr << "usage: r69_new_cases arithmetic-state|deferred-recancel|waiting-side-cancel\n";
+exit_code=0
+$ rg -n "class shared_future|void wait\(\) const|_M_state.*wait|_M_wait|_M_complete_async|condition_variable" codes/gcc/libstdc++-v3/include/std/future
+41:#include <condition_variable> // __at_thread_exit_elt
+140:    class shared_future;
+357:	_M_complete_async();
+391:	      _M_complete_async();
+420:	      _M_complete_async();
+605:      virtual void _M_complete_async() { }
+723:        _M_state->wait();
+731:          return _M_state->wait_for(__rel);
+739:          return _M_state->wait_until(__abs);
+748:        _Result_base& __res = _M_state->wait();
+929:    class shared_future : public __basic_future<_Res>
+975:    class shared_future<_Res&> : public __basic_future<_Res&>
+1014:    class shared_future<void> : public __basic_future<void>
+1704:      _M_complete_async()
+1742:    virtual void _M_complete_async() { _M_join(); }
+exit_code=0
+$ rg -n "class condition_variable|void wait\(unique_lock<mutex>&|condition_variable::wait" codes/gcc/libstdc++-v3/include/std/condition_variable codes/gcc/libstdc++-v3/src codes/gcc/libstdc++-v3/src/c++11/condition_variable.cc
+codes/gcc/libstdc++-v3/src/c++11/condition_variable.cc:39:  condition_variable::wait(unique_lock<mutex>& __lock)
+codes/gcc/libstdc++-v3/include/std/condition_variable:70:  class condition_variable
+codes/gcc/libstdc++-v3/include/std/condition_variable:244:  class condition_variable_any
+codes/gcc/libstdc++-v3/src/c++11/condition_variable.cc:39:  condition_variable::wait(unique_lock<mutex>& __lock)
+codes/gcc/libstdc++-v3/src/c++11/compatibility-condvar.cc:47:  class condition_variable_any
+codes/gcc/libstdc++-v3/src/c++11/compatibility-condvar.cc:64:// std::condition_variable::wait changed to noexcept(false)
+codes/gcc/libstdc++-v3/src/c++11/compatibility-condvar.cc:97:  // In theory this could be simply this->std::condition_variable::wait(lock)
+codes/gcc/libstdc++-v3/src/c++11/compatibility-condvar.cc:103:// Export a noexcept wrapper around std::condition_variable::wait
+exit_code=0
+$ rg -n "condition_variable::wait|__libcpp_condvar_wait|pthread_cond_wait" codes/llvm/libcxx/include codes/llvm/libcxx/src
+codes/llvm/libcxx/src/call_once.cpp:47:    __libcpp_condvar_wait(&cv, &mut);
+codes/llvm/libcxx/src/condition_variable.cpp:33:void condition_variable::wait(unique_lock<mutex>& lk) noexcept {
+codes/llvm/libcxx/src/condition_variable.cpp:35:    std::__throw_system_error(EPERM, "condition_variable::wait: mutex not locked");
+codes/llvm/libcxx/src/condition_variable.cpp:36:  int ec = __libcpp_condvar_wait(&__cv_, lk.mutex()->native_handle());
+codes/llvm/libcxx/src/support/win32/thread_win32.cpp:94:int __libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m) {
+codes/llvm/libcxx/include/__thread/support.h:57:_LIBCPP_NO_THREAD_SAFETY_ANALYSIS int __libcpp_condvar_wait(__libcpp_condvar_t*, __libcpp_mutex_t*);
+codes/llvm/libcxx/include/__thread/support/c11.h:96:__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m) {
+codes/llvm/libcxx/include/__thread/support/windows.h:69:__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m);
+codes/llvm/libcxx/include/__thread/support/pthread.h:121:__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m) {
+codes/llvm/libcxx/include/__thread/support/pthread.h:122:  return pthread_cond_wait(__cv, __m);
+codes/llvm/libcxx/include/__cxx03/__thread/support.h:57:_LIBCPP_NO_THREAD_SAFETY_ANALYSIS int __libcpp_condvar_wait(__libcpp_condvar_t*, __libcpp_mutex_t*);
+codes/llvm/libcxx/include/__cxx03/__thread/support/c11.h:96:__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m) {
+codes/llvm/libcxx/include/__cxx03/__thread/support/windows.h:69:__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m);
+codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:121:__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m) {
+codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:122:  return pthread_cond_wait(__cv, __m);
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:145:void condition_variable::wait(unique_lock<mutex>& __lk, _Predicate __pred) {
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:151:cv_status condition_variable::wait_until(unique_lock<mutex>& __lk, const chrono::time_point<_Clock, _Duration>& __t) {
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:166:bool condition_variable::wait_until(
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:176:cv_status condition_variable::wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d) {
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:204:condition_variable::wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d, _Predicate __pred) {
+codes/llvm/libcxx/include/__condition_variable/condition_variable.h:192:condition_variable::wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d, _Predicate __pred) {
+exit_code=0

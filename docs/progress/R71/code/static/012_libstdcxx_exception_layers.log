@@ -1,0 +1,241 @@
+$ nl -ba codes/gcc/libstdc++-v3/include/std/mutex | sed -n 810,925p; nl -ba codes/gcc/libstdc++-v3/src/c++11/thread.cc | sed -n 120,145p; nl -ba codes/gcc/libgcc/gthr-posix.h | sed -n 672,686p
+   810	
+   811	    /// Deleted copy constructor
+   812	    once_flag(const once_flag&) = delete;
+   813	    /// Deleted assignment operator
+   814	    once_flag& operator=(const once_flag&) = delete;
+   815	
+   816	  private:
+   817	    // For gthreads targets a pthread_once_t is used with pthread_once, but
+   818	    // for most targets this doesn't work correctly for exceptional executions.
+   819	    __gthread_once_t _M_once = __GTHREAD_ONCE_INIT;
+   820	
+   821	    struct _Prepare_execution;
+   822	
+   823	    template<typename _Callable, typename... _Args>
+   824	      friend void
+   825	      call_once(once_flag& __once, _Callable&& __f, _Args&&... __args);
+   826	  };
+   827	
+   828	  /// @cond undocumented
+   829	# ifdef _GLIBCXX_HAVE_TLS
+   830	  // If TLS is available use thread-local state for the type-erased callable
+   831	  // that is being run by std::call_once in the current thread.
+   832	  extern __thread void* __once_callable;
+   833	  extern __thread void (*__once_call)();
+   834	
+   835	  // RAII type to set up state for pthread_once call.
+   836	  struct once_flag::_Prepare_execution
+   837	  {
+   838	    template<typename _Callable>
+   839	      explicit
+   840	      _Prepare_execution(_Callable& __c)
+   841	      {
+   842		// Store address in thread-local pointer:
+   843		__once_callable = std::__addressof(__c);
+   844		// Trampoline function to invoke the closure via thread-local pointer:
+   845		__once_call = [] { (*static_cast<_Callable*>(__once_callable))(); };
+   846	      }
+   847	
+   848	    ~_Prepare_execution()
+   849	    {
+   850	      // PR libstdc++/82481
+   851	      __once_callable = nullptr;
+   852	      __once_call = nullptr;
+   853	    }
+   854	
+   855	    _Prepare_execution(const _Prepare_execution&) = delete;
+   856	    _Prepare_execution& operator=(const _Prepare_execution&) = delete;
+   857	  };
+   858	
+   859	# else
+   860	  // Without TLS use a global std::mutex and store the callable in a
+   861	  // global std::function.
+   862	  extern function<void()> __once_functor;
+   863	
+   864	  extern void
+   865	  __set_once_functor_lock_ptr(unique_lock<mutex>*);
+   866	
+   867	  extern mutex&
+   868	  __get_once_mutex();
+   869	
+   870	  // RAII type to set up state for pthread_once call.
+   871	  struct once_flag::_Prepare_execution
+   872	  {
+   873	    template<typename _Callable>
+   874	      explicit
+   875	      _Prepare_execution(_Callable& __c)
+   876	      {
+   877		// Store the callable in the global std::function
+   878		__once_functor = __c;
+   879		__set_once_functor_lock_ptr(&_M_functor_lock);
+   880	      }
+   881	
+   882	    ~_Prepare_execution()
+   883	    {
+   884	      if (_M_functor_lock)
+   885		__set_once_functor_lock_ptr(nullptr);
+   886	    }
+   887	
+   888	  private:
+   889	    // XXX This deadlocks if used recursively (PR 97949)
+   890	    unique_lock<mutex> _M_functor_lock{__get_once_mutex()};
+   891	
+   892	    _Prepare_execution(const _Prepare_execution&) = delete;
+   893	    _Prepare_execution& operator=(const _Prepare_execution&) = delete;
+   894	  };
+   895	# endif
+   896	  /// @endcond
+   897	
+   898	  // This function is passed to pthread_once by std::call_once.
+   899	  // It runs __once_call() or __once_functor().
+   900	  extern "C" void __once_proxy(void);
+   901	
+   902	  /// Invoke a callable and synchronize with other calls using the same flag
+   903	  template<typename _Callable, typename... _Args>
+   904	    void
+   905	    call_once(once_flag& __once, _Callable&& __f, _Args&&... __args)
+   906	    {
+   907	      // Closure type that runs the function
+   908	      auto __callable = [&] {
+   909		  std::__invoke(std::forward<_Callable>(__f),
+   910				std::forward<_Args>(__args)...);
+   911	      };
+   912	
+   913	      once_flag::_Prepare_execution __exec(__callable);
+   914	
+   915	      // XXX pthread_once does not reset the flag if an exception is thrown.
+   916	      if (int __e = __gthread_once(&__once._M_once, &__once_proxy))
+   917		__throw_system_error(__e);
+   918	    }
+   919	
+   920	#else // _GLIBCXX_HAS_GTHREADS
+   921	
+   922	  /// Flag type used by std::call_once
+   923	  struct once_flag
+   924	  {
+   925	    constexpr once_flag() noexcept = default;
+   120	    }
+   121	#endif
+   122	  } // extern "C"
+   123	
+   124	_GLIBCXX_BEGIN_NAMESPACE_VERSION
+   125	
+   126	  thread::_State::~_State() = default;
+   127	
+   128	  void
+   129	  thread::join()
+   130	  {
+   131	    int __e = EINVAL;
+   132	
+   133	    if (_M_id != id())
+   134	      __e = __gthread_join(_M_id._M_thread, 0);
+   135	
+   136	    if (__e)
+   137	      __throw_system_error(__e);
+   138	
+   139	    _M_id = id();
+   140	  }
+   141	
+   142	  void
+   143	  thread::detach()
+   144	  {
+   145	    int __e = EINVAL;
+   672	static inline int
+   673	__gthread_create (__gthread_t *__threadid, void *(*__func) (void*),
+   674			  void *__args)
+   675	{
+   676	  return __gthrw_(pthread_create) (__threadid, NULL, __func, __args);
+   677	}
+   678	
+   679	static inline int
+   680	__gthread_join (__gthread_t __threadid, void **__value_ptr)
+   681	{
+   682	  return __gthrw_(pthread_join) (__threadid, __value_ptr);
+   683	}
+   684	
+   685	static inline int
+   686	__gthread_detach (__gthread_t __threadid)
+exit_code=0
+$ nl -ba codes/gcc/libstdc++-v3/include/std/future | sed -n 1400,1452p; nl -ba codes/gcc/libstdc++-v3/include/std/future | sed -n 1768,1792p
+  1400	      _M_state()
+  1401	      {
+  1402		__future_base::_State_base::_S_check(_M_future);
+  1403		return *_M_future;
+  1404	      }
+  1405	    };
+  1406	
+  1407	  /// @cond undocumented
+  1408	  template<typename _Ptr_type, typename _Fn, typename _Res>
+  1409	    struct __future_base::_Task_setter
+  1410	    {
+  1411	      // Invoke the function and provide the result to the caller.
+  1412	      _Ptr_type operator()() const
+  1413	      {
+  1414		__try
+  1415		  {
+  1416		    (*_M_result)->_M_set((*_M_fn)());
+  1417		  }
+  1418		__catch(const __cxxabiv1::__forced_unwind&)
+  1419		  {
+  1420		    __throw_exception_again; // will cause broken_promise
+  1421		  }
+  1422		__catch(...)
+  1423		  {
+  1424		    (*_M_result)->_M_error = current_exception();
+  1425		  }
+  1426		return std::move(*_M_result);
+  1427	      }
+  1428	      _Ptr_type*	_M_result;
+  1429	      _Fn*		_M_fn;
+  1430	    };
+  1431	
+  1432	  template<typename _Ptr_type, typename _Fn>
+  1433	    struct __future_base::_Task_setter<_Ptr_type, _Fn, void>
+  1434	    {
+  1435	      _Ptr_type operator()() const
+  1436	      {
+  1437		__try
+  1438		  {
+  1439		    (*_M_fn)();
+  1440		  }
+  1441		__catch(const __cxxabiv1::__forced_unwind&)
+  1442		  {
+  1443		    __throw_exception_again; // will cause broken_promise
+  1444		  }
+  1445		__catch(...)
+  1446		  {
+  1447		    (*_M_result)->_M_error = current_exception();
+  1448		  }
+  1449		return std::move(*_M_result);
+  1450	      }
+  1451	      _Ptr_type*	_M_result;
+  1452	      _Fn*		_M_fn;
+  1768	      // thread can be referring to this state if it is being destroyed.
+  1769	      ~_Async_state_impl()
+  1770	      {
+  1771		if (_M_thread.joinable())
+  1772		  _M_thread.join();
+  1773	      }
+  1774	
+  1775	    private:
+  1776	      void
+  1777	      _M_run()
+  1778	      {
+  1779		__try
+  1780		  {
+  1781		    _M_set_result(_S_task_setter(_M_result, _M_fn));
+  1782		  }
+  1783		__catch (const __cxxabiv1::__forced_unwind&)
+  1784		  {
+  1785		    // make the shared state ready on thread cancellation
+  1786		    if (static_cast<bool>(_M_result))
+  1787		      this->_M_break_promise(std::move(_M_result));
+  1788		    __throw_exception_again;
+  1789		  }
+  1790	      }
+  1791	
+  1792	      typedef __future_base::_Ptr<_Result<_Res>> _Ptr_type;
+exit_code=0
+$ rg -n "__forced_unwind" codes/gcc/libstdc++-v3/include/std/future | awk -F: "$1 < 300 || ($1 >= 300 && $1 <= 800) || ($1 >= 1680 && $1 <= 1760)"
+exit_code=0

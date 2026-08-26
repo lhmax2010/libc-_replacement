@@ -1,0 +1,144 @@
+$ nl -ba codes/gcc/libstdc++-v3/include/std/future | sed -n 1680,1760p; nl -ba codes/gcc/libstdc++-v3/include/bits/std_thread.h | sed -n 165,205p; nl -ba codes/gcc/libstdc++-v3/include/mutex | sed -n 810,925p
+  1680	
+  1681	  /// @cond undocumented
+  1682	
+  1683	  // Shared state created by std::async().
+  1684	  // Holds a deferred function and storage for its result.
+  1685	  template<typename _BoundFn, typename _Res>
+  1686	    class __future_base::_Deferred_state final
+  1687	    : public __future_base::_State_base
+  1688	    {
+  1689	    public:
+  1690	      template<typename... _Args>
+  1691		explicit
+  1692		_Deferred_state(_Args&&... __args)
+  1693		: _M_result(new _Result<_Res>()),
+  1694		  _M_fn(std::forward<_Args>(__args)...)
+  1695		{ }
+  1696	
+  1697	    private:
+  1698	      typedef __future_base::_Ptr<_Result<_Res>> _Ptr_type;
+  1699	      _Ptr_type _M_result;
+  1700	      _BoundFn _M_fn;
+  1701	
+  1702	      // Run the deferred function.
+  1703	      virtual void
+  1704	      _M_complete_async()
+  1705	      {
+  1706		// Multiple threads can call a waiting function on the future and
+  1707		// reach this point at the same time. The call_once in _M_set_result
+  1708		// ensures only the first one run the deferred function, stores the
+  1709		// result in _M_result, swaps that with the base _M_result and makes
+  1710		// the state ready. Tell _M_set_result to ignore failure so all later
+  1711		// calls do nothing.
+  1712	        _M_set_result(_S_task_setter(_M_result, _M_fn), true);
+  1713	      }
+  1714	
+  1715	      // Caller should check whether the state is ready first, because this
+  1716	      // function will return true even after the deferred function has run.
+  1717	      virtual bool _M_is_deferred_future() const { return true; }
+  1718	    };
+  1719	
+  1720	  // Common functionality hoisted out of the _Async_state_impl template.
+  1721	  class __future_base::_Async_state_commonV2
+  1722	    : public __future_base::_State_base
+  1723	  {
+  1724	  protected:
+  1725	    ~_Async_state_commonV2() = default;
+  1726	
+  1727	    // Make waiting functions block until the thread completes, as if joined.
+  1728	    //
+  1729	    // This function is used by wait() to satisfy the first requirement below
+  1730	    // and by wait_for() / wait_until() to satisfy the second.
+  1731	    //
+  1732	    // [futures.async]:
+  1733	    //
+  1734	    // - a call to a waiting function on an asynchronous return object that
+  1735	    // shares the shared state created by this async call shall block until
+  1736	    // the associated thread has completed, as if joined, or else time out.
+  1737	    //
+  1738	    // - the associated thread completion synchronizes with the return from
+  1739	    // the first function that successfully detects the ready status of the
+  1740	    // shared state or with the return from the last function that releases
+  1741	    // the shared state, whichever happens first.
+  1742	    virtual void _M_complete_async() { _M_join(); }
+  1743	
+  1744	    void _M_join() { std::call_once(_M_once, &thread::join, &_M_thread); }
+  1745	
+  1746	    thread _M_thread;
+  1747	    once_flag _M_once;
+  1748	  };
+  1749	
+  1750	  // Shared state created by std::async().
+  1751	  // Starts a new thread that runs a function and makes the shared state ready.
+  1752	  template<typename _BoundFn, typename _Res>
+  1753	    class __future_base::_Async_state_impl final
+  1754	    : public __future_base::_Async_state_commonV2
+  1755	    {
+  1756	    public:
+  1757	      template<typename... _Args>
+  1758		explicit
+  1759		_Async_state_impl(_Args&&... __args)
+  1760		: _M_result(new _Result<_Res>()),
+   165		static_assert( __is_invocable<typename decay<_Callable>::type,
+   166					      typename decay<_Args>::type...>::value,
+   167		  "std::thread arguments must be invocable after conversion to rvalues"
+   168		  );
+   169	
+   170		using _Wrapper = _Call_wrapper<_Callable, _Args...>;
+   171		// Create a call wrapper with DECAY_COPY(__f) as its target object
+   172		// and DECAY_COPY(__args)... as its bound argument entities.
+   173		_M_start_thread(_State_ptr(new _State_impl<_Wrapper>(
+   174		      std::forward<_Callable>(__f), std::forward<_Args>(__args)...)),
+   175		    _M_thread_deps_never_run);
+   176	      }
+   177	#endif // _GLIBCXX_HAS_GTHREADS
+   178	
+   179	    ~thread()
+   180	    {
+   181	      if (joinable())
+   182		std::__terminate();
+   183	    }
+   184	
+   185	    thread(const thread&) = delete;
+   186	
+   187	    thread(thread&& __t) noexcept
+   188	    { swap(__t); }
+   189	
+   190	    thread& operator=(const thread&) = delete;
+   191	
+   192	    thread& operator=(thread&& __t) noexcept
+   193	    {
+   194	      if (joinable())
+   195		std::__terminate();
+   196	      swap(__t);
+   197	      return *this;
+   198	    }
+   199	
+   200	    void
+   201	    swap(thread& __t) noexcept
+   202	    { std::swap(_M_id, __t._M_id); }
+   203	
+   204	    bool
+   205	    joinable() const noexcept
+nl: codes/gcc/libstdc++-v3/include/mutex: No such file or directory
+exit_code=0
+$ rg -n "__forced_unwind|__catch|catch" codes/gcc/libstdc++-v3/include/std/future codes/gcc/libstdc++-v3/include/mutex codes/gcc/libstdc++-v3/include/bits/std_thread.h codes/gcc/libstdc++-v3/src/c++11/future.cc codes/gcc/libstdc++-v3/src/c++11/thread.cc 2>/dev/null
+codes/gcc/libstdc++-v3/include/std/future:1418:	__catch(const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/future:1422:	__catch(...)
+codes/gcc/libstdc++-v3/include/std/future:1441:	__catch(const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/future:1445:	__catch(...)
+codes/gcc/libstdc++-v3/include/std/future:1783:	__catch (const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/future:1816:	  catch(const system_error& __e)
+exit_code=2
+$ rg -n "void join\(|thread::join|pthread_join|__gthread_join" codes/gcc/libstdc++-v3/include/bits/std_thread.h codes/gcc/libstdc++-v3/src codes/gcc/libgcc/gthr-posix.h | head -100
+codes/gcc/libstdc++-v3/include/bits/std_thread.h:147:    // pthread_create and pthread_join, which ensures they are both
+codes/gcc/libstdc++-v3/include/bits/std_thread.h:155:      reinterpret_cast<void (*)(void)>(&pthread_join)();
+codes/gcc/libstdc++-v3/include/bits/std_thread.h:321:  inline void thread::join() { std::__throw_system_error(EINVAL); }
+codes/gcc/libstdc++-v3/src/c++11/compatibility-thread-c++0x.cc:116:    void _M_join() { std::call_once(_M_once, &thread::join, &_M_thread); }
+codes/gcc/libstdc++-v3/src/c++11/thread.cc:129:  thread::join()
+codes/gcc/libstdc++-v3/src/c++11/thread.cc:134:      __e = __gthread_join(_M_id._M_thread, 0);
+codes/gcc/libgcc/gthr-posix.h:113:__gthrw(pthread_join)
+codes/gcc/libgcc/gthr-posix.h:680:__gthread_join (__gthread_t __threadid, void **__value_ptr)
+codes/gcc/libgcc/gthr-posix.h:682:  return __gthrw_(pthread_join) (__threadid, __value_ptr);
+exit_code_rg=0 exit_code_head=
