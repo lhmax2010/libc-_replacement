@@ -1,0 +1,260 @@
+--- a/libcxx/include/future
++++ b/libcxx/include/future
+@@ -523,6 +523,8 @@
+ 
+ class _LIBCPP_EXPORTED_FROM_ABI __assoc_sub_state : public __shared_count {
+ protected:
++  enum class __forced_unwind_action { __restore_deferred, __complete_with_error };
++
+   exception_ptr __exception_;
+   mutable mutex __mut_;
+   mutable condition_variable __cv_;
+@@ -530,6 +532,26 @@
+ 
+   void __on_zero_shared() _NOEXCEPT override;
+   void __sub_wait(unique_lock<mutex>& __lk);
++
++  _LIBCPP_HIDE_FROM_ABI void
++  __handle_forced_unwind(__forced_unwind_action __action, exception_ptr __error = exception_ptr()) _NOEXCEPT {
++#    if _LIBCPP_HAS_EXCEPTIONS
++    try {
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++      unique_lock<mutex> __lk(__mut_);
++      if (__action == __forced_unwind_action::__restore_deferred) {
++        if (!(__state_ & ready) && !__has_value())
++          __state_ |= deferred;
++      } else if (!(__state_ & ready) && !__has_value()) {
++        __exception_ = std::move(__error);
++        __state_ |= ready;
++      }
++      __cv_.notify_all();
++#    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (...) {
++    }
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++  }
+ 
+ public:
+   enum { __constructed = 1, __future_attached = 2, ready = 4, deferred = 8 };
+@@ -592,6 +614,11 @@
+ 
+   _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __on_zero_shared() _NOEXCEPT override;
+ 
++  template <class _Arg>
++  _LIBCPP_HIDE_FROM_ABI void __construct_value_unready(_Arg&& __arg);
++
++  _LIBCPP_HIDE_FROM_ABI void __complete_forced_unwind(exception_ptr __error) _NOEXCEPT;
++
+ public:
+   template <class _Arg>
+   _LIBCPP_HIDE_FROM_ABI void set_value(_Arg&& __arg);
+@@ -623,6 +650,51 @@
+ 
+ template <class _Rp>
+ template <class _Arg>
++void __assoc_state<_Rp>::__construct_value_unready(_Arg&& __arg) {
++  unique_lock<mutex> __lk(this->__mut_);
++  if (this->__has_value())
++    std::__throw_future_error(future_errc::promise_already_satisfied);
++  ::new ((void*)std::addressof(__value_)) _Rp(std::forward<_Arg>(__arg));
++  this->__state_ |= base::__constructed;
++}
++
++template <class _Rp>
++void __assoc_state<_Rp>::__complete_forced_unwind(exception_ptr __error) _NOEXCEPT {
++  bool __destroy_value = false;
++#    if _LIBCPP_HAS_EXCEPTIONS
++  try {
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++    {
++      unique_lock<mutex> __lk(this->__mut_);
++      if (!(this->__state_ & base::ready)) {
++        __destroy_value = (this->__state_ & base::__constructed) != 0;
++        this->__state_ &= ~base::__constructed;
++        this->__exception_ = std::move(__error);
++      }
++    }
++    if (__destroy_value) {
++#    if _LIBCPP_HAS_EXCEPTIONS
++      try {
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++        reinterpret_cast<_Rp*>(std::addressof(__value_))->~_Rp();
++#    if _LIBCPP_HAS_EXCEPTIONS
++      } catch (...) {
++      }
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++    }
++    unique_lock<mutex> __lk(this->__mut_);
++    if (!(this->__state_ & base::ready) && this->__exception_ != nullptr) {
++      this->__state_ |= base::ready;
++      this->__cv_.notify_all();
++    }
++#    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (...) {
++  }
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++}
++
++template <class _Rp>
++template <class _Arg>
+ void __assoc_state<_Rp>::set_value_at_thread_exit(_Arg&& __arg) {
+   unique_lock<mutex> __lk(this->__mut_);
+   if (this->__has_value())
+@@ -660,6 +732,10 @@
+ 
+   _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __on_zero_shared() _NOEXCEPT override;
+ 
++  _LIBCPP_HIDE_FROM_ABI void __construct_value_unready(_Rp& __arg);
++
++  _LIBCPP_HIDE_FROM_ABI void __complete_forced_unwind(exception_ptr __error) _NOEXCEPT;
++
+ public:
+   _LIBCPP_HIDE_FROM_ABI void set_value(_Rp& __arg);
+   _LIBCPP_HIDE_FROM_ABI void set_value_at_thread_exit(_Rp& __arg);
+@@ -680,6 +756,34 @@
+   __value_ = std::addressof(__arg);
+   this->__state_ |= base::__constructed | base::ready;
+   __cv_.notify_all();
++}
++
++template <class _Rp>
++void __assoc_state<_Rp&>::__construct_value_unready(_Rp& __arg) {
++  unique_lock<mutex> __lk(this->__mut_);
++  if (this->__has_value())
++    std::__throw_future_error(future_errc::promise_already_satisfied);
++  __value_ = std::addressof(__arg);
++  this->__state_ |= base::__constructed;
++}
++
++template <class _Rp>
++void __assoc_state<_Rp&>::__complete_forced_unwind(exception_ptr __error) _NOEXCEPT {
++#    if _LIBCPP_HAS_EXCEPTIONS
++  try {
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++    unique_lock<mutex> __lk(this->__mut_);
++    if (!(this->__state_ & base::ready)) {
++      this->__state_ &= ~base::__constructed;
++      __value_ = nullptr;
++      this->__exception_ = std::move(__error);
++      this->__state_ |= base::ready;
++      this->__cv_.notify_all();
++    }
++#    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (...) {
++  }
++#    endif // _LIBCPP_HAS_EXCEPTIONS
+ }
+ 
+ template <class _Rp>
+@@ -791,6 +895,7 @@
+     this->set_value(__func_());
+ #    if _LIBCPP_HAS_EXCEPTIONS
+   } catch (const __cxxabiv1::__forced_unwind&) {
++    this->__handle_forced_unwind(base::__forced_unwind_action::__restore_deferred);
+     throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+@@ -824,6 +929,7 @@
+     this->set_value();
+ #    if _LIBCPP_HAS_EXCEPTIONS
+   } catch (const __cxxabiv1::__forced_unwind&) {
++    this->__handle_forced_unwind(base::__forced_unwind_action::__restore_deferred);
+     throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+@@ -853,14 +959,17 @@
+ #    if _LIBCPP_HAS_EXCEPTIONS
+   try {
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+-    this->set_value(__func_());
++    this->__construct_value_unready(__func_());
++    this->__make_ready();
+ #    if _LIBCPP_HAS_EXCEPTIONS
+   } catch (const __cxxabiv1::__forced_unwind&) {
++    exception_ptr __error;
+     try {
+       std::__throw_future_error(future_errc::broken_promise);
+     } catch (...) {
+-      this->set_exception(current_exception());
++      __error = current_exception();
+     }
++    this->__complete_forced_unwind(std::move(__error));
+     throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+@@ -900,11 +1009,13 @@
+     this->set_value();
+ #    if _LIBCPP_HAS_EXCEPTIONS
+   } catch (const __cxxabiv1::__forced_unwind&) {
++    exception_ptr __error;
+     try {
+       std::__throw_future_error(future_errc::broken_promise);
+     } catch (...) {
+-      this->set_exception(current_exception());
++      __error = current_exception();
+     }
++    this->__handle_forced_unwind(base::__forced_unwind_action::__complete_with_error, std::move(__error));
+     throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+--- a/libcxx/include/istream
++++ b/libcxx/include/istream
+@@ -796,6 +796,7 @@
+ #    if _LIBCPP_HAS_EXCEPTIONS
+     } catch (const __cxxabiv1::__forced_unwind&) {
+       __state |= ios_base::badbit;
++      this->__setstate_nothrow(__state);
+       throw;
+     } catch (...) {
+       __state |= ios_base::badbit;
+--- a/libcxx/src/future.cpp
++++ b/libcxx/src/future.cpp
+@@ -111,14 +111,16 @@
+ }
+ 
+ void __assoc_sub_state::__sub_wait(unique_lock<mutex>& __lk) {
+-  if (!__is_ready()) {
++  while (!__is_ready()) {
+     if (__state_ & static_cast<unsigned>(deferred)) {
+       __state_ &= ~static_cast<unsigned>(deferred);
+       __lk.unlock();
+       __execute();
+-    } else
+-      while (!__is_ready())
+-        __cv_.wait(__lk);
++      if (!__lk.owns_lock())
++        __lk.lock();
++    } else {
++      __cv_.wait(__lk);
++    }
+   }
+ }
+ 
+--- a/libcxx/src/ios.cpp
++++ b/libcxx/src/ios.cpp
+@@ -368,9 +368,9 @@
+   } catch (const __cxxabiv1::__forced_unwind&) {
+     throw;
+   } catch (...) {
+-  }
+-  if (__exceptions_ & badbit)
+-    throw;
++    if (__exceptions_ & badbit)
++      throw;
++  }
+ #endif // _LIBCPP_HAS_EXCEPTIONS
+ }
+ 
+@@ -382,9 +382,9 @@
+   } catch (const __cxxabiv1::__forced_unwind&) {
+     throw;
+   } catch (...) {
+-  }
+-  if (__exceptions_ & failbit)
+-    throw;
++    if (__exceptions_ & failbit)
++      throw;
++  }
+ #endif // _LIBCPP_HAS_EXCEPTIONS
+ }
+ 
