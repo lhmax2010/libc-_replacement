@@ -1,0 +1,434 @@
+COMMAND=nl -ba codes/llvm/libcxx/include/__condition_variable/condition_variable.h | sed -n 89,225p
+    89	class _LIBCPP_EXPORTED_FROM_ABI condition_variable {
+    90	  __libcpp_condvar_t __cv_ = _LIBCPP_CONDVAR_INITIALIZER;
+    91	
+    92	public:
+    93	  _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR condition_variable() _NOEXCEPT = default;
+    94	
+    95	#  if _LIBCPP_HAS_TRIVIAL_CONDVAR_DESTRUCTION
+    96	  ~condition_variable() = default;
+    97	#  else
+    98	  ~condition_variable();
+    99	#  endif
+   100	
+   101	  condition_variable(const condition_variable&)            = delete;
+   102	  condition_variable& operator=(const condition_variable&) = delete;
+   103	
+   104	  void notify_one() _NOEXCEPT;
+   105	  void notify_all() _NOEXCEPT;
+   106	
+   107	  void wait(unique_lock<mutex>& __lk) _NOEXCEPT;
+   108	
+   109	  template <class _Predicate>
+   110	  _LIBCPP_HIDE_FROM_ABI void wait(unique_lock<mutex>& __lk, _Predicate __pred) {
+   111	    while (!__pred())
+   112	      wait(__lk);
+   113	  }
+   114	
+   115	  template <class _Clock, class _Duration>
+   116	  _LIBCPP_HIDE_FROM_ABI cv_status
+   117	  wait_until(unique_lock<mutex>& __lk, const chrono::time_point<_Clock, _Duration>& __t) {
+   118	    using namespace chrono;
+   119	    using __clock_tp_ns = time_point<_Clock, nanoseconds>;
+   120	
+   121	    typename _Clock::time_point __now = _Clock::now();
+   122	    if (__t <= __now)
+   123	      return cv_status::timeout;
+   124	
+   125	    __clock_tp_ns __t_ns = __clock_tp_ns(std::__safe_nanosecond_cast(__t.time_since_epoch()));
+   126	
+   127	    __do_timed_wait(__lk, __t_ns);
+   128	    return _Clock::now() < __t ? cv_status::no_timeout : cv_status::timeout;
+   129	  }
+   130	
+   131	  template <class _Clock, class _Duration, class _Predicate>
+   132	  _LIBCPP_HIDE_FROM_ABI bool
+   133	  wait_until(unique_lock<mutex>& __lk, const chrono::time_point<_Clock, _Duration>& __t, _Predicate __pred) {
+   134	    while (!__pred()) {
+   135	      if (wait_until(__lk, __t) == cv_status::timeout)
+   136	        return __pred();
+   137	    }
+   138	    return true;
+   139	  }
+   140	
+   141	  template <class _Rep, class _Period>
+   142	  _LIBCPP_HIDE_FROM_ABI cv_status wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d) {
+   143	    using namespace chrono;
+   144	    if (__d <= __d.zero())
+   145	      return cv_status::timeout;
+   146	    using __ns_rep                   = nanoseconds::rep;
+   147	    steady_clock::time_point __c_now = steady_clock::now();
+   148	
+   149	#  if _LIBCPP_HAS_COND_CLOCKWAIT
+   150	    using __clock_tp_ns     = time_point<steady_clock, nanoseconds>;
+   151	    __ns_rep __now_count_ns = std::__safe_nanosecond_cast(__c_now.time_since_epoch()).count();
+   152	#  else
+   153	    using __clock_tp_ns     = time_point<system_clock, nanoseconds>;
+   154	    __ns_rep __now_count_ns = std::__safe_nanosecond_cast(system_clock::now().time_since_epoch()).count();
+   155	#  endif
+   156	
+   157	    __ns_rep __d_ns_count = std::__safe_nanosecond_cast(__d).count();
+   158	
+   159	    if (__now_count_ns > numeric_limits<__ns_rep>::max() - __d_ns_count) {
+   160	      __do_timed_wait(__lk, __clock_tp_ns::max());
+   161	    } else {
+   162	      __do_timed_wait(__lk, __clock_tp_ns(nanoseconds(__now_count_ns + __d_ns_count)));
+   163	    }
+   164	
+   165	    return steady_clock::now() - __c_now < __d ? cv_status::no_timeout : cv_status::timeout;
+   166	  }
+   167	
+   168	  template <class _Rep, class _Period, class _Predicate>
+   169	  bool _LIBCPP_HIDE_FROM_ABI
+   170	  wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d, _Predicate __pred);
+   171	
+   172	  typedef __libcpp_condvar_t* native_handle_type;
+   173	  [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI native_handle_type native_handle() { return &__cv_; }
+   174	
+   175	private:
+   176	  void
+   177	  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>) _NOEXCEPT;
+   178	#  if _LIBCPP_HAS_COND_CLOCKWAIT
+   179	  _LIBCPP_HIDE_FROM_ABI void
+   180	  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>) _NOEXCEPT;
+   181	#  endif
+   182	  template <class _Clock>
+   183	  _LIBCPP_HIDE_FROM_ABI void
+   184	  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>) _NOEXCEPT;
+   185	};
+   186	#endif // _LIBCPP_HAS_THREADS
+   187	
+   188	#if _LIBCPP_HAS_THREADS
+   189	
+   190	template <class _Rep, class _Period, class _Predicate>
+   191	inline bool
+   192	condition_variable::wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d, _Predicate __pred) {
+   193	  return wait_until(__lk, chrono::steady_clock::now() + __d, std::move(__pred));
+   194	}
+   195	
+   196	#  if _LIBCPP_HAS_COND_CLOCKWAIT
+   197	inline void condition_variable::__do_timed_wait(
+   198	    unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds> __tp) _NOEXCEPT {
+   199	  using namespace chrono;
+   200	  if (!__lk.owns_lock())
+   201	    std::__throw_system_error(EPERM, "condition_variable::timed wait: mutex not locked");
+   202	  nanoseconds __d = __tp.time_since_epoch();
+   203	  timespec __ts;
+   204	  seconds __s                 = duration_cast<seconds>(__d);
+   205	  using __ts_sec              = decltype(__ts.tv_sec);
+   206	  const __ts_sec __ts_sec_max = numeric_limits<__ts_sec>::max();
+   207	  if (__s.count() < __ts_sec_max) {
+   208	    __ts.tv_sec  = static_cast<__ts_sec>(__s.count());
+   209	    __ts.tv_nsec = (__d - __s).count();
+   210	  } else {
+   211	    __ts.tv_sec  = __ts_sec_max;
+   212	    __ts.tv_nsec = giga::num - 1;
+   213	  }
+   214	  int __ec = pthread_cond_clockwait(&__cv_, __lk.mutex()->native_handle(), CLOCK_MONOTONIC, &__ts);
+   215	  if (__ec != 0 && __ec != ETIMEDOUT)
+   216	    std::__throw_system_error(__ec, "condition_variable timed_wait failed");
+   217	}
+   218	#  endif // _LIBCPP_HAS_COND_CLOCKWAIT
+   219	
+   220	template <class _Clock>
+   221	inline void condition_variable::__do_timed_wait(unique_lock<mutex>& __lk,
+   222	                                                chrono::time_point<_Clock, chrono::nanoseconds> __tp) _NOEXCEPT {
+   223	  wait_for(__lk, __tp - _Clock::now());
+   224	}
+   225	
+EXIT_CODE=0
+COMMAND=nl -ba codes/llvm/libcxx/src/condition_variable.cpp | sed -n 27,64p
+    27	// ~condition_variable is defined elsewhere.
+    28	
+    29	void condition_variable::notify_one() noexcept { __libcpp_condvar_signal(&__cv_); }
+    30	
+    31	void condition_variable::notify_all() noexcept { __libcpp_condvar_broadcast(&__cv_); }
+    32	
+    33	void condition_variable::wait(unique_lock<mutex>& lk) noexcept {
+    34	  if (!lk.owns_lock())
+    35	    std::__throw_system_error(EPERM, "condition_variable::wait: mutex not locked");
+    36	  int ec = __libcpp_condvar_wait(&__cv_, lk.mutex()->native_handle());
+    37	  if (ec)
+    38	    std::__throw_system_error(ec, "condition_variable wait failed");
+    39	}
+    40	
+    41	void condition_variable::__do_timed_wait(unique_lock<mutex>& lk,
+    42	                                         chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) noexcept {
+    43	  using namespace chrono;
+    44	  if (!lk.owns_lock())
+    45	    std::__throw_system_error(EPERM, "condition_variable::timed wait: mutex not locked");
+    46	  nanoseconds d = tp.time_since_epoch();
+    47	  if (d > nanoseconds(0x59682F000000E941))
+    48	    d = nanoseconds(0x59682F000000E941);
+    49	  __libcpp_timespec_t ts;
+    50	  seconds s = duration_cast<seconds>(d);
+    51	  typedef decltype(ts.tv_sec) ts_sec;
+    52	  constexpr ts_sec ts_sec_max = numeric_limits<ts_sec>::max();
+    53	  if (s.count() < ts_sec_max) {
+    54	    ts.tv_sec  = static_cast<ts_sec>(s.count());
+    55	    ts.tv_nsec = static_cast<decltype(ts.tv_nsec)>((d - s).count());
+    56	  } else {
+    57	    ts.tv_sec  = ts_sec_max;
+    58	    ts.tv_nsec = giga::num - 1;
+    59	  }
+    60	  int ec = __libcpp_condvar_timedwait(&__cv_, lk.mutex()->native_handle(), &ts);
+    61	  if (ec != 0 && ec != ETIMEDOUT)
+    62	    std::__throw_system_error(ec, "condition_variable timed_wait failed");
+    63	}
+    64	
+EXIT_CODE=0
+COMMAND=nl -ba codes/llvm/libcxx/include/__thread/support/pthread.h | sed -n 115,202p
+   115	
+   116	inline _LIBCPP_HIDE_FROM_ABI int __libcpp_condvar_broadcast(__libcpp_condvar_t* __cv) {
+   117	  return pthread_cond_broadcast(__cv);
+   118	}
+   119	
+   120	_LIBCPP_NO_THREAD_SAFETY_ANALYSIS inline _LIBCPP_HIDE_FROM_ABI int
+   121	__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m) {
+   122	  return pthread_cond_wait(__cv, __m);
+   123	}
+   124	
+   125	_LIBCPP_NO_THREAD_SAFETY_ANALYSIS inline _LIBCPP_HIDE_FROM_ABI int
+   126	__libcpp_condvar_timedwait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m, __libcpp_timespec_t* __ts) {
+   127	  return pthread_cond_timedwait(__cv, __m, __ts);
+   128	}
+   129	
+   130	inline _LIBCPP_HIDE_FROM_ABI int __libcpp_condvar_destroy(__libcpp_condvar_t* __cv) {
+   131	  return pthread_cond_destroy(__cv);
+   132	}
+   133	
+   134	//
+   135	// Execute once
+   136	//
+   137	typedef pthread_once_t __libcpp_exec_once_flag;
+   138	#define _LIBCPP_EXEC_ONCE_INITIALIZER PTHREAD_ONCE_INIT
+   139	
+   140	inline _LIBCPP_HIDE_FROM_ABI int __libcpp_execute_once(__libcpp_exec_once_flag* __flag, void (*__init_routine)()) {
+   141	  return pthread_once(__flag, __init_routine);
+   142	}
+   143	
+   144	//
+   145	// Thread id
+   146	//
+   147	#if defined(__MVS__)
+   148	typedef unsigned long long __libcpp_thread_id;
+   149	#else
+   150	typedef pthread_t __libcpp_thread_id;
+   151	#endif
+   152	
+   153	// Returns non-zero if the thread ids are equal, otherwise 0
+   154	inline _LIBCPP_HIDE_FROM_ABI bool __libcpp_thread_id_equal(__libcpp_thread_id __t1, __libcpp_thread_id __t2) {
+   155	  return __t1 == __t2;
+   156	}
+   157	
+   158	// Returns non-zero if t1 < t2, otherwise 0
+   159	inline _LIBCPP_HIDE_FROM_ABI bool __libcpp_thread_id_less(__libcpp_thread_id __t1, __libcpp_thread_id __t2) {
+   160	  return __t1 < __t2;
+   161	}
+   162	
+   163	//
+   164	// Thread
+   165	//
+   166	#define _LIBCPP_NULL_THREAD ((__libcpp_thread_t()))
+   167	typedef pthread_t __libcpp_thread_t;
+   168	
+   169	inline _LIBCPP_HIDE_FROM_ABI __libcpp_thread_id __libcpp_thread_get_id(const __libcpp_thread_t* __t) {
+   170	#if defined(__MVS__)
+   171	  return __t->__;
+   172	#else
+   173	  return *__t;
+   174	#endif
+   175	}
+   176	
+   177	inline _LIBCPP_HIDE_FROM_ABI bool __libcpp_thread_isnull(const __libcpp_thread_t* __t) {
+   178	  return __libcpp_thread_get_id(__t) == 0;
+   179	}
+   180	
+   181	inline _LIBCPP_HIDE_FROM_ABI int __libcpp_thread_create(__libcpp_thread_t* __t, void* (*__func)(void*), void* __arg) {
+   182	  return pthread_create(__t, nullptr, __func, __arg);
+   183	}
+   184	
+   185	inline _LIBCPP_HIDE_FROM_ABI __libcpp_thread_id __libcpp_thread_get_current_id() {
+   186	  const __libcpp_thread_t __current_thread = pthread_self();
+   187	  return __libcpp_thread_get_id(&__current_thread);
+   188	}
+   189	
+   190	inline _LIBCPP_HIDE_FROM_ABI int __libcpp_thread_join(__libcpp_thread_t* __t) { return pthread_join(*__t, nullptr); }
+   191	
+   192	inline _LIBCPP_HIDE_FROM_ABI int __libcpp_thread_detach(__libcpp_thread_t* __t) { return pthread_detach(*__t); }
+   193	
+   194	inline _LIBCPP_HIDE_FROM_ABI void __libcpp_thread_yield() { sched_yield(); }
+   195	
+   196	inline _LIBCPP_HIDE_FROM_ABI void __libcpp_thread_sleep_for(const chrono::nanoseconds& __ns) {
+   197	  __libcpp_timespec_t __ts = std::__convert_to_timespec<__libcpp_timespec_t>(__ns);
+   198	  while (nanosleep(&__ts, &__ts) == -1 && errno == EINTR)
+   199	    ;
+   200	}
+   201	
+   202	//
+EXIT_CODE=0
+COMMAND=nl -ba codes/gcc/libstdc++-v3/include/std/condition_variable | sed -n 85,229p
+    85	    condition_variable() noexcept;
+    86	    ~condition_variable() noexcept;
+    87	
+    88	    condition_variable(const condition_variable&) = delete;
+    89	    condition_variable& operator=(const condition_variable&) = delete;
+    90	
+    91	    void
+    92	    notify_one() noexcept;
+    93	
+    94	    void
+    95	    notify_all() noexcept;
+    96	
+    97	    void
+    98	    wait(unique_lock<mutex>& __lock);
+    99	
+   100	    template<typename _Predicate>
+   101	      void
+   102	      wait(unique_lock<mutex>& __lock, _Predicate __p)
+   103	      {
+   104		while (!__p())
+   105		  wait(__lock);
+   106	      }
+   107	
+   108	#ifdef _GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT
+   109	    template<typename _Duration>
+   110	      cv_status
+   111	      wait_until(unique_lock<mutex>& __lock,
+   112			 const chrono::time_point<steady_clock, _Duration>& __atime)
+   113	      { return __wait_until_impl(__lock, __atime); }
+   114	#endif
+   115	
+   116	    template<typename _Duration>
+   117	      cv_status
+   118	      wait_until(unique_lock<mutex>& __lock,
+   119			 const chrono::time_point<system_clock, _Duration>& __atime)
+   120	      { return __wait_until_impl(__lock, __atime); }
+   121	
+   122	    template<typename _Clock, typename _Duration>
+   123	      cv_status
+   124	      wait_until(unique_lock<mutex>& __lock,
+   125			 const chrono::time_point<_Clock, _Duration>& __atime)
+   126	      {
+   127	#if __cplusplus > 201703L
+   128		static_assert(chrono::is_clock_v<_Clock>);
+   129	#endif
+   130		using __s_dur = typename __clock_t::duration;
+   131		const typename _Clock::time_point __c_entry = _Clock::now();
+   132		const __clock_t::time_point __s_entry = __clock_t::now();
+   133		const auto __delta = __atime - __c_entry;
+   134		const auto __s_atime = __s_entry +
+   135		  chrono::__detail::ceil<__s_dur>(__delta);
+   136	
+   137		if (__wait_until_impl(__lock, __s_atime) == cv_status::no_timeout)
+   138		  return cv_status::no_timeout;
+   139		// We got a timeout when measured against __clock_t but
+   140		// we need to check against the caller-supplied clock
+   141		// to tell whether we should return a timeout.
+   142		if (_Clock::now() < __atime)
+   143		  return cv_status::no_timeout;
+   144		return cv_status::timeout;
+   145	      }
+   146	
+   147	    template<typename _Clock, typename _Duration, typename _Predicate>
+   148	      bool
+   149	      wait_until(unique_lock<mutex>& __lock,
+   150			 const chrono::time_point<_Clock, _Duration>& __atime,
+   151			 _Predicate __p)
+   152	      {
+   153		while (!__p())
+   154		  if (wait_until(__lock, __atime) == cv_status::timeout)
+   155		    return __p();
+   156		return true;
+   157	      }
+   158	
+   159	    template<typename _Rep, typename _Period>
+   160	      cv_status
+   161	      wait_for(unique_lock<mutex>& __lock,
+   162		       const chrono::duration<_Rep, _Period>& __rtime)
+   163	      {
+   164		using __dur = typename steady_clock::duration;
+   165		return wait_until(__lock,
+   166				  steady_clock::now() +
+   167				  chrono::__detail::ceil<__dur>(__rtime));
+   168	      }
+   169	
+   170	    template<typename _Rep, typename _Period, typename _Predicate>
+   171	      bool
+   172	      wait_for(unique_lock<mutex>& __lock,
+   173		       const chrono::duration<_Rep, _Period>& __rtime,
+   174		       _Predicate __p)
+   175	      {
+   176		using __dur = typename steady_clock::duration;
+   177		return wait_until(__lock,
+   178				  steady_clock::now() +
+   179				  chrono::__detail::ceil<__dur>(__rtime),
+   180				  std::move(__p));
+   181	      }
+   182	
+   183	    native_handle_type
+   184	    native_handle()
+   185	    { return _M_cond.native_handle(); }
+   186	
+   187	  private:
+   188	#ifdef _GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT
+   189	    template<typename _Dur>
+   190	      cv_status
+   191	      __wait_until_impl(unique_lock<mutex>& __lock,
+   192				const chrono::time_point<steady_clock, _Dur>& __atime)
+   193	      {
+   194		auto __s = chrono::time_point_cast<chrono::seconds>(__atime);
+   195		auto __ns = chrono::duration_cast<chrono::nanoseconds>(__atime - __s);
+   196	
+   197		__gthread_time_t __ts =
+   198		  {
+   199		    static_cast<std::time_t>(__s.time_since_epoch().count()),
+   200		    static_cast<long>(__ns.count())
+   201		  };
+   202	
+   203		_M_cond.wait_until(*__lock.mutex(), CLOCK_MONOTONIC, __ts);
+   204	
+   205		return (steady_clock::now() < __atime
+   206			? cv_status::no_timeout : cv_status::timeout);
+   207	      }
+   208	#endif
+   209	
+   210	    template<typename _Dur>
+   211	      cv_status
+   212	      __wait_until_impl(unique_lock<mutex>& __lock,
+   213				const chrono::time_point<system_clock, _Dur>& __atime)
+   214	      {
+   215		auto __s = chrono::time_point_cast<chrono::seconds>(__atime);
+   216		auto __ns = chrono::duration_cast<chrono::nanoseconds>(__atime - __s);
+   217	
+   218		__gthread_time_t __ts =
+   219		  {
+   220		    static_cast<std::time_t>(__s.time_since_epoch().count()),
+   221		    static_cast<long>(__ns.count())
+   222		  };
+   223	
+   224		_M_cond.wait_until(*__lock.mutex(), __ts);
+   225	
+   226		return (system_clock::now() < __atime
+   227			? cv_status::no_timeout : cv_status::timeout);
+   228	      }
+   229	  };
+EXIT_CODE=0
+COMMAND=nl -ba codes/gcc/libstdc++-v3/src/c++11/condition_variable.cc | sed -n 30,45p
+    30	namespace std _GLIBCXX_VISIBILITY(default)
+    31	{
+    32	_GLIBCXX_BEGIN_NAMESPACE_VERSION
+    33	
+    34	  condition_variable::condition_variable() noexcept = default;
+    35	
+    36	  condition_variable::~condition_variable() noexcept = default;
+    37	
+    38	  void
+    39	  condition_variable::wait(unique_lock<mutex>& __lock)
+    40	  {
+    41	    _M_cond.wait(*__lock.mutex());
+    42	  }
+    43	
+    44	  void
+    45	  condition_variable::notify_one() noexcept
+EXIT_CODE=0
