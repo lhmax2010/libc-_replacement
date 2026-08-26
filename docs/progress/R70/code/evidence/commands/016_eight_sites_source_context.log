@@ -1,0 +1,396 @@
+$ nl -ba codes/gcc/libstdc++-v3/include/experimental/executor | sed -n "1680,1850p"
+  1680	      // use_future_t members:
+  1681	      constexpr use_future_t() noexcept = default;
+  1682	
+  1683	      explicit
+  1684	      use_future_t(const allocator_type& __a) noexcept { }
+  1685	
+  1686	      template<class _Up>
+  1687		use_future_t<std::allocator<_Up>>
+  1688		rebind(const std::allocator<_Up>& __a) const noexcept
+  1689		{ return use_future_t<std::allocator<_Up>>(__a); }
+  1690	
+  1691	      allocator_type get_allocator() const noexcept { return {}; }
+  1692	
+  1693	      template<typename _Func>
+  1694		auto
+  1695		operator()(_Func&& __f) const
+  1696		{
+  1697		  using _Token = __use_future_ct<decay_t<_Func>, allocator_type>;
+  1698		  return _Token{std::forward<_Func>(__f)};
+  1699		}
+  1700	    };
+  1701	
+  1702	  constexpr use_future_t<> use_future = use_future_t<>();
+  1703	
+  1704	  template<typename _Func, typename _Alloc, typename _Res, typename... _Args>
+  1705	    class async_result<__use_future_ct<_Func, _Alloc>, _Res(_Args...)>;
+  1706	
+  1707	  template<typename _Result, typename _Executor>
+  1708	    struct __use_future_ex;
+  1709	
+  1710	  // Completion handler for asynchronous operations initiated with use_future.
+  1711	  template<typename _Func, typename... _Args>
+  1712	    struct __use_future_ch
+  1713	    {
+  1714	      template<typename _Alloc>
+  1715		explicit
+  1716		__use_future_ch(__use_future_ct<_Func, _Alloc>&& __token)
+  1717		: _M_f{ std::move(std::get<0>(__token._M_t)) },
+  1718		  _M_promise{ std::get<1>(__token._M_t) }
+  1719		{ }
+  1720	
+  1721	      template<typename _Tp>
+  1722		explicit
+  1723		__use_future_ch(__use_future_ct<_Func, std::allocator<_Tp>>&& __token)
+  1724		: _M_f{ std::move(__token._M_f) }
+  1725		{ }
+  1726	
+  1727	      void
+  1728	      operator()(_Args&&... __args)
+  1729	      {
+  1730		__try
+  1731		  {
+  1732		    _M_promise.set_value(_M_f(std::forward<_Args>(__args)...));
+  1733		  }
+  1734		__catch(__cxxabiv1::__forced_unwind&)
+  1735		  {
+  1736		    __throw_exception_again;
+  1737		  }
+  1738		__catch(...)
+  1739		  {
+  1740		    _M_promise.set_exception(std::current_exception());
+  1741		  }
+  1742	      }
+  1743	
+  1744	      using __result = result_of_t<_Func(decay_t<_Args>...)>;
+  1745	
+  1746	      future<__result> get_future() { return _M_promise.get_future(); }
+  1747	
+  1748	    private:
+  1749	      template<typename _Result, typename _Executor>
+  1750		friend struct __use_future_ex;
+  1751	
+  1752	      _Func _M_f;
+  1753	      mutable promise<__result> _M_promise;
+  1754	    };
+  1755	
+  1756	  // Specialization of async_result for operations initiated with use_future.
+  1757	  template<typename _Func, typename _Alloc, typename _Res, typename... _Args>
+  1758	    class async_result<__use_future_ct<_Func, _Alloc>, _Res(_Args...)>
+  1759	    {
+  1760	    public:
+  1761	      using completion_handler_type = __use_future_ch<_Func, _Args...>;
+  1762	      using return_type = future<typename completion_handler_type::__result>;
+  1763	
+  1764	      explicit
+  1765	      async_result(completion_handler_type& __h)
+  1766	      : _M_future(__h.get_future())
+  1767	      { }
+  1768	
+  1769	      async_result(const async_result&) = delete;
+  1770	      async_result& operator=(const async_result&) = delete;
+  1771	
+  1772	      return_type get() { return std::move(_M_future); }
+  1773	
+  1774	    private:
+  1775	      return_type _M_future;
+  1776	    };
+  1777	
+  1778	  template<typename _Result, typename _Executor>
+  1779	    struct __use_future_ex
+  1780	    {
+  1781	      template<typename _Handler>
+  1782	      __use_future_ex(const _Handler& __h, _Executor __ex)
+  1783	      : _M_t(__h._M_promise, __ex)
+  1784	      { }
+  1785	
+  1786	      template<typename _Fn, typename _Alloc>
+  1787		void
+  1788		dispatch(_Fn&& __fn)
+  1789		{
+  1790		  __try
+  1791		    {
+  1792		      std::get<1>(_M_t).dispatch(std::forward<_Fn>(__fn));
+  1793		    }
+  1794		  __catch(__cxxabiv1::__forced_unwind&)
+  1795		    {
+  1796		      __throw_exception_again;
+  1797		    }
+  1798		  __catch(...)
+  1799		    {
+  1800		      std::get<0>(_M_t).set_exception(std::current_exception());
+  1801		    }
+  1802		}
+  1803	
+  1804	      template<typename _Fn, typename _Alloc>
+  1805		void
+  1806		post(_Fn&& __fn)
+  1807		{
+  1808		  __try
+  1809		    {
+  1810		      std::get<1>(_M_t).post(std::forward<_Fn>(__fn));
+  1811		    }
+  1812		  __catch(__cxxabiv1::__forced_unwind&)
+  1813		    {
+  1814		      __throw_exception_again;
+  1815		    }
+  1816		  __catch(...)
+  1817		    {
+  1818		      std::get<0>(_M_t).set_exception(std::current_exception());
+  1819		    }
+  1820		}
+  1821	
+  1822	      template<typename _Fn, typename _Alloc>
+  1823		void
+  1824		defer(_Fn&& __fn)
+  1825		{
+  1826		  __try
+  1827		    {
+  1828		      std::get<1>(_M_t).defer(std::forward<_Fn>(__fn));
+  1829		    }
+  1830		  __catch(__cxxabiv1::__forced_unwind&)
+  1831		    {
+  1832		      __throw_exception_again;
+  1833		    }
+  1834		  __catch(...)
+  1835		    {
+  1836		      std::get<0>(_M_t).set_exception(std::current_exception());
+  1837		    }
+  1838		}
+  1839	
+  1840	    private:
+  1841	      tuple<promise<_Result>&, _Executor> _M_t;
+  1842	    };
+  1843	
+  1844	  template<typename _Func, typename... _Args, typename _Executor>
+  1845	    struct associated_executor<__use_future_ch<_Func, _Args...>, _Executor>
+  1846	    {
+  1847	    private:
+  1848	      using __handler = __use_future_ch<_Func, _Args...>;
+  1849	
+  1850	      using type = __use_future_ex<typename __handler::__result, _Executor>;
+exit_code=0
+$ nl -ba codes/gcc/libstdc++-v3/include/ext/vstring.tcc | sed -n "560,710p"
+   560	      typedef __gnu_cxx::__versa_string<_CharT, _Traits, _Alloc, _Base>
+   561		                                                __string_type;
+   562	      typedef typename __istream_type::int_type		__int_type;
+   563	      typedef typename __string_type::size_type		__size_type;
+   564	      typedef ctype<_CharT>				__ctype_type;
+   565	      typedef typename __ctype_type::ctype_base         __ctype_base;
+   566	
+   567	      __size_type __extracted = 0;
+   568	      typename __ios_base::iostate __err = __ios_base::goodbit;
+   569	      typename __istream_type::sentry __cerb(__in, false);
+   570	      if (__cerb)
+   571		{
+   572		  __try
+   573		    {
+   574		      // Avoid reallocation for common case.
+   575		      __str.erase();
+   576		      _CharT __buf[128];
+   577		      __size_type __len = 0;
+   578		      const streamsize __w = __in.width();
+   579		      const __size_type __n = __w > 0 ? static_cast<__size_type>(__w)
+   580			                              : __str.max_size();
+   581		      const __ctype_type& __ct = use_facet<__ctype_type>(__in.getloc());
+   582		      const __int_type __eof = _Traits::eof();
+   583		      __int_type __c = __in.rdbuf()->sgetc();
+   584	
+   585		      while (__extracted < __n
+   586			     && !_Traits::eq_int_type(__c, __eof)
+   587			     && !__ct.is(__ctype_base::space,
+   588					 _Traits::to_char_type(__c)))
+   589			{
+   590			  if (__len == sizeof(__buf) / sizeof(_CharT))
+   591			    {
+   592			      __str.append(__buf, sizeof(__buf) / sizeof(_CharT));
+   593			      __len = 0;
+   594			    }
+   595			  __buf[__len++] = _Traits::to_char_type(__c);
+   596			  ++__extracted;
+   597			  __c = __in.rdbuf()->snextc();
+   598			}
+   599		      __str.append(__buf, __len);
+   600	
+   601		      if (_Traits::eq_int_type(__c, __eof))
+   602			__err |= __ios_base::eofbit;
+   603		      __in.width(0);
+   604		    }
+   605		  __catch(__cxxabiv1::__forced_unwind&)
+   606		    {
+   607		      __in._M_setstate(__ios_base::badbit);
+   608		      __throw_exception_again;
+   609		    }
+   610		  __catch(...)
+   611		    {
+   612		      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+   613		      // 91. Description of operator>> and getline() for string<>
+   614		      // might cause endless loop
+   615		      __in._M_setstate(__ios_base::badbit);
+   616		    }
+   617		}
+   618	      // 211.  operator>>(istream&, string&) doesn't set failbit
+   619	      if (!__extracted)
+   620		__err |= __ios_base::failbit;
+   621	      if (__err)
+   622		__in.setstate(__err);
+   623	      return __in;
+   624	    }      
+   625	
+   626	  template<typename _CharT, typename _Traits, typename _Alloc,
+   627	           template <typename, typename, typename> class _Base>
+   628	    basic_istream<_CharT, _Traits>&
+   629	    getline(basic_istream<_CharT, _Traits>& __in,
+   630		    __gnu_cxx::__versa_string<_CharT, _Traits, _Alloc, _Base>& __str,
+   631		    _CharT __delim)
+   632	    {
+   633	      typedef basic_istream<_CharT, _Traits>	        __istream_type;
+   634	      typedef typename __istream_type::ios_base         __ios_base;
+   635	      typedef __gnu_cxx::__versa_string<_CharT, _Traits, _Alloc, _Base>
+   636		                                                __string_type;
+   637	      typedef typename __istream_type::int_type		__int_type;
+   638	      typedef typename __string_type::size_type		__size_type;
+   639	
+   640	      __size_type __extracted = 0;
+   641	      const __size_type __n = __str.max_size();
+   642	      typename __ios_base::iostate __err = __ios_base::goodbit;
+   643	      typename __istream_type::sentry __cerb(__in, true);
+   644	      if (__cerb)
+   645		{
+   646		  __try
+   647		    {
+   648		      // Avoid reallocation for common case.
+   649		      __str.erase();
+   650		      _CharT __buf[128];
+   651		      __size_type __len = 0;
+   652		      const __int_type __idelim = _Traits::to_int_type(__delim);
+   653		      const __int_type __eof = _Traits::eof();
+   654		      __int_type __c = __in.rdbuf()->sgetc();
+   655	
+   656		      while (__extracted < __n
+   657			     && !_Traits::eq_int_type(__c, __eof)
+   658			     && !_Traits::eq_int_type(__c, __idelim))
+   659			{
+   660			  if (__len == sizeof(__buf) / sizeof(_CharT))
+   661			    {
+   662			      __str.append(__buf, sizeof(__buf) / sizeof(_CharT));
+   663			      __len = 0;
+   664			    }
+   665			  __buf[__len++] = _Traits::to_char_type(__c);
+   666			  ++__extracted;
+   667			  __c = __in.rdbuf()->snextc();
+   668			}
+   669		      __str.append(__buf, __len);
+   670	
+   671		      if (_Traits::eq_int_type(__c, __eof))
+   672			__err |= __ios_base::eofbit;
+   673		      else if (_Traits::eq_int_type(__c, __idelim))
+   674			{
+   675			  ++__extracted;		  
+   676			  __in.rdbuf()->sbumpc();
+   677			}
+   678		      else
+   679			__err |= __ios_base::failbit;
+   680		    }
+   681		  __catch(__cxxabiv1::__forced_unwind&)
+   682		    {
+   683		      __in._M_setstate(__ios_base::badbit);
+   684		      __throw_exception_again;
+   685		    }
+   686		  __catch(...)
+   687		    {
+   688		      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+   689		      // 91. Description of operator>> and getline() for string<>
+   690		      // might cause endless loop
+   691		      __in._M_setstate(__ios_base::badbit);
+   692		    }
+   693		}
+   694	      if (!__extracted)
+   695		__err |= __ios_base::failbit;
+   696	      if (__err)
+   697		__in.setstate(__err);
+   698	      return __in;
+   699	    }      
+   700	
+   701	_GLIBCXX_END_NAMESPACE_VERSION
+   702	} // namespace
+   703	
+   704	#endif // _VSTRING_TCC
+exit_code=0
+$ nl -ba codes/gcc/libstdc++-v3/include/tr2/dynamic_bitset.tcc | sed -n "220,275p"
+   220	      typename __ios_base::iostate __state = __ios_base::goodbit;
+   221	      typename __istream_type::sentry __sentry(__is);
+   222	      if (__sentry)
+   223		{
+   224		  __try
+   225		    {
+   226		      while (1)
+   227			{
+   228			  static typename _Traits::int_type __eof = _Traits::eof();
+   229	
+   230			  typename _Traits::int_type __c1 = __is.rdbuf()->sbumpc();
+   231			  if (_Traits::eq_int_type(__c1, __eof))
+   232			    {
+   233			      __state |= __ios_base::eofbit;
+   234			      break;
+   235			    }
+   236			  else
+   237			    {
+   238			      const char_type __c2 = _Traits::to_char_type(__c1);
+   239			      if (_Traits::eq(__c2, __zero))
+   240				__tmp.push_back(__zero);
+   241			      else if (_Traits::eq(__c2, __one))
+   242				__tmp.push_back(__one);
+   243			      else if (_Traits::
+   244				       eq_int_type(__is.rdbuf()->sputbackc(__c2),
+   245						   __eof))
+   246				{
+   247				  __state |= __ios_base::failbit;
+   248				  break;
+   249				}
+   250			      else
+   251				break;
+   252			    }
+   253			}
+   254		    }
+   255		  __catch(__cxxabiv1::__forced_unwind&)
+   256		    {
+   257		      __is._M_setstate(__ios_base::badbit);
+   258		      __throw_exception_again;
+   259		    }
+   260		  __catch(...)
+   261		    { __is._M_setstate(__ios_base::badbit); }
+   262		}
+   263	
+   264	      __x.resize(__tmp.size());
+   265	
+   266	      if (__tmp.empty() && __x.size())
+   267		__state |= __ios_base::failbit;
+   268	      else
+   269		__x._M_copy_from_string(__tmp, static_cast<size_t>(0), __x.size(),
+   270					__zero, __one);
+   271	      if (__state)
+   272		__is.setstate(__state);
+   273	      return __is;
+   274	    }
+   275	} // tr2
+exit_code=0
+$ rg -n "executor|execution_context|dynamic_bitset|vstring|__unlock_guard" codes/llvm/libcxx/include codes/llvm/libcxx/src --glob "!*test*"
+codes/llvm/libcxx/include/condition_variable:151:struct __unlock_guard {
+codes/llvm/libcxx/include/condition_variable:154:  _LIBCPP_HIDE_FROM_ABI __unlock_guard(_Lock& __lock) : __lock_(__lock) { __lock_.unlock(); }
+codes/llvm/libcxx/include/condition_variable:156:  _LIBCPP_HIDE_FROM_ABI ~__unlock_guard() _NOEXCEPT // turns exception to std::terminate
+codes/llvm/libcxx/include/condition_variable:161:  __unlock_guard(const __unlock_guard&)            = delete;
+codes/llvm/libcxx/include/condition_variable:162:  __unlock_guard& operator=(const __unlock_guard&) = delete;
+codes/llvm/libcxx/include/condition_variable:179:    __unlock_guard<_Lock> __unlock(__lock);
+codes/llvm/libcxx/include/condition_variable:191:    __unlock_guard<_Lock> __unlock(__lock);
+codes/llvm/libcxx/include/condition_variable:297:    __unlock_guard<_Lock> __unlock(__user_lock);
+codes/llvm/libcxx/include/condition_variable:325:    __unlock_guard<_Lock> __unlock(__user_lock);
+codes/llvm/libcxx/include/__cxx03/condition_variable:188:struct __unlock_guard {
+codes/llvm/libcxx/include/__cxx03/condition_variable:191:  _LIBCPP_HIDE_FROM_ABI __unlock_guard(_Lock& __lock) : __lock_(__lock) { __lock_.unlock(); }
+codes/llvm/libcxx/include/__cxx03/condition_variable:193:  _LIBCPP_HIDE_FROM_ABI ~__unlock_guard() _NOEXCEPT // turns exception to std::terminate
+codes/llvm/libcxx/include/__cxx03/condition_variable:198:  __unlock_guard(const __unlock_guard&)            = delete;
+codes/llvm/libcxx/include/__cxx03/condition_variable:199:  __unlock_guard& operator=(const __unlock_guard&) = delete;
+codes/llvm/libcxx/include/__cxx03/condition_variable:206:  __unlock_guard<_Lock> __unlock(__lock);
+codes/llvm/libcxx/include/__cxx03/condition_variable:221:  __unlock_guard<_Lock> __unlock(__lock);
+exit_code=0

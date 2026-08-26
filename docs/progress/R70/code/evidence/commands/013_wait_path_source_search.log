@@ -1,0 +1,239 @@
+$ nl -ba progress/R69/src/r69_new_cases.cpp | sed -n "1,280p"
+     1	#include <atomic>
+     2	#include <chrono>
+     3	#include <cstdint>
+     4	#include <cstdlib>
+     5	#include <cstring>
+     6	#include <future>
+     7	#include <iostream>
+     8	#include <locale>
+     9	#include <pthread.h>
+    10	#include <sched.h>
+    11	#include <sstream>
+    12	
+    13	namespace {
+    14	
+    15	std::atomic<int> facet_entered{0};
+    16	
+    17	class cancel_num_put : public std::num_put<char> {
+    18	protected:
+    19	  iter_type do_put(iter_type out, std::ios_base&, char_type, long) const override {
+    20	    facet_entered.store(1, std::memory_order_release);
+    21	    for (;;)
+    22	      pthread_testcancel();
+    23	    return out;
+    24	  }
+    25	};
+    26	
+    27	struct StreamArgument {
+    28	  std::ostream* stream;
+    29	};
+    30	
+    31	void* arithmetic_worker(void* raw) {
+    32	  int previous = 0;
+    33	  pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &previous);
+    34	  pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, &previous);
+    35	  StreamArgument* argument = static_cast<StreamArgument*>(raw);
+    36	  *argument->stream << 42L;
+    37	  return reinterpret_cast<void*>(1);
+    38	}
+    39	
+    40	bool wait_until_at_least(const std::atomic<int>& value, int target) {
+    41	  for (int i = 0; i != 2000000; ++i) {
+    42	    if (value.load(std::memory_order_acquire) >= target)
+    43	      return true;
+    44	    sched_yield();
+    45	  }
+    46	  return false;
+    47	}
+    48	
+    49	int arithmetic_state_case() {
+    50	  std::ostringstream stream;
+    51	  stream.imbue(std::locale(std::locale::classic(), new cancel_num_put));
+    52	  StreamArgument argument{&stream};
+    53	  pthread_t thread{};
+    54	  const int create_rc = pthread_create(&thread, nullptr, arithmetic_worker, &argument);
+    55	  if (create_rc != 0)
+    56	    return 10;
+    57	  if (!wait_until_at_least(facet_entered, 1))
+    58	    return 11;
+    59	  const int cancel_rc = pthread_cancel(thread);
+    60	  void* joined = nullptr;
+    61	  const int join_rc = pthread_join(thread, &joined);
+    62	  const int state = static_cast<int>(stream.rdstate());
+    63	  const bool canceled = joined == PTHREAD_CANCELED;
+    64	  const bool bad = (state & std::ios_base::badbit) != 0;
+    65	  std::cout << "CASE=arithmetic_state CREATE_RC=" << create_rc << " CANCEL_RC=" << cancel_rc
+    66	            << " JOIN_RC=" << join_rc << " JOIN_CANCELED=" << canceled << " RDSTATE=" << state
+    67	            << " BAD=" << bad << " FAIL=" << stream.fail() << '\n';
+    68	  return cancel_rc == 0 && join_rc == 0 && canceled && bad ? 0 : 12;
+    69	}
+    70	
+    71	std::atomic<int> deferred_invocations{0};
+    72	std::shared_future<int>* deferred_future = nullptr;
+    73	
+    74	int deferred_callable() {
+    75	  const int invocation = deferred_invocations.fetch_add(1, std::memory_order_acq_rel) + 1;
+    76	  if (invocation <= 2) {
+    77	    for (;;)
+    78	      pthread_testcancel();
+    79	  }
+    80	  return 42;
+    81	}
+    82	
+    83	void* deferred_waiter(void*) {
+    84	  const int value = deferred_future->get();
+    85	  return reinterpret_cast<void*>(static_cast<intptr_t>(value));
+    86	}
+    87	
+    88	int deferred_recancel_case() {
+    89	  std::shared_future<int> future = std::async(std::launch::deferred, deferred_callable).share();
+    90	  deferred_future                 = &future;
+    91	  bool canceled[2]                = {false, false};
+    92	  int cancel_rc[2]                = {-1, -1};
+    93	  int join_rc[2]                  = {-1, -1};
+    94	  for (int round = 0; round != 2; ++round) {
+    95	    pthread_t thread{};
+    96	    if (pthread_create(&thread, nullptr, deferred_waiter, nullptr) != 0)
+    97	      return 20 + round;
+    98	    if (!wait_until_at_least(deferred_invocations, round + 1))
+    99	      return 22 + round;
+   100	    cancel_rc[round] = pthread_cancel(thread);
+   101	    void* joined     = nullptr;
+   102	    join_rc[round]   = pthread_join(thread, &joined);
+   103	    canceled[round]  = joined == PTHREAD_CANCELED;
+   104	  }
+   105	  const int value = future.get();
+   106	  const int calls = deferred_invocations.load(std::memory_order_acquire);
+   107	  std::cout << "CASE=deferred_recancel CANCEL1_RC=" << cancel_rc[0] << " JOIN1_RC=" << join_rc[0]
+   108	            << " CANCELED1=" << canceled[0] << " CANCEL2_RC=" << cancel_rc[1]
+   109	            << " JOIN2_RC=" << join_rc[1] << " CANCELED2=" << canceled[1] << " INVOCATIONS=" << calls
+   110	            << " VALUE=" << value << '\n';
+   111	  return cancel_rc[0] == 0 && cancel_rc[1] == 0 && join_rc[0] == 0 && join_rc[1] == 0 &&
+   112	                 canceled[0] && canceled[1] && calls == 3 && value == 42
+   113	             ? 0
+   114	             : 24;
+   115	}
+   116	
+   117	std::atomic<int> async_started{0};
+   118	std::atomic<int> async_release{0};
+   119	std::atomic<int> waiter_started{0};
+   120	std::shared_future<int>* waiting_future = nullptr;
+   121	
+   122	int async_callable() {
+   123	  async_started.store(1, std::memory_order_release);
+   124	  while (!async_release.load(std::memory_order_acquire))
+   125	    sched_yield();
+   126	  return 42;
+   127	}
+   128	
+   129	void* waiting_side(void*) {
+   130	  waiter_started.store(1, std::memory_order_release);
+   131	  waiting_future->wait();
+   132	  return reinterpret_cast<void*>(1);
+   133	}
+   134	
+   135	int waiting_side_cancel_case() {
+   136	  std::shared_future<int> future = std::async(std::launch::async, async_callable).share();
+   137	  waiting_future                 = &future;
+   138	  if (!wait_until_at_least(async_started, 1))
+   139	    return 30;
+   140	  pthread_t waiter{};
+   141	  if (pthread_create(&waiter, nullptr, waiting_side, nullptr) != 0)
+   142	    return 31;
+   143	  if (!wait_until_at_least(waiter_started, 1))
+   144	    return 32;
+   145	  const int cancel_rc = pthread_cancel(waiter);
+   146	  void* joined        = nullptr;
+   147	  const int join_rc   = pthread_join(waiter, &joined);
+   148	  async_release.store(1, std::memory_order_release);
+   149	  const int value     = future.get();
+   150	  const bool canceled = joined == PTHREAD_CANCELED;
+   151	  std::cout << "CASE=waiting_side_cancel CANCEL_RC=" << cancel_rc << " JOIN_RC=" << join_rc
+   152	            << " JOIN_CANCELED=" << canceled << " VALUE=" << value << '\n';
+   153	  return cancel_rc == 0 && join_rc == 0 && canceled && value == 42 ? 0 : 33;
+   154	}
+   155	
+   156	} // namespace
+   157	
+   158	int main(int argc, char** argv) {
+   159	  if (argc != 2) {
+   160	    std::cerr << "usage: r69_new_cases arithmetic-state|deferred-recancel|waiting-side-cancel\n";
+   161	    return 64;
+   162	  }
+   163	  if (std::strcmp(argv[1], "arithmetic-state") == 0)
+   164	    return arithmetic_state_case();
+   165	  if (std::strcmp(argv[1], "deferred-recancel") == 0)
+   166	    return deferred_recancel_case();
+   167	  if (std::strcmp(argv[1], "waiting-side-cancel") == 0)
+   168	    return waiting_side_cancel_case();
+   169	  return 65;
+   170	}
+exit_code=0
+$ rg -n "void __assoc_sub_state::wait|__assoc_sub_state::wait|condition_variable|__unlock_guard|forced_unwind" codes/llvm/libcxx/include/future codes/llvm/libcxx/src/future.cpp codes/llvm/libcxx/include/condition_variable codes/gcc/libstdc++-v3/include/std/future codes/gcc/libstdc++-v3/include/std/condition_variable
+codes/gcc/libstdc++-v3/include/std/condition_variable:1:// <condition_variable> -*- C++ -*-
+codes/gcc/libstdc++-v3/include/std/condition_variable:25:/** @file include/condition_variable
+codes/gcc/libstdc++-v3/include/std/condition_variable:59:   * @defgroup condition_variables Condition Variables
+codes/gcc/libstdc++-v3/include/std/condition_variable:62:   * Classes for condition_variable support.
+codes/gcc/libstdc++-v3/include/std/condition_variable:69:  /// condition_variable
+codes/gcc/libstdc++-v3/include/std/condition_variable:70:  class condition_variable
+codes/gcc/libstdc++-v3/include/std/condition_variable:85:    condition_variable() noexcept;
+codes/gcc/libstdc++-v3/include/std/condition_variable:86:    ~condition_variable() noexcept;
+codes/gcc/libstdc++-v3/include/std/condition_variable:88:    condition_variable(const condition_variable&) = delete;
+codes/gcc/libstdc++-v3/include/std/condition_variable:89:    condition_variable& operator=(const condition_variable&) = delete;
+codes/gcc/libstdc++-v3/include/std/condition_variable:232:  notify_all_at_thread_exit(condition_variable&, unique_lock<mutex>);
+codes/gcc/libstdc++-v3/include/std/condition_variable:242:  /// condition_variable_any
+codes/gcc/libstdc++-v3/include/std/condition_variable:244:  class condition_variable_any
+codes/gcc/libstdc++-v3/include/std/condition_variable:251:    condition_variable			_M_cond;
+codes/gcc/libstdc++-v3/include/std/condition_variable:268:	      __catch(const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/condition_variable:285:    condition_variable_any() : _M_mutex(std::make_shared<mutex>()) { }
+codes/gcc/libstdc++-v3/include/std/condition_variable:286:    ~condition_variable_any() = default;
+codes/gcc/libstdc++-v3/include/std/condition_variable:288:    condition_variable_any(const condition_variable_any&) = delete;
+codes/gcc/libstdc++-v3/include/std/condition_variable:289:    condition_variable_any& operator=(const condition_variable_any&) = delete;
+codes/gcc/libstdc++-v3/include/std/condition_variable:447:  /// @} group condition_variables
+codes/llvm/libcxx/include/condition_variable:14:    condition_variable synopsis
+codes/llvm/libcxx/include/condition_variable:21:class condition_variable
+codes/llvm/libcxx/include/condition_variable:24:    condition_variable();
+codes/llvm/libcxx/include/condition_variable:25:    ~condition_variable();
+codes/llvm/libcxx/include/condition_variable:27:    condition_variable(const condition_variable&) = delete;
+codes/llvm/libcxx/include/condition_variable:28:    condition_variable& operator=(const condition_variable&) = delete;
+codes/llvm/libcxx/include/condition_variable:63:void notify_all_at_thread_exit(condition_variable& cond, unique_lock<mutex> lk);
+codes/llvm/libcxx/include/condition_variable:65:class condition_variable_any
+codes/llvm/libcxx/include/condition_variable:68:    condition_variable_any();
+codes/llvm/libcxx/include/condition_variable:69:    ~condition_variable_any();
+codes/llvm/libcxx/include/condition_variable:71:    condition_variable_any(const condition_variable_any&) = delete;
+codes/llvm/libcxx/include/condition_variable:72:    condition_variable_any& operator=(const condition_variable_any&) = delete;
+codes/llvm/libcxx/include/condition_variable:122:#  include <__cxx03/condition_variable>
+codes/llvm/libcxx/include/condition_variable:127:#  include <__condition_variable/condition_variable.h>
+codes/llvm/libcxx/include/condition_variable:151:struct __unlock_guard {
+codes/llvm/libcxx/include/condition_variable:154:  _LIBCPP_HIDE_FROM_ABI __unlock_guard(_Lock& __lock) : __lock_(__lock) { __lock_.unlock(); }
+codes/llvm/libcxx/include/condition_variable:156:  _LIBCPP_HIDE_FROM_ABI ~__unlock_guard() _NOEXCEPT // turns exception to std::terminate
+codes/llvm/libcxx/include/condition_variable:161:  __unlock_guard(const __unlock_guard&)            = delete;
+codes/llvm/libcxx/include/condition_variable:162:  __unlock_guard& operator=(const __unlock_guard&) = delete;
+codes/llvm/libcxx/include/condition_variable:165:class _LIBCPP_EXPORTED_FROM_ABI condition_variable_any {
+codes/llvm/libcxx/include/condition_variable:166:  condition_variable __cv_;
+codes/llvm/libcxx/include/condition_variable:170:  _LIBCPP_HIDE_FROM_ABI condition_variable_any();
+codes/llvm/libcxx/include/condition_variable:179:    __unlock_guard<_Lock> __unlock(__lock);
+codes/llvm/libcxx/include/condition_variable:191:    __unlock_guard<_Lock> __unlock(__lock);
+codes/llvm/libcxx/include/condition_variable:222:inline condition_variable_any::condition_variable_any() : __mut_(make_shared<mutex>()) {}
+codes/llvm/libcxx/include/condition_variable:224:inline void condition_variable_any::notify_one() _NOEXCEPT {
+codes/llvm/libcxx/include/condition_variable:229:inline void condition_variable_any::notify_all() _NOEXCEPT {
+codes/llvm/libcxx/include/condition_variable:235:inline void condition_variable_any::wait(_Lock& __lock, _Predicate __pred) {
+codes/llvm/libcxx/include/condition_variable:242:condition_variable_any::wait_until(_Lock& __lock, const chrono::time_point<_Clock, _Duration>& __t, _Predicate __pred) {
+codes/llvm/libcxx/include/condition_variable:250:inline cv_status condition_variable_any::wait_for(_Lock& __lock, const chrono::duration<_Rep, _Period>& __d) {
+codes/llvm/libcxx/include/condition_variable:256:condition_variable_any::wait_for(_Lock& __lock, const chrono::duration<_Rep, _Period>& __d, _Predicate __pred) {
+codes/llvm/libcxx/include/condition_variable:263:bool condition_variable_any::wait(_Lock& __user_lock, stop_token __stoken, _Predicate __pred) {
+codes/llvm/libcxx/include/condition_variable:297:    __unlock_guard<_Lock> __unlock(__user_lock);
+codes/llvm/libcxx/include/condition_variable:306:bool condition_variable_any::wait_until(
+codes/llvm/libcxx/include/condition_variable:325:    __unlock_guard<_Lock> __unlock(__user_lock);
+codes/llvm/libcxx/include/condition_variable:336:bool condition_variable_any::wait_for(
+codes/llvm/libcxx/include/condition_variable:343:_LIBCPP_EXPORTED_FROM_ABI void notify_all_at_thread_exit(condition_variable&, unique_lock<mutex>);
+codes/llvm/libcxx/include/future:374:#    include <__condition_variable/condition_variable.h>
+codes/llvm/libcxx/include/future:527:  mutable condition_variable __cv_;
+codes/llvm/libcxx/include/future:581:inline future_status __assoc_sub_state::wait_for(const chrono::duration<_Rep, _Period>& __rel_time) const {
+codes/gcc/libstdc++-v3/include/std/future:41:#include <condition_variable> // __at_thread_exit_elt
+codes/gcc/libstdc++-v3/include/std/future:1418:	__catch(const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/future:1441:	__catch(const __cxxabiv1::__forced_unwind&)
+codes/gcc/libstdc++-v3/include/std/future:1783:	__catch (const __cxxabiv1::__forced_unwind&)
+codes/llvm/libcxx/src/future.cpp:108:void __assoc_sub_state::wait() {
+exit_code=0
