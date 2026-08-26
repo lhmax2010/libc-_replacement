@@ -1,0 +1,193 @@
+$ rg -n "D0[1-5]|condition_variable::wait|wbuffer_convert" docs/progress/R72 progress/R72 | head -240
+progress/R72/REPORT.md:9:- **两套库实际行为差异：5 个边界定义，5 个均可达**。其中 4 个位于 libc++ 的 `condition_variable`：一个普通等待边界、两个时钟特化的定时等待边界、一个任意时钟模板边界；libstdc++ 的对应函数均已移除 `noexcept`。另 1 个是 `wbuffer_convert` 析构：两侧析构都隐式不抛异常，但只有 libc++ 析构会主动 `sync()`，因此只有 libc++ 把 wrapped streambuf 的取消点带入该边界。
+progress/R72/REPORT.md:23:计数单位是当前配置中源码可见的函数定义；同一模板按定义计 1，不按实例化数膨胀。对仅由已计边界包裹、且源码中没有独立定义的隐式外层析构不重复计数。两库对照同时检查异常规格和调用结构；`wbuffer_convert` 说明“对应函数也隐式不抛异常”并不自动等价于“两侧同样受影响”，因为 libstdc++ 对应析构没有 libc++ 的 `sync()` 调用。
+progress/R72/REPORT.md:25:校准成功：脚本重新发现了已知项 `condition_variable::wait -> __libcpp_condvar_wait -> pthread_cond_wait`（`commands/028_calibration_verified_rows.log`）。同时校准也暴露了词法图的预期假阳性，例如 `wait`、`remove`、`max` 等同名函数会串错；因此原始 882 行候选没有被当作 882 个边界。完整原始候选保留在 `raw/noexcept_candidates.tsv`。
+progress/R72/REPORT.md:41:| D01 | `condition_variable::wait` | `pthread_cond_wait` | 2 | 对应声明和定义均非 `noexcept` |
+progress/R72/REPORT.md:42:| D02 | `__do_timed_wait(system_clock)` | `pthread_cond_timedwait` | 2 | 对应 helper 非 `noexcept` |
+progress/R72/REPORT.md:43:| D03 | `__do_timed_wait(steady_clock)` | `pthread_cond_clockwait` | 1 | 对应 helper 非 `noexcept` |
+progress/R72/REPORT.md:44:| D04 | `__do_timed_wait<Clock>` | 经 `wait_for` 到 D03 | 3 | 任意时钟路径非 `noexcept` |
+progress/R72/REPORT.md:45:| D05 | `wbuffer_convert::~wbuffer_convert` | `sync()` 经 wrapped streambuf 到输出取消点 | 开放虚路径 | 对应析构同为不抛异常，但不调用 `sync()` |
+progress/R72/REPORT.md:47:前 4 项不只影响直接使用 `condition_variable` 的代码。源码可达的设施包括 `condition_variable_any`、future/shared_future、`timed_mutex`/`recursive_timed_mutex`、`shared_mutex`/`shared_timed_mutex` 和任意时钟版 `this_thread::sleep_until`；D05 影响绑定输出 streambuf 的已弃用 `wbuffer_convert`。路径见 `tables/facility_paths.tsv`。
+progress/R72/REPORT.md:49:可达性判据是：公开入口能在正常线程调用中阻塞于对应 pthread 取消点，且调用链上的该 libc++ helper 带不抛异常规格。对 D05，具体可构造条件是 wrapped streambuf 的同步输出进入取消点。普通 wait、steady 定时等待与自定义时钟等待均取得动态证据；system-clock 特化与 D05 取得静态/具体构造路径证据，本轮按“抽样 2–3 项”的任务要求未另做运行样本。
+progress/R72/REPORT.md:64:消费面以 R32 已成功扫描的 371 个 source RPM 为分母，对会到达 D01–D05 的设施做源码词法命中；结果见 `raw/facility_usage_summary.tsv`，逐文件命中见 `raw/facility_usage_hits.tsv`。
+progress/R72/REPORT.md:66:扫描 371/371 source RPM 成功、失败 0；它们对应 347 个去重包名。至少命中一种相关设施的有 **35 个 source RPM / 26 个去重包名**。按 source RPM / 去重包名分设施为：`condition_variable` 13/10、future 族 35/26、timed-mutex 族 3/2、shared-mutex 族 4/3、`sleep_until` 3/2、`wbuffer_convert` 2/1。同一包可同时计入多类，故分项不可相加；`wbuffer_convert` 的唯一包名是 GCC 自身源码/测试，不是独立产品消费者。
+progress/R72/REPORT.md:74:3. **若以移除异常规格处理**：D01/D02 有 out-of-line 定义，但异常规格也出现在头文件声明，旧消费者仍可能按 `noexcept` 生成终止路径；D03/D04 是头文件内联 helper。D05 位于头文件模板中，但其差异还包含析构是否执行 `sync()`，不是只删异常规格即可等价。其交付性质包含库重建和消费者重编两个维度。
+progress/R72/REPORT.md:93:- 将“函数定义”作为计数单位，模板 D04 计 1 个定义，不按潜在实例化数膨胀。
+docs/progress/R72/REPORT.md:9:- **两套库实际行为差异：5 个边界定义，5 个均可达**。其中 4 个位于 libc++ 的 `condition_variable`：一个普通等待边界、两个时钟特化的定时等待边界、一个任意时钟模板边界；libstdc++ 的对应函数均已移除 `noexcept`。另 1 个是 `wbuffer_convert` 析构：两侧析构都隐式不抛异常，但只有 libc++ 析构会主动 `sync()`，因此只有 libc++ 把 wrapped streambuf 的取消点带入该边界。
+docs/progress/R72/REPORT.md:23:计数单位是当前配置中源码可见的函数定义；同一模板按定义计 1，不按实例化数膨胀。对仅由已计边界包裹、且源码中没有独立定义的隐式外层析构不重复计数。两库对照同时检查异常规格和调用结构；`wbuffer_convert` 说明“对应函数也隐式不抛异常”并不自动等价于“两侧同样受影响”，因为 libstdc++ 对应析构没有 libc++ 的 `sync()` 调用。
+docs/progress/R72/REPORT.md:25:校准成功：脚本重新发现了已知项 `condition_variable::wait -> __libcpp_condvar_wait -> pthread_cond_wait`（`commands/028_calibration_verified_rows.log`）。同时校准也暴露了词法图的预期假阳性，例如 `wait`、`remove`、`max` 等同名函数会串错；因此原始 882 行候选没有被当作 882 个边界。完整原始候选保留在 `raw/noexcept_candidates.tsv`。
+docs/progress/R72/REPORT.md:41:| D01 | `condition_variable::wait` | `pthread_cond_wait` | 2 | 对应声明和定义均非 `noexcept` |
+docs/progress/R72/REPORT.md:42:| D02 | `__do_timed_wait(system_clock)` | `pthread_cond_timedwait` | 2 | 对应 helper 非 `noexcept` |
+docs/progress/R72/REPORT.md:43:| D03 | `__do_timed_wait(steady_clock)` | `pthread_cond_clockwait` | 1 | 对应 helper 非 `noexcept` |
+docs/progress/R72/REPORT.md:44:| D04 | `__do_timed_wait<Clock>` | 经 `wait_for` 到 D03 | 3 | 任意时钟路径非 `noexcept` |
+docs/progress/R72/REPORT.md:45:| D05 | `wbuffer_convert::~wbuffer_convert` | `sync()` 经 wrapped streambuf 到输出取消点 | 开放虚路径 | 对应析构同为不抛异常，但不调用 `sync()` |
+docs/progress/R72/REPORT.md:47:前 4 项不只影响直接使用 `condition_variable` 的代码。源码可达的设施包括 `condition_variable_any`、future/shared_future、`timed_mutex`/`recursive_timed_mutex`、`shared_mutex`/`shared_timed_mutex` 和任意时钟版 `this_thread::sleep_until`；D05 影响绑定输出 streambuf 的已弃用 `wbuffer_convert`。路径见 `tables/facility_paths.tsv`。
+docs/progress/R72/REPORT.md:49:可达性判据是：公开入口能在正常线程调用中阻塞于对应 pthread 取消点，且调用链上的该 libc++ helper 带不抛异常规格。对 D05，具体可构造条件是 wrapped streambuf 的同步输出进入取消点。普通 wait、steady 定时等待与自定义时钟等待均取得动态证据；system-clock 特化与 D05 取得静态/具体构造路径证据，本轮按“抽样 2–3 项”的任务要求未另做运行样本。
+docs/progress/R72/REPORT.md:64:消费面以 R32 已成功扫描的 371 个 source RPM 为分母，对会到达 D01–D05 的设施做源码词法命中；结果见 `raw/facility_usage_summary.tsv`，逐文件命中见 `raw/facility_usage_hits.tsv`。
+docs/progress/R72/REPORT.md:66:扫描 371/371 source RPM 成功、失败 0；它们对应 347 个去重包名。至少命中一种相关设施的有 **35 个 source RPM / 26 个去重包名**。按 source RPM / 去重包名分设施为：`condition_variable` 13/10、future 族 35/26、timed-mutex 族 3/2、shared-mutex 族 4/3、`sleep_until` 3/2、`wbuffer_convert` 2/1。同一包可同时计入多类，故分项不可相加；`wbuffer_convert` 的唯一包名是 GCC 自身源码/测试，不是独立产品消费者。
+docs/progress/R72/REPORT.md:74:3. **若以移除异常规格处理**：D01/D02 有 out-of-line 定义，但异常规格也出现在头文件声明，旧消费者仍可能按 `noexcept` 生成终止路径；D03/D04 是头文件内联 helper。D05 位于头文件模板中，但其差异还包含析构是否执行 `sync()`，不是只删异常规格即可等价。其交付性质包含库重建和消费者重编两个维度。
+docs/progress/R72/REPORT.md:93:- 将“函数定义”作为计数单位，模板 D04 计 1 个定义，不按潜在实例化数膨胀。
+progress/R72/raw/facility_usage_summary.tsv:7:wbuffer_convert	2	1	371	347	lexical source mention; approximate
+docs/progress/R72/raw/facility_usage_summary.tsv:7:wbuffer_convert	2	1	371	347	lexical source mention; approximate
+progress/R72/raw/libcxx_actual_cp_lexical_hits.txt:190:codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:96:  _LIBCPP_HIDE_FROM_ABI_VIRTUAL wbuffer_convert* __close();
+progress/R72/raw/libcxx_actual_cp_lexical_hits.txt:191:codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:120:  __close();
+progress/R72/raw/libcxx_actual_cp_lexical_hits.txt:192:codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:410:wbuffer_convert<_Codecvt, _Elem, _Tr>* wbuffer_convert<_Codecvt, _Elem, _Tr>::__close() {
+progress/R72/raw/libcxx_actual_cp_lexical_hits.txt:415:codes/llvm/libcxx/include/__cxx03/locale:3380:  _LIBCPP_HIDE_FROM_ABI_VIRTUAL wbuffer_convert* __close();
+progress/R72/raw/libcxx_actual_cp_lexical_hits.txt:417:codes/llvm/libcxx/include/__cxx03/locale:3694:wbuffer_convert<_Codecvt, _Elem, _Tr>* wbuffer_convert<_Codecvt, _Elem, _Tr>::__close() {
+docs/progress/R72/raw/libcxx_actual_cp_lexical_hits.txt:190:codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:96:  _LIBCPP_HIDE_FROM_ABI_VIRTUAL wbuffer_convert* __close();
+docs/progress/R72/raw/libcxx_actual_cp_lexical_hits.txt:191:codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:120:  __close();
+docs/progress/R72/raw/libcxx_actual_cp_lexical_hits.txt:192:codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:410:wbuffer_convert<_Codecvt, _Elem, _Tr>* wbuffer_convert<_Codecvt, _Elem, _Tr>::__close() {
+docs/progress/R72/raw/libcxx_actual_cp_lexical_hits.txt:415:codes/llvm/libcxx/include/__cxx03/locale:3380:  _LIBCPP_HIDE_FROM_ABI_VIRTUAL wbuffer_convert* __close();
+docs/progress/R72/raw/libcxx_actual_cp_lexical_hits.txt:417:codes/llvm/libcxx/include/__cxx03/locale:3694:wbuffer_convert<_Codecvt, _Elem, _Tr>* wbuffer_convert<_Codecvt, _Elem, _Tr>::__close() {
+progress/R72/raw/direct_cancel_calls.tsv:2:wbuffer_convert::__close	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:410-418	NOT_MARKED	sync	POSIX_MAY
+progress/R72/raw/direct_cancel_calls.tsv:100:wbuffer_convert::seekoff	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:296-306	NOT_MARKED	sync	POSIX_MAY
+progress/R72/raw/direct_cancel_calls.tsv:101:wbuffer_convert::seekpos	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:310-316	NOT_MARKED	sync	POSIX_MAY
+progress/R72/raw/direct_cancel_calls.tsv:107:condition_variable::wait	codes/llvm/libcxx/include/__condition_variable/condition_variable.h:110-113	NOT_MARKED	wait	POSIX_REQUIRED
+progress/R72/raw/direct_cancel_calls.tsv:108:condition_variable::wait	codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:145-148	NOT_MARKED	wait	POSIX_REQUIRED
+docs/progress/R72/raw/direct_cancel_calls.tsv:2:wbuffer_convert::__close	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:410-418	NOT_MARKED	sync	POSIX_MAY
+docs/progress/R72/raw/direct_cancel_calls.tsv:100:wbuffer_convert::seekoff	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:296-306	NOT_MARKED	sync	POSIX_MAY
+docs/progress/R72/raw/direct_cancel_calls.tsv:101:wbuffer_convert::seekpos	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:310-316	NOT_MARKED	sync	POSIX_MAY
+docs/progress/R72/raw/direct_cancel_calls.tsv:107:condition_variable::wait	codes/llvm/libcxx/include/__condition_variable/condition_variable.h:110-113	NOT_MARKED	wait	POSIX_REQUIRED
+docs/progress/R72/raw/direct_cancel_calls.tsv:108:condition_variable::wait	codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:145-148	NOT_MARKED	wait	POSIX_REQUIRED
+docs/progress/R72/raw/noexcept_candidates.tsv:55:condition_variable::__do_timed_wait	codes/llvm/libcxx/include/__condition_variable/condition_variable.h:221-224	EXPLICIT	4	pthread_cond_timedwait	condition_variable::__do_timed_wait@codes/llvm/libcxx/include/__condition_variable/condition_variable.h:221 -> condition_variable::wait_for@codes/llvm/libcxx/include/__condition_variable/condition_variable.h:142 -> condition_variable::__do_timed_wait@codes/llvm/libcxx/src/condition_variable.cpp:41 -> __libcpp_condvar_timedwait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:126 -> pthread_cond_timedwait
+docs/progress/R72/raw/noexcept_candidates.tsv:57:condition_variable::__do_timed_wait	codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:233-236	EXPLICIT	4	pthread_cond_timedwait	condition_variable::__do_timed_wait@codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:233 -> condition_variable::wait_for@codes/llvm/libcxx/include/__condition_variable/condition_variable.h:142 -> condition_variable::__do_timed_wait@codes/llvm/libcxx/src/condition_variable.cpp:41 -> __libcpp_condvar_timedwait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:126 -> pthread_cond_timedwait
+docs/progress/R72/raw/noexcept_candidates.tsv:838:condition_variable::wait	codes/llvm/libcxx/src/condition_variable.cpp:33-39	EXPLICIT	2	pthread_cond_wait	condition_variable::wait@codes/llvm/libcxx/src/condition_variable.cpp:33 -> __libcpp_condvar_wait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:121 -> pthread_cond_wait
+docs/progress/R72/raw/noexcept_candidates.tsv:881:wbuffer_convert::~wbuffer_convert	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:119-126	IMPLICIT_DESTRUCTOR_REVIEW	2	sync	wbuffer_convert::~wbuffer_convert@codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:119 -> wbuffer_convert::__close@codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:410 -> sync
+progress/R72/raw/noexcept_candidates.tsv:55:condition_variable::__do_timed_wait	codes/llvm/libcxx/include/__condition_variable/condition_variable.h:221-224	EXPLICIT	4	pthread_cond_timedwait	condition_variable::__do_timed_wait@codes/llvm/libcxx/include/__condition_variable/condition_variable.h:221 -> condition_variable::wait_for@codes/llvm/libcxx/include/__condition_variable/condition_variable.h:142 -> condition_variable::__do_timed_wait@codes/llvm/libcxx/src/condition_variable.cpp:41 -> __libcpp_condvar_timedwait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:126 -> pthread_cond_timedwait
+progress/R72/raw/noexcept_candidates.tsv:57:condition_variable::__do_timed_wait	codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:233-236	EXPLICIT	4	pthread_cond_timedwait	condition_variable::__do_timed_wait@codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:233 -> condition_variable::wait_for@codes/llvm/libcxx/include/__condition_variable/condition_variable.h:142 -> condition_variable::__do_timed_wait@codes/llvm/libcxx/src/condition_variable.cpp:41 -> __libcpp_condvar_timedwait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:126 -> pthread_cond_timedwait
+progress/R72/raw/noexcept_candidates.tsv:838:condition_variable::wait	codes/llvm/libcxx/src/condition_variable.cpp:33-39	EXPLICIT	2	pthread_cond_wait	condition_variable::wait@codes/llvm/libcxx/src/condition_variable.cpp:33 -> __libcpp_condvar_wait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:121 -> pthread_cond_wait
+progress/R72/raw/noexcept_candidates.tsv:881:wbuffer_convert::~wbuffer_convert	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:119-126	IMPLICIT_DESTRUCTOR_REVIEW	2	sync	wbuffer_convert::~wbuffer_convert@codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:119 -> wbuffer_convert::__close@codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:410 -> sync
+progress/R72/MATERIALS.md:31:- D02（system-clock timed wait）和 D05（`wbuffer_convert` 析构）本轮只取得源码可达证据，运行样本为 `NOT_OBSERVED`；动态抽样已按任务要求选满 3 项。
+progress/R72/raw/noexcept_candidates_depth_le3.tsv:114:condition_variable::wait	codes/llvm/libcxx/src/condition_variable.cpp:33-39	EXPLICIT	2	pthread_cond_wait	condition_variable::wait@codes/llvm/libcxx/src/condition_variable.cpp:33 -> __libcpp_condvar_wait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:121 -> pthread_cond_wait
+progress/R72/raw/noexcept_candidates_depth_le3.tsv:131:wbuffer_convert::~wbuffer_convert	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:119-126	IMPLICIT_DESTRUCTOR_REVIEW	2	sync	wbuffer_convert::~wbuffer_convert@codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:119 -> wbuffer_convert::__close@codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:410 -> sync
+docs/progress/R72/tables/sample_results.tsv:2:wait	D01	libc++	134	0	NOT_OBSERVED	NOT_OBSERVED	libc++abi terminating due to uncaught foreign exception
+docs/progress/R72/tables/sample_results.tsv:3:wait	D01	libstdc++	0	0	0	1	clean cancellation
+docs/progress/R72/tables/sample_results.tsv:4:wait_for	D03	libc++	134	0	NOT_OBSERVED	NOT_OBSERVED	libc++abi terminating due to uncaught foreign exception
+docs/progress/R72/tables/sample_results.tsv:5:wait_for	D03	libstdc++	0	0	0	1	clean cancellation
+docs/progress/R72/tables/sample_results.tsv:6:custom_clock	D04	libc++	134	0	NOT_OBSERVED	NOT_OBSERVED	libc++abi terminating due to uncaught foreign exception
+docs/progress/R72/tables/sample_results.tsv:7:custom_clock	D04	libstdc++	0	0	0	1	clean cancellation
+progress/R72/tables/sample_results.tsv:2:wait	D01	libc++	134	0	NOT_OBSERVED	NOT_OBSERVED	libc++abi terminating due to uncaught foreign exception
+progress/R72/tables/sample_results.tsv:3:wait	D01	libstdc++	0	0	0	1	clean cancellation
+progress/R72/tables/sample_results.tsv:4:wait_for	D03	libc++	134	0	NOT_OBSERVED	NOT_OBSERVED	libc++abi terminating due to uncaught foreign exception
+progress/R72/tables/sample_results.tsv:5:wait_for	D03	libstdc++	0	0	0	1	clean cancellation
+progress/R72/tables/sample_results.tsv:6:custom_clock	D04	libc++	134	0	NOT_OBSERVED	NOT_OBSERVED	libc++abi terminating due to uncaught foreign exception
+progress/R72/tables/sample_results.tsv:7:custom_clock	D04	libstdc++	0	0	0	1	clean cancellation
+docs/progress/R72/raw/facility_usage_hits.tsv:4578:wbuffer_convert	gcc-14.2.0-1.12.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/include/bits/locale_conv.h
+docs/progress/R72/raw/facility_usage_hits.tsv:4579:wbuffer_convert	gcc-14.2.0-1.12.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/1.cc
+docs/progress/R72/raw/facility_usage_hits.tsv:4580:wbuffer_convert	gcc-14.2.0-1.12.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/2.cc
+docs/progress/R72/raw/facility_usage_hits.tsv:4581:wbuffer_convert	gcc-14.2.0-1.12.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/3.cc
+docs/progress/R72/raw/facility_usage_hits.tsv:4582:wbuffer_convert	gcc-14.2.0-1.12.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/requirements/typedefs.cc
+docs/progress/R72/raw/facility_usage_hits.tsv:4583:wbuffer_convert	gcc-14.2.0-1.14.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/include/bits/locale_conv.h
+docs/progress/R72/raw/facility_usage_hits.tsv:4584:wbuffer_convert	gcc-14.2.0-1.14.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/1.cc
+docs/progress/R72/raw/facility_usage_hits.tsv:4585:wbuffer_convert	gcc-14.2.0-1.14.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/2.cc
+docs/progress/R72/raw/facility_usage_hits.tsv:4586:wbuffer_convert	gcc-14.2.0-1.14.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/3.cc
+docs/progress/R72/raw/facility_usage_hits.tsv:4587:wbuffer_convert	gcc-14.2.0-1.14.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/requirements/typedefs.cc
+docs/progress/R72/tables/verified_boundaries.tsv:2:D01	ACTUAL_BEHAVIOR_DIFFERENCE	std::condition_variable::wait	codes/llvm/libcxx/src/condition_variable.cpp:33-39 + include/__condition_variable/condition_variable.h:107	EXPLICIT	__libcpp_condvar_wait -> pthread_cond_wait	2	codes/gcc/libstdc++-v3/src/c++11/condition_variable.cc:38-42 + include/std/condition_variable:97-98	NO	YES	wait	libc++ terminates; libstdc++ cleanly cancels
+docs/progress/R72/tables/verified_boundaries.tsv:3:D02	ACTUAL_BEHAVIOR_DIFFERENCE	std::condition_variable::__do_timed_wait(system_clock)	codes/llvm/libcxx/src/condition_variable.cpp:41-63 + include/__condition_variable/condition_variable.h:175-177	EXPLICIT	__libcpp_condvar_timedwait -> pthread_cond_timedwait	2	codes/gcc/libstdc++-v3/include/std/condition_variable:210-228	NO	YES	NOT_SAMPLED	statically reachable via wait_until(system_clock)
+docs/progress/R72/tables/verified_boundaries.tsv:4:D03	ACTUAL_BEHAVIOR_DIFFERENCE	std::condition_variable::__do_timed_wait(steady_clock)	codes/llvm/libcxx/include/__condition_variable/condition_variable.h:197-217	EXPLICIT	pthread_cond_clockwait	1	codes/gcc/libstdc++-v3/include/std/condition_variable:188-207	NO	YES	wait_for	active because _LIBCPP_HAS_COND_CLOCKWAIT=1
+docs/progress/R72/tables/verified_boundaries.tsv:5:D04	ACTUAL_BEHAVIOR_DIFFERENCE	std::condition_variable::__do_timed_wait<Clock>	codes/llvm/libcxx/include/__condition_variable/condition_variable.h:220-224	EXPLICIT	wait_for -> __do_timed_wait(steady_clock) -> pthread_cond_clockwait	3	codes/gcc/libstdc++-v3/include/std/condition_variable:122-145	NO	YES	custom_clock	generic-clock route
+docs/progress/R72/tables/verified_boundaries.tsv:6:D05	ACTUAL_BEHAVIOR_DIFFERENCE	std::wbuffer_convert::~wbuffer_convert	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:119-126	IMPLICIT_DESTRUCTOR	__close -> sync -> wrapped streambuf virtual output path	OPEN_WORLD	codes/gcc/libstdc++-v3/include/bits/locale_conv.h:409-465	IMPLICIT_DESTRUCTOR_BUT_NO_SYNC_CALL	YES	NOT_SAMPLED	libc++ destructor flushes through wrapped streambuf; libstdc++ defaulted destructor does not
+progress/R72/raw/facility_usage_hits.tsv:4578:wbuffer_convert	gcc-14.2.0-1.12.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/include/bits/locale_conv.h
+progress/R72/raw/facility_usage_hits.tsv:4579:wbuffer_convert	gcc-14.2.0-1.12.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/1.cc
+progress/R72/raw/facility_usage_hits.tsv:4580:wbuffer_convert	gcc-14.2.0-1.12.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/2.cc
+progress/R72/raw/facility_usage_hits.tsv:4581:wbuffer_convert	gcc-14.2.0-1.12.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/3.cc
+progress/R72/raw/facility_usage_hits.tsv:4582:wbuffer_convert	gcc-14.2.0-1.12.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/requirements/typedefs.cc
+progress/R72/raw/facility_usage_hits.tsv:4583:wbuffer_convert	gcc-14.2.0-1.14.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/include/bits/locale_conv.h
+progress/R72/raw/facility_usage_hits.tsv:4584:wbuffer_convert	gcc-14.2.0-1.14.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/1.cc
+progress/R72/raw/facility_usage_hits.tsv:4585:wbuffer_convert	gcc-14.2.0-1.14.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/2.cc
+progress/R72/raw/facility_usage_hits.tsv:4586:wbuffer_convert	gcc-14.2.0-1.14.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/3.cc
+progress/R72/raw/facility_usage_hits.tsv:4587:wbuffer_convert	gcc-14.2.0-1.14.src.rpm	gcc	unpacked/gcc-14.2.0.tar.bz2/gcc-14.2.0/libstdc++-v3/testsuite/22_locale/conversions/buffer/requirements/typedefs.cc
+progress/R72/tables/verified_boundaries.tsv:2:D01	ACTUAL_BEHAVIOR_DIFFERENCE	std::condition_variable::wait	codes/llvm/libcxx/src/condition_variable.cpp:33-39 + include/__condition_variable/condition_variable.h:107	EXPLICIT	__libcpp_condvar_wait -> pthread_cond_wait	2	codes/gcc/libstdc++-v3/src/c++11/condition_variable.cc:38-42 + include/std/condition_variable:97-98	NO	YES	wait	libc++ terminates; libstdc++ cleanly cancels
+progress/R72/tables/verified_boundaries.tsv:3:D02	ACTUAL_BEHAVIOR_DIFFERENCE	std::condition_variable::__do_timed_wait(system_clock)	codes/llvm/libcxx/src/condition_variable.cpp:41-63 + include/__condition_variable/condition_variable.h:175-177	EXPLICIT	__libcpp_condvar_timedwait -> pthread_cond_timedwait	2	codes/gcc/libstdc++-v3/include/std/condition_variable:210-228	NO	YES	NOT_SAMPLED	statically reachable via wait_until(system_clock)
+progress/R72/tables/verified_boundaries.tsv:4:D03	ACTUAL_BEHAVIOR_DIFFERENCE	std::condition_variable::__do_timed_wait(steady_clock)	codes/llvm/libcxx/include/__condition_variable/condition_variable.h:197-217	EXPLICIT	pthread_cond_clockwait	1	codes/gcc/libstdc++-v3/include/std/condition_variable:188-207	NO	YES	wait_for	active because _LIBCPP_HAS_COND_CLOCKWAIT=1
+progress/R72/tables/verified_boundaries.tsv:5:D04	ACTUAL_BEHAVIOR_DIFFERENCE	std::condition_variable::__do_timed_wait<Clock>	codes/llvm/libcxx/include/__condition_variable/condition_variable.h:220-224	EXPLICIT	wait_for -> __do_timed_wait(steady_clock) -> pthread_cond_clockwait	3	codes/gcc/libstdc++-v3/include/std/condition_variable:122-145	NO	YES	custom_clock	generic-clock route
+progress/R72/tables/verified_boundaries.tsv:6:D05	ACTUAL_BEHAVIOR_DIFFERENCE	std::wbuffer_convert::~wbuffer_convert	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:119-126	IMPLICIT_DESTRUCTOR	__close -> sync -> wrapped streambuf virtual output path	OPEN_WORLD	codes/gcc/libstdc++-v3/include/bits/locale_conv.h:409-465	IMPLICIT_DESTRUCTOR_BUT_NO_SYNC_CALL	YES	NOT_SAMPLED	libc++ destructor flushes through wrapped streambuf; libstdc++ defaulted destructor does not
+progress/R72/code/noexcept_cancel_samples.cpp:74:  // The worker holds this mutex until condition_variable::wait* has entered
+docs/progress/R72/tables/facility_paths.tsv:2:condition_variable	condition_variable::wait / wait_for / wait_until	D01,D02,D03,D04	public blocking calls directly reach the helpers
+docs/progress/R72/tables/facility_paths.tsv:3:condition_variable_any	condition_variable_any::wait* -> internal condition_variable	D01,D02,D03,D04	include/condition_variable stores condition_variable __cv_
+docs/progress/R72/tables/facility_paths.tsv:4:future	future/shared_future wait* -> __assoc_sub_state::__cv_	D01,D02,D03,D04	include/future:527 and src/future.cpp waiting path
+docs/progress/R72/tables/facility_paths.tsv:5:timed_mutex	timed_mutex/recursive_timed_mutex timed lock -> internal condition_variable	D02,D03,D04	include/mutex:242,279 store condition_variable
+docs/progress/R72/tables/facility_paths.tsv:6:shared_mutex	shared_mutex/shared_timed_mutex wait -> __shared_mutex_base gates	D01,D02,D03,D04	include/shared_mutex:159-160 store two condition_variables
+docs/progress/R72/tables/facility_paths.tsv:7:this_thread_sleep_until	this_thread::sleep_until<custom clock> -> local condition_variable::wait_until	D04	include/__thread/this_thread.h:55-62
+docs/progress/R72/tables/facility_paths.tsv:8:wbuffer_convert	wbuffer_convert destructor -> __close -> sync -> wrapped streambuf output	D05	libc++ destructor calls sync; libstdc++ corresponding defaulted destructor does not
+progress/R72/tables/facility_paths.tsv:2:condition_variable	condition_variable::wait / wait_for / wait_until	D01,D02,D03,D04	public blocking calls directly reach the helpers
+progress/R72/tables/facility_paths.tsv:3:condition_variable_any	condition_variable_any::wait* -> internal condition_variable	D01,D02,D03,D04	include/condition_variable stores condition_variable __cv_
+progress/R72/tables/facility_paths.tsv:4:future	future/shared_future wait* -> __assoc_sub_state::__cv_	D01,D02,D03,D04	include/future:527 and src/future.cpp waiting path
+progress/R72/tables/facility_paths.tsv:5:timed_mutex	timed_mutex/recursive_timed_mutex timed lock -> internal condition_variable	D02,D03,D04	include/mutex:242,279 store condition_variable
+progress/R72/tables/facility_paths.tsv:6:shared_mutex	shared_mutex/shared_timed_mutex wait -> __shared_mutex_base gates	D01,D02,D03,D04	include/shared_mutex:159-160 store two condition_variables
+progress/R72/tables/facility_paths.tsv:7:this_thread_sleep_until	this_thread::sleep_until<custom clock> -> local condition_variable::wait_until	D04	include/__thread/this_thread.h:55-62
+progress/R72/tables/facility_paths.tsv:8:wbuffer_convert	wbuffer_convert destructor -> __close -> sync -> wrapped streambuf output	D05	libc++ destructor calls sync; libstdc++ corresponding defaulted destructor does not
+docs/progress/R72/tables/count_summary.tsv:2:ACTUAL_BEHAVIOR_DIFFERENCE	5	5	D01-D05; four condition_variable definitions plus wbuffer_convert destructor structural difference
+progress/R72/tables/count_summary.tsv:2:ACTUAL_BEHAVIOR_DIFFERENCE	5	5	D01-D05; four condition_variable definitions plus wbuffer_convert destructor structural difference
+docs/progress/R72/MATERIALS.md:31:- D02（system-clock timed wait）和 D05（`wbuffer_convert` 析构）本轮只取得源码可达证据，运行样本为 `NOT_OBSERVED`；动态抽样已按任务要求选满 3 项。
+docs/progress/R72/code/noexcept_cancel_samples.cpp:74:  // The worker holds this mutex until condition_variable::wait* has entered
+docs/progress/R72/code/scan_facility_usage.py:25:    "wbuffer_convert": r"\b(?:std::)?wbuffer_convert\b",
+docs/progress/R72/commands/028_calibration_verified_rows.log:1:COMMAND=rg -n condition_variable::wait progress/R72/raw/noexcept_candidates.tsv
+docs/progress/R72/commands/028_calibration_verified_rows.log:3:55:condition_variable::__do_timed_wait	codes/llvm/libcxx/include/__condition_variable/condition_variable.h:221-224	EXPLICIT	4	pthread_cond_timedwait	condition_variable::__do_timed_wait@codes/llvm/libcxx/include/__condition_variable/condition_variable.h:221 -> condition_variable::wait_for@codes/llvm/libcxx/include/__condition_variable/condition_variable.h:142 -> condition_variable::__do_timed_wait@codes/llvm/libcxx/src/condition_variable.cpp:41 -> __libcpp_condvar_timedwait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:126 -> pthread_cond_timedwait
+docs/progress/R72/commands/028_calibration_verified_rows.log:5:57:condition_variable::__do_timed_wait	codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:233-236	EXPLICIT	4	pthread_cond_timedwait	condition_variable::__do_timed_wait@codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:233 -> condition_variable::wait_for@codes/llvm/libcxx/include/__condition_variable/condition_variable.h:142 -> condition_variable::__do_timed_wait@codes/llvm/libcxx/src/condition_variable.cpp:41 -> __libcpp_condvar_timedwait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:126 -> pthread_cond_timedwait
+docs/progress/R72/commands/028_calibration_verified_rows.log:7:838:condition_variable::wait	codes/llvm/libcxx/src/condition_variable.cpp:33-39	EXPLICIT	2	pthread_cond_wait	condition_variable::wait@codes/llvm/libcxx/src/condition_variable.cpp:33 -> __libcpp_condvar_wait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:121 -> pthread_cond_wait
+progress/R72/commands/036_facility_usage_scan_package_names.log:10:wbuffer_convert=2
+progress/R72/code/scan_facility_usage.py:25:    "wbuffer_convert": r"\b(?:std::)?wbuffer_convert\b",
+progress/R72/commands/017_condition_variable_source_evidence.log:105:   192	condition_variable::wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d, _Predicate __pred) {
+progress/R72/commands/017_condition_variable_source_evidence.log:147:    33	void condition_variable::wait(unique_lock<mutex>& lk) noexcept {
+progress/R72/commands/017_condition_variable_source_evidence.log:149:    35	    std::__throw_system_error(EPERM, "condition_variable::wait: mutex not locked");
+progress/R72/commands/017_condition_variable_source_evidence.log:427:    39	  condition_variable::wait(unique_lock<mutex>& __lock)
+docs/progress/R72/commands/036_facility_usage_scan_package_names.log:10:wbuffer_convert=2
+docs/progress/R72/raw/noexcept_candidates_depth_le3.tsv:114:condition_variable::wait	codes/llvm/libcxx/src/condition_variable.cpp:33-39	EXPLICIT	2	pthread_cond_wait	condition_variable::wait@codes/llvm/libcxx/src/condition_variable.cpp:33 -> __libcpp_condvar_wait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:121 -> pthread_cond_wait
+docs/progress/R72/raw/noexcept_candidates_depth_le3.tsv:131:wbuffer_convert::~wbuffer_convert	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:119-126	IMPLICIT_DESTRUCTOR_REVIEW	2	sync	wbuffer_convert::~wbuffer_convert@codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:119 -> wbuffer_convert::__close@codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:410 -> sync
+progress/R72/commands/035_additional_boundary_source_evidence.log:1:COMMAND=nl -ba selected libc++/libstdc++ wbuffer_convert, basic_filebuf, and iostream-init ranges
+progress/R72/commands/035_additional_boundary_source_evidence.log:9:   119	wbuffer_convert<_Codecvt, _Elem, _Tr>::~wbuffer_convert() {
+progress/R72/commands/035_additional_boundary_source_evidence.log:18:   410	wbuffer_convert<_Codecvt, _Elem, _Tr>* wbuffer_convert<_Codecvt, _Elem, _Tr>::__close() {
+progress/R72/commands/035_additional_boundary_source_evidence.log:19:   411	  wbuffer_convert* __rt = nullptr;
+progress/R72/commands/035_additional_boundary_source_evidence.log:26:   409	    class wbuffer_convert : public basic_streambuf<_Elem, _Tr>
+progress/R72/commands/035_additional_boundary_source_evidence.log:34:   417	      wbuffer_convert() : wbuffer_convert(nullptr) { }
+progress/R72/commands/035_additional_boundary_source_evidence.log:45:   428	      wbuffer_convert(streambuf* __bytebuf, _Codecvt* __pcvt = new _Codecvt,
+progress/R72/commands/035_additional_boundary_source_evidence.log:47:   430	      : _M_buf(__bytebuf), _M_cvt(__pcvt, "wbuffer_convert"),
+progress/R72/commands/035_additional_boundary_source_evidence.log:59:   442	      ~wbuffer_convert() = default;
+progress/R72/commands/035_additional_boundary_source_evidence.log:62:   445	      // 2176. Special members for wstring_convert and wbuffer_convert
+progress/R72/commands/035_additional_boundary_source_evidence.log:63:   446	      wbuffer_convert(const wbuffer_convert&) = delete;
+progress/R72/commands/035_additional_boundary_source_evidence.log:64:   447	      wbuffer_convert& operator=(const wbuffer_convert&) = delete;
+docs/progress/R72/commands/017_condition_variable_source_evidence.log:105:   192	condition_variable::wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d, _Predicate __pred) {
+docs/progress/R72/commands/017_condition_variable_source_evidence.log:147:    33	void condition_variable::wait(unique_lock<mutex>& lk) noexcept {
+docs/progress/R72/commands/017_condition_variable_source_evidence.log:149:    35	    std::__throw_system_error(EPERM, "condition_variable::wait: mutex not locked");
+docs/progress/R72/commands/017_condition_variable_source_evidence.log:427:    39	  condition_variable::wait(unique_lock<mutex>& __lock)
+progress/R72/commands/034_facility_usage_scan_with_wbuffer.log:10:wbuffer_convert=2
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log:1:COMMAND=nl -ba selected libc++/libstdc++ wbuffer_convert, basic_filebuf, and iostream-init ranges
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log:9:   119	wbuffer_convert<_Codecvt, _Elem, _Tr>::~wbuffer_convert() {
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log:18:   410	wbuffer_convert<_Codecvt, _Elem, _Tr>* wbuffer_convert<_Codecvt, _Elem, _Tr>::__close() {
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log:19:   411	  wbuffer_convert* __rt = nullptr;
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log:26:   409	    class wbuffer_convert : public basic_streambuf<_Elem, _Tr>
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log:34:   417	      wbuffer_convert() : wbuffer_convert(nullptr) { }
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log:45:   428	      wbuffer_convert(streambuf* __bytebuf, _Codecvt* __pcvt = new _Codecvt,
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log:47:   430	      : _M_buf(__bytebuf), _M_cvt(__pcvt, "wbuffer_convert"),
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log:59:   442	      ~wbuffer_convert() = default;
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log:62:   445	      // 2176. Special members for wstring_convert and wbuffer_convert
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log:63:   446	      wbuffer_convert(const wbuffer_convert&) = delete;
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log:64:   447	      wbuffer_convert& operator=(const wbuffer_convert&) = delete;
+docs/progress/R72/commands/034_facility_usage_scan_with_wbuffer.log:10:wbuffer_convert=2
+progress/R72/commands/028_calibration_verified_rows.log:1:COMMAND=rg -n condition_variable::wait progress/R72/raw/noexcept_candidates.tsv
+progress/R72/commands/028_calibration_verified_rows.log:3:55:condition_variable::__do_timed_wait	codes/llvm/libcxx/include/__condition_variable/condition_variable.h:221-224	EXPLICIT	4	pthread_cond_timedwait	condition_variable::__do_timed_wait@codes/llvm/libcxx/include/__condition_variable/condition_variable.h:221 -> condition_variable::wait_for@codes/llvm/libcxx/include/__condition_variable/condition_variable.h:142 -> condition_variable::__do_timed_wait@codes/llvm/libcxx/src/condition_variable.cpp:41 -> __libcpp_condvar_timedwait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:126 -> pthread_cond_timedwait
+progress/R72/commands/028_calibration_verified_rows.log:5:57:condition_variable::__do_timed_wait	codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:233-236	EXPLICIT	4	pthread_cond_timedwait	condition_variable::__do_timed_wait@codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:233 -> condition_variable::wait_for@codes/llvm/libcxx/include/__condition_variable/condition_variable.h:142 -> condition_variable::__do_timed_wait@codes/llvm/libcxx/src/condition_variable.cpp:41 -> __libcpp_condvar_timedwait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:126 -> pthread_cond_timedwait
+progress/R72/commands/028_calibration_verified_rows.log:7:838:condition_variable::wait	codes/llvm/libcxx/src/condition_variable.cpp:33-39	EXPLICIT	2	pthread_cond_wait	condition_variable::wait@codes/llvm/libcxx/src/condition_variable.cpp:33 -> __libcpp_condvar_wait@codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:121 -> pthread_cond_wait
+PIPE_EXIT=0 0
+$ rg -n "pthread_cancel" codes/llvm/libcxx codes/llvm/libcxxabi
+codes/llvm/libcxxabi/test/forced_unwind4.pass.cpp:12:// pthread_cancel in case of glibc calls _Unwind_ForcedUnwind from a signal on
+codes/llvm/libcxxabi/test/forced_unwind4.pass.cpp:18:// Android/Bionic does not support pthread_cancel.
+codes/llvm/libcxxabi/test/forced_unwind4.pass.cpp:54:  pthread_cancel(child_thread);
+codes/llvm/libcxxabi/test/forced_unwind3.pass.cpp:10:// what pthread_cancel does.
+EXIT_CODE=0
+$ nl -ba codes/llvm/libcxx/docs/DesignDocs/NoexceptPolicy.rst | sed -n '1,180p'
+     1	===================
+     2	``noexcept`` Policy
+     3	===================
+     4	
+     5	Extended applications of ``noexcept``
+     6	-------------------------------------
+     7	
+     8	As of version 13 libc++ may mark functions that do not throw (i.e.,
+     9	"Throws: Nothing") as ``noexcept``. This has two primary consequences:
+    10	first, functions might not report precondition violations by throwing.
+    11	Second, user-provided functions, such as custom predicates or custom
+    12	traits, which throw might not be propagated up to the caller (unless
+    13	specified otherwise by the Standard).
+EXIT_CODE=0
