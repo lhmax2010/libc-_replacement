@@ -1,0 +1,178 @@
+$ rg -n "def tryCompileFlag|def hasCompileFlag|def sourceBuilds" tmp/R69/replay/libcxx/utils/libcxx/test/dsl.py
+136:def sourceBuilds(config, source, additionalFlags=[]):
+209:def tryCompileFlag(config, flag):
+222:def hasCompileFlag(config, flag):
+exit_code=0
+$ sed -n 170,340p tmp/R69/replay/libcxx/utils/libcxx/test/dsl.py
+        _, err, exitCode, _, buildcmd = _executeWithFakeConfig(test, ["%{build}"])
+        if exitCode != 0:
+            raise ConfigurationCompilationError(
+                "Failed to build program, cmd:\n{}\nstderr is:\n{}".format(
+                    buildcmd, err
+                )
+            )
+
+        out, err, exitCode, _, runcmd = _executeWithFakeConfig(
+            test, ["%{{run}} {}".format(" ".join(args))]
+        )
+        if exitCode != 0:
+            raise ConfigurationRuntimeError(
+                "Failed to run program, cmd:\n{}\nstderr is:\n{}".format(runcmd, err)
+            )
+
+        return out
+
+
+@_memoizeExpensiveOperation(
+    lambda c, p, args=None: (c.substitutions, c.environment, p, args)
+)
+def programSucceeds(config, program, args=None):
+    """
+    Compiles a program for the test target, run it on the test target and return
+    whether it completed successfully.
+
+    Note that execution of the program is done through the %{exec} substitution,
+    which means that the program may be run on a remote host depending on what
+    %{exec} does.
+    """
+    try:
+        programOutput(config, program, args)
+    except ConfigurationRuntimeError:
+        return False
+    return True
+
+
+@_memoizeExpensiveOperation(lambda c, f: (c.substitutions, c.environment, f))
+def tryCompileFlag(config, flag):
+    """
+    Try using the given compiler flag and return the exit code along with stdout and stderr.
+    """
+    # fmt: off
+    with _makeConfigTest(config) as test:
+        out, err, exitCode, timeoutInfo, _ = _executeWithFakeConfig(test, [
+            "%{{cxx}} -xc++ {} -Werror -fsyntax-only %{{flags}} %{{compile_flags}} {}".format(os.devnull, flag)
+        ])
+        return exitCode, out, err
+    # fmt: on
+
+
+def hasCompileFlag(config, flag):
+    """
+    Return whether the compiler in the configuration supports a given compiler flag.
+
+    This is done by executing the %{cxx} substitution with the given flag and
+    checking whether that succeeds.
+    """
+    (exitCode, _, _) = tryCompileFlag(config, flag)
+    return exitCode == 0
+
+
+@_memoizeExpensiveOperation(lambda c, s: (c.substitutions, c.environment, s))
+def runScriptExitCode(config, script):
+    """
+    Runs the given script as a Lit test, and returns the exit code of the execution.
+
+    The script must be a list of commands, each of which being something that
+    could appear on the right-hand-side of a `RUN:` keyword.
+    """
+    with _makeConfigTest(config) as test:
+        _, _, exitCode, _, _ = _executeWithFakeConfig(test, script)
+        return exitCode
+
+
+@_memoizeExpensiveOperation(lambda c, s: (c.substitutions, c.environment, s))
+def commandOutput(config, command):
+    """
+    Runs the given script as a Lit test, and returns the output.
+    If the exit code isn't 0 an exception is raised.
+
+    The script must be a list of commands, each of which being something that
+    could appear on the right-hand-side of a `RUN:` keyword.
+    """
+    with _makeConfigTest(config) as test:
+        out, err, exitCode, _, cmd = _executeWithFakeConfig(test, command)
+        if exitCode != 0:
+            raise ConfigurationRuntimeError(
+                "Failed to run command: {}\nstderr is:\n{}".format(cmd, err)
+            )
+        return out
+
+
+@_memoizeExpensiveOperation(lambda c, l: (c.substitutions, c.environment, l))
+def hasAnyLocale(config, locales):
+    """
+    Return whether the runtime execution environment supports a given locale.
+    Different systems may use different names for a locale, so this function checks
+    whether any of the passed locale names is supported by setlocale() and returns
+    true if one of them works.
+
+    This is done by executing a program that tries to set the given locale using
+    %{exec} -- this means that the command may be executed on a remote host
+    depending on the %{exec} substitution.
+    """
+
+    # Convert the locale names into C string literals. We expect all currently
+    # known locale names to be printable ASCII and not contain awkward
+    # characters like \ or ", so this should be trivial.
+    assert all(
+        0x20 <= ord(ch) <= 0x7E and ch not in {'"', "\\"}
+        for locale in locales
+        for ch in locale
+    )
+    name_string_literals = ", ".join('"' + locale + '"' for locale in locales)
+
+    program = (
+        """
+    #include <stddef.h>
+    #if defined(_LIBCPP_VERSION) && !_LIBCPP_HAS_LOCALIZATION
+      int main(int, char**) { return 1; }
+    #else
+      #include <locale.h>
+      static const char *const test_locale_names[] = {
+          """
+        + name_string_literals
+        + """, nullptr,
+      };
+      int main(int, char**) {
+        for (size_t i = 0; test_locale_names[i]; i++) {
+          if (::setlocale(LC_ALL, test_locale_names[i]) != NULL) {
+            return 0;
+          }
+        }
+        return 1;
+      }
+    #endif
+    """
+    )
+    return programSucceeds(config, program)
+
+
+@_memoizeExpensiveOperation(lambda c, flags="": (c.substitutions, c.environment, flags))
+def compilerMacros(config, flags=""):
+    """
+    Return a dictionary of predefined compiler macros.
+
+    The keys are strings representing macros, and the values are strings
+    representing what each macro is defined to.
+
+    If the optional `flags` argument (a string) is provided, these flags will
+    be added to the compiler invocation when generating the macros.
+    """
+    with _makeConfigTest(config) as test:
+        with open(test.getSourcePath(), "w") as sourceFile:
+            sourceFile.write(
+                """
+      #if __has_include(<__config>)
+      #  include <__config>
+      #endif
+      """
+            )
+        unparsedOutput, err, exitCode, _, cmd = _executeWithFakeConfig(
+            test, ["%{{cxx}} %s -dM -E %{{flags}} %{{compile_flags}} {}".format(flags)]
+        )
+        if exitCode != 0:
+            raise ConfigurationCompilationError(
+                "Failed to retrieve compiler macros, compiler invocation is:\n{}\nstderr is:\n{}".format(
+                    cmd, err
+                )
+exit_code=0

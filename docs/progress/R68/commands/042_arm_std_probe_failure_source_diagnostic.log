@@ -1,0 +1,305 @@
+$ sed -n 340,530p tmp/R69/replay/libcxx/utils/libcxx/test/dsl.py
+                )
+            )
+        parsedMacros = dict()
+        defines = (
+            l.strip() for l in unparsedOutput.split("\n") if l.startswith("#define ")
+        )
+        for line in defines:
+            line = line[len("#define ") :]
+            macro, _, value = line.partition(" ")
+            parsedMacros[macro] = value
+        return parsedMacros
+
+
+def featureTestMacros(config, flags=""):
+    """
+    Return a dictionary of feature test macros.
+
+    The keys are strings representing feature test macros, and the values are
+    integers representing the value of the macro.
+    """
+    allMacros = compilerMacros(config, flags)
+    return {
+        m: int(v.rstrip("LlUu"))
+        for (m, v) in allMacros.items()
+        if m.startswith("__cpp_")
+    }
+
+
+def _getSubstitution(substitution, config):
+  for (orig, replacement) in config.substitutions:
+    if orig == substitution:
+      return replacement
+  raise ValueError('Substitution {} is not in the config.'.format(substitution))
+
+def _appendToSubstitution(substitutions, key, value):
+    return [(k, v + " " + value) if k == key else (k, v) for (k, v) in substitutions]
+
+def _prependToSubstitution(substitutions, key, value):
+    return [(k, value + " " + v) if k == key else (k, v) for (k, v) in substitutions]
+
+def _ensureFlagIsSupported(config, flag):
+    (exitCode, out, err) = tryCompileFlag(config, flag)
+    assert (
+        exitCode == 0
+    ), f"Trying to enable compiler flag {flag}, which is not supported. stdout was:\n{out}\n\nstderr was:\n{err}"
+
+
+class ConfigAction(object):
+    """
+    This class represents an action that can be performed on a Lit TestingConfig
+    object.
+
+    Examples of such actions are adding or modifying substitutions, Lit features,
+    etc. This class only provides the interface of such actions, and it is meant
+    to be subclassed appropriately to create new actions.
+    """
+
+    def applyTo(self, config):
+        """
+        Applies the action to the given configuration.
+
+        This should modify the configuration object in place, and return nothing.
+
+        If applying the action to the configuration would yield an invalid
+        configuration, and it is possible to diagnose it here, this method
+        should produce an error. For example, it should be an error to modify
+        a substitution in a way that we know for sure is invalid (e.g. adding
+        a compiler flag when we know the compiler doesn't support it). Failure
+        to do so early may lead to difficult-to-diagnose issues down the road.
+        """
+        pass
+
+    def pretty(self, config, litParams):
+        """
+        Returns a short and human-readable string describing what this action does.
+
+        This is used for logging purposes when running the test suite, so it should
+        be kept concise.
+        """
+        pass
+
+
+class AddFeature(ConfigAction):
+    """
+    This action defines the given Lit feature when running the test suite.
+
+    The name of the feature can be a string or a callable, in which case it is
+    called with the configuration to produce the feature name (as a string).
+    """
+
+    def __init__(self, name):
+        self._name = name
+
+    def _getName(self, config):
+        name = self._name(config) if callable(self._name) else self._name
+        if not isinstance(name, str):
+            raise ValueError(
+                "Lit feature did not resolve to a string (got {})".format(name)
+            )
+        return name
+
+    def applyTo(self, config):
+        config.available_features.add(self._getName(config))
+
+    def pretty(self, config, litParams):
+        return "add Lit feature {}".format(self._getName(config))
+
+
+class AddFlag(ConfigAction):
+    """
+    This action adds the given flag to the %{flags} substitution.
+
+    The flag can be a string or a callable, in which case it is called with the
+    configuration to produce the actual flag (as a string).
+    """
+
+    def __init__(self, flag):
+        self._getFlag = lambda config: flag(config) if callable(flag) else flag
+
+    def applyTo(self, config):
+        flag = self._getFlag(config)
+        _ensureFlagIsSupported(config, flag)
+        config.substitutions = _appendToSubstitution(
+            config.substitutions, "%{flags}", flag
+        )
+
+    def pretty(self, config, litParams):
+        return "add {} to %{{flags}}".format(self._getFlag(config))
+
+class AddFlagIfSupported(ConfigAction):
+    """
+    This action adds the given flag to the %{flags} substitution, only if
+    the compiler supports the flag.
+
+    The flag can be a string or a callable, in which case it is called with the
+    configuration to produce the actual flag (as a string).
+    """
+
+    def __init__(self, flag):
+        self._getFlag = lambda config: flag(config) if callable(flag) else flag
+
+    def applyTo(self, config):
+        flag = self._getFlag(config)
+        if hasCompileFlag(config, flag):
+            config.substitutions = _appendToSubstitution(
+                config.substitutions, "%{flags}", flag
+            )
+
+    def pretty(self, config, litParams):
+        return "add {} to %{{flags}}".format(self._getFlag(config))
+
+
+class AddCompileFlag(ConfigAction):
+    """
+    This action adds the given flag to the %{compile_flags} substitution.
+
+    The flag can be a string or a callable, in which case it is called with the
+    configuration to produce the actual flag (as a string).
+    """
+
+    def __init__(self, flag):
+        self._getFlag = lambda config: flag(config) if callable(flag) else flag
+
+    def applyTo(self, config):
+        flag = self._getFlag(config)
+        _ensureFlagIsSupported(config, flag)
+        config.substitutions = _appendToSubstitution(
+            config.substitutions, "%{compile_flags}", flag
+        )
+
+    def pretty(self, config, litParams):
+        return "add {} to %{{compile_flags}}".format(self._getFlag(config))
+
+
+class AddLinkFlag(ConfigAction):
+    """
+    This action appends the given flag to the %{link_flags} substitution.
+
+    The flag can be a string or a callable, in which case it is called with the
+    configuration to produce the actual flag (as a string).
+    """
+
+    def __init__(self, flag):
+        self._getFlag = lambda config: flag(config) if callable(flag) else flag
+
+    def applyTo(self, config):
+        flag = self._getFlag(config)
+        _ensureFlagIsSupported(config, flag)
+        config.substitutions = _appendToSubstitution(
+            config.substitutions, "%{link_flags}", flag
+        )
+exit_code=0
+$ sed -n 1,240p tmp/R68/build-patched-armv7l/libcxx/test/lit.site.cfg
+# This testing configuration handles running the test suite against LLVM's libc++
+# using a shared library.
+
+lit_config.load_config(config, '/home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test/cmake-bridge.cfg')
+
+config.substitutions.append(('%{flags}',
+    '-pthread' + (' -isysroot {}'.format('') if '' else '')
+))
+config.substitutions.append(('%{compile_flags}',
+    '-nostdinc++ -I %{target-include-dir} -I %{include-dir} -I %{libcxx-dir}/test/support'
+))
+config.substitutions.append(('%{link_flags}',
+    '-nostdlib++ -L %{lib-dir} -Wl,-rpath,%{lib-dir} -lc++'
+))
+config.substitutions.append(('%{exec}',
+    '%{executor} --execdir %{temp} -- '
+))
+
+import os, site
+site.addsitedir(os.path.join('/home/toolchain/development/libc++_replacement/tmp/R69/replay/libcxx', 'utils'))
+import libcxx.test.params, libcxx.test.config
+libcxx.test.config.configure(
+    libcxx.test.params.DEFAULT_PARAMETERS,
+    libcxx.test.features.DEFAULT_FEATURES,
+    config,
+    lit_config
+)
+exit_code=0
+$ sed -n 150,230p tmp/R69/replay/libcxx/utils/libcxx/test/params.py
+    if not exe:
+        exe = testClangTidy(cfg, version, "clang-tidy")
+
+    return exe
+
+
+# fmt: off
+DEFAULT_PARAMETERS = [
+    Parameter(
+        name="compiler",
+        type=str,
+        help="The path of the compiler to use for testing.",
+        actions=lambda cxx: [
+            AddSubstitution("%{cxx}", shlex.quote(cxx)),
+        ],
+    ),
+    Parameter(
+        name="target_triple",
+        type=str,
+        help="The target triple to compile the test suite for. This must be "
+        "compatible with the target that the tests will be run on.",
+        actions=lambda triple: filter(
+            None,
+            [
+                AddFeature("target={}".format(triple)),
+                AddFlagIfSupported("--target={}".format(triple)),
+            ],
+        ),
+    ),
+    Parameter(
+        name="std",
+        choices=_allStandards,
+        type=str,
+        help="The version of the standard to compile the test suite with.",
+        default=lambda cfg: getDefaultStdValue(cfg),
+        actions=lambda std: [
+            AddFeature(std),
+            AddSubstitution("%{cxx_std}", re.sub(r"\+", "x", std)),
+            AddCompileFlag(lambda cfg: getStdFlag(cfg, std)),
+        ]
+        + [AddFeature(f"std-at-least-{s}") for s in _allStandards if s <= std],
+    ),
+    Parameter(
+        name="optimization",
+        choices=["none", "speed", "size"],
+        type=str,
+        help="The optimization level to use when compiling the test suite.",
+        default="none",
+        actions=lambda opt: filter(None, [
+            AddCompileFlag(lambda cfg: getSpeedOptimizationFlag(cfg)) if opt == "speed" else None,
+            AddCompileFlag(lambda cfg: getSizeOptimizationFlag(cfg)) if opt == "size" else None,
+            AddFeature(f'optimization={opt}'),
+        ]),
+    ),
+    Parameter(
+        name="enable_modules",
+        choices=["none", "clang", "clang-lsv"],
+        type=str,
+        help="Whether to build the test suite with modules enabled. "
+             "Select `clang` for Clang modules, and 'clang-lsv' for Clang modules with Local Submodule Visibility. "
+             "Note that in recent versions of Clang, using Clang modules with -std=c++20 and later implies LSV.",
+        default="none",
+        actions=lambda modules: filter(None, [
+            AddFeature("clang-modules-build")           if modules in ("clang", "clang-lsv") else None,
+
+            # Note: AppleClang disregards -fmodules entirely when compiling C++, so we also pass -fcxx-modules
+            #       to enable modules for C++.
+            AddCompileFlag("-fmodules -fcxx-modules")   if modules in ("clang", "clang-lsv") else None,
+
+            # Note: We use a custom modules cache path to make sure that we don't reuse
+            #       the default one, which can be shared across CI builds with different
+            #       configurations.
+            AddCompileFlag(lambda cfg: f"-fmodules-cache-path={cfg.test_exec_root}/ModuleCache") if modules in ("clang", "clang-lsv") else None,
+
+            AddCompileFlag("-Xclang -fmodules-local-submodule-visibility") if modules == "clang-lsv" else None,
+        ])
+    ),
+    Parameter(
+        name="enable_exceptions",
+        choices=[True, False],
+        type=bool,
+exit_code=0

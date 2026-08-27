@@ -1,0 +1,141 @@
+$ python3 tmp/R69/experiment/llvm/utils/lit/lit.py --version
+lit 22.1.8dev
+exit_code=0
+$ find tmp/R69/experiment/llvm/utils/lit -maxdepth 2 -type f -name "lit.py" -o -name "__main__.py"
+tmp/R69/experiment/llvm/utils/lit/lit.py
+exit_code=0
+$ sed -n 1,150p docs/progress/R69/REPORT.md
+# R69 报告：重建回退修复与版本间差异门禁
+
+## 结论
+
+结论为 **`PARTIAL`**。
+
+N1、N2 均已修复，四补丁已按 20/30 分批从干净基线重建；实验树、补丁生成树、干净重放树的 9 个变更文件逐文件 SHA256 与 `cmp` 完全一致。新增的版本差异门禁对 R58 上一版整体复验树与本次重放树给出 14 个差异 hunk，14/14 均有书面出处；分批语义审计通过。
+
+不能给出 `PATCHSET_VERIFIED` 的原因有两项：
+
+1. 新增“等待方被取消”格在 x86_64 下，最终 libc++ 20/20 退出 134，libstdc++ 20/20 退出 0；未打补丁 libc++ 的补充对照同为 134。该差异不是 N1/N2 引入，但表明此前未覆盖的 libc++ 等待路径仍未与参考实现对齐。本任务未扩大范围修改补丁。
+2. armv7l 的库、测试件和上游测试件均构建成功，但 SDB 目标在三次连接尝试中均不可达；板端运行、加载身份与运行后清理核验为 `NOT_OBSERVED`。预检失败发生在任何部署之前，板上未写入本任务文件、未启动本任务进程。
+
+## 1. 资源与执行边界
+
+- `tools/resource_gate.sh --level medium` 返回 0；实测资源原文见 `commands/001_resource_gate.log`。
+- x86_64 与 armv7l 构建均显式使用 `-j2`、`LLVM_PARALLEL_LINK_JOBS=1`、`nice -n 15`、`ionice -c 3`。
+- 构建采样中没有 `RED_STOP_RESOURCE`；可用内存未接近 1 GiB 中止线。
+- `codes/` 未修改；全部源码实验在 `tmp/R69/`。
+
+## 2. 版本间差异门禁
+
+新增 `tools/source_tree_diff_gate.py`：
+
+- 输入两棵源码树，可用重复的 `--include` 完整限定受影响子树；本次完整比较 `libcxx/` 与 `libcxxabi/`，不是只比较已知 9 文件。
+- 输出统一 diff 和逐 hunk TSV；hunk ID 由路径、差异类别、行范围与 hunk 正文稳定计算。
+- 说明 TSV 的每项必须同时含 `task` 与 `reason`；缺说明或多余的失效说明均返回 2；参数/输入错误返回 10。
+- `--inventory-only` 只用于取得 hunk ID，不代表门禁通过。
+
+自验结果：
+
+- Python 语法检查返回 0。
+- 故意只说明 1/16 个 hunk 时，工具列出 15 个 `MISSING_RATIONALE` 并返回 2。
+- 修复前正式说明 16/16 通过；前两个 hunk 分别精确对应 N2、N1。
+- 修复后相对 R58 剩 14 个 hunk，全部为 R60/W1/R67 已登记的 F1/F2/M1/M2 改动，14/14 有出处，正式门禁返回 0。
+
+选择 R58 `tmp/R58/source-full` 为上一版已验证树：它是重建前最后一次完成整体复验且仍保留显式 include 的树。W1 已经继承 include 丢失，若仅以 W1 为基准会让 N2 再次成为“两树同错”盲区。
+
+## 3. N1 与 N2
+
+### N1
+
+选择**删除新增的 `__put_num` typed handler，恢复汇聚函数路径**。
+
+理由：
+
+- `catch (...)` 随后调用 `ios_base::__set_badbit_and_consider_rethrow()`；该函数先以不抛异常的内部状态写入设置 `badbit`，再在活动嵌套 handler 中识别并重抛 `__forced_unwind`。
+- 这是此前两架构已验证的 16 个汇聚站点共用路径；删除新 hunk 不增加新接口、不在头文件复制状态提交逻辑。
+- libstdc++ 对应路径是“先置 `badbit`、再重抛”。修复后的可观察状态与参照一致：x86_64 新格中最终版与参考均为 `JOIN_CANCELED=1 RDSTATE=1 BAD=1 FAIL=1`。
+
+修复后，该站点与其余 15 个汇聚站点均通过同一 out-of-line helper；库内补丁不再修改 `basic_ostream.h`。
+
+### N2
+
+在层 C 头文件补丁中恢复 `basic_ostream.h` 的显式 `#include <cxxabi.h>`。预处理器 `-H` 对照显示：
+
+- R67 缺失显式 include 时仍从 `string` 等路径传递到 `cxxabi.h`（深度 8），因此旧构建能够通过；
+- R69 恢复后，`basic_ostream.h` 直接包含 `cxxabi.h`（深度 3）。
+
+传递链仍存在于相关头文件结构中，显式 include 与它不冲突；头文件 guard 阻止重复展开。完整子树 diff 的修复前负向内容只有 N2 这一处；其余被改文件未发现“上一版有、本次无”的同类非站点内容丢失。
+
+## 4. 补丁集与身份核验
+
+基线：`5ed6c77278dfa7a470667cf1a137723d3c96fe60`（`packaging: add libc++ runtimes spec`）。
+
+补丁 SHA256 见 `tables/patches.tsv`。层 C 保持头文件 20 / 库内 30：
+
+- 头文件补丁新增 20 个 typed handler，并恢复 `basic_ostream.h` 的显式 include；
+- 库内补丁为 14 个直接 handler + `ios.cpp` 的 2 个汇聚 handler，后者覆盖 16 个站点，站点口径 `14 + 16 = 30`；
+- 库内补丁不含 `basic_ostream.h` hunk，`__put_num` 直接 handler 为 absent，汇聚调用为 present。
+
+实验树、补丁生成树、干净重放树的 9 个文件三方 SHA256 完全一致，全部 `cmp` 返回 0。原文见 `commands/013_three_tree_gate_semantic_audit.log`。
+
+## 5. 构建
+
+| 架构 | libc++.so.1.0 SHA256 | libc++abi.so.1.0 SHA256 | 结果 |
+|---|---|---|---|
+| x86_64 | `b2d8d0ee8d8e06feba4829507d66b8c75aa6d9c6c9bc042278ec7da1e528de0f` | `aaea4e9d9320d2295176bbc054ded398c485a17a4a4a8144298d06ec76fb95da` | 成功 |
+| armv7l | `c44942bf3eccce1f77d67ec1fca8bdb16c8a2a9e18280c0c47e9bfcdcc95573c` | `f8a4456a111eb86e9552a9411d08636e5e34300db16a0e01b8d8a637a14b418f` | 成功 |
+
+四个产物均无 R40/R41/R42/R45 诊断字符串。构建无 error、无指向 9 个被改文件的 warning；仅有既有驱动选项未使用 warning。
+
+## 6. 新增三格
+
+完整表见 `tables/new_cases.tsv`。
+
+- **算术输出状态位**：基线 134；最终版与参考均 0，且逐项断言 `badbit`、`fail()` 和 `PTHREAD_CANCELED`。
+- **deferred 重试期间再次取消**：最终版与参考均 20/20；前两次等待线程均被取消，第三次取得 42，callable 恰执行 3 次。基线补充格为 134。
+- **等待方被取消**：最终版 0/20（均 134，`libc++abi: terminating due to uncaught foreign exception`），参考 20/20；基线补充格也为 134。该格是新发现的既有 libc++/libstdc++ 差异，不是 N1/N2 回退。
+- **宽字符实例**：按任务要求仅登记，本轮未实现，记为未覆盖。
+
+## 7. x86_64 全量重验
+
+摘要见 `tables/x86_regression_summary.tsv`，每格原始输出在 `raw/x86_64/`。
+
+- F1/F2/M1 定向格 3/3，状态与参考逐项一致；M2 锁外析构 20/20；M1 多等待者 20/20。
+- async 取消最终版与参考各 20/20；正常返回、真实异常传递、packaged_task 和 iostream 正常失败路径均退出 0。
+- R51 9 场景最终版/参考共 18/18。
+- 上游 libc++abi：最终版 10/10、参考 10/10；上游 libc++ 选定 11 项 11/11，包含 `async.pass.cpp` 的返回引用用例。
+- 并发：multi-cancel、取消与真实异常并发、重复取消两侧均 20/20。标准库并发输出最终版 15/20、参考 0/20；R67 同格为 14/20 与 1/20，属于已登记的两侧共同不稳定设施。
+- cout 本轮最终版 124、参考 0；R67 同格为 124/124。取消和 join 已完成，差异发生在进程退出阶段，属于任务背景已登记的时序不稳定项，原始输出保留。
+
+宿主 `LD_DEBUG=libs` 明确加载 `tmp/R69/build-x86_64/lib/libc++.so.1` 与 `libc++abi.so.1`；默认 `ldd` 无 `LD_LIBRARY_PATH` 时显示 not found，未把它用作运行身份结论。
+
+## 8. armv7l 状态
+
+- runtimes 构建成功；全部设施/定向/新增测试件及上游测试件交叉编译成功。
+- `sdb devices` 为空；对 `192.168.108.26:26101` 的三次 `sdb connect` 均返回 1，随后均出现 `target not found`。
+- 重试命令中使用 `if command; then ...; fi` 后读取 `$?`，导致日志内 `shell_exit_code` 被错误记成 0；三次 `connect_exit_code=1` 和错误原文不受影响。该采集缺陷如实保留。
+- 未进入部署步骤，因此没有板端文件或进程需要清理；由于目标不可达，板端运行后清理核验也无法观测。
+
+## 9. 自行判断、疑问与未覆盖范围
+
+自行判断：
+
+1. 选用 R58 而非 W1 作为版本门禁基准，理由是避免 N2 的共同错误被基准吞掉。
+2. N1 采用删除 hunk，而不是新增头文件内不抛异常提交逻辑；理由见第 3 节。
+3. SDB 三次失败后不再重试，armv7l 运行全部记 `NOT_OBSERVED`。
+4. 新发现的等待方取消差异不在本任务内修改，保留为阻止 `PATCHSET_VERIFIED` 的实测项。
+
+尚存疑问：
+
+- libc++ 等待方取消为何仍由内部 catch-all 吞掉强制展开，尚未定位；本任务没有授权扩展修复。
+- armv7l 上 N1、新三格和全量矩阵的运行行为仍缺真机证据。
+
+未覆盖：armv7l 运行、aarch64、宽字符站点、LTO、混合运行时帧穿越、动态加载边界。未向 Gerrit 或外部源码仓推送，未修改落章文档。
+exit_code=0
+$ find progress/R69 docs/progress/R69/code -type f -iname "*configure*" -o -iname "*build*command*" -o -name "*.command.txt"
+progress/R69/build/015_configure_armv7l.log
+progress/R69/build/014_configure_x86_64.log
+docs/progress/R69/code/evidence/build/015_configure_armv7l.log
+docs/progress/R69/code/evidence/build/014_configure_x86_64.log
+exit_code=0
+wrapper_exit_code=0

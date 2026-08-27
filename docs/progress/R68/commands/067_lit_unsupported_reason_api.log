@@ -1,0 +1,172 @@
+$ rg -n "unsupported|requires|isWithinFeatureLimits|missing" tmp/R69/replay/llvm/utils/lit/lit/Test.py tmp/R69/replay/llvm/utils/lit/lit/run.py tmp/R69/replay/llvm/utils/lit/lit/main.py
+tmp/R69/replay/llvm/utils/lit/lit/run.py:165:        local_test.requires = remote_test.requires
+tmp/R69/replay/llvm/utils/lit/lit/Test.py:259:        self.requires = []
+tmp/R69/replay/llvm/utils/lit/lit/Test.py:264:        self.unsupported = []
+tmp/R69/replay/llvm/utils/lit/lit/Test.py:357:    def isWithinFeatureLimits(self):
+tmp/R69/replay/llvm/utils/lit/lit/Test.py:359:        isWithinFeatureLimits() -> bool
+tmp/R69/replay/llvm/utils/lit/lit/Test.py:391:                for item in self.requires
+tmp/R69/replay/llvm/utils/lit/lit/Test.py:422:                for item in self.unsupported
+exit_code=0 meaning=1_no_match
+$ sed -n 80,240p tmp/R69/replay/llvm/utils/lit/lit/Test.py
+
+class IntMetricValue(MetricValue):
+    def __init__(self, value):
+        self.value = value
+
+    def format(self):
+        return str(self.value)
+
+    def todata(self):
+        return self.value
+
+
+class RealMetricValue(MetricValue):
+    def __init__(self, value):
+        self.value = value
+
+    def format(self):
+        return "%.4f" % self.value
+
+    def todata(self):
+        return self.value
+
+
+class JSONMetricValue(MetricValue):
+    """
+    JSONMetricValue is used for types that are representable in the output
+    but that are otherwise uninterpreted.
+    """
+
+    def __init__(self, value):
+        # Ensure the value is a serializable by trying to encode it.
+        # WARNING: The value may change before it is encoded again, and may
+        #          not be encodable after the change.
+        try:
+            e = JSONEncoder()
+            e.encode(value)
+        except TypeError:
+            raise
+        self.value = value
+
+    def format(self):
+        e = JSONEncoder(indent=2, sort_keys=True)
+        return e.encode(self.value)
+
+    def todata(self):
+        return self.value
+
+
+def toMetricValue(value):
+    if isinstance(value, MetricValue):
+        return value
+    elif isinstance(value, int):
+        return IntMetricValue(value)
+    elif isinstance(value, float):
+        return RealMetricValue(value)
+    else:
+        # 'long' is only present in python2
+        try:
+            if isinstance(value, long):
+                return IntMetricValue(value)
+        except NameError:
+            pass
+
+        # Try to create a JSONMetricValue and let the constructor throw
+        # if value is not a valid type.
+        return JSONMetricValue(value)
+
+
+# Test results.
+
+
+class Result(object):
+    """Wrapper for the results of executing an individual test."""
+
+    def __init__(
+        self, code, output="", elapsed=None, attempts=1, max_allowed_attempts=None
+    ):
+        # The result code.
+        self.code = code
+        # The test output.
+        self.output = output
+        # The wall timing to execute the test, if timing.
+        self.elapsed = elapsed
+        self.start = None
+        self.pid = None
+        # The metrics reported by this test.
+        self.metrics = {}
+        # The micro-test results reported by this test.
+        self.microResults = {}
+        # How often was the test run?
+        self.attempts = attempts
+        # How many attempts were allowed for this test
+        self.max_allowed_attempts = max_allowed_attempts
+
+    def addMetric(self, name, value):
+        """
+        addMetric(name, value)
+
+        Attach a test metric to the test result, with the given name and list of
+        values. It is an error to attempt to attach the metrics with the same
+        name multiple times.
+
+        Each value must be an instance of a MetricValue subclass.
+        """
+        if name in self.metrics:
+            raise ValueError("result already includes metrics for %r" % (name,))
+        if not isinstance(value, MetricValue):
+            raise TypeError("unexpected metric value: %r" % (value,))
+        self.metrics[name] = value
+
+    def addMicroResult(self, name, microResult):
+        """
+        addMicroResult(microResult)
+
+        Attach a micro-test result to the test result, with the given name and
+        result.  It is an error to attempt to attach a micro-test with the
+        same name multiple times.
+
+        Each micro-test result must be an instance of the Result class.
+        """
+        if name in self.microResults:
+            raise ValueError("Result already includes microResult for %r" % (name,))
+        if not isinstance(microResult, Result):
+            raise TypeError("unexpected MicroResult value %r" % (microResult,))
+        self.microResults[name] = microResult
+
+
+# Test classes.
+
+
+class TestSuite:
+    """TestSuite - Information on a group of tests.
+
+    A test suite groups together a set of logically related tests.
+    """
+
+    def __init__(self, name, source_root, exec_root, config):
+        self.name = name
+        self.source_root = source_root
+        self.exec_root = exec_root
+        # The test suite configuration.
+        self.config = config
+
+        self.test_times = read_test_times(self)
+
+    def getSourcePath(self, components):
+        return os.path.join(self.source_root, *components)
+
+    def getExecPath(self, components):
+        return os.path.join(self.exec_root, *components)
+
+
+class Test:
+    """Test - Information on a single test instance."""
+
+    def __init__(
+        self, suite, path_in_suite, config, file_path=None, gtest_json_file=None
+    ):
+        self.suite = suite
+        self.path_in_suite = path_in_suite
+        self.config = config
+exit_code=0
