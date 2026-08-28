@@ -1,0 +1,203 @@
+R7_SOURCE_VARS
+#!/usr/bin/env bash
+set -u
+set -o pipefail
+
+REPO=/home/toolchain/development/libc++_replacement
+SOURCE="$REPO/codes/llvm"
+OUT="$REPO/progress/R7"
+RAW="$OUT/raw"
+LEDGER="$OUT/commands/00_pre_push_verification.log"
+EXPECTED_HEAD=3d3e3da49e00ae89b0ff928dee811d6d0d1d4f0b
+EXPECTED_PATCH_ID=ab69099b6f2dd679eeaf8b1dfe82bb13fdabc479
+EXPECTED_REMOTE=ssh://lhmax2025@review.tizen.org:29418/platform/upstream/llvm
+SANDBOX_REF=refs/heads/sandbox/lhmax2025/libcxx-ehabi-backport
+
+mkdir -p "$RAW"
+: >"$LEDGER"
+
+record_to() {
+  local label=$1
+  local outfile=$2
+  shift 2
+  {
+    printf 'LABEL=%s\n' "$label"
+    printf 'PWD=%s\n' "$PWD"
+    printf 'COMMAND='
+    printf '%q ' "$@"
+    printf '\n'
+  } >>"$LEDGER"
+  "$@" >"$outfile" 2>"$RAW/$label.stderr.txt"
+  local rc=$?
+  printf 'EXIT_CODE=%s\n\n' "$rc" >>"$LEDGER"
+  return "$rc"
+}
+
+overall=0
+cd "$SOURCE" || exit 125
+
+record_to source_pwd "$RAW/source_pwd.stdout.txt" pwd || overall=1
+record_to source_branch "$RAW/source_branch.stdout.txt" git branch --show-current || overall=1
+record_to source_head "$RAW/source_head.stdout.txt" git rev-parse HEAD || overall=1
+record_to source_status_porcelain "$RAW/source_status_porcelain.stdout.txt" git status --porcelain=v1 || overall=1
+record_to source_remote_v "$RAW/source_remote_v.stdout.txt" git remote -v || overall=1
+record_to source_remote_url "$RAW/source_remote_url.stdout.txt" git remote get-url origin || overall=1
+record_to fetch_origin_tizen_base "$RAW/fetch_origin_tizen_base.stdout.txt" git fetch origin tizen_base || overall=1
+record_to remote_tizen_base_before "$RAW/remote_tizen_base_before.stdout.txt" git ls-remote origin refs/heads/tizen_base || overall=1
+record_to remote_sandbox_before "$RAW/remote_sandbox_before.stdout.txt" git ls-remote origin "$SANDBOX_REF" || overall=1
+record_to origin_tizen_base_sha "$RAW/origin_tizen_base_sha.stdout.txt" git rev-parse origin/tizen_base || overall=1
+record_to ahead_count "$RAW/ahead_count.stdout.txt" git rev-list --count origin/tizen_base..HEAD || overall=1
+record_to behind_count "$RAW/behind_count.stdout.txt" git rev-list --count HEAD..origin/tizen_base || overall=1
+record_to ahead_commit_list "$RAW/ahead_commit_list.stdout.txt" git log --oneline --decorate origin/tizen_base..HEAD || overall=1
+record_to origin_is_ancestor "$RAW/origin_is_ancestor.stdout.txt" git merge-base --is-ancestor origin/tizen_base HEAD || overall=1
+record_to patch_id "$RAW/patch_id.stdout.txt" bash -o pipefail -c \
+  'git show --pretty=email --patch "$1" | git patch-id --stable' _ "$EXPECTED_HEAD" || overall=1
+record_to commit_message "$RAW/commit_message.stdout.txt" git log -1 --format=%B "$EXPECTED_HEAD" || overall=1
+record_to commit_show "$RAW/commit_show.stdout.txt" git show --format=fuller --stat --patch "$EXPECTED_HEAD" || overall=1
+record_to cxa_personality_sha256 "$RAW/cxa_personality_sha256.stdout.txt" sha256sum \
+  libcxxabi/src/cxa_personality.cpp || overall=1
+
+record_to assert_branch "$RAW/assert_branch.stdout.txt" test "$(cat "$RAW/source_branch.stdout.txt")" = tizen_base || overall=1
+record_to assert_head "$RAW/assert_head.stdout.txt" test "$(cat "$RAW/source_head.stdout.txt")" = "$EXPECTED_HEAD" || overall=1
+record_to assert_clean "$RAW/assert_clean.stdout.txt" test ! -s "$RAW/source_status_porcelain.stdout.txt" || overall=1
+record_to assert_remote "$RAW/assert_remote.stdout.txt" test "$(cat "$RAW/source_remote_url.stdout.txt")" = "$EXPECTED_REMOTE" || overall=1
+record_to assert_one_ahead_zero_behind "$RAW/assert_one_ahead_zero_behind.stdout.txt" bash -o pipefail -c \
+  'test "$(cat "$1")" = 1 && test "$(cat "$2")" = 0' _ \
+  "$RAW/ahead_count.stdout.txt" "$RAW/behind_count.stdout.txt" || overall=1
+record_to assert_patch_id "$RAW/assert_patch_id.stdout.txt" bash -o pipefail -c \
+  'test "$(cut -d" " -f1 "$1")" = "$2"' _ "$RAW/patch_id.stdout.txt" "$EXPECTED_PATCH_ID" || overall=1
+record_to assert_change_id "$RAW/assert_change_id.stdout.txt" rg -n \
+  '^Change-Id: I[0-9a-f]+$' "$RAW/commit_message.stdout.txt" || overall=1
+record_to assert_upstream_status "$RAW/assert_upstream_status.stdout.txt" rg -n \
+  '^Upstream-Status: Backport \[8119f1854948b50358bbfaea08f207f51970f06c\]$' \
+  "$RAW/commit_message.stdout.txt" || overall=1
+record_to assert_link "$RAW/assert_link.stdout.txt" rg -n \
+  '^Link: https://github.com/llvm/llvm-project/pull/189787$' "$RAW/commit_message.stdout.txt" || overall=1
+record_to assert_cxa_hash "$RAW/assert_cxa_hash.stdout.txt" bash -o pipefail -c \
+  'test "$(cut -d" " -f1 "$1")" = 55e136184adbaeee078a339afde2d6da103f4af7cb7c5c31926f2911127eff03' \
+  _ "$RAW/cxa_personality_sha256.stdout.txt" || overall=1
+record_to assert_remote_tracking_matches_remote "$RAW/assert_remote_tracking_matches_remote.stdout.txt" bash -o pipefail -c \
+  'test "$(cut -f1 "$1")" = "$(cat "$2")"' _ \
+  "$RAW/remote_tizen_base_before.stdout.txt" "$RAW/origin_tizen_base_sha.stdout.txt" || overall=1
+R69_DIRS
+tmp/R69
+tmp/R69/board-payload
+tmp/R69/board-payload/bin
+tmp/R69/board-payload/runtime
+tmp/R69/board-payload/upstream
+tmp/R69/build-armv7l
+tmp/R69/build-armv7l/CMakeFiles
+tmp/R69/build-armv7l/include
+tmp/R69/build-armv7l/lib
+tmp/R69/build-armv7l/libcxx
+tmp/R69/build-armv7l/libcxxabi
+tmp/R69/build-armv7l/modules
+tmp/R69/build-x86_64
+tmp/R69/build-x86_64/CMakeFiles
+tmp/R69/build-x86_64/include
+tmp/R69/build-x86_64/lib
+tmp/R69/build-x86_64/libcxx
+tmp/R69/build-x86_64/libcxxabi
+tmp/R69/build-x86_64/modules
+tmp/R69/experiment
+tmp/R69/experiment/.ci
+tmp/R69/experiment/.git
+tmp/R69/experiment/.github
+tmp/R69/experiment/bolt
+tmp/R69/experiment/clang
+tmp/R69/experiment/clang-tools-extra
+tmp/R69/experiment/cmake
+tmp/R69/experiment/compiler-rt
+tmp/R69/experiment/cross-project-tests
+tmp/R69/experiment/flang
+tmp/R69/experiment/flang-rt
+tmp/R69/experiment/libc
+tmp/R69/experiment/libclc
+tmp/R69/experiment/libcxx
+tmp/R69/experiment/libcxxabi
+tmp/R69/experiment/libsycl
+tmp/R69/experiment/libunwind
+tmp/R69/experiment/lld
+tmp/R69/experiment/lldb
+tmp/R69/experiment/llvm
+tmp/R69/experiment/llvm-libgcc
+tmp/R69/experiment/mlir
+tmp/R69/experiment/offload
+tmp/R69/experiment/openmp
+tmp/R69/experiment/orc-rt
+tmp/R69/experiment/packaging
+tmp/R69/experiment/polly
+tmp/R69/experiment/runtimes
+tmp/R69/experiment/third-party
+tmp/R69/experiment/utils
+tmp/R69/generated-python-cache
+tmp/R69/patchset
+tmp/R69/patchset/.git
+tmp/R69/patchset/libcxx
+tmp/R69/patchset/libcxxabi
+tmp/R69/probes
+tmp/R69/probes/armv7l
+tmp/R69/probes/x86_64
+tmp/R69/pycache
+tmp/R69/pycache/home
+tmp/R69/replay
+tmp/R69/replay/.ci
+tmp/R69/replay/.git
+tmp/R69/replay/.github
+tmp/R69/replay/bolt
+tmp/R69/replay/clang
+tmp/R69/replay/clang-tools-extra
+tmp/R69/replay/cmake
+tmp/R69/replay/compiler-rt
+tmp/R69/replay/cross-project-tests
+tmp/R69/replay/flang
+tmp/R69/replay/flang-rt
+tmp/R69/replay/libc
+tmp/R69/replay/libclc
+tmp/R69/replay/libcxx
+tmp/R69/replay/libcxxabi
+tmp/R69/replay/libsycl
+tmp/R69/replay/libunwind
+tmp/R69/replay/lld
+tmp/R69/replay/lldb
+tmp/R69/replay/llvm
+tmp/R69/replay/llvm-libgcc
+tmp/R69/replay/mlir
+tmp/R69/replay/offload
+tmp/R69/replay/openmp
+tmp/R69/replay/orc-rt
+tmp/R69/replay/packaging
+tmp/R69/replay/polly
+tmp/R69/replay/runtimes
+tmp/R69/replay/third-party
+tmp/R69/replay/utils
+tmp/R69/upstream
+tmp/R69/upstream/armv7l
+tmp/R69/upstream/x86_64
+GIT_REPOS
+tmp/R29/work/consumer
+tmp/R29/work/flatbuffers
+tmp/R29/work/lottie-player
+tmp/R29/work/pcre
+tmp/R30/semantic-package
+tmp/R31/matrix-package
+tmp/R32/candidate-package
+tmp/R51/patch-repo
+tmp/R51/patch-repo-final
+tmp/R52/patch-repo
+tmp/R53/patch-repo
+tmp/R55/full-sequence-verify.8huygq
+tmp/R55/header-patch-repo.TbYKrV
+tmp/R55/header-patch-verify.IUHFur
+tmp/R60/patch-repo
+tmp/R67/experiment
+tmp/R67/patchset
+tmp/R67/verify-apply
+tmp/R69/experiment
+tmp/R69/patchset
+tmp/R69/replay
+tmp/R72/glibc-2.40
+tmp/W1/patch-repo
+tmp/W4/android-llvm-toolchain
+tmp/W4/android-llvm-toolchain-r596125
+tmp/W4/chromium-buildtools

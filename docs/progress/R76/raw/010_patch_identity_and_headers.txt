@@ -1,0 +1,141 @@
+RECORDED
+af41f2989efcc28405bd26e3db24fb8e26c1fcca89f7d6f22c9140ccdb5beebd  progress/R69/patches/0001-Layer-A-fix-foreign-forced-unwind-resume.patch
+a121ce3bb7b95d3170a5ae0acd885557a5c7c0ab100b360a469d129c9c985b6e  progress/R69/patches/0002-Layer-B-add-GNU-forced-unwind-marker.patch
+0a32dc44e0e57ed524283bc416bdc5c4f6a00b131de5e421485b6e7bcb4b82e9  progress/R69/patches/0003-Layer-C-header-batch-20-sites.patch
+88228328db96b38ca139ec1fa3b04ddd82c25f17b97e8a90c674feb2a654d90e  progress/R69/patches/0004-Layer-C-library-batch-30-sites.patch
+ACTUAL
+af41f2989efcc28405bd26e3db24fb8e26c1fcca89f7d6f22c9140ccdb5beebd  progress/R69/patches/0001-Layer-A-fix-foreign-forced-unwind-resume.patch
+a121ce3bb7b95d3170a5ae0acd885557a5c7c0ab100b360a469d129c9c985b6e  progress/R69/patches/0002-Layer-B-add-GNU-forced-unwind-marker.patch
+0a32dc44e0e57ed524283bc416bdc5c4f6a00b131de5e421485b6e7bcb4b82e9  progress/R69/patches/0003-Layer-C-header-batch-20-sites.patch
+88228328db96b38ca139ec1fa3b04ddd82c25f17b97e8a90c674feb2a654d90e  progress/R69/patches/0004-Layer-C-library-batch-30-sites.patch
+CHECK
+sha256sum: progress/R69/patches/0001-Layer-A-fix-foreign-forced-unwind-resume.patch: No such file or directory
+progress/R69/patches/0001-Layer-A-fix-foreign-forced-unwind-resume.patch: FAILED open or read
+sha256sum: progress/R69/patches/0002-Layer-B-add-GNU-forced-unwind-marker.patch: No such file or directory
+progress/R69/patches/0002-Layer-B-add-GNU-forced-unwind-marker.patch: FAILED open or read
+sha256sum: progress/R69/patches/0003-Layer-C-header-batch-20-sites.patch: No such file or directory
+progress/R69/patches/0003-Layer-C-header-batch-20-sites.patch: FAILED open or read
+sha256sum: progress/R69/patches/0004-Layer-C-library-batch-30-sites.patch: No such file or directory
+progress/R69/patches/0004-Layer-C-library-batch-30-sites.patch: FAILED open or read
+sha256sum: WARNING: 4 listed files could not be read
+PATCH_HEADERS
+
+progress/R69/patches/0001-Layer-A-fix-foreign-forced-unwind-resume.patch
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: R51 Evidence <r51@example.invalid>
+Date: Thu, 20 Aug 2026 20:20:15 +0800
+Subject: [PATCH 1/4] libc++abi: preserve foreign forced-unwind state
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A foreign exception rethrown through __cxa_rethrow currently starts a new
+unwind with _Unwind_RaiseException. For pthread cancellation this loses the
+forced-unwind continuation. Use _Unwind_Resume_or_Rethrow for foreign
+exceptions while retaining the existing native and SJLJ paths.
+
+On ARM EHABI, the resumed forced unwind may reach a catching handler during
+the cleanup phase. Treat a non-zero ttypeIndex as a catching handler and do
+not register it through __cxa_begin_cleanup, matching libstdc++'s
+found_cleanup gate.
+
+The two changes form one series: applying only the rethrow change exposes the
+EHABI cleanup-registration defect on ARM. Validation covers x86_64 native and
+armv7l hardware with libgcc_s. It does not cover aarch64, LLVM libunwind,
+concurrent cancellation, or mixed-runtime frame traversal.
+
+中文说明：修复外来强制展开重抛状态丢失，并修复 ARM EHABI 将捕获
+handler 误登记为 cleanup 的问题。两处必须作为同一系列应用。
+---
+ libcxxabi/src/cxa_exception.cpp   |  5 ++++-
+ libcxxabi/src/cxa_personality.cpp | 11 +++++++++++
+
+progress/R69/patches/0002-Layer-B-add-GNU-forced-unwind-marker.patch
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: R51 Evidence <r51@example.invalid>
+Date: Thu, 20 Aug 2026 20:20:59 +0800
+Subject: [PATCH 2/4] libc++abi: expose GNU forced-unwind marker type
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+GNU C++ code protects pthread cancellation with a handler for
+__cxxabiv1::__forced_unwind, but libc++abi does not expose or map that marker.
+Define the same abstract class shape used by libstdc++, with an out-of-line
+virtual destructor so libc++abi owns one exported strong typeinfo definition.
+Map a forced foreign exception to this type during personality matching.
+
+This extension depends on the Layer A forced-unwind rethrow and ARM EHABI
+handler fixes, at least on armv7l, because the matched handler rethrows the
+foreign exception. Validation covers x86_64 native and armv7l hardware with
+libgcc_s. It does not cover aarch64, LLVM libunwind, concurrent cancellation,
+or mixed-runtime frame traversal.
+
+中文说明：移植 GNU 强制展开标记类型及 personality 映射；采用抽象类
+和库内 key function，保证消费者引用 libc++abi 中唯一的强 typeinfo。
+该扩展在 armv7l 上依赖层 A。
+---
+ libcxxabi/include/cxxabi.h        |  8 ++++++++
+ libcxxabi/src/cxa_exception.cpp   |  2 ++
+ libcxxabi/src/cxa_personality.cpp | 17 +++++++++++++++++
+ 3 files changed, 27 insertions(+)
+
+progress/R69/patches/0003-Layer-C-header-batch-20-sites.patch
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: NOT_AVAILABLE <not-available@invalid>
+Date: Fri, 21 Aug 2026 19:59:06 +0800
+Subject: [PATCH 3/4] libcxx: preserve forced unwind in consumer-instantiated
+ handlers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Catch-all handlers in consumer-instantiated iostream, future, and string
+paths intercept pthread cancellation's foreign forced unwind.  Preserve the
+stream state updates and future state-machine obligations, then rethrow the
+GNU ABI marker before the generic handlers can consume it.
+
+Keep deferred work retryable after cancellation.  For async results, split
+result construction from readiness publication so cancellation in the
+pre-publication window atomically publishes broken_promise.  Reference
+results use the same protocol without taking ownership of the referenced
+object, and value-result destruction runs after releasing the shared-state
+mutex.
+
+The twenty guarded sites are delivered in this header batch because their
+code may be instantiated into consumers under the supported build modes.
+This change depends on the libc++abi forced-unwind marker and unwind fixes.
+
+中文说明：
+为消费者侧可能实例化的 iostream、future 与 string 共二十处站点补齐
+强制展开防护；保留原状态更新后重抛取消展开。deferred 取消后恢复为
+
+progress/R69/patches/0004-Layer-C-library-batch-30-sites.patch
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: He Fangyu <fangyu.he@samsung.com>
+Date: Tue, 25 Aug 2026 20:52:54 +0800
+Subject: [PATCH 4/4] libcxx: preserve forced unwind in library-delivered
+ handlers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Catch-all handlers in explicitly instantiated iostream paths consume foreign
+forced unwind and can turn pthread cancellation into process termination.
+Add typed handlers at the thirty sites whose implementation is delivered by
+the shared libc++ library, preserving stream state before rethrowing.
+
+For the badbit and failbit aggregation helpers, classify and rethrow while
+the nested handler remains active; a later bare rethrow has no active
+exception for foreign exception paths.  Streambuf extraction commits its
+state with the non-throwing setter before rethrowing so an exception mask
+cannot replace the forced unwind.
+
+This library batch is separate from consumer-instantiated header sites and
+depends on the libc++abi forced-unwind marker and unwind fixes.
+
+中文说明：
+为由 libc++ 动态库交付的三十处 iostream 站点补齐强制展开防护。
+badbit/failbit 汇聚函数在活动 handler 内完成条件重抛，streambuf
+提取路径以不抛异常的接口先提交状态位，再继续传播取消展开。
+
