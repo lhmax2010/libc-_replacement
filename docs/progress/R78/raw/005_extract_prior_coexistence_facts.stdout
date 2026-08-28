@@ -1,0 +1,162 @@
+1-R29_REPORT
+2:# R29 双运行时 provider 打包形态设计与打通报告
+3-
+4-日期：2026-08-12  
+5-执行分支：`codex/r5-ehabi-diagnosis`  
+6:范围：x86_64 本地 GBS 形态验证；未向任何外部仓推送
+7-
+8:## 结论
+9-
+10:规定的“单 spec 内两次构建”形态已在三个第二阶段层 1 provider 上打通：autotools 的 pcre、CMake 的 flatbuffers、meson 的 lottie-player。三包均同时产出默认 libstdc++ 子包和独立 `-libcxx` 子包；最终 GBS 退出码均为 0。
+11-
+12-三组默认/变体 devel 包在临时 RPM 数据库中同时执行 `rpm --test --nodeps -ivh`，三次均退出 0，普通文件非预期同路径交集为 0。这里的 `--nodeps` 只隔离验证文件冲突；依赖闭包由实际 GBS buildroot 同时安装两组 BuildRequires 并完成消费者构建来验证，不能把前者单独解释为完整可安装性验证。
+13-
+14:同一份最小消费者 spec（SHA256 `9bf1c6e056fa5e383c1f933647338207f695aa0696d9aea65df0c1387fa165ee`）在两根全新 buildroot 中构建：默认中央配置解析默认库，libc++ 中央配置通过 `CXXFLAGS`/`LDFLAGS`、`PKG_CONFIG_PATH`、`CMAKE_PREFIX_PATH` 解析三套变体。两次均退出 0；六个消费者 ELF 的 `ldd -r` 均退出 0。消费者 spec 与源码未因模式切换而改变。
+15-
+16-本任务证明的是三类代表样包的可实现形态，不等于其余 73 包已经构建通过。逐包定制项和 76 包形态分布见“模板与适用边界”。
+17-
+--
+31-
+32-### 子包命名
+33-
+34:变体运行时采用原运行时原子名加 `-libcxx`，开发包采用 `<源码包>-libcxx-devel`，原包已拆静态开发包时再用 `<源码包>-libcxx-devel-static`。这样默认包名和既有 Requires 不变，变体可被显式选择。
+35-
+36-### 文件路径与 SONAME
+37-
+38:共享库仍位于 `%{_libdir}`，但文件名与 `DT_SONAME` 同时增加 `-libcxx`。仅更换目录不能改变消费者记录的 DT_NEEDED，也不能保证 dlopen 共载，因此 SONAME 必须不同。最终实测：
+39-
+40-- `libpcrecpp.so.0` / `libpcrecpp-libcxx.so.0`
+41-- `libflatbuffers.so.24.3.25` / `libflatbuffers-libcxx.so.24.3.25`
+--
+55-
+56-### 构建选项
+57-
+58:provider 的第二遍构建由各 spec 显式使用 `clang++ -stdlib=libc++`，并以 `-Wl,--no-as-needed -lc++abi -Wl,--as-needed` 保留直接 libc++abi 依赖。这是变体产出的包内职责。消费者选择则完全由中央 buildconf 注入，不修改消费者 spec。
+59-
+60-## 3. 逐包实现与构建
+61-
+62-### pcre / autotools
+63-
+64:默认构建保持原路径。第二遍从隔离源码副本重新 configure，避免复用第一遍生成的缓存；显式复用平台 prefix/libdir 选项。只复制 C++ wrapper `libpcrecpp` 的变体，C ABI `libpcre.so.1` 继续共享。变体新增 3 个非 debug 子包：`libpcrecpp-libcxx`、`pcre-libcxx-devel`、`pcre-libcxx-devel-static`。最终根 `R29-pcre-x86_64-20260812-04`，GBS 退出 0。
+65-
+66-### flatbuffers / CMake
+67-
+68:第二遍使用独立源码副本和独立 `build-libcxx`，关闭第二遍 `flatc` 构建，安装到 staging 后重命名共享/静态库，并重写 pkg-config 和全部 CMake imported targets。变体新增 `flatbuffers-libcxx`、`flatbuffers-libcxx-devel`。最终根 `R29-flatbuffers-x86_64-20260812-04`，GBS 退出 0。
+69-
+70-### lottie-player / meson
+71-
+72:首次第二遍编译失败：Meson 生成 `-I..`，源码根下名为 `format` 的开发辅助脚本遮蔽 libc++ 标准头 `<format>`，clang 将脚本首行解析为 C++ 并报错。错误原文在 `commands/022_build_lottie.full.log`。
+73-
+74:默认源码树未改。第二遍使用隔离副本，仅在该副本中把非头文件 `format` 改名为 `format.command`，随后用独立 `builddir-libcxx` 构建。此动作是 lottie 特化，不能机械套入通用 meson 模板。变体新增 `lottie-player-libcxx`、`lottie-player-libcxx-devel`。最终根 `R29-lottie-x86_64-20260812-02`，GBS 退出 0。
+75-
+76-所有实际创建的 buildroot 均单次使用，并以 `RETIRED_SINGLE_USE` 标记；失败根未复用。尝试、红项分类和处置见 `tables/attempts_and_dispositions.tsv`。
+77-
+78-## 4. Provider 验证
+79-
+80:最终六个主要共享库的判据全部满足：默认侧含 `DT_NEEDED libstdc++.so.6`；libc++ 侧含 `libc++.so.1` 和 `libc++abi.so.1`，不含 `libstdc++.so.6`；两侧 SONAME 不同。
+81-
+82:导出符号实测：pcre/flatbuffers/lottie 默认侧分别有 22/226/21 个 `std::__cxx11` 命中、0 个 `std::__1`；libc++ 侧分别有 28/233/69 个 `std::__1` 命中、0 个 `std::__cxx11`。逐 ELF 数据见 `tables/provider_elf_results.tsv`，原文见 `commands/030_final_elf_validation.log`。
+83-
+84:共装测试与路径交集原文见 `commands/051_final_coinstall_and_path_overlap.log`；开发路径与静态库清单见 `commands/053_static_and_devel_path_validation.log`。
+85-
+86-## 5. 消费者侧验证
+87-
+--
+92-- pcre include `/usr/include`，链接 `libpcrecpp.so.0`；
+93-- rlottie include `/usr/include`，链接 `librlottie.so.0`；
+94-- flatbuffers CMake target `/usr/lib64/libflatbuffers.so.24.3.25`，include `/usr/include`；
+95:- 三个消费者 ELF 均含 `libstdc++.so.6`，不含 libc++ provider SONAME。
+96-
+97:中央 libc++ 注入模式解析：
+98-
+99-- pcre include `/usr/include/pcre-libcxx`，链接 `libpcrecpp-libcxx.so.0`；
+100-- rlottie include `/usr/include/lottie-player-libcxx`，链接 `librlottie-libcxx.so.0`；
+101-- flatbuffers CMake target `/usr/lib64/libflatbuffers-libcxx.so.24.3.25`，include `/usr/include/flatbuffers-libcxx`；
+102:- 三个消费者 ELF 均含 `libc++.so.1`、`libc++abi.so.1`，不含 `libstdc++.so.6`。
+103-
+104:六次 `ldd -r` 均退出 0。执行方式为宿主 x86_64 原生 `ldd -r`，`LD_LIBRARY_PATH` 指向各自退役 buildroot 的只读 `/usr/lib64`。输出中的 `/bin/bash` 对目标根 `libtinfo.so.6` 的版本提示来自该执行载体；目标 ELF 没有未解析符号且退出码为 0。完整原文在 `commands/049_consumer_elf_and_ldd_validation.log`。
+105-
+106:解析路径、spec/buildconf SHA 和结果见 `tables/consumer_results.tsv`。这验证了消费者 spec 无需修改；切换由中央配置完成。
+107-
+108-## 6. 模板与对其余 73 包的适用边界
+109-
+--
+113-
+114-## 7. 产物与证据
+115-
+116:- 最终 RPM/SRPM、构建日志和配置副本：`artifacts/R29/{pcre,flatbuffers,lottie-player,consumer}/`
+117-- 被 CMake 路径验证淘汰但保留的中间产物：`artifacts/R29/flatbuffers-superseded-cmake-overlay/`
+118-- 实际改造 spec、消费者源码与中央配置：`progress/R29/proposed/`
+119-- 构建/验证汇总：`progress/R29/tables/`
+--
+122-
+123-本任务未修改既有制品、冻结配置或外部源码仓；构建用配置均为 `tmp/R29/` 中的副本。未向 Gerrit 或任何外部源码仓推送。
+124-R66_PEN_WAVE_COMMAND
+125:cwd: /home/toolchain/development/libc++_replacement
+126:command: bash -lc root=tmp/corpus/extracted/pen-wave-1.4.0-2.src.rpm/unpacked/pen-wave.tar.gz/pen-wave\;\ for\ so\ in\ \"\$root\"/lib/\*/libpen-wave.so.1.4.0\;\ do\ printf\ \"=====\ %s\ =====\\\\n\"\ \"\$so\"\;\ sha256sum\ \"\$so\"\;\ readelf\ -h\ \"\$so\"\ \|\ sed\ -n\ \"1\,24p\"\;\ readelf\ -d\ \"\$so\"\ \|\ rg\ \"SONAME\|NEEDED\"\;\ readelf\ -Ws\ \"\$so\"\ \|\ rg\ \"GLIBCXX_\|CXXABI_\|_ZSt\|_ZNSt\|_ZNKSt\|_ZTISt\"\ \|\ head\ -40\;\ done
+127---- stdout+stderr ---
+128:===== tmp/corpus/extracted/pen-wave-1.4.0-2.src.rpm/unpacked/pen-wave.tar.gz/pen-wave/lib/aarch64/libpen-wave.so.1.4.0 =====
+129:3b98d292f9bbac11c44493a4dd7ab7c7164c47a6916f16632cd48ef1e63ec64a  tmp/corpus/extracted/pen-wave-1.4.0-2.src.rpm/unpacked/pen-wave.tar.gz/pen-wave/lib/aarch64/libpen-wave.so.1.4.0
+130-ELF Header:
+131-  Magic:   7f 45 4c 46 02 01 01 03 00 00 00 00 00 00 00 00 
+132-  Class:                             ELF64
+--
+152- 0x0000000000000001 (NEEDED)             Shared library: [libcairo.so.2]
+153- 0x0000000000000001 (NEEDED)             Shared library: [libGLESv2.so.2]
+154- 0x0000000000000001 (NEEDED)             Shared library: [libdlog.so.0]
+155: 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so.6]
+156- 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]
+157- 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
+158- 0x0000000000000001 (NEEDED)             Shared library: [libpthread.so.0]
+--
+199-    80: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND _ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_@GLIBCXX_3.4.21 (3)
+200-    83: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND _ZNSi10_M_extractImEERSiRT_@GLIBCXX_3.4.9 (17)
+201-    96: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND _ZSt28_Rb_tree_rebalance_for_erasePSt18_Rb_tree_node_baseRS_@GLIBCXX_3.4 (2)
+202:===== tmp/corpus/extracted/pen-wave-1.4.0-2.src.rpm/unpacked/pen-wave.tar.gz/pen-wave/lib/armv7l/libpen-wave.so.1.4.0 =====
+203:0dd24e53a6f87f64c4db3fc1828f8564f6a3e0f28a31c77caacc8112f0bf3843  tmp/corpus/extracted/pen-wave-1.4.0-2.src.rpm/unpacked/pen-wave.tar.gz/pen-wave/lib/armv7l/libpen-wave.so.1.4.0
+204-ELF Header:
+205-  Magic:   7f 45 4c 46 01 01 01 03 00 00 00 00 00 00 00 00 
+206-  Class:                             ELF32
+--
+226- 0x00000001 (NEEDED)                     Shared library: [libcairo.so.2]
+227- 0x00000001 (NEEDED)                     Shared library: [libGLESv2.so.2]
+228- 0x00000001 (NEEDED)                     Shared library: [libdlog.so.0]
+229: 0x00000001 (NEEDED)                     Shared library: [libstdc++.so.6]
+230- 0x00000001 (NEEDED)                     Shared library: [libm.so.6]
+231- 0x00000001 (NEEDED)                     Shared library: [libgcc_s.so.1]
+232- 0x00000001 (NEEDED)                     Shared library: [libpthread.so.0]
+--
+273-    73: 00000000     0 FUNC    GLOBAL DEFAULT  UND _ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE14_M_replace_auxEjjjc@GLIBCXX_3.4.21 (3)
+274-    74: 00000000     0 FUNC    GLOBAL DEFAULT  UND _ZNKSt6locale2id5_M_idEv@GLIBCXX_3.4 (2)
+275-    75: 00000000     0 FUNC    GLOBAL DEFAULT  UND _ZSt20__throw_length_errorPKc@GLIBCXX_3.4 (2)
+276:===== tmp/corpus/extracted/pen-wave-1.4.0-2.src.rpm/unpacked/pen-wave.tar.gz/pen-wave/lib/i586/libpen-wave.so.1.4.0 =====
+277:5c08d916ab3b44e0053cb33fce65e6dedaad475c930ec88af1cdbaf73af59959  tmp/corpus/extracted/pen-wave-1.4.0-2.src.rpm/unpacked/pen-wave.tar.gz/pen-wave/lib/i586/libpen-wave.so.1.4.0
+278-ELF Header:
+279-  Magic:   7f 45 4c 46 01 01 01 03 00 00 00 00 00 00 00 00 
+280-  Class:                             ELF32
+--
+300- 0x00000001 (NEEDED)                     Shared library: [libcairo.so.2]
+301- 0x00000001 (NEEDED)                     Shared library: [libGLESv2.so.2]
+302- 0x00000001 (NEEDED)                     Shared library: [libdlog.so.0]
+303: 0x00000001 (NEEDED)                     Shared library: [libstdc++.so.6]
+304- 0x00000001 (NEEDED)                     Shared library: [libm.so.6]
+305- 0x00000001 (NEEDED)                     Shared library: [libgcc_s.so.1]
+306- 0x00000001 (NEEDED)                     Shared library: [libpthread.so.0]
+--
+331-aarch64	PACKAGE_CONTAINS_CPP_AND_OPERATIONAL_PURE_C_ELFS	121	2026	binary_package_records_with_runtime_ELF	0.059723593
+332-aarch64	PACKAGE_CONTAINS_CPP_ELFS_ONLY	717	2026	binary_package_records_with_runtime_ELF	0.353899309
+333-aarch64	PACKAGE_CONTAINS_OPERATIONAL_PURE_C_ELFS_ONLY	1188	2026	binary_package_records_with_runtime_ELF	0.586377098
+334:armv7l	PACKAGE_CONTAINS_CPP_AND_OPERATIONAL_PURE_C_ELFS	121	2019	binary_package_records_with_runtime_ELF	0.059930659
+335:armv7l	PACKAGE_CONTAINS_CPP_ELFS_ONLY	711	2019	binary_package_records_with_runtime_ELF	0.352154532
+336:armv7l	PACKAGE_CONTAINS_OPERATIONAL_PURE_C_ELFS_ONLY	1187	2019	binary_package_records_with_runtime_ELF	0.587914809
+337-i586	PACKAGE_CONTAINS_OPERATIONAL_PURE_C_ELFS_ONLY	5	5	binary_package_records_with_runtime_ELF	1.000000000
+338-noarch	PACKAGE_CONTAINS_CPP_AND_OPERATIONAL_PURE_C_ELFS	2	2	binary_package_records_with_runtime_ELF	1.000000000
+339-riscv64	PACKAGE_CONTAINS_CPP_AND_OPERATIONAL_PURE_C_ELFS	3	9	binary_package_records_with_runtime_ELF	0.333333333
+340-riscv64	PACKAGE_CONTAINS_CPP_ELFS_ONLY	2	9	binary_package_records_with_runtime_ELF	0.222222222
+341-riscv64	PACKAGE_CONTAINS_OPERATIONAL_PURE_C_ELFS_ONLY	4	9	binary_package_records_with_runtime_ELF	0.444444444
+342:x86_64	PACKAGE_CONTAINS_CPP_AND_OPERATIONAL_PURE_C_ELFS	119	2003	binary_package_records_with_runtime_ELF	0.059410884
+343:x86_64	PACKAGE_CONTAINS_CPP_ELFS_ONLY	717	2003	binary_package_records_with_runtime_ELF	0.357963055
+344:x86_64	PACKAGE_CONTAINS_OPERATIONAL_PURE_C_ELFS_ONLY	1167	2003	binary_package_records_with_runtime_ELF	0.582626061
+345-ALL	SOURCE_PACKAGE_CONTAINS_CPP_AND_OPERATIONAL_PURE_C_ELFS	192	1135	source_package_records_with_runtime_ELF	0.169162996
+346-ALL	SOURCE_PACKAGE_CONTAINS_CPP_ELFS_ONLY	291	1135	source_package_records_with_runtime_ELF	0.256387665
+347-ALL	SOURCE_PACKAGE_CONTAINS_OPERATIONAL_PURE_C_ELFS_ONLY	652	1135	source_package_records_with_runtime_ELF	0.574449339
