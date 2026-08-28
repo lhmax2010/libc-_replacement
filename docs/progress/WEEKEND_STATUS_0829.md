@@ -4,7 +4,7 @@
 |---|---|---|---|---|
 | W1 / R77 | `PARTIAL` | 约 2 小时 24 分 | `docs/progress/R77/` | patched 完整；baseline libc++ 7,000/11,321 后 SDB 连接失败，已停止并释放开发板 |
 | W2 / R78 | `PARTIAL` | 约 17 分钟 | `docs/progress/R78/` | 两架构核心矩阵完成、真实 ICU 共存通过；pen-wave 因板镜像缺 GLES 未进入 API |
-| W3 / R79 | `PENDING` | 0 | `docs/progress/R79/` | 独立任务 |
+| W3 / R79 | `COMPLETED` | 约 53 分钟 | `docs/progress/R79/` | 371 包全量静态扫描；3 个生产源码包直接 ASYNC，2 个确认 C++ 风险形态 |
 | W4 / R80 | `PENDING` | 0 | `docs/progress/R80/` | 独立任务 |
 
 ## 状态更新
@@ -60,3 +60,14 @@
 - 实际 pen-wave 与源包 hash 一致，但板镜像缺 `libGLESv2.so.2`，API 未进入；
 - R78 精确目录已删除，相关进程为零，开发板已释放；下一步封存、独立提交、
   推送 R78 后开始无需板卡的 W3。
+
+### 2026-08-28T22:16:14+08:00
+
+- W3 / R79 完成：冻结 371 个成功提取 source RPM、约 49 GiB 展开树全量只读
+  token 扫描正常退出 0；
+- 418 行候选涉及 45 包；直接字面 ASYNC setter 涉及 5 包，其中 3 个生产
+  源码包、2 个内核测试包；
+- 生产命中为 lightweight-web-engine、LLVM OpenMP、Mesa；前两者确认是 C++
+  异步可取消线程与取消路径，Mesa 确认异步线程但已见栈为 C 源码；
+- 只陈述静态事实，没有构建、运行、修改产品或提出处置建议；下一步封存、
+  独立提交、推送 R79 后开始 W4。
