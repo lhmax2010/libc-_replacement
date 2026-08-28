@@ -1,0 +1,58 @@
+        add_json(results, args.gate_json)
+    complete_dirs = sorted(p.parent for p in args.batch_root.glob("batch-*/COMPLETE.tsv"))
+    for directory in complete_dirs:
+        add_json(results, directory / "result.json")
+
+    missing = sorted(set(expected) - set(results))
+    extra = sorted(set(results) - set(expected))
+    counts = collections.Counter(item["code"] for item in results.values())
+    summary = {
+        "expected": len(expected),
+        "observed": len(results),
+        "complete_batches": len(complete_dirs),
+        "missing": len(missing),
+        "extra": len(extra),
+        "codes": dict(sorted(counts.items())),
+    }
+    write_result(args.output, results)
+    (args.output.parent / "aggregate_summary.json").write_text(
+        json.dumps(summary, indent=2) + "\n"
+    )
+    (args.output.parent / "missing_tests.txt").write_text("\n".join(missing) + ("\n" if missing else ""))
+    (args.output.parent / "extra_tests.txt").write_text("\n".join(extra) + ("\n" if extra else ""))
+    print(json.dumps(summary, sort_keys=True))
+
+    if args.compare:
+        other_data = json.loads(args.compare.read_text())
+        other = {normalize(item["name"]): item for item in other_data["tests"]}
+        names = sorted(set(results) | set(other))
+        rows = ["test\tpatched\tbaseline\trelation\n"]
+        relations = collections.Counter()
+        fail_codes = {"FAIL", "XPASS", "UNRESOLVED", "TIMEOUT"}
+        for name in names:
+            patched = results.get(name)
+            baseline = other.get(name)
+            pc = patched["code"] if patched else "MISSING"
+            bc = baseline["code"] if baseline else "MISSING"
+            if pc == bc:
+                relation = "SAME"
+            elif bc == "PASS" and pc in fail_codes:
+                relation = "INTRODUCED_CANDIDATE"
+            elif pc in fail_codes and bc in fail_codes:
+                relation = "BOTH_FAIL_DIFFERENT_CODE"
+            else:
+                relation = "DIFFERENT_OTHER"
+            relations[relation] += 1
+            rows.append(f"{name}\t{pc}\t{bc}\t{relation}\n")
+        if not args.comparison_output:
+            raise RuntimeError("--comparison-output is required with --compare")
+        args.comparison_output.write_text("".join(rows))
+        print(json.dumps({"relations": dict(sorted(relations.items()))}, sort_keys=True))
+
+    if missing or extra:
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

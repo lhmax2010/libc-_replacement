@@ -1,0 +1,171 @@
+COMMAND: git diff --no-index progress/R77/code/sdb_executor.before.py progress/R77/code/sdb_executor.py; git diff -- progress/R77/code/run_arm_batches.py; python3 -m py_compile progress/R77/code/run_arm_batches.py progress/R77/code/sdb_executor.py
+diff --git a/progress/R77/code/sdb_executor.before.py b/progress/R77/code/sdb_executor.py
+index 08b98c6..5fa54da 100755
+--- a/progress/R77/code/sdb_executor.before.py
++++ b/progress/R77/code/sdb_executor.py
+@@ -3,6 +3,7 @@
+ 
+ import argparse
+ import hashlib
++import io
+ import os
+ import re
+ import shlex
+@@ -14,9 +15,10 @@ import tempfile
+ 
+ SDB = "/home/toolchain/.local/bin/sdb"
+ SERIAL = "192.168.108.26:26101"
+-REMOTE_ROOT = "/opt/usr/home/owner/share/tmp/r68_lit_20260827"
++REMOTE_ROOT = "/opt/usr/home/owner/share/tmp/r77_lit_20260829"
+ SHARED_ROOT = "/opt/usr/home/owner/share/tmp"
+-EXIT_MARKER = "__R68_SDB_EXIT__="
++EXIT_MARKER = "__R77_SDB_EXIT__="
++MAX_TEST_TIMEOUT_SECONDS = 120
+ 
+ 
+ def run_host(command, *, check=True, **kwargs):
+@@ -46,6 +48,34 @@ def build_environment(env_args, prepend_args):
+     return "".join(components)
+ 
+ 
++def stop_remote_test(remote_pid_file):
++    cleanup_process = (
++        f"if test -s {shlex.quote(remote_pid_file)}; then "
++        f"pgid=$(cat {shlex.quote(remote_pid_file)}); "
++        "pkill -TERM -g \"$pgid\" 2>/dev/null || true; "
++        "sleep 2; "
++        "pkill -KILL -g \"$pgid\" 2>/dev/null || true; "
++        "fi"
++    )
++    return run_host(
++        sdb_command("shell", cleanup_process),
++        check=False,
++        stdin=subprocess.DEVNULL,
++        stdout=subprocess.PIPE,
++        stderr=subprocess.STDOUT,
++        text=True,
++        errors="replace",
++    )
++
++
++def write_timeout_stream(stream, destination):
++    if not stream:
++        return
++    if isinstance(stream, bytes):
++        stream = stream.decode("utf-8", errors="replace")
++    destination.write(stream)
++
++
+ def main():
+     parser = argparse.ArgumentParser()
+     parser.add_argument("--execdir", required=True)
+@@ -54,6 +84,22 @@ def main():
+     parser.add_argument("command", nargs=argparse.ONE_OR_MORE)
+     args = parser.parse_args()
+ 
++    try:
++        test_timeout_seconds = int(
++            os.environ.get(
++                "R77_SDB_TEST_TIMEOUT_SECONDS", str(MAX_TEST_TIMEOUT_SECONDS)
++            )
++        )
++    except ValueError:
++        print("ERROR: R77_SDB_TEST_TIMEOUT_SECONDS is not an integer", file=sys.stderr)
++        return 10
++    if not 1 <= test_timeout_seconds <= MAX_TEST_TIMEOUT_SECONDS:
++        print(
++            "ERROR: R77_SDB_TEST_TIMEOUT_SECONDS must be in [1, 120]",
++            file=sys.stderr,
++        )
++        return 10
++
+     local_dir = os.path.abspath(args.execdir)
+     if not os.path.isdir(local_dir):
+         print(f"ERROR: execdir is not a directory: {local_dir}", file=sys.stderr)
+@@ -64,8 +110,11 @@ def main():
+     remote_dir = f"{REMOTE_ROOT}/runs/{invocation}"
+     shared_tar = f"{SHARED_ROOT}/{invocation}.tar"
+     remote_tar = f"{REMOTE_ROOT}/{invocation}.tar"
++    remote_pid_file = f"{remote_dir}/.test_pgid"
++    remote_stdin_file = f"{remote_dir}/.stdin"
+     local_tar = None
+     local_tar_bytes = 0
++    stdin_data = b"" if sys.stdin.isatty() else sys.stdin.buffer.read()
+ 
+     def map_argument(argument):
+         prefix = local_dir + os.sep
+@@ -77,7 +126,12 @@ def main():
+         with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as temporary:
+             local_tar = temporary.name
+         with tarfile.open(local_tar, "w") as archive:
+-            archive.add(local_dir, arcname=os.path.basename(local_dir))
++            archive_root = os.path.basename(local_dir)
++            archive.add(local_dir, arcname=archive_root)
++            stdin_info = tarfile.TarInfo(name=f"{archive_root}/.stdin")
++            stdin_info.mode = 0o600
++            stdin_info.size = len(stdin_data)
++            archive.addfile(stdin_info, io.BytesIO(stdin_data))
+         local_tar_bytes = os.path.getsize(local_tar)
+ 
+         run_host(
+@@ -106,24 +160,46 @@ def main():
+         )
+ 
+         remote_command = [map_argument(argument) for argument in args.command]
++        test_command = (
++            "exec "
++            + shlex.join(remote_command)
++            + f" < {shlex.quote(remote_stdin_file)}"
++        )
++        remote_test_script = (
++            f"printf '%d\\n' \"$$\" > {shlex.quote(remote_pid_file)}; "
++            + test_command
++        )
+         shell_command = (
+             "set +e; "
+             + build_environment(args.env, args.prepend_env)
+             + f"cd {shlex.quote(remote_dir)}; "
+-            + shlex.join(remote_command)
++            + f"setsid sh -c {shlex.quote(remote_test_script)}"
+             + "; rc=$?; "
+             + f"printf '\n{EXIT_MARKER}%d\n' \"$rc\"; exit 0"
+         )
+-        completed = run_host(
+-            sdb_command("shell", shell_command),
+-            check=False,
+-            stdin=subprocess.DEVNULL,
+-            stdout=subprocess.PIPE,
+-            stderr=subprocess.PIPE,
+-            text=True,
+-            errors="replace",
+-        )
+-        telemetry_path = os.environ.get("R68_SDB_TELEMETRY")
++        try:
++            completed = run_host(
++                sdb_command("shell", shell_command),
++                check=False,
++                stdin=subprocess.DEVNULL,
++                stdout=subprocess.PIPE,
++                stderr=subprocess.PIPE,
++                text=True,
++                errors="replace",
++                timeout=test_timeout_seconds,
++            )
++        except subprocess.TimeoutExpired as timeout_error:
++            stop_result = stop_remote_test(remote_pid_file)
++            write_timeout_stream(timeout_error.stdout, sys.stdout)
++            write_timeout_stream(timeout_error.stderr, sys.stderr)
++            sys.stderr.write(
++                f"ERROR: remote test exceeded {test_timeout_seconds} seconds; "
++                "terminated and recorded as failure\n"
++            )
++            if stop_result.stdout:
++                sys.stderr.write(stop_result.stdout)
++            return 124
++        telemetry_path = os.environ.get("R77_SDB_TELEMETRY")
+         if telemetry_path:
+             usage = run_host(
+                 sdb_command("shell", f"du -sk {shlex.quote(remote_dir)}"),
+DIFF_EXIT_CODE: 1
+GIT_DIFF_EXIT_CODE: 0
+EXIT_CODE: 0

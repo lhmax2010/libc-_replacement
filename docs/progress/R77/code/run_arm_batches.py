@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Run prepared libc++ or libc++abi lit batches with checkpoints."""
+
+import argparse
+import hashlib
+import json
+import os
+import shlex
+import signal
+import subprocess
+import time
+from datetime import datetime
+from pathlib import Path
+
+
+WORKSPACE = Path("/home/toolchain/development/libc++_replacement")
+COMPILER = WORKSPACE / "progress/R68/tools/armv7l_lit_host_clangxx.sh"
+EXECUTOR = WORKSPACE / "progress/R77/code/sdb_executor.py"
+MEMORY_STOP_KIB = 1024 * 1024
+
+
+def timestamp() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def memory_available_kib() -> int:
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1])
+    raise RuntimeError("MemAvailable is absent")
+
+
+def sample_resources(path: Path) -> int:
+    available = memory_available_kib()
+    load1, load5, load15 = os.getloadavg()
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(
+            f"timestamp={timestamp()} mem_available_kib={available} "
+            f"load1={load1:.2f} load5={load5:.2f} load15={load15:.2f}\n"
+        )
+    return available
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--label", required=True)
+    parser.add_argument("--suite", choices=("libcxx", "libcxxabi"), default="libcxx")
+    parser.add_argument("--source-dir", type=Path, required=True)
+    parser.add_argument("--build-dir", type=Path, required=True)
+    parser.add_argument("--manifest-dir", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--deadline-epoch", type=int, required=True)
+    args = parser.parse_args()
+
+    lit = args.source_dir / "llvm/utils/lit/lit.py"
+    suite = args.build_dir / args.suite / "test"
+    args.output_root.mkdir(parents=True, exist_ok=True)
+    status = args.output_root / "STATUS.tsv"
+    if not status.exists():
+        status.write_text("batch\tstate\tlit_exit\ttests\tfinished_at\n")
+
+    manifests = sorted(args.manifest_dir.glob("batch-*/tests.txt"))
+    for tests_file in manifests:
+        batch_name = tests_file.parent.name
+        batch_output = args.output_root / batch_name
+        complete = batch_output / "COMPLETE.tsv"
+        if complete.exists():
+            print(f"BATCH_ALREADY_COMPLETE\t{batch_name}", flush=True)
+            continue
+        if time.time() >= args.deadline_epoch:
+            print(f"TASK_DEADLINE_REACHED\t{batch_name}", flush=True)
+            return 75
+
+        batch_output.mkdir(exist_ok=True)
+        expression = (tests_file.parent / "filter.regex").read_text()
+        test_count = sum(1 for _ in tests_file.open())
+        result = batch_output / "result.json"
+        stdout_path = batch_output / "lit.stdout"
+        stderr_path = batch_output / "lit.stderr"
+        resources = batch_output / "resources.log"
+        telemetry = batch_output / "executor_telemetry.tsv"
+        command = [
+            "nice", "-n", "15", "ionice", "-c", "3", "python3", str(lit),
+            "-j", "2", "-D", "std=c++26", "-D", f"compiler={COMPILER}",
+            "-D", f"executor={EXECUTOR}", "--order=lexical",
+            "--show-unsupported", "--show-skipped", "--time-tests", "-v",
+            "--filter", expression, "-o", str(result),
+            str(suite),
+        ]
+        (batch_output / "command.txt").write_text(
+            "COMMAND=" + shlex.join(command) + "\n",
+            encoding="utf-8",
+        )
+        environment = os.environ.copy()
+        environment["R77_SDB_TELEMETRY"] = str(telemetry)
+        environment["R77_SDB_TEST_TIMEOUT_SECONDS"] = "110"
+        started = time.time()
+        with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+            process = subprocess.Popen(
+                command,
+                stdout=stdout,
+                stderr=stderr,
+                env=environment,
+                start_new_session=True,
+            )
+            while True:
+                try:
+                    lit_exit = process.wait(timeout=300)
+                    break
+                except subprocess.TimeoutExpired:
+                    if sample_resources(resources) < MEMORY_STOP_KIB:
+                        os.killpg(process.pid, signal.SIGTERM)
+                        try:
+                            process.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.wait()
+                        print(f"RED_STOP_RESOURCE\t{batch_name}", flush=True)
+                        return 20
+                    if time.time() >= args.deadline_epoch:
+                        os.killpg(process.pid, signal.SIGTERM)
+                        try:
+                            process.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.wait()
+                        print(f"TASK_DEADLINE_REACHED\t{batch_name}", flush=True)
+                        return 75
+        sample_resources(resources)
+        elapsed = int(time.time() - started)
+        if lit_exit not in (0, 1):
+            print(f"TECHNICAL_LIT_EXIT\t{batch_name}\t{lit_exit}", flush=True)
+            return lit_exit
+        if not result.is_file():
+            print(f"MISSING_RESULT_JSON\t{batch_name}", flush=True)
+            return 13
+        combined = stdout_path.read_text(errors="replace") + stderr_path.read_text(
+            errors="replace"
+        )
+        connection_markers = (
+            "ERROR: SDB carrier exited",
+            "device not found",
+            "device offline",
+            "failed to connect",
+            "remote exit marker was not observed",
+        )
+        if any(marker in combined for marker in connection_markers):
+            print(f"SDB_CONNECTION_FAILURE\t{batch_name}", flush=True)
+            return 90
+        data = json.loads(result.read_text())
+        if len(data.get("tests", [])) != test_count:
+            print(
+                f"RESULT_COUNT_MISMATCH\t{batch_name}\t"
+                f"expected={test_count}\tobserved={len(data.get('tests', []))}",
+                flush=True,
+            )
+            return 14
+        digest = hashlib.sha256(result.read_bytes()).hexdigest()
+        complete.write_text(
+            "field\tvalue\n"
+            f"batch\t{batch_name}\n"
+            f"tests\t{test_count}\n"
+            f"lit_exit\t{lit_exit}\n"
+            f"elapsed_seconds\t{elapsed}\n"
+            f"result_sha256\t{digest}\n",
+            encoding="utf-8",
+        )
+        with status.open("a", encoding="utf-8") as stream:
+            stream.write(
+                f"{batch_name}\tCOMPLETE\t{lit_exit}\t{test_count}\t{timestamp()}\n"
+            )
+        print(
+            f"BATCH_COMPLETE\t{batch_name}\tlit_exit={lit_exit}\t"
+            f"tests={test_count}\telapsed={elapsed}",
+            flush=True,
+        )
+    (args.output_root / "COMBINATION_BATCHES_COMPLETE").write_text(
+        f"label\t{args.label}\ncompleted_at\t{timestamp()}\n",
+        encoding="utf-8",
+    )
+    print(f"COMBINATION_BATCHES_COMPLETE\t{args.label}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
