@@ -1,0 +1,26 @@
+### 第一部分：修复运行时的两处缺陷
+
+**（一）重新放行时用错了接口。**
+
+C++ 里的 `throw;`（不带参数的重新抛出）在运行时会走到一个内部函数。libc++ 的实现在处理外来异常时，调用的是 `_Unwind_RaiseException`——**这是「发起一次全新的异常传播」的接口**。
+
+而正确的做法是 `_Unwind_Resume_or_Rethrow`——**它会先检查「当前是不是正处在一次强制展开当中」，如果是就继续那次展开，而不是另起一次**。
+
+libstdc++ 在同样位置用的正是后者：
+
+```cpp
+// codes/gcc/libstdc++-v3/libsupc++/eh_throw.cc:123-131
+
+#ifdef __USING_SJLJ_EXCEPTIONS__
+      _Unwind_SjLj_Resume_or_Rethrow (&header->unwindHeader);
+#else
+#if defined(_LIBUNWIND_STD_ABI)
+      _Unwind_RaiseException (&header->unwindHeader);
+#else
+      _Unwind_Resume_or_Rethrow (&header->unwindHeader);    // ← 我们平台走的是这一支
+#endif
+#endif
+```
+
+**两者的差别在后果上很直接**：线程终止流程是由 glibc 发起的，它在发起时登记了一个「收尾回调」。用「继续原有展开」的接口，那个回调会在展开走完时被正常调用，线程干净结束；而用「发起新异常」的接口，等于把线程终止当成了一个普通异常重新抛出去——**glibc 那个收尾回调再也不会被调用**，异常一路上抛没人接手，最终终止进程。
+

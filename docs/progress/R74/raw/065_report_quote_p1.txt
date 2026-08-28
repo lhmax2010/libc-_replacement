@@ -1,0 +1,41 @@
+```
+FATAL: exception not rethrown
+```
+
+### 两套标准库为何不同
+
+**libstdc++ 提供了一个专门的标记类型**，让代码能识别出「这是线程终止，不是普通异常」：
+
+```
+codes/gcc/libstdc++-v3/libsupc++/cxxabi_forced.h:48-54
+
+  class __forced_unwind
+  {
+    virtual ~__forced_unwind() throw();
+    virtual void __pure_dummy() = 0;   // 纯虚函数，使该类不可实例化
+  };
+```
+
+光有这个类型还不够，还需要让它在运行时真的能被匹配到。libstdc++ 的异常处理例程在判断「当前这个异常是什么类型」时，做了一步特殊处理：
+
+```cpp
+// codes/gcc/libstdc++-v3/libsupc++/eh_personality.cc:563-573
+
+#if __cpp_rtti
+      // During forced unwinding, match a magic exception type.
+      if (actions & _UA_FORCE_UNWIND)
+        {
+          throw_type = &typeid(abi::__forced_unwind);
+        }
+      // With a foreign exception class, there's no exception type.
+      else if (foreign_exception)
+        {
+          throw_type = &typeid(abi::__foreign_exception);
+        }
+      else
+```
+
+关键是第 565–568 行：**当发现这次展开是「强制展开」（也就是线程终止）时，就把「当前异常的类型」直接指定为 `abi::__forced_unwind`。**
+
+线程终止本身并不是一个真正的 C++ 对象，它来自 glibc，没有类型信息。这段代码相当于给它**临时贴上一个标签**，于是后续的类型匹配就能认出它——代码里写的 `catch (abi::__forced_unwind&)` 才会命中。
+

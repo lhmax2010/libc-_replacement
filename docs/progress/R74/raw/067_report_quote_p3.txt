@@ -1,0 +1,39 @@
+## 问题三：libc++ 的 `noexcept` 标注使线程终止变成进程终止
+
+这一项**已经查清，但尚未处置**，因此描述得详细一些。
+
+### 问题是什么
+
+C++ 里可以给函数标注 `noexcept`，表示「这个函数不会抛出异常」。如果异常真的试图穿过这样的函数，程序**立即终止**——这是语言规定的行为。
+
+而线程终止走的是异常的同一套机制。因此：**如果一个函数被标注了 `noexcept`，而线程恰好在它内部被终止，那么终止流程一穿到这个边界就会让进程死掉。**
+
+libc++ 给 `std::condition_variable::wait` 加了这个标注。声明处：
+
+```cpp
+// codes/llvm/libcxx/include/__condition_variable/condition_variable.h:104-107
+
+  void notify_one() _NOEXCEPT;
+  void notify_all() _NOEXCEPT;
+
+  void wait(unique_lock<mutex>& __lk) _NOEXCEPT;      // ← 就是这一行
+```
+
+定义处：
+
+```cpp
+// codes/llvm/libcxx/src/condition_variable.cpp:33-37
+
+void condition_variable::wait(unique_lock<mutex>& lk) noexcept {
+  if (!lk.owns_lock())
+    std::__throw_system_error(EPERM, "condition_variable::wait: mutex not locked");
+  int ec = __libcpp_condvar_wait(&__cv_, lk.mutex()->native_handle());
+  ...
+}
+```
+
+第 36 行的 `__libcpp_condvar_wait` 最终调用的是 `pthread_cond_wait`——**那是一个取消点**。也就是说，线程可以在这个函数内部被终止，**而这个函数本身被标注为不会抛异常**。两件事撞在一起，结果就是进程终止。
+
+同一个头文件里，三个带超时的等待函数（第 177、180、184 行）也都带着同样的标注，因此是同一类问题的另外三个入口。
+
+### 两家的政策正好相反

@@ -1,0 +1,190 @@
+===== progress/R74/extracted/01_unlabelled_unlabelled.cpp =====
+     1	try {
+     2	    // 这里可能有取消点，例如读写、等待
+     3	} catch (...) {
+     4	    // 捕获所有异常并处理
+     5	}
+===== progress/R74/extracted/02_unlabelled_unlabelled.cpp =====
+     1	// codes/gcc/libstdc++-v3/libsupc++/eh_personality.cc:563-573
+     2	
+     3	#if __cpp_rtti
+     4	      // During forced unwinding, match a magic exception type.
+     5	      if (actions & _UA_FORCE_UNWIND)
+     6	        {
+     7	          throw_type = &typeid(abi::__forced_unwind);
+     8	        }
+     9	      // With a foreign exception class, there's no exception type.
+    10	      else if (foreign_exception)
+    11	        {
+    12	          throw_type = &typeid(abi::__foreign_exception);
+    13	        }
+    14	      else
+===== progress/R74/extracted/03_unlabelled_unlabelled.cpp =====
+     1	try { ... }
+     2	catch (abi::__forced_unwind&) { throw; }   // 识别出来，原样放行
+     3	catch (...) { ... }                         // 处理真正的异常
+===== progress/R74/extracted/04_unlabelled_unlabelled.cpp =====
+     1	#include <pthread.h>
+     2	#include <unistd.h>
+     3	#include <atomic>
+     4	#include <cstdio>
+     5	
+     6	#if defined(__GLIBCXX__)
+     7	#include <cxxabi.h>          // libstdc++ 才有识别类型
+     8	#endif
+     9	
+    10	static std::atomic<int> started{0};
+    11	
+    12	struct Cleanup {
+    13	    ~Cleanup() { std::puts("EVENT destructor"); }
+    14	};
+    15	
+    16	static void *worker(void *) {      // 注意：不加 noexcept
+    17	    Cleanup cleanup;               // 用于确认清理代码确实执行了
+    18	    try {
+    19	        started.store(1);
+    20	        for (;;) {
+    21	            pthread_testcancel();  // 明确的取消点
+    22	            usleep(1000);
+    23	        }
+    24	#if defined(__GLIBCXX__)
+    25	    } catch (const __cxxabiv1::__forced_unwind &) {
+    26	        std::puts("EVENT forced_guard_rethrow");
+    27	        throw;                     // 识别出来，原样放行
+    28	#endif
+    29	    } catch (...) {
+    30	        std::puts("EVENT catch_all");   // 吞掉——问题就出在这里
+    31	    }
+    32	    std::puts("EVENT worker_returned");
+    33	    return nullptr;
+    34	}
+    35	
+    36	int main() {
+    37	    pthread_t thread{};
+    38	    void *result = nullptr;
+    39	    pthread_create(&thread, nullptr, worker, nullptr);   // 用裸 pthread，不用 std::thread
+    40	    while (started.load() == 0) usleep(1000);
+    41	    pthread_cancel(thread);
+    42	    pthread_join(thread, &result);
+    43	    std::printf("RESULT joined=%s\n",
+    44	                result == PTHREAD_CANCELED ? "PTHREAD_CANCELED" : "other");
+    45	    return result == PTHREAD_CANCELED ? 0 : 1;
+    46	}
+===== progress/R74/extracted/05_unlabelled_unlabelled.cpp =====
+     1	// codes/llvm/libcxx/src/ios.cpp
+     2	
+     3	void ios_base::__set_badbit_and_consider_rethrow() {
+     4	    __rdstate_ |= badbit;
+     5	    if (__exceptions_ & badbit)
+     6	        throw;
+     7	}
+===== progress/R74/extracted/06_unlabelled_unlabelled.cpp =====
+     1	static void *worker(void *) {          // 同样不是 noexcept
+     2	    for (int i = 0; ; ++i) {
+     3	        std::cout << i << std::endl;   // 底层的写操作本身就是取消点
+     4	    }
+     5	    return nullptr;
+     6	}
+     7	
+     8	int main() {
+     9	    pthread_t t;
+    10	    pthread_create(&t, nullptr, worker, nullptr);
+    11	    usleep(50 * 1000);
+    12	    pthread_cancel(t);
+    13	    void *result = nullptr;
+    14	    pthread_join(t, &result);
+    15	    return result == PTHREAD_CANCELED ? 0 : 1;
+    16	}
+===== progress/R74/extracted/07_unlabelled_unlabelled.cpp =====
+     1	// codes/llvm/libcxx/include/__condition_variable/condition_variable.h:104-107
+     2	
+     3	  void notify_one() _NOEXCEPT;
+     4	  void notify_all() _NOEXCEPT;
+     5	
+     6	  void wait(unique_lock<mutex>& __lk) _NOEXCEPT;      // ← 就是这一行
+===== progress/R74/extracted/08_unlabelled_unlabelled.cpp =====
+     1	// codes/llvm/libcxx/src/condition_variable.cpp:33-37
+     2	
+     3	void condition_variable::wait(unique_lock<mutex>& lk) noexcept {
+     4	  if (!lk.owns_lock())
+     5	    std::__throw_system_error(EPERM, "condition_variable::wait: mutex not locked");
+     6	  int ec = __libcpp_condvar_wait(&__cv_, lk.mutex()->native_handle());
+     7	  ...
+     8	}
+===== progress/R74/extracted/09_unlabelled_unlabelled.cpp =====
+     1	std::shared_future<int> *waiting_future;
+     2	
+     3	static void *waiting_side(void *) {    // 不是 noexcept
+     4	    waiter_started.store(1);
+     5	    waiting_future->wait();            // 阻塞在这里
+     6	    return (void *)1;
+     7	}
+     8	
+     9	int main() {
+    10	    auto f = std::async(std::launch::async, some_work).share();
+    11	    waiting_future = &f;
+    12	    // 等 some_work 真正开始
+    13	    pthread_t waiter;
+    14	    pthread_create(&waiter, nullptr, waiting_side, nullptr);
+    15	    while (!waiter_started.load()) usleep(1000);
+    16	    pthread_cancel(waiter);            // 终止等待方
+    17	    void *joined = nullptr;
+    18	    pthread_join(waiter, &joined);
+    19	    // 期望：等待方干净退出，主线程仍能取到结果
+    20	    return (joined == PTHREAD_CANCELED && f.get() == 42) ? 0 : 1;
+    21	}
+===== progress/R74/extracted/10_unlabelled_unlabelled.cpp =====
+     1	#include <pthread.h>
+     2	#include <unistd.h>
+     3	#include <atomic>
+     4	#include <cstdio>
+     5	#include <string>
+     6	
+     7	static std::atomic<int> cancel_ready{0};
+     8	
+     9	template <class T> struct CancelAllocator {
+    10	    using value_type = T;
+    11	    CancelAllocator() = default;
+    12	    template <class U> CancelAllocator(const CancelAllocator<U>&) {}
+    13	
+    14	    T *allocate(std::size_t n) {
+    15	        cancel_ready.store(1);
+    16	        for (;;) pthread_testcancel();   // 取消在这里被送达——位于 shrink_to_fit 内部
+    17	        return nullptr;
+    18	    }
+    19	    void deallocate(T *p, std::size_t) noexcept { ::operator delete(p); }
+    20	};
+    21	
+    22	using CancelString =
+    23	    std::basic_string<char, std::char_traits<char>, CancelAllocator<char>>;
+    24	
+    25	static void *worker(void *) {            // 不加 noexcept
+    26	    CancelString s(1024, 'x');
+    27	    s.reserve(65536);
+    28	    s.shrink_to_fit();                   // 触发重新分配 → 进入 allocate()
+    29	    return nullptr;
+    30	}
+    31	
+    32	int main() {
+    33	    pthread_t thread{};
+    34	    void *result = nullptr;
+    35	    pthread_create(&thread, nullptr, worker, nullptr);
+    36	    while (cancel_ready.load() == 0) usleep(1000);
+    37	    pthread_cancel(thread);
+    38	    pthread_join(thread, &result);
+    39	    std::printf("RESULT joined=%s\n",
+    40	                result == PTHREAD_CANCELED ? "PTHREAD_CANCELED" : "other");
+    41	    return result == PTHREAD_CANCELED ? 0 : 1;
+    42	}
+===== progress/R74/extracted/11_unlabelled_unlabelled.cpp =====
+     1	// codes/gcc/libstdc++-v3/libsupc++/eh_throw.cc:123-131
+     2	
+     3	#ifdef __USING_SJLJ_EXCEPTIONS__
+     4	      _Unwind_SjLj_Resume_or_Rethrow (&header->unwindHeader);
+     5	#else
+     6	#if defined(_LIBUNWIND_STD_ABI)
+     7	      _Unwind_RaiseException (&header->unwindHeader);
+     8	#else
+     9	      _Unwind_Resume_or_Rethrow (&header->unwindHeader);    // ← 我们平台走的是这一支
+    10	#endif
+    11	#endif

@@ -1,0 +1,77 @@
+R64:
+# R64：M2 armv7l 归因与 W3 分批数量确定
+
+日期：2026-08-25
+执行分支：`codex/r5-ehabi-diagnosis`
+
+## 结论
+
+1. M2 的 armv7l 结论为 **`FIXTURE_ISSUE_CONFIRMED`**。原探针使用异步取消并在 `WindowResult` 析构中无取消点忙等；挂起现场中工作线程已经退出，只剩主线程在 futex 等待 future。将探针改为延迟取消并在完全相同的“值已发布、执行未返回”窗口调用 `pthread_testcancel()` 后，armv7l 上修复版 libc++ 与 libstdc++ 参考侧的主窗口、`wait_for`、多等待者三格均 **20/20** 通过；x86_64 同矩阵也均 **20/20**，与 W1 一致。没有修改 M2 产品实现。
+2. W3 的原始不确定变量是构建时 `%{build_type}` 的实际展开值；原构建的 CMakeCache、`compile_commands.json` 与日志均未保存。R64 从 Tizen 官方当前 armv7l 发布调试 RPM（与 W3 源 RPM NEVR 一致）补得实际 producer 记录：`app-installers` 与 `tpk-backend` 均带 `-flto`，并有 `-fltrans` 链接时优化记录。因此：
+   - 任务要求的“只计 W3 三个确认例外”的保守下界仍为 **库内批 31 / 头文件批 19**；
+   - 对当前官方发布的同 NEVR armv7l 制品，精确值可确定为 **30 / 20**；新增移动的是 `app-installers` 命中的 `S08`，`tpk-backend` 没有观察到受影响站点。
+   - 与落章文档 `34 / 16` 相比，当前发布制品口径为库内批少 4、头文件批多 4。未修改落章文档。
+
+## 纪律与执行环境
+
+- 开工先调用 `tools/resource_gate.sh --level light`，退出 0；当时 `MemAvailable=17646448 KiB`，`load1=8.10`，阈值分别为 2 GiB 与 30。
+- 只重编/重链探针，复用 W2 的 libc++/libc++abi；没有修改产品代码。
+- armv7l 在 `192.168.108.26:26101` 真机原生执行；x86_64 在宿主原生执行；未使用模拟器执行测试。
+- 交叉编译器本身由既有包装器借助 qemu 启动目标 clang，仅用于交叉编译，不用于行为验证。
+- 共享盘曾出现严重 I/O wait；中止了本任务自身卡住的交叉编译与只读盘点进程，待退出后串行重跑。没有并发启动第二个构建。
+- 板端部署目录、两个传输归档及测试进程均已清理，清理核验退出 0。
+
+## 输入与 SHA256
+
+完整清单见 `raw/025_input_sha256.stdout.txt`。关键项：
+
+| 输入 | SHA256 |
+|---|---|
+| W2 原探针 `r61_m2_matrix.cpp` | `b3521c4435acd23c61d3497727446a6c1a7d809e07d49523adf697b8e8c2c820` |
+| W2 报告 | `bbfceb6ce9bd3c918374d97af8bce502f9cc82c58e5c7d658eda2755e58ed440` |
+| W3 报告 | `97d9d82a63c3ddc6cd9ae3ac8dbd31b2f9facde58e9b6226da59702b78c58505` |
+| W3 `reviewed_exception_consumers.tsv` | `03effe8f5e349675c834fe10970d2f40a7208d54d89d6be75db2037a3adcb8af` |
+| W2 armv7l libc++.so.1 | `22d9ee51df953c470587d10c785567635b3a719b1456529db9cba99da61e6fc9` |
+| W2 armv7l libc++abi.so.1 | `f63b9604b9a9490d62e2b87b0a8c8fd84e1a5d8947f2594bff2a656b2b175c46` |
+| 官方 app-installers armv7l debuginfo RPM | `430f915d5cddc247dd50bd6bff440043d50db60af318808d72c62bde8ce88290` |
+R65:
+对照支持 R64 判定：同一产品库下，只改变取消夹具后，ARM 能遍历到共享状态 handler 并发布完成结果。产品实现无需修改。
+
+## 四、两处勘误
+
+### W2
+
+- 新增 `docs/progress/W2/ERRATUM-M2-ARMV7L-FIXTURE.md`，说明原三格记述、R64 的 20/20 对照和本次调用栈补证，并明确 M2 产品实现未改。
+- `docs/progress/W2/REPORT.md:3` 只增加一行显著勘误指向；原有结论文字未改。
+
+### 决定文档
+
+- `docs/decisions/20260815-thread-cancellation-scope.md:15` 起，在裁决结论表后加入数量勘误：由 34 / 16 修正为 **30 / 20**，分批框架不变。
+- `docs/decisions/README.md:18-23` 的摘要数字和复核状态同步为 **30 / 20**。
+- `docs/decisions/superseded/` 九个文件修改前后 SHA256 清单逐字节相同，见 `tables/superseded_before.sha256` 与 `tables/superseded_after.sha256`。
+
+## 五、其他 34/16 引用
+
+除本次修改的 README 摘要与决定文档勘误外，仍有以下引用；均按任务要求未修改：
+
+- 现行决定文档被冻结正文中的原始口径：`docs/decisions/20260815-thread-cancellation-scope.md:12,22,247,248,302,303,310,390`；新勘误位于第 15 行起。
+- 活跃进展报告：`docs/progress/R50/REPORT.md:8-9`、`docs/progress/R52/REPORT.md:1`、`docs/progress/R53/REPORT.md:1`、`docs/progress/W3/REPORT.md:9,15`、`docs/progress/R64/REPORT.md:12,141`。
+R72:
+9:- **两套库实际行为差异：5 个边界定义，5 个均可达**。其中 4 个位于 libc++ 的 `condition_variable`：一个普通等待边界、两个时钟特化的定时等待边界、一个任意时钟模板边界；libstdc++ 的对应函数均已移除 `noexcept`。另 1 个是 `wbuffer_convert` 析构：两侧析构都隐式不抛异常，但只有 libc++ 析构会主动 `sync()`，因此只有 libc++ 把 wrapped streambuf 的取消点带入该边界。
+31:平台实际口径另用与目标 libc 同版本的 GNU glibc 2.40 官方源码核对 `SYSCALL_CANCEL`/取消包装器；官方 tarball SHA256 为 `19a890175e9263d748f627993de6f4b1af9cd21e03f080e4bfb3a1fac10205a2`，GitHub mirror 的同 tag commit 为 `3d1aed874918c466a4477af1da35983ab036690e`。所抽查的取消/非取消 wrapper 文件在二者间逐文件 SHA256 相同。Linux 顶层源码确认 67 个包装器文件名；其中 32 个名字不在上述 POSIX-required 名字集中，见 `tables/platform_extension_cancel_points.tsv`。这 32 个含 64 位别名和 Linux 扩展（如 `accept4`、`epoll_wait`、`getrandom`、`preadv2`、`splice` 等），不等价于“32 个彼此独立的规范 API”。目标 GBS sysroot 的 `libc.so.6` 为 glibc 2.40，SHA256 `215bfd3dc2b21691e626990cc0990a38d6f7e9f83b5a2f64c9e1e033d07ba656`；源码材料是同版本上游旁证，不冒充平台补丁源码。
+33:POSIX “may” 不能直接冒充本平台的实际取消点。例如当前 glibc 的 `stat/lstat/mkdir/ioctl` 走非取消 syscall，`closedir` 走 `__close_nocancel`；相关 libc++ filesystem/noexcept 路径只列入 `tables/portable_only_candidates.tsv`，未计入平台实数。stdio 与自定义 streambuf 路径依赖 FILE 标志及虚调用，按条件可达处理。
+35:## 4. 实际差异与可达设施
+37:5 个实际差异为：
+47:前 4 项不只影响直接使用 `condition_variable` 的代码。源码可达的设施包括 `condition_variable_any`、future/shared_future、`timed_mutex`/`recursive_timed_mutex`、`shared_mutex`/`shared_timed_mutex` 和任意时钟版 `this_thread::sleep_until`；D05 影响绑定输出 streambuf 的已弃用 `wbuffer_convert`。路径见 `tables/facility_paths.tsv`。
+49:可达性判据是：公开入口能在正常线程调用中阻塞于对应 pthread 取消点，且调用链上的该 libc++ helper 带不抛异常规格。对 D05，具体可构造条件是 wrapped streambuf 的同步输出进入取消点。普通 wait、steady 定时等待与自定义时钟等待均取得动态证据；system-clock 特化与 D05 取得静态/具体构造路径证据，本轮按“抽样 2–3 项”的任务要求未另做运行样本。
+60:逐格原始输出在 `raw/tests/`，汇总见 `tables/sample_results.tsv`。最终二进制对应的 `commands/039_final_runtime_identity.log` 中，`ldd` 与 `LD_DEBUG=libs` 证明 libc++ 格加载指定实验构建的 `libc++.so.1`/`libc++abi.so.1`，参照格加载系统 `libstdc++.so.6`。
+64:消费面以 R32 已成功扫描的 371 个 source RPM 为分母，对会到达 D01–D05 的设施做源码词法命中；结果见 `raw/facility_usage_summary.tsv`，逐文件命中见 `raw/facility_usage_hits.tsv`。
+66:扫描 371/371 source RPM 成功、失败 0；它们对应 347 个去重包名。至少命中一种相关设施的有 **35 个 source RPM / 26 个去重包名**。按 source RPM / 去重包名分设施为：`condition_variable` 13/10、future 族 35/26、timed-mutex 族 3/2、shared-mutex 族 4/3、`sleep_until` 3/2、`wbuffer_convert` 2/1。同一包可同时计入多类，故分项不可相加；`wbuffer_convert` 的唯一包名是 GCC 自身源码/测试，不是独立产品消费者。
+101:- 开放世界边界不存在有限、绝对完备的源码清单；因此“5 个实际差异”应理解为本轮明确限定口径内的可证数，而不是所有可能程序的全称命题。
+103:## 9. 过程异常申报
+105:- 三次早期只读搜索范围写得过宽并被终止，退出 130，记录在 `commands/002_inventory.log`、`005_platform_source_inventory.log`、`009_stop_overbroad_find.log`。
+106:- 官方 sourceware glibc clone 返回 403，随后使用 glibc 官方 GitHub mirror 的同一 `glibc-2.40` tag，记录在 `commands/010_*`、`011_*`。
+R70 EIGHT:
+1:# R70 报告：等待方取消定性、armv7l 补跑与八处待议站点评估
+5:总判定为 **`VERIFIED`**：等待方取消已经完成两架构、三组合各 20 次的定性；R69 缺失的 armv7l 运行矩阵已补齐；八处待议站点均已逐项评估。未修改四个补丁或平台源码。
+87:## 6. 八处待议站点评估

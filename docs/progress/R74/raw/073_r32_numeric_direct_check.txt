@@ -1,0 +1,66 @@
+R32_REPORT:
+# R32 forced unwind 影响面、候选方向与 R30 红项定性报告
+
+日期：2026-08-13  
+执行边界：第一、三部分只读取证；第二部分仅构建并运行 `progress/R32/` 中的独立实验件。平台源码、R30 候选补丁、既有制品和既有文档均未改动。
+
+## 结论摘要
+
+- 影响面补扫以 T1 已成功解包的 371/372 个源码包为分母；最终状态为 SCAN_OK 371/371、SCAN_FAILED 0/371。Chromium 仍是 T1 的既有未扫 1 包，不在本次补扫分母之外另作补齐。
+- 已有 `__forced_unwind` 捕获并重抛防护：10/371 个源码包；相关位置 50 处。
+- 无防护但包级同时有 catch-all 与线程/取消迹象：90/371 个源码包；相关位置 3364 处。
+- 仅有 catch-all、未见包内线程迹象：87/371 个源码包；相关位置 443 处。
+- 未命中 catch-all：184/371 个源码包；相关位置 0 处。
+- 首批两包均有 in-tree 单元测试实际创建线程、调用 `pthread_cancel`，并让取消穿过目标包装器；搜索到的生产代码中未观察到 `pthread_cancel` 调用，因此定性为“测试已触发；所搜生产路径中为防御性代码”，不外推到仓外消费者。
+- 候选方向 A–D 中，没有一个在本次两套标准库实测里同时满足“强制展开正常传播、真实异常原处理语义不变、两套标准库行为一致”三个条件。该句是矩阵观测的机械合取，不是方案评价。
+- R30 三项遗留红项：`_S_badbit`、`__filebuf_type` 为源码级缺陷；Boost.Test 为第三方库 ABI 问题。它们分别揭示 T1 对任意实现私有成员和已构建 DSO ABI 的系统性不可见面；不重算 R1 的 45。
+
+## 一、语料、口径与方法
+
+T1 原扫描已覆盖 `pthread_cancel`、`pthread_setcancelstate`、`pthread_testcancel`，但未覆盖 catch-all、`pthread_create` 和 `std::thread`。本次仅在 `progress/T1/extraction_results.tsv` 标为 `EXTRACTED_OK` 的 371 个既有解包目录内补扫；未下载、未重新解包、未扫描仓快照。输入 SHA256 在 `tables/input_identity.tsv`。
+
+最终扫描命令由 `tools/scan_impact.py` 生成：4 个包级 worker，每个 `rg --threads 1`，限定常见源码/构建/文档文本后缀；命令、进度与退出码在 `commands/017_impact_scan_io_bounded_cached.log`。此前五次无效或受阻尝试均保留在 `tables/supplemental_scan_attempts.tsv`，没有将其结果并入结论。
+
+包级互斥分类规则：
+
+1. `EXISTING_GUARD`：存在 `abi::__forced_unwind`/`__cxxabiv1::__forced_unwind` 捕获，且在下一个 catch 前实见 `throw;`；
+2. 否则，catch-all 与线程/取消标记在同一源码包内共存为 `UNGUARDED_RISK_PATTERN`；
+3. 否则，有 catch-all 为 `CATCH_ONLY_NO_THREAD_EVIDENCE`；
+4. 否则为 `NO_CATCH_ALL`。
+
+`DOC` 路径不参与包分类；`TEST`、`EXAMPLE`、`BUILD` 与 `PRODUCTION_LIKE` 均保留并逐位置标注。catch-all 宏定义及其标识符使用另见 `catchall_macro_definitions.tsv` 与 `catchall_macro_uses.tsv`。
+
+位置总表共 19393 行：catch-all 9484、forced-unwind token 157、pthread_cancel 207、pthread_create 5015、pthread_setcancelstate 150、pthread_testcancel 70、std::thread 4310。识别到 catch-all 宏定义 214 处、宏定义/使用记录 22708 行。
+
+局限：包级共现不等于调用路径；外部包发起的取消无法由被取消包源码识别；C 宏的多层拼接、动态调用和运行时取消状态无法由该词法扫描完全还原。以上无法判定处没有推断补全。
+
+## 二、平台影响面
+
+| 类别 | 源码包数 | 分母 | 相关位置数 |
+| --- | --- | --- | --- |
+| 仅有 catch-all、未见包内线程迹象 | 87 | 371 源码包 | 443 |
+| 已有 `__forced_unwind` 捕获并重抛防护 | 10 | 371 源码包 | 50 |
+| 未命中 catch-all | 184 | 371 源码包 | 0 |
+| 无防护但包级同时有 catch-all 与线程/取消迹象 | 90 | 371 源码包 | 3364 |
+
+逐包分类在 `tables/impact_package_classification.tsv`，逐位置 `file:line`、scope 与阶段在 `tables/impact_category_locations.tsv`；所有匹配位置在 `tables/impact_locations.tsv`。
+
+### 迁移阶段分布
+
+| 阶段 | 类别 | 源码包数 |
+| --- | --- | --- |
+| NOT_IN_483 | 未命中 catch-all | 2 |
+| PHASE1 | 仅有 catch-all、未见包内线程迹象 | 1 |
+| PHASE1 | 已有 `__forced_unwind` 捕获并重抛防护 | 5 |
+| PHASE1 | 未命中 catch-all | 4 |
+| PHASE1 | 无防护但包级同时有 catch-all 与线程/取消迹象 | 3 |
+EXISTING_GUARD_PACKAGES_LINES:
+11 docs/progress/R32/tables/existing_guard_packages.tsv
+EXISTING_GUARD_LOCATIONS_CATEGORY_COUNT:
+50
+EXISTING_GUARD_UNIQUE_RPMS:
+10
+EXISTING_GUARD_UNIQUE_PACKAGE_NAMES:
+8
+UNGUARDED_COUNT:
+locations=3364 rpms=90

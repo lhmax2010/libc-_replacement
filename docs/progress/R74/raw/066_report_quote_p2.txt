@@ -1,0 +1,37 @@
+## 问题二：libc++ 标准库自身的内部代码没有防护
+
+### 问题是什么
+
+问题一说的是应用代码。但我们随后发现了更大的一块：**libc++ 自己的实现内部，也大量存在「捕获所有异常」的写法**，而 libstdc++ 在同样位置是有识别子句的。
+
+这意味着：**应用代码一行不改、里面一个 `catch` 都没有，只要它用到标准库的常见功能，线程在其中被终止时同样会崩溃。**
+
+以输出流为例，libstdc++ 的写法是：
+
+```
+codes/gcc/libstdc++-v3/include/bits/ostream.tcc:81-87
+
+  __catch(__cxxabiv1::__forced_unwind&)
+    { this->_M_setstate(ios_base::badbit); __throw_exception_again; }
+  __catch(...)
+    { this->_M_setstate(ios_base::badbit); }
+```
+
+先设置状态位，然后**把线程终止原样放行**。
+
+libc++ 在对应位置的写法是这样（以输出流为例，其内部把出错处理收拢到一个函数里）：
+
+```cpp
+// codes/llvm/libcxx/src/ios.cpp
+
+void ios_base::__set_badbit_and_consider_rethrow() {
+    __rdstate_ |= badbit;
+    if (__exceptions_ & badbit)
+        throw;
+}
+```
+
+**注意这里没有任何识别线程终止的地方。** 调用它的位置是一个裸的 `catch (...)`：捕获之后设一下状态位就结束了，线程终止被吞在这里，再也没有机会继续。
+
+只有当使用方事先设置过「出错时抛异常」这个开关时，末尾那个 `throw;` 才会执行——而**默认是不设的**，所以绝大多数情况下就是直接吞掉。
+
