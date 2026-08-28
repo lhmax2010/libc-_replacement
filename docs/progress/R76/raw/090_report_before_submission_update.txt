@@ -1,0 +1,63 @@
+     1	# R76：四补丁 Gerrit sandbox / QuickBuild 提交验证
+     2	
+     3	日期：2026-08-28  
+     4	最终状态：`BLOCKED`
+     5	
+     6	## 1. 结论摘要
+     7	
+     8	R76 在提交前顺序应用预检的身份门禁处返回非零。按“遇异常即中止”纪律，本轮没有创建四个提交、没有向 Gerrit 推送、没有触发 QuickBuild，也没有修改任何补丁或平台源码。
+     9	
+    10	失败并非已观察到的补丁哈希不一致或应用冲突，而是 R76 验证脚本的路径错误：`progress/R69/patches/SHA256SUMS` 保存的是相对于工作区根目录的路径，脚本却先进入 `progress/R69/patches/` 再执行 `sha256sum -c SHA256SUMS`，导致四个文件均报 `No such file or directory`，退出 1。由于门禁在任何 `git apply --check` 之前失败，四补丁在当前远端基线上的可应用性仍为 `NOT_OBSERVED`。
+    11	
+    12	## 2. 资源门禁
+    13	
+    14	按任务要求执行 `tools/resource_gate.sh --level light`，退出 0。原文见 `raw/001_resource_gate.stdout`、`raw/001_resource_gate.stderr`，命令及退出码见 `commands/001_resource_gate.log`。
+    15	
+    16	## 3. 补丁身份
+    17	
+    18	定稿来源为 `progress/R69/patches/`，顺序按用户确认采用：
+    19	
+    20	1. 0001 层 A；
+    21	2. 0002 层 B；
+    22	3. 0003 层 C 头文件批；
+    23	4. 0004 层 C 库内批。
+    24	
+    25	单独计算得到的四个 observed SHA256 与 `SHA256SUMS` 中四个 recorded SHA256 文本逐项相同，见 `PATCH_IDENTITY.tsv` 和 `raw/010_patch_identity_and_headers.txt`。但自动 `sha256sum -c` 因上述路径问题未通过，因此本轮没有把身份门禁登记为 PASS，也没有越过该门禁。
+    26	
+    27	补丁文件没有任何修改。
+    28	
+    29	## 4. 基线与计划提交位置
+    30	
+    31	只读远端查询得到：
+    32	
+    33	- Gerrit 仓库：`ssh://lhmax2025@review.tizen.org:29418/platform/upstream/llvm`；
+    34	- 当前 `refs/heads/tizen_base`：`8dfebafe1a477b3dcc678ee4cb18a3a4306d5a7c`；
+    35	- 计划 sandbox：`refs/heads/sandbox/lhmax2025/libcxx-forced-unwind`；
+    36	- 查询时计划 sandbox 不存在。
+    37	
+    38	远端原文见 `raw/020_remote_baseline_and_sandbox_before.stdout`。该基线已抓取到本地远端跟踪 ref，并在 `tmp/R76/apply-check` 建立隔离 worktree；其 HEAD 与远端基线一致且初始状态干净。未修改主 `codes/llvm` 工作树。
+    39	
+    40	## 5. 中止点
+    41	
+    42	顺序预检脚本依次完成：
+    43	
+    44	- 基线读取：退出 0；
+    45	- worktree 未暂存差异检查：退出 0；
+    46	- worktree 已暂存差异检查：退出 0；
+    47	- 补丁身份自动校验：退出 1。
+    48	
+    49	随后脚本按 `set -e` 立即退出，没有执行任何一个补丁的 `git apply --check` 或 `git apply`。完整失败原文见 `raw/apply_preflight/004_patch_identity.log`；摘要见 `raw/028_preflight_failure_digest.txt`、`raw/029_preflight_identity_failure.txt`。
+    50	
+    51	## 6. Gerrit 与 QuickBuild
+    52	
+    53	- Gerrit sandbox push：`NOT_ATTEMPTED`；
+    54	- 正式分支 push：`NOT_ATTEMPTED`；
+    55	- LLVM 上游提交：`NOT_ATTEMPTED`；
+    56	- QuickBuild：`NOT_OBSERVED`；
+    57	- 构建产物、其他包构建、新增告警：全部 `NOT_OBSERVED`。
+    58	
+    59	没有可报告的提交 SHA 或 QuickBuild 日志，因为流程在提交前中止。
+    60	
+    61	## 7. 自行判断与疑问
+    62	
+    63	详见 `SELF_DECISIONS_AND_QUESTIONS.md`。恢复任务前需由用户明确允许修正验证脚本路径并从身份门禁重新开始，同时确认直推 sandbox 场景下 series 说明的 Gerrit 可见载体及 QuickBuild 完整日志获取路径。

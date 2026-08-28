@@ -33,7 +33,7 @@ record() {
 record 001_baseline git -C "${tree}" rev-parse HEAD
 record 002_clean git -C "${tree}" diff --quiet
 record 003_cached_clean git -C "${tree}" diff --cached --quiet
-record 004_patch_identity bash -c "cd '${patch_root}' && sha256sum -c SHA256SUMS"
+record 004_patch_identity bash -c "cd '${workspace}' && sha256sum -c progress/R69/patches/SHA256SUMS"
 
 index=10
 for patch in "${patches[@]}"; do
@@ -48,6 +48,6 @@ done
 record 020_diff_check git -C "${tree}" diff --cached --check
 record 021_status git -C "${tree}" status --short
 record 022_diff_stat git -C "${tree}" diff --cached --stat
-record 023_patch_identity_after bash -c "cd '${patch_root}' && sha256sum -c SHA256SUMS"
+record 023_patch_identity_after bash -c "cd '${workspace}' && sha256sum -c progress/R69/patches/SHA256SUMS"
 
 printf 'R76_APPLY_PREFLIGHT=PASS\n' > "${out}/STATUS"

@@ -2,13 +2,15 @@
 
 ## 自行判断
 
-1. 根据用户确认，计划分支采用 `refs/heads/sandbox/lhmax2025/libcxx-forced-unwind`，补丁顺序采用定稿序列 0001、0002、0003、0004。
-2. 远端 `tizen_base` 当前值为 `8dfebafe1a477b3dcc678ee4cb18a3a4306d5a7c`；计划 sandbox ref 在预检时不存在。只读 `ls-remote` 后抓取这一精确基线并建立隔离 worktree，没有改动 `codes/llvm` 工作树。
-3. 顺序应用预检在补丁应用前的身份门禁返回 1。尽管失败原因是验证脚本错误地在 `progress/R69/patches/` 内解释工作区相对路径，并非补丁内容不一致，但任务纪律要求“遇异常即中止”，因此没有修正脚本后重跑，也没有进入 `git apply --check`、提交、Gerrit 推送或 QuickBuild。
-4. R76 的 BLOCKED 证据仍按任务第 10 项交付到本项目仓；这不构成向 Gerrit sandbox、正式分支或 LLVM 上游提交。
+1. 采用用户确认的定稿顺序 0001、0002、0003、0004，以及新分支 `refs/heads/sandbox/lhmax2025/libcxx-forced-unwind`。
+2. 首次身份门禁失败属于脚本路径错误。得到明确授权后，只修改两条相同身份命令的工作目录解析；修正前后补丁和 `SHA256SUMS` 字节身份一致。
+3. 原 commit message 只覆盖局部依赖，没有明确四提交整体不可拆分。按用户条件授权，只在层 A 末尾增加批准的中英文依赖段；其余三条正文不变。层 A amend 触发仓库 hook 自动增加一个允许的 Change-Id。
+4. 直推 sandbox 不产生 Gerrit change/topic/comment；R7 旧提交的只读 Gerrit query 返回 `rowCount: 0`。因此依赖说明必须由层 A commit message 承载，并在本报告同步存档。
+5. QuickBuild 沿用 R7 的触发/观察形态。当前环境没有平台日志入口，因此选择任务允许的 `SUBMITTED_BUILD_PENDING`，所有未观察构建事实均明确写 `NOT_OBSERVED`。
+6. Gerrit push 输出的 subject/行宽 warning 属于提交说明风格检查，不登记为新增编译告警，也不因其修改定稿 message。
+7. 三次后续 validator 非零均由验证器格式或计数处理造成；逐次保留失败与修正 diff。最终判据全部通过后才执行唯一一次 sandbox push。
 
 ## 尚存疑问
 
-1. 是否允许修正仅用于验证的 R76 脚本路径，使 `sha256sum -c` 从工作区根目录运行，然后从身份门禁重新开始？补丁文件不会改变。
-2. 直推 `refs/heads/sandbox/...` 不产生 Gerrit change/topic/comment。用户已禁止扩充 commit message；后续若恢复，series 级依赖说明应记录在何种 Gerrit 可见载体上仍需确认，或是否以本项目 R76 报告作为等价说明。
-3. R7 的既有记录明确写 QuickBuild 结果由人工观察后回传。本环境未发现可直接下载 QuickBuild 完整日志的接口；若恢复并推送，完整日志将由何种路径取得仍待确认。
+1. QuickBuild 的平台构建 profile、架构矩阵、完整日志、构建产物、其他包结果和新增编译告警需要人工平台侧观察后回传。
+2. 若 QuickBuild 失败，是否允许执行任务规定的最多一次重试，需依据首次失败完整日志决定；当前重试次数为 0。

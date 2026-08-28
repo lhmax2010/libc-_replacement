@@ -1,0 +1,43 @@
+---
+ libcxxabi/src/cxa_exception.cpp   |  5 ++++-
+ libcxxabi/src/cxa_personality.cpp | 11 +++++++++++
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/libcxxabi/src/cxa_exception.cpp b/libcxxabi/src/cxa_exception.cpp
+index 5d7edae697d6..0a346f344b66 100644
+--- a/libcxxabi/src/cxa_exception.cpp
++++ b/libcxxabi/src/cxa_exception.cpp
+@@ -648,7 +648,10 @@ void __cxa_rethrow() {
+ #ifdef __USING_SJLJ_EXCEPTIONS__
+     _Unwind_SjLj_RaiseException(&exception_header->unwindHeader);
+ #else
+-    _Unwind_RaiseException(&exception_header->unwindHeader);
++    if (native_exception)
++        _Unwind_RaiseException(&exception_header->unwindHeader);
++    else
++        _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
+ #endif
+ 
+     //  If we get here, some kind of unwinding error has occurred.
+diff --git a/libcxxabi/src/cxa_personality.cpp b/libcxxabi/src/cxa_personality.cpp
+index 28208194edb3..3fd12fce9a16 100644
+--- a/libcxxabi/src/cxa_personality.cpp
++++ b/libcxxabi/src/cxa_personality.cpp
+@@ -1254,6 +1254,17 @@ __gxx_personality_v0(_Unwind_State state,
+                       unwind_exception, context);
+         if (results.reason == _URC_HANDLER_FOUND)
+         {
++            // A non-zero ttypeIndex identifies a catching handler. ARM EHABI
++            // requires __cxa_begin_cleanup only for a true cleanup entry
++            // (ttypeIndex == 0), matching libstdc++'s found_cleanup gate.
++            if (is_force_unwinding && !native_exception &&
++                results.ttypeIndex != 0)
++            {
++                save_results_to_barrier_cache(unwind_exception, results);
++                set_registers(unwind_exception, context, results);
++                return _URC_INSTALL_CONTEXT;
++            }
++
+             // Found a non-catching handler
+ 
+             // ARM EHABI 8.4.2: Before we can jump to the cleanup handler, we have to setup some
