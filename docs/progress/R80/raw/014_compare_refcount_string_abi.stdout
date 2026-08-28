@@ -1,0 +1,639 @@
+LIBCXX_REFSTRING
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	
+     9	#ifndef _LIBCPP_REFSTRING_H
+    10	#define _LIBCPP_REFSTRING_H
+    11	
+    12	#include "atomic_support.h"
+    13	#include <__config>
+    14	#include <cstddef>
+    15	#include <cstring>
+    16	#include <stdexcept>
+    17	
+    18	// MacOS and iOS used to ship with libstdc++, and still support old applications
+    19	// linking against libstdc++. The libc++ and libstdc++ exceptions are supposed
+    20	// to be ABI compatible, such that they can be thrown from one library and caught
+    21	// in the other.
+    22	//
+    23	// For that reason, we must look for libstdc++ in the same process and if found,
+    24	// check the string stored in the exception object to see if it is the GCC empty
+    25	// string singleton before manipulating the reference count. This is done so that
+    26	// if an exception is created with a zero-length string in libstdc++, libc++abi
+    27	// won't try to delete the memory.
+    28	#if defined(__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__) || defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
+    29	#  define _LIBCPP_CHECK_FOR_GCC_EMPTY_STRING_STORAGE
+    30	#  include <dlfcn.h>
+    31	#  include <mach-o/dyld.h>
+    32	#endif
+    33	
+    34	_LIBCPP_BEGIN_NAMESPACE_STD
+    35	
+    36	namespace __refstring_imp {
+    37	namespace {
+    38	typedef int count_t;
+    39	
+    40	struct _Rep_base {
+    41	  std::size_t len;
+    42	  std::size_t cap;
+    43	  count_t count;
+    44	};
+    45	
+    46	inline _Rep_base* rep_from_data(const char* data_) noexcept {
+    47	  char* data = const_cast<char*>(data_);
+    48	  return reinterpret_cast<_Rep_base*>(data - sizeof(_Rep_base));
+    49	}
+    50	
+    51	inline char* data_from_rep(_Rep_base* rep) noexcept {
+    52	  char* data = reinterpret_cast<char*>(rep);
+    53	  return data + sizeof(*rep);
+    54	}
+    55	
+    56	#if defined(_LIBCPP_CHECK_FOR_GCC_EMPTY_STRING_STORAGE)
+    57	inline const char* compute_gcc_empty_string_storage() noexcept {
+    58	  void* handle = dlopen("/usr/lib/libstdc++.6.dylib", RTLD_NOLOAD);
+    59	  if (handle == nullptr)
+    60	    return nullptr;
+    61	  void* sym = dlsym(handle, "_ZNSs4_Rep20_S_empty_rep_storageE");
+    62	  if (sym == nullptr)
+    63	    return nullptr;
+    64	  return data_from_rep(reinterpret_cast<_Rep_base*>(sym));
+    65	}
+    66	
+    67	inline const char* get_gcc_empty_string_storage() noexcept {
+    68	  static const char* p = compute_gcc_empty_string_storage();
+    69	  return p;
+    70	}
+    71	#endif
+    72	
+    73	} // namespace
+    74	} // namespace __refstring_imp
+    75	
+    76	using namespace __refstring_imp;
+    77	
+    78	inline __libcpp_refstring::__libcpp_refstring(const char* msg) {
+    79	  std::size_t len = strlen(msg);
+    80	  _Rep_base* rep  = static_cast<_Rep_base*>(::operator new(sizeof(*rep) + len + 1));
+    81	  rep->len        = len;
+    82	  rep->cap        = len;
+    83	  rep->count      = 0;
+    84	  char* data      = data_from_rep(rep);
+    85	  std::memcpy(data, msg, len + 1);
+    86	  __imp_ = data;
+    87	}
+    88	
+    89	inline __libcpp_refstring::__libcpp_refstring(const __libcpp_refstring& s) noexcept : __imp_(s.__imp_) {
+    90	  if (__uses_refcount())
+    91	    __libcpp_atomic_add(&rep_from_data(__imp_)->count, 1);
+    92	}
+    93	
+    94	inline __libcpp_refstring& __libcpp_refstring::operator=(__libcpp_refstring const& s) noexcept {
+    95	  bool adjust_old_count     = __uses_refcount();
+    96	  struct _Rep_base* old_rep = rep_from_data(__imp_);
+    97	  __imp_                    = s.__imp_;
+    98	  if (__uses_refcount())
+    99	    __libcpp_atomic_add(&rep_from_data(__imp_)->count, 1);
+   100	  if (adjust_old_count) {
+   101	    if (__libcpp_atomic_add(&old_rep->count, count_t(-1)) < 0) {
+   102	      ::operator delete(old_rep);
+   103	    }
+   104	  }
+   105	  return *this;
+   106	}
+   107	
+   108	inline __libcpp_refstring::~__libcpp_refstring() {
+   109	  if (__uses_refcount()) {
+   110	    _Rep_base* rep = rep_from_data(__imp_);
+   111	    if (__libcpp_atomic_add(&rep->count, count_t(-1)) < 0) {
+   112	      ::operator delete(rep);
+   113	    }
+   114	  }
+   115	}
+   116	
+   117	inline bool __libcpp_refstring::__uses_refcount() const {
+   118	#if defined(_LIBCPP_CHECK_FOR_GCC_EMPTY_STRING_STORAGE)
+   119	  return __imp_ != get_gcc_empty_string_storage();
+   120	#else
+   121	  return true;
+   122	#endif
+   123	}
+   124	
+   125	_LIBCPP_END_NAMESPACE_STD
+   126	
+   127	#endif // _LIBCPP_REFSTRING_H
+codes/llvm/libcxx/src/include/refstring.h:78:inline __libcpp_refstring::__libcpp_refstring(const char* msg) {
+codes/llvm/libcxx/src/include/refstring.h:89:inline __libcpp_refstring::__libcpp_refstring(const __libcpp_refstring& s) noexcept : __imp_(s.__imp_) {
+codes/llvm/libcxx/src/include/refstring.h:94:inline __libcpp_refstring& __libcpp_refstring::operator=(__libcpp_refstring const& s) noexcept {
+codes/llvm/libcxx/src/include/refstring.h:108:inline __libcpp_refstring::~__libcpp_refstring() {
+codes/llvm/libcxx/src/include/refstring.h:117:inline bool __libcpp_refstring::__uses_refcount() const {
+
+LIBSTDCXX_HEADER
+43-_GLIBCXX_BEGIN_NAMESPACE_VERSION
+44-
+45-#if _GLIBCXX_USE_DUAL_ABI
+46-#if _GLIBCXX_USE_CXX11_ABI
+47-  // Emulates an old COW string when the new std::string is in use.
+48:  struct __cow_string
+49-  {
+50-    union {
+51-      const char* _M_p;
+52-      char _M_bytes[sizeof(const char*)];
+53-    };
+54-
+55:    __cow_string();
+56:    __cow_string(const std::string&);
+57:    __cow_string(const char*, size_t);
+58:    __cow_string(const __cow_string&) _GLIBCXX_NOTHROW;
+59:    __cow_string& operator=(const __cow_string&) _GLIBCXX_NOTHROW;
+60:    ~__cow_string();
+61-#if __cplusplus >= 201103L
+62:    __cow_string(__cow_string&&) noexcept;
+63:    __cow_string& operator=(__cow_string&&) noexcept;
+64-#endif
+65-  };
+66-
+67-  typedef basic_string<char> __sso_string;
+68-#else // _GLIBCXX_USE_CXX11_ABI
+69:  typedef basic_string<char> __cow_string;
+70-
+71-  // Emulates a new SSO string when the old std::string is in use.
+72-  struct __sso_string
+73-  {
+74-    struct __str
+--
+95-#endif
+96-  };
+97-#endif // _GLIBCXX_USE_CXX11_ABI
+98-#else  // _GLIBCXX_USE_DUAL_ABI
+99-  typedef basic_string<char> __sso_string;
+100:  typedef basic_string<char> __cow_string;
+101-#endif
+102-
+103-  /**
+104-   * @addtogroup exceptions
+105-   * @{
+--
+108-  /** Logic errors represent problems in the internal logic of a program;
+109-   *  in theory, these are preventable, and even detectable before the
+110-   *  program runs (e.g., violations of class invariants).
+111-   *  @brief One of two subclasses of exception.
+112-   */
+113:  class logic_error : public exception
+114-  {
+115:    __cow_string _M_msg;
+116-
+117-  public:
+118-    /** Takes a character string describing the error.  */
+119-    explicit
+120-    logic_error(const string& __arg) _GLIBCXX_TXN_SAFE;
+--
+214-  /** Runtime errors represent problems outside the scope of a program;
+215-   *  they cannot be easily predicted and can generally only be caught as
+216-   *  the program executes.
+217-   *  @brief One of two subclasses of exception.
+218-   */
+219:  class runtime_error : public exception
+220-  {
+221:    __cow_string _M_msg;
+222-
+223-  public:
+224-    /** Takes a character string describing the error.  */
+225-    explicit
+226-    runtime_error(const string& __arg) _GLIBCXX_TXN_SAFE;
+
+LIBSTDCXX_COW_REP
+69-   *  A string looks like this:
+70-   *
+71-   *  @code
+72-   *                                        [_Rep]
+73:   *                                        _M_length
+74:   *   [basic_string<char_type>]            _M_capacity
+75:   *   _M_dataplus                          _M_refcount
+76-   *   _M_p ---------------->               unnamed array of char_type
+77-   *  @endcode
+78-   *
+79-   *  Where the _M_p points to the first character in the string, and
+--
+139-
+140-    private:
+141-      // _Rep: string representation
+142-      //   Invariants:
+143:      //   1. String really contains _M_length + 1 characters: due to 21.3.4
+144-      //      must be kept null-terminated.
+145:      //   2. _M_capacity >= _M_length
+146:      //      Allocated memory is always (_M_capacity + 1) * sizeof(_CharT).
+147:      //   3. _M_refcount has three states:
+148-      //      -1: leaked, one reference, no ref-copies allowed, non-const.
+149-      //       0: one reference, non-const.
+150-      //     n>0: n + 1 references, operations require a lock, const.
+151-      //   4. All fields==0 is an empty string, given the extra storage
+152-      //      beyond-the-end for a null terminator; thus, the shared
+153-      //      empty string representation needs no constructor.
+154-
+155:      struct _Rep_base
+156-      {
+157:	size_type		_M_length;
+158:	size_type		_M_capacity;
+159:	_Atomic_word		_M_refcount;
+160-      };
+161-
+162:      struct _Rep : _Rep_base
+163-      {
+164-	// Types:
+165-	typedef typename __gnu_cxx::__alloc_traits<_Alloc>::template
+166-	  rebind<char>::other _Raw_bytes_alloc;
+--
+198-	bool
+199-	_M_is_leaked() const _GLIBCXX_NOEXCEPT
+200-	{
+201-#if defined(__GTHREADS)
+202:	  // _M_refcount is mutated concurrently by _M_refcopy/_M_dispose,
+203-	  // so we need to use an atomic load. However, _M_is_leaked
+204-	  // predicate does not change concurrently (i.e. the string is either
+205-	  // leaked or not), so a relaxed load is enough.
+206:	  return __atomic_load_n(&this->_M_refcount, __ATOMIC_RELAXED) < 0;
+207-#else
+208:	  return this->_M_refcount < 0;
+209-#endif
+210-	}
+211-
+212-	bool
+213-	_M_is_shared() const _GLIBCXX_NOEXCEPT
+214-	{
+215-#if defined(__GTHREADS)
+216:	  // _M_refcount is mutated concurrently by _M_refcopy/_M_dispose,
+217-	  // so we need to use an atomic load. Another thread can drop last
+218-	  // but one reference concurrently with this check, so we need this
+219-	  // load to be acquire to synchronize with release fetch_and_add in
+220-	  // _M_dispose.
+221-	  if (!__gnu_cxx::__is_single_threaded())
+222:	    return __atomic_load_n(&this->_M_refcount, __ATOMIC_ACQUIRE) > 0;
+223-#endif
+224:	  return this->_M_refcount > 0;
+225-	}
+226-
+227-	void
+228-	_M_set_leaked() _GLIBCXX_NOEXCEPT
+229:	{ this->_M_refcount = -1; }
+230-
+231-	void
+232-	_M_set_sharable() _GLIBCXX_NOEXCEPT
+233:	{ this->_M_refcount = 0; }
+234-
+235-	void
+236-	_M_set_length_and_sharable(size_type __n) _GLIBCXX_NOEXCEPT
+237-	{
+--
+239-	  if (__builtin_expect(this != &_S_empty_rep(), false))
+240-#endif
+241-	    {
+242-	      this->_M_set_sharable();  // One reference.
+243:	      this->_M_length = __n;
+244-	      traits_type::assign(this->_M_refdata()[__n], _S_terminal);
+245-	      // grrr. (per 21.3.4)
+246-	      // You cannot leave those LWG people alone for a second.
+247-	    }
+--
+269-	  if (__builtin_expect(this != &_S_empty_rep(), false))
+270-#endif
+271-	    {
+272-	      // Be race-detector-friendly.  For more info see bits/c++config.
+273:	      _GLIBCXX_SYNCHRONIZATION_HAPPENS_BEFORE(&this->_M_refcount);
+274:	      // Decrement of _M_refcount is acq_rel, because:
+275-	      // - all but last decrements need to release to synchronize with
+276-	      //   the last decrement that will delete the object.
+277-	      // - the last decrement needs to acquire to synchronize with
+278-	      //   all the previous decrements.
+279-	      // - last but one decrement needs to release to synchronize with
+280-	      //   the acquire load in _M_is_shared that will conclude that
+281-	      //   the object is not shared anymore.
+282:	      if (__gnu_cxx::__exchange_and_add_dispatch(&this->_M_refcount,
+283-							 -1) <= 0)
+284-		{
+285:		  _GLIBCXX_SYNCHRONIZATION_HAPPENS_AFTER(&this->_M_refcount);
+286-		  _M_destroy(__a);
+287-		}
+288-	    }
+289-	}  // XXX MT
+--
+296-	{
+297-#if _GLIBCXX_FULLY_DYNAMIC_STRING == 0
+298-	  if (__builtin_expect(this != &_S_empty_rep(), false))
+299-#endif
+300:	    __gnu_cxx::__atomic_add_dispatch(&this->_M_refcount, 1);
+301-	  return _M_refdata();
+302-	}  // XXX MT
+303-
+304-	_CharT*
+--
+627-	// just share ownership with it by incrementing the reference count.
+628-	// If the rvalue string was the unique owner then there are exactly
+629-	// two owners now.
+630-	if (_M_rep()->_M_is_shared())
+631:	  __gnu_cxx::__atomic_add_dispatch(&_M_rep()->_M_refcount, 1);
+632-	else
+633:	  _M_rep()->_M_refcount = 1;
+634-#endif
+635-      }
+636-
+637-      /**
+--
+907-      size_type
+908-      size() const _GLIBCXX_NOEXCEPT
+909-      {
+910-#if _GLIBCXX_FULLY_DYNAMIC_STRING == 0 && __OPTIMIZE__
+911:	if (_S_empty_rep()._M_length != 0)
+912-	  __builtin_unreachable();
+913-#endif
+914:	return _M_rep()->_M_length;
+915-      }
+916-
+917-      ///  Returns the number of characters in the string, not including any
+918-      ///  null-termination.
+--
+1009-       *  before needing to allocate more memory.
+1010-       */
+1011-      size_type
+1012-      capacity() const _GLIBCXX_NOEXCEPT
+1013:      { return _M_rep()->_M_capacity; }
+1014-
+1015-      /**
+1016-       *  @brief  Attempt to preallocate enough memory for specified number of
+1017-       *          characters.
+--
+3152-	__try
+3153-	  {
+3154-	    while (__beg != __end)
+3155-	      {
+3156:		if (__len == __r->_M_capacity)
+3157-		  {
+3158-		    // Allocate more space.
+3159-		    _Rep* __another = _Rep::_S_create(__len + 1, __len, __a);
+3160-		    _M_copy(__another->_M_refdata(), __r->_M_refdata(), __len);
+--
+3460-    basic_string<_CharT, _Traits, _Alloc>::_Rep::
+3461-    _M_destroy(const _Alloc& __a) throw ()
+3462-    {
+3463-      const size_type __size = sizeof(_Rep_base)
+3464:			       + (this->_M_capacity + 1) * sizeof(_CharT);
+3465-      _Raw_bytes_alloc(__a).deallocate(reinterpret_cast<char*>(this), __size);
+3466-    }
+3467-
+3468-  template<typename _CharT, typename _Traits, typename _Alloc>
+--
+3634-      // NB: Might throw, but no worries about a leak, mate: _Rep()
+3635-      // does not throw.
+3636-      void* __place = _Raw_bytes_alloc(__alloc).allocate(__size);
+3637-      _Rep *__p = new (__place) _Rep;
+3638:      __p->_M_capacity = __capacity;
+3639-      // ABI compatibility - 3.4.x set in _S_create both
+3640:      // _M_refcount and _M_length.  All callers of _S_create
+3641:      // in basic_string.tcc then set just _M_length.
+3642:      // In 4.0.x and later both _M_refcount and _M_length
+3643-      // are initialized in the callers, unfortunately we can
+3644-      // have 3.4.x compiled code with _S_create callers inlined
+3645-      // calling 4.0.x+ _S_create.
+3646-      __p->_M_set_sharable();
+--
+3652-    basic_string<_CharT, _Traits, _Alloc>::_Rep::
+3653-    _M_clone(const _Alloc& __alloc, size_type __res)
+3654-    {
+3655-      // Requested capacity of the clone.
+3656:      const size_type __requested_cap = this->_M_length + __res;
+3657:      _Rep* __r = _Rep::_S_create(__requested_cap, this->_M_capacity,
+3658-				  __alloc);
+3659:      if (this->_M_length)
+3660:	_M_copy(__r->_M_refdata(), _M_refdata(), this->_M_length);
+3661-
+3662:      __r->_M_set_length_and_sharable(this->_M_length);
+3663-      return __r->_M_refdata();
+3664-    }
+3665-
+3666-  template<typename _CharT, typename _Traits, typename _Alloc>
+
+DESIGN_COMMENTS
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp-10-#include "new"
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp-11-#include <cstdlib>
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp-12-#include <cstring>
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp-13-#include <cstdint>
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp-14-#include <cstddef>
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp:15:#include "include/refstring.h" // from libc++
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp-16-
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp:17:static_assert(sizeof(std::__libcpp_refstring) == sizeof(const char *), "");
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp-18-
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp-19-namespace std  // purposefully not using versioning namespace
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp-20-{
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp-21-
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp-22-logic_error::~logic_error() noexcept {}
+--
+codes/llvm/libcxx/src/include/refstring.h-13-#include <__config>
+codes/llvm/libcxx/src/include/refstring.h-14-#include <cstddef>
+codes/llvm/libcxx/src/include/refstring.h-15-#include <cstring>
+codes/llvm/libcxx/src/include/refstring.h-16-#include <stdexcept>
+codes/llvm/libcxx/src/include/refstring.h-17-
+codes/llvm/libcxx/src/include/refstring.h:18:// MacOS and iOS used to ship with libstdc++, and still support old applications
+codes/llvm/libcxx/src/include/refstring.h:19:// linking against libstdc++. The libc++ and libstdc++ exceptions are supposed
+codes/llvm/libcxx/src/include/refstring.h:20:// to be ABI compatible, such that they can be thrown from one library and caught
+codes/llvm/libcxx/src/include/refstring.h-21-// in the other.
+codes/llvm/libcxx/src/include/refstring.h-22-//
+codes/llvm/libcxx/src/include/refstring.h:23:// For that reason, we must look for libstdc++ in the same process and if found,
+codes/llvm/libcxx/src/include/refstring.h-24-// check the string stored in the exception object to see if it is the GCC empty
+codes/llvm/libcxx/src/include/refstring.h-25-// string singleton before manipulating the reference count. This is done so that
+codes/llvm/libcxx/src/include/refstring.h:26:// if an exception is created with a zero-length string in libstdc++, libc++abi
+codes/llvm/libcxx/src/include/refstring.h-27-// won't try to delete the memory.
+codes/llvm/libcxx/src/include/refstring.h-28-#if defined(__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__) || defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
+codes/llvm/libcxx/src/include/refstring.h-29-#  define _LIBCPP_CHECK_FOR_GCC_EMPTY_STRING_STORAGE
+codes/llvm/libcxx/src/include/refstring.h-30-#  include <dlfcn.h>
+codes/llvm/libcxx/src/include/refstring.h-31-#  include <mach-o/dyld.h>
+codes/llvm/libcxx/src/include/refstring.h-32-#endif
+codes/llvm/libcxx/src/include/refstring.h-33-
+codes/llvm/libcxx/src/include/refstring.h-34-_LIBCPP_BEGIN_NAMESPACE_STD
+codes/llvm/libcxx/src/include/refstring.h-35-
+codes/llvm/libcxx/src/include/refstring.h:36:namespace __refstring_imp {
+codes/llvm/libcxx/src/include/refstring.h-37-namespace {
+codes/llvm/libcxx/src/include/refstring.h-38-typedef int count_t;
+codes/llvm/libcxx/src/include/refstring.h-39-
+codes/llvm/libcxx/src/include/refstring.h-40-struct _Rep_base {
+codes/llvm/libcxx/src/include/refstring.h-41-  std::size_t len;
+--
+codes/llvm/libcxx/src/include/refstring.h-53-  return data + sizeof(*rep);
+codes/llvm/libcxx/src/include/refstring.h-54-}
+codes/llvm/libcxx/src/include/refstring.h-55-
+codes/llvm/libcxx/src/include/refstring.h-56-#if defined(_LIBCPP_CHECK_FOR_GCC_EMPTY_STRING_STORAGE)
+codes/llvm/libcxx/src/include/refstring.h-57-inline const char* compute_gcc_empty_string_storage() noexcept {
+codes/llvm/libcxx/src/include/refstring.h:58:  void* handle = dlopen("/usr/lib/libstdc++.6.dylib", RTLD_NOLOAD);
+codes/llvm/libcxx/src/include/refstring.h-59-  if (handle == nullptr)
+codes/llvm/libcxx/src/include/refstring.h-60-    return nullptr;
+codes/llvm/libcxx/src/include/refstring.h-61-  void* sym = dlsym(handle, "_ZNSs4_Rep20_S_empty_rep_storageE");
+codes/llvm/libcxx/src/include/refstring.h-62-  if (sym == nullptr)
+codes/llvm/libcxx/src/include/refstring.h-63-    return nullptr;
+--
+codes/llvm/libcxx/src/include/refstring.h-69-  return p;
+codes/llvm/libcxx/src/include/refstring.h-70-}
+codes/llvm/libcxx/src/include/refstring.h-71-#endif
+codes/llvm/libcxx/src/include/refstring.h-72-
+codes/llvm/libcxx/src/include/refstring.h-73-} // namespace
+codes/llvm/libcxx/src/include/refstring.h:74:} // namespace __refstring_imp
+codes/llvm/libcxx/src/include/refstring.h-75-
+codes/llvm/libcxx/src/include/refstring.h:76:using namespace __refstring_imp;
+codes/llvm/libcxx/src/include/refstring.h-77-
+codes/llvm/libcxx/src/include/refstring.h:78:inline __libcpp_refstring::__libcpp_refstring(const char* msg) {
+codes/llvm/libcxx/src/include/refstring.h-79-  std::size_t len = strlen(msg);
+codes/llvm/libcxx/src/include/refstring.h-80-  _Rep_base* rep  = static_cast<_Rep_base*>(::operator new(sizeof(*rep) + len + 1));
+codes/llvm/libcxx/src/include/refstring.h-81-  rep->len        = len;
+codes/llvm/libcxx/src/include/refstring.h-82-  rep->cap        = len;
+codes/llvm/libcxx/src/include/refstring.h-83-  rep->count      = 0;
+codes/llvm/libcxx/src/include/refstring.h-84-  char* data      = data_from_rep(rep);
+codes/llvm/libcxx/src/include/refstring.h-85-  std::memcpy(data, msg, len + 1);
+codes/llvm/libcxx/src/include/refstring.h-86-  __imp_ = data;
+codes/llvm/libcxx/src/include/refstring.h-87-}
+codes/llvm/libcxx/src/include/refstring.h-88-
+codes/llvm/libcxx/src/include/refstring.h:89:inline __libcpp_refstring::__libcpp_refstring(const __libcpp_refstring& s) noexcept : __imp_(s.__imp_) {
+codes/llvm/libcxx/src/include/refstring.h-90-  if (__uses_refcount())
+codes/llvm/libcxx/src/include/refstring.h-91-    __libcpp_atomic_add(&rep_from_data(__imp_)->count, 1);
+codes/llvm/libcxx/src/include/refstring.h-92-}
+codes/llvm/libcxx/src/include/refstring.h-93-
+codes/llvm/libcxx/src/include/refstring.h:94:inline __libcpp_refstring& __libcpp_refstring::operator=(__libcpp_refstring const& s) noexcept {
+codes/llvm/libcxx/src/include/refstring.h-95-  bool adjust_old_count     = __uses_refcount();
+codes/llvm/libcxx/src/include/refstring.h-96-  struct _Rep_base* old_rep = rep_from_data(__imp_);
+codes/llvm/libcxx/src/include/refstring.h-97-  __imp_                    = s.__imp_;
+codes/llvm/libcxx/src/include/refstring.h-98-  if (__uses_refcount())
+codes/llvm/libcxx/src/include/refstring.h-99-    __libcpp_atomic_add(&rep_from_data(__imp_)->count, 1);
+--
+codes/llvm/libcxx/src/include/refstring.h-103-    }
+codes/llvm/libcxx/src/include/refstring.h-104-  }
+codes/llvm/libcxx/src/include/refstring.h-105-  return *this;
+codes/llvm/libcxx/src/include/refstring.h-106-}
+codes/llvm/libcxx/src/include/refstring.h-107-
+codes/llvm/libcxx/src/include/refstring.h:108:inline __libcpp_refstring::~__libcpp_refstring() {
+codes/llvm/libcxx/src/include/refstring.h-109-  if (__uses_refcount()) {
+codes/llvm/libcxx/src/include/refstring.h-110-    _Rep_base* rep = rep_from_data(__imp_);
+codes/llvm/libcxx/src/include/refstring.h-111-    if (__libcpp_atomic_add(&rep->count, count_t(-1)) < 0) {
+codes/llvm/libcxx/src/include/refstring.h-112-      ::operator delete(rep);
+codes/llvm/libcxx/src/include/refstring.h-113-    }
+codes/llvm/libcxx/src/include/refstring.h-114-  }
+codes/llvm/libcxx/src/include/refstring.h-115-}
+codes/llvm/libcxx/src/include/refstring.h-116-
+codes/llvm/libcxx/src/include/refstring.h:117:inline bool __libcpp_refstring::__uses_refcount() const {
+codes/llvm/libcxx/src/include/refstring.h-118-#if defined(_LIBCPP_CHECK_FOR_GCC_EMPTY_STRING_STORAGE)
+codes/llvm/libcxx/src/include/refstring.h-119-  return __imp_ != get_gcc_empty_string_storage();
+codes/llvm/libcxx/src/include/refstring.h-120-#else
+codes/llvm/libcxx/src/include/refstring.h-121-  return true;
+codes/llvm/libcxx/src/include/refstring.h-122-#endif
+--
+codes/llvm/libcxx/src/CMakeLists.txt-16-  functional.cpp
+codes/llvm/libcxx/src/CMakeLists.txt-17-  hash.cpp
+codes/llvm/libcxx/src/CMakeLists.txt-18-  include/apple_availability.h
+codes/llvm/libcxx/src/CMakeLists.txt-19-  include/atomic_support.h
+codes/llvm/libcxx/src/CMakeLists.txt-20-  include/config_elast.h
+codes/llvm/libcxx/src/CMakeLists.txt:21:  include/refstring.h
+codes/llvm/libcxx/src/CMakeLists.txt-22-  include/ryu/common.h
+codes/llvm/libcxx/src/CMakeLists.txt-23-  include/ryu/d2fixed.h
+codes/llvm/libcxx/src/CMakeLists.txt-24-  include/ryu/d2fixed_full_table.h
+codes/llvm/libcxx/src/CMakeLists.txt-25-  include/ryu/d2s.h
+codes/llvm/libcxx/src/CMakeLists.txt-26-  include/ryu/d2s_full_table.h
+--
+codes/llvm/libcxx/src/new_handler.cpp-17-#elif defined(LIBCXX_BUILDING_LIBCXXABI)
+codes/llvm/libcxx/src/new_handler.cpp-18-// nothing to do, we use the one from libc++abi
+codes/llvm/libcxx/src/new_handler.cpp-19-#elif defined(LIBCXXRT)
+codes/llvm/libcxx/src/new_handler.cpp-20-#  define _LIBPCPP_DEFINE_NEW_HANDLER
+codes/llvm/libcxx/src/new_handler.cpp-21-#elif defined(__GLIBCXX__)
+codes/llvm/libcxx/src/new_handler.cpp:22:// nothing to do, we use the one from libstdc++/libsupc++
+codes/llvm/libcxx/src/new_handler.cpp-23-#else
+codes/llvm/libcxx/src/new_handler.cpp-24-#  define _LIBPCPP_DEFINE_NEW_HANDLER
+codes/llvm/libcxx/src/new_handler.cpp-25-#endif
+codes/llvm/libcxx/src/new_handler.cpp-26-
+codes/llvm/libcxx/src/new_handler.cpp-27-#if defined(_LIBPCPP_DEFINE_NEW_HANDLER)
+--
+codes/llvm/libcxx/src/string.cpp-23-#if _LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION < 14
+codes/llvm/libcxx/src/string.cpp-24-
+codes/llvm/libcxx/src/string.cpp-25-template <bool>
+codes/llvm/libcxx/src/string.cpp-26-struct __basic_string_common;
+codes/llvm/libcxx/src/string.cpp-27-
+codes/llvm/libcxx/src/string.cpp:28:// The struct isn't declared anymore in the headers. It's only here for ABI compatibility.
+codes/llvm/libcxx/src/string.cpp-29-template <>
+codes/llvm/libcxx/src/string.cpp-30-struct __basic_string_common<true> {
+codes/llvm/libcxx/src/string.cpp-31-  [[noreturn]] _LIBCPP_EXPORTED_FROM_ABI void __throw_length_error() const;
+codes/llvm/libcxx/src/string.cpp-32-  [[noreturn]] _LIBCPP_EXPORTED_FROM_ABI void __throw_out_of_range() const;
+codes/llvm/libcxx/src/string.cpp-33-};
+--
+codes/llvm/libcxx/src/memory.cpp-135-
+codes/llvm/libcxx/src/memory.cpp-136-#if _LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION < 21
+codes/llvm/libcxx/src/memory.cpp-137-
+codes/llvm/libcxx/src/memory.cpp-138-_LIBCPP_DIAGNOSTIC_PUSH
+codes/llvm/libcxx/src/memory.cpp-139-_LIBCPP_CLANG_DIAGNOSTIC_IGNORED("-Wmissing-prototypes")
+codes/llvm/libcxx/src/memory.cpp:140:// This function only exists for ABI compatibility and we therefore don't provide a declaration in the headers
+codes/llvm/libcxx/src/memory.cpp-141-_LIBCPP_EXPORTED_FROM_ABI void* align(size_t alignment, size_t size, void*& ptr, size_t& space) {
+codes/llvm/libcxx/src/memory.cpp-142-  return __align_inline::align(alignment, size, ptr, space);
+codes/llvm/libcxx/src/memory.cpp-143-}
+codes/llvm/libcxx/src/memory.cpp-144-_LIBCPP_DIAGNOSTIC_POP
+codes/llvm/libcxx/src/memory.cpp-145-
+--
+codes/llvm/libcxx/src/condition_variable_destructor.cpp-7-//===----------------------------------------------------------------------===//
+codes/llvm/libcxx/src/condition_variable_destructor.cpp-8-
+codes/llvm/libcxx/src/condition_variable_destructor.cpp-9-// Define ~condition_variable.
+codes/llvm/libcxx/src/condition_variable_destructor.cpp-10-//
+codes/llvm/libcxx/src/condition_variable_destructor.cpp-11-// On some platforms ~condition_variable has been made trivial and the
+codes/llvm/libcxx/src/condition_variable_destructor.cpp:12:// definition is only provided for ABI compatibility.
+codes/llvm/libcxx/src/condition_variable_destructor.cpp-13-
+codes/llvm/libcxx/src/condition_variable_destructor.cpp-14-#include <__config>
+codes/llvm/libcxx/src/condition_variable_destructor.cpp-15-#include <__thread/support.h>
+codes/llvm/libcxx/src/condition_variable_destructor.cpp-16-
+codes/llvm/libcxx/src/condition_variable_destructor.cpp-17-#if _LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION < 9 || !_LIBCPP_HAS_TRIVIAL_CONDVAR_DESTRUCTION
+--
+codes/llvm/libcxx/src/charconv.cpp-18-
+codes/llvm/libcxx/src/charconv.cpp-19-namespace __itoa {
+codes/llvm/libcxx/src/charconv.cpp-20-
+codes/llvm/libcxx/src/charconv.cpp-21-_LIBCPP_DIAGNOSTIC_PUSH
+codes/llvm/libcxx/src/charconv.cpp-22-_LIBCPP_CLANG_DIAGNOSTIC_IGNORED("-Wmissing-prototypes")
+codes/llvm/libcxx/src/charconv.cpp:23:// These functions exist for ABI compatibility, so we don't ever want a declaration prior to the definition.
+codes/llvm/libcxx/src/charconv.cpp-24-_LIBCPP_EXPORTED_FROM_ABI char* __u32toa(uint32_t value, char* buffer) noexcept { return __base_10_u32(buffer, value); }
+codes/llvm/libcxx/src/charconv.cpp-25-_LIBCPP_EXPORTED_FROM_ABI char* __u64toa(uint64_t value, char* buffer) noexcept { return __base_10_u64(buffer, value); }
+codes/llvm/libcxx/src/charconv.cpp-26-_LIBCPP_DIAGNOSTIC_POP
+codes/llvm/libcxx/src/charconv.cpp-27-
+codes/llvm/libcxx/src/charconv.cpp-28-} // namespace __itoa
+--
+codes/llvm/libcxx/src/optional.cpp-19-
+codes/llvm/libcxx/src/optional.cpp-20-#include <__config>
+codes/llvm/libcxx/src/optional.cpp-21-
+codes/llvm/libcxx/src/optional.cpp-22-#if _LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION < 7
+codes/llvm/libcxx/src/optional.cpp-23-
+codes/llvm/libcxx/src/optional.cpp:24://  Preserve std::experimental::bad_optional_access for ABI compatibility
+codes/llvm/libcxx/src/optional.cpp-25-//  Even though it no longer exists in a header file
+codes/llvm/libcxx/src/optional.cpp-26-_LIBCPP_BEGIN_NAMESPACE_EXPERIMENTAL
+codes/llvm/libcxx/src/optional.cpp-27-
+codes/llvm/libcxx/src/optional.cpp-28-class _LIBCPP_EXPORTED_FROM_ABI bad_optional_access : public std::logic_error {
+codes/llvm/libcxx/src/optional.cpp-29-public:
+--
+codes/llvm/libcxx/src/any.cpp-14-
+codes/llvm/libcxx/src/any.cpp-15-#include <__config>
+codes/llvm/libcxx/src/any.cpp-16-
+codes/llvm/libcxx/src/any.cpp-17-#if _LIBCPP_AVAILABILITY_MINIMUM_HEADER_VERSION < 7
+codes/llvm/libcxx/src/any.cpp-18-
+codes/llvm/libcxx/src/any.cpp:19://  Preserve std::experimental::any_bad_cast for ABI compatibility
+codes/llvm/libcxx/src/any.cpp-20-//  Even though it no longer exists in a header file
+codes/llvm/libcxx/src/any.cpp-21-_LIBCPP_BEGIN_NAMESPACE_LFTS
+codes/llvm/libcxx/src/any.cpp-22-
+codes/llvm/libcxx/src/any.cpp-23-class _LIBCPP_EXPORTED_FROM_ABI bad_any_cast : public bad_cast {
+codes/llvm/libcxx/src/any.cpp-24-public:
+--
+codes/llvm/libcxx/src/mutex_destructor.cpp-7-//===----------------------------------------------------------------------===//
+codes/llvm/libcxx/src/mutex_destructor.cpp-8-
+codes/llvm/libcxx/src/mutex_destructor.cpp-9-// Define ~mutex.
+codes/llvm/libcxx/src/mutex_destructor.cpp-10-//
+codes/llvm/libcxx/src/mutex_destructor.cpp-11-// On some platforms ~mutex has been made trivial and the definition is only
+codes/llvm/libcxx/src/mutex_destructor.cpp:12:// provided for ABI compatibility.
+codes/llvm/libcxx/src/mutex_destructor.cpp-13-//
+codes/llvm/libcxx/src/mutex_destructor.cpp-14-// In order to avoid ODR violations within libc++ itself, we need to ensure
+codes/llvm/libcxx/src/mutex_destructor.cpp-15-// that *nothing* sees the non-trivial mutex declaration. For this reason
+codes/llvm/libcxx/src/mutex_destructor.cpp-16-// we re-declare the entire class in this file instead of using
+codes/llvm/libcxx/src/mutex_destructor.cpp-17-// _LIBCPP_BUILDING_LIBRARY to change the definition in the headers.
+--
+codes/llvm/libcxx/src/include/refstring.h-13-#include <__config>
+codes/llvm/libcxx/src/include/refstring.h-14-#include <cstddef>
+codes/llvm/libcxx/src/include/refstring.h-15-#include <cstring>

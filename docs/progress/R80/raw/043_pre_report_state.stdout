@@ -1,0 +1,239 @@
+?? README_UNPACK.md
+?? docs/hq/
+?? docs/plan/
+?? docs/progress/R66/code/__pycache__/
+?? gbs_llvm.conf
+
+WEEKEND_STATUS
+# 周末任务状态（2026-08-29 ~ 08-31）
+
+| 任务 | 状态 | 用时 | 产物路径 | 备注 |
+|---|---|---|---|---|
+| W1 / R77 | `PARTIAL` | 约 2 小时 24 分 | `docs/progress/R77/` | patched 完整；baseline libc++ 7,000/11,321 后 SDB 连接失败，已停止并释放开发板 |
+| W2 / R78 | `PARTIAL` | 约 17 分钟 | `docs/progress/R78/` | 两架构核心矩阵完成、真实 ICU 共存通过；pen-wave 因板镜像缺 GLES 未进入 API |
+| W3 / R79 | `COMPLETED` | 约 53 分钟 | `docs/progress/R79/` | 371 包全量静态扫描；3 个生产源码包直接 ASYNC，2 个确认 C++ 风险形态 |
+| W4 / R80 | `PENDING` | 0 | `docs/progress/R80/` | 独立任务 |
+
+## 状态更新
+
+### 2026-08-28T18:34:34+08:00
+
+- 当前任务：W1 / R77；
+- 资源门禁通过；开发板 R68 遗留进程为零，残留目录已清理并核验；
+- SDB 执行器已加入 stdin 文件透传、EOF 保证和单测 120 秒硬上限；
+- `stdin-is-piped.sh.cpp` 与 `cin.sh.cpp` 均通过，2 秒超时探针返回 124 且无远端残留；
+- 旧 5,877 项中没有任何 stdin 依赖测试完成，判定这些结果不受 stdin 缺陷污染；
+- 下一步：按批次续跑余项并保存断点。
+
+### 2026-08-28T18:50:20+08:00
+
+- 当前任务：W1 / R77；
+- lit 自带逐测试超时因环境缺少 `psutil` 在配置阶段退出 2；未安装依赖，移除该不受支持选项，保留 SDB 执行器的逐测试 110 秒硬超时；
+- patched armv7l 的旧 5,877 项与两项执行器门禁不重跑，余下 5,442 项分为 11 批；已完成 2 批，当前执行第 3 批；
+- batch-001：490 PASS / 6 UNSUPPORTED / 4 FAIL；失败先保留待 baseline 逐项对照；batch-002：500 项、lit 退出 0；
+- baseline 清单已生成：libc++ 11,321 项（23 批），libc++abi 81 项（1 批）；
+- 可用内存约 21 GiB，未触发资源停止。
+
+### 2026-08-28T20:33:31+08:00
+
+- 当前任务：W1 / R77；
+- patched armv7l libc++ 已完成：11,321/11,321，无缺失、无重复；10,017 PASS / 214 FAIL / 1,061 UNSUPPORTED / 29 XFAIL；
+- patched 动态加载路径已以 `LD_DEBUG=libs` 确认，板端精确任务目录随后清理并核验无文件、无进程；
+- baseline 运行库主机/板端 SHA256 一致；baseline libc++ 已完成 11/23 批，第 12 批运行中；
+- 未发生 SDB 连接中断；可用内存保持约 20 GiB，未触发资源停止；
+- 现有失败全部保留待两组合逐项对照，尚未归因。
+
+### 2026-08-28T20:58:25+08:00
+
+- W1 / R77 结论：`PARTIAL`；
+- patched armv7l libc++ 11,321/11,321、libc++abi 81/81；baseline libc++
+  完成 7,000/11,321，batch-015 遇 `SDB_CONNECTION_FAILURE`，驱动退出 90；
+- 按板卡异常纪律未重试：baseline libc++abi 未启动，剩余项均记
+  `NOT_OBSERVED`；
+- 7,000 项重叠集合中无“基线 PASS、补丁失败”：135 个补丁失败为基线同样
+  失败，79 个补丁失败因基线未覆盖而无法判断；
+- 精确任务目录已删除，任务相关进程为零，开发板已释放；下一步封存 R77 并
+  独立提交、推送后开始 W2。
+
+### 2026-08-28T21:20:28+08:00
+
+- W2 / R78 结论：`PARTIAL`；
+- armv7l 与 x86_64 的受控正常 C ABI、跨界取消均退出 0 且行为断言通过；
+  两侧 guard 析构各一次；
+- 两架构跨界普通异常均未被相同源码类型捕获，进入 catch-all 并退出 12，
+  支持“共载可行、普通 C++ 语义不得跨界”的边界；
+- armv7l 板上真实 ICU（直接依赖 libstdc++）由补丁 libc++ 主程序通过 C API
+  调用成功，两套运行时加载证据齐全；
+- 实际 pen-wave 与源包 hash 一致，但板镜像缺 `libGLESv2.so.2`，API 未进入；
+- R78 精确目录已删除，相关进程为零，开发板已释放；下一步封存、独立提交、
+  推送 R78 后开始无需板卡的 W3。
+
+### 2026-08-28T22:16:14+08:00
+
+- W3 / R79 完成：冻结 371 个成功提取 source RPM、约 49 GiB 展开树全量只读
+  token 扫描正常退出 0；
+- 418 行候选涉及 45 包；直接字面 ASYNC setter 涉及 5 包，其中 3 个生产
+  源码包、2 个内核测试包；
+- 生产命中为 lightweight-web-engine、LLVM OpenMP、Mesa；前两者确认是 C++
+  异步可取消线程与取消路径，Mesa 确认异步线程但已见栈为 C 源码；
+- 只陈述静态事实，没有构建、运行、修改产品或提出处置建议；下一步封存、
+  独立提交、推送 R79 后开始 W4。
+
+WEEKEND_QUESTIONS
+# 周末任务疑问（2026-08-29 ~ 08-31）
+
+当前无待人工裁决疑问。
+
+R80_TOP_SIZE
+314M	progress/R80
+180K	progress/R80/commands
+3.0M	progress/R80/raw
+24K	progress/R80/code
+20K	progress/R80/tables
+311M	progress/R80/build
+
+R80_NONBUILD_FILES
+0	progress/R80/raw/000_initialize_r80.stderr
+0	progress/R80/raw/001_resource_gate.stderr
+0	progress/R80/raw/002_locate_d09_d11_prior_evidence.stderr
+0	progress/R80/raw/003_inspect_prior_evidence.stderr
+0	progress/R80/raw/004_read_d09_d11_records.stderr
+0	progress/R80/raw/005_extract_common17_and_inputs.stderr
+0	progress/R80/raw/006_show_abi_outputs_and_common17.stderr
+0	progress/R80/raw/008_inspect_and_reconstruct_common17.stderr
+0	progress/R80/raw/009_locate_common17_source_definitions.stderr
+0	progress/R80/raw/010_capture_source_implementations.stderr
+0	progress/R80/raw/011_targeted_source_and_elf_identity.stderr
+0	progress/R80/raw/012_capture_libcxx_runtime_implementations.stderr
+0	progress/R80/raw/013_key_libcxx_runtime_excerpts.stderr
+0	progress/R80/raw/014_compare_refcount_string_abi.stderr
+0	progress/R80/raw/015_compare_exception_runtime_semantics.stderr
+0	progress/R80/raw/016_read_r80_task_and_d11_prior.stderr
+0	progress/R80/raw/018_locate_compiler_and_source_corpus.stderr
+0	progress/R80/raw/019_precise_compiler_and_corpus_check.stderr
+0	progress/R80/raw/022_precise_clang_lookup.stderr
+0	progress/R80/raw/023_locate_tizen_clang_precisely.stderr
+0	progress/R80/raw/024_find_existing_clang_in_buildroots.stderr
+0	progress/R80/raw/025_check_llvm_bins_and_corpus.stderr
+0	progress/R80/raw/026_find_clang_rpm_artifact.stderr
+0	progress/R80/raw/028_fix_cached_clang_library_path.stderr
+0	progress/R80/raw/029_locate_llvm_runtime_rpm.stderr
+0	progress/R80/raw/031_cached_clang_missing_libraries.stderr
+0	progress/R80/raw/033_build_run_libcxx_layout_probe.stderr
+0	progress/R80/raw/034_compare_layout_outputs.stderr
+0	progress/R80/raw/036_retry_cross_layout_case_with_deque.stderr
+0	progress/R80/raw/037_header_definition_scale.stderr
+0	progress/R80/raw/038_platform_layout_trigger_evidence.stderr
+0	progress/R80/raw/039_extract_boost_provider_consumers.stderr
+0	progress/R80/raw/040_summarize_boost_trigger_edges.stderr
+0	progress/R80/raw/041_rebuild_extended_layout_probe.stderr
+0	progress/R80/raw/042_build_run_d09_behavior_probe.stderr
+0	progress/R80/raw/043_pre_report_state.stderr
+12	progress/R80/raw/032_extract_libxml_and_verify_clang.stderr
+36	progress/R80/raw/000_initialize_r80.stdout
+69	progress/R80/raw/007_reconstruct_common17.stdout
+92	progress/R80/raw/017_check_compilers_and_platform_edges.stderr
+131	progress/R80/raw/007_reconstruct_common17.stderr
+146	progress/R80/raw/024_find_existing_clang_in_buildroots.stdout
+155	progress/R80/commands/028_fix_cached_clang_library_path.log
+162	progress/R80/commands/001_resource_gate.log
+169	progress/R80/raw/d09_libcxx_run.txt
+169	progress/R80/raw/d09_libstdcxx_run.txt
+174	progress/R80/raw/030_extract_libllvm_and_verify_clang.stderr
+175	progress/R80/commands/043_pre_report_state.log
+178	progress/R80/raw/001_resource_gate.stdout
+180	progress/R80/commands/019_precise_compiler_and_corpus_check.log
+185	progress/R80/commands/016_read_r80_task_and_d11_prior.log
+190	progress/R80/raw/027_extract_cached_clang_tool.stderr
+191	progress/R80/commands/010_capture_source_implementations.log
+192	progress/R80/commands/026_find_clang_rpm_artifact.log
+194	progress/R80/commands/025_check_llvm_bins_and_corpus.log
+194	progress/R80/raw/023_locate_tizen_clang_precisely.stdout
+196	progress/R80/commands/023_locate_tizen_clang_precisely.log
+196	progress/R80/commands/029_locate_llvm_runtime_rpm.log
+198	progress/R80/commands/024_find_existing_clang_in_buildroots.log
+199	progress/R80/commands/011_targeted_source_and_elf_identity.log
+199	progress/R80/commands/012_capture_libcxx_runtime_implementations.log
+202	progress/R80/commands/030_extract_libllvm_and_verify_clang.log
+202	progress/R80/commands/032_extract_libxml_and_verify_clang.log
+204	progress/R80/commands/006_show_abi_outputs_and_common17.log
+204	progress/R80/commands/008_inspect_and_reconstruct_common17.log
+207	progress/R80/commands/017_check_compilers_and_platform_edges.log
+211	progress/R80/commands/013_key_libcxx_runtime_excerpts.log
+211	progress/R80/commands/018_locate_compiler_and_source_corpus.log
+215	progress/R80/commands/022_precise_clang_lookup.log
+217	progress/R80/commands/021_find_config_site_and_retry_layout.log
+217	progress/R80/commands/040_summarize_boost_trigger_edges.log
+218	progress/R80/commands/007_reconstruct_common17.log
+219	progress/R80/commands/034_compare_layout_outputs.log
+221	progress/R80/commands/014_compare_refcount_string_abi.log
+223	progress/R80/commands/031_cached_clang_missing_libraries.log
+224	progress/R80/commands/042_build_run_d09_behavior_probe.log
+228	progress/R80/commands/027_extract_cached_clang_tool.log
+230	progress/R80/commands/000_initialize_r80.log
+230	progress/R80/commands/005_extract_common17_and_inputs.log
+230	progress/R80/commands/039_extract_boost_provider_consumers.log
+232	progress/R80/commands/036_retry_cross_layout_case_with_deque.log
+237	progress/R80/commands/038_platform_layout_trigger_evidence.log
+242	progress/R80/commands/035_build_run_cross_layout_case.log
+243	progress/R80/commands/041_rebuild_extended_layout_probe.log
+246	progress/R80/commands/015_compare_exception_runtime_semantics.log
+247	progress/R80/commands/033_build_run_libcxx_layout_probe.log
+255	progress/R80/commands/037_header_definition_scale.log
+267	progress/R80/commands/009_locate_common17_source_definitions.log
+279	progress/R80/commands/003_inspect_prior_evidence.log
+301	progress/R80/commands/020_build_run_layout_probe.log
+302	progress/R80/raw/020_build_run_layout_probe.stderr
+313	progress/R80/raw/025_check_llvm_bins_and_corpus.stdout
+349	progress/R80/raw/037_header_definition_scale.stdout
+360	progress/R80/commands/004_read_d09_d11_records.log
+400	progress/R80/code/layout_boundary.h
+401	progress/R80/code/layout_provider.cpp
+431	progress/R80/raw/028_fix_cached_clang_library_path.stdout
+438	progress/R80/raw/035_build_run_cross_layout_case.stderr
+468	progress/R80/raw/042_build_run_d09_behavior_probe.stdout
+472	progress/R80/commands/002_locate_d09_d11_prior_evidence.log
+513	progress/R80/raw/032_extract_libxml_and_verify_clang.stdout
+535	progress/R80/code/layout_consumer.cpp
+554	progress/R80/raw/021_find_config_site_and_retry_layout.stdout
+721	progress/R80/raw/030_extract_libllvm_and_verify_clang.stdout
+897	progress/R80/raw/layout_libcxx.tsv
+898	progress/R80/raw/layout_libstdcxx.tsv
+1091	progress/R80/raw/040_summarize_boost_trigger_edges.stdout
+1183	progress/R80/raw/034_compare_layout_outputs.stdout
+1310	progress/R80/tables/d11_layout_comparison.tsv
+1331	progress/R80/code/d09_behavior_probe.cpp
+1392	progress/R80/raw/041_rebuild_extended_layout_probe.stdout
+1452	progress/R80/raw/033_build_run_libcxx_layout_probe.stdout
+1559	progress/R80/raw/020_build_run_layout_probe.stdout
+1686	progress/R80/raw/029_locate_llvm_runtime_rpm.stdout
+1944	progress/R80/raw/035_build_run_cross_layout_case.stdout
+1960	progress/R80/raw/036_retry_cross_layout_case_with_deque.stdout
+2424	progress/R80/raw/006_show_abi_outputs_and_common17.stdout
+2575	progress/R80/code/layout_probe.cpp
+2628	progress/R80/tables/d11_header_object_families.tsv
+3174	progress/R80/raw/003_inspect_prior_evidence.stdout
+3531	progress/R80/raw/031_cached_clang_missing_libraries.stdout
+4839	progress/R80/raw/043_pre_report_state.stdout
+5393	progress/R80/raw/026_find_clang_rpm_artifact.stdout
+5493	progress/R80/raw/008_inspect_and_reconstruct_common17.stdout
+5739	progress/R80/raw/022_precise_clang_lookup.stdout
+5943	progress/R80/tables/d09_common17.tsv
+7948	progress/R80/raw/027_extract_cached_clang_tool.stdout
+10289	progress/R80/raw/017_check_compilers_and_platform_edges.stdout
+12346	progress/R80/raw/011_targeted_source_and_elf_identity.stdout
+12939	progress/R80/raw/013_key_libcxx_runtime_excerpts.stdout
+18509	progress/R80/raw/009_locate_common17_source_definitions.stdout
+25740	progress/R80/raw/019_precise_compiler_and_corpus_check.stdout
+31077	progress/R80/raw/014_compare_refcount_string_abi.stdout
+31640	progress/R80/raw/015_compare_exception_runtime_semantics.stdout
+33099	progress/R80/raw/016_read_r80_task_and_d11_prior.stdout
+33296	progress/R80/raw/012_capture_libcxx_runtime_implementations.stdout
+35126	progress/R80/raw/004_read_d09_d11_records.stdout
+41433	progress/R80/raw/010_capture_source_implementations.stdout
+44624	progress/R80/raw/018_locate_compiler_and_source_corpus.stdout
+126552	progress/R80/raw/002_locate_d09_d11_prior_evidence.stdout
+146234	progress/R80/raw/039_extract_boost_provider_consumers.stdout
+348398	progress/R80/raw/005_extract_common17_and_inputs.stdout
+799345	progress/R80/raw/021_find_config_site_and_retry_layout.stderr
+1161972	progress/R80/raw/038_platform_layout_trigger_evidence.stdout

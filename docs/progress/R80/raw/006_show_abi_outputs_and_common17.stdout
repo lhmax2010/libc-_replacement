@@ -1,0 +1,46 @@
+-rw-rw-r-- 1 toolchain toolchain 1545109 Aug 26 11:42 docs/progress/R66/tables/x86_64_abi_only.tsv
+-rw-rw-r-- 1 toolchain toolchain     209 Aug 26 11:42 docs/progress/R66/tables/x86_64_abi_summary.tsv
+-rw-rw-r-- 1 toolchain toolchain    1193 Aug 26 11:42 docs/progress/R66/tables/x86_64_abi_version_nodes.tsv
+
+SCRIPT_OUTPUT_NAMES
+78:    prefix = args.output_prefix
+79:    write(prefix + "_only.tsv", detail)
+80:    summary = [["metric", "libstdc++", "libc++"],
+83:               ["exact_mangled_common", len(set(left)&set(right)), len(set(left)&set(right))]]
+85:        summary.append(["only_" + category, counts.get(("libstdc++", category), 0),
+87:    write(prefix + "_summary.tsv", summary)
+
+COMMON_FILE
+
+REPORT_SECTION
+
+这是不同实现命名空间、显式实例化和 runtime 拆分的结果，不等于 7,992 个
+独立缺陷。完整逐符号表在 `tables/x86_64_abi_only.tsv`。
+
+版本节点完全不同：GCC manifest 有 GLIBCXX_3.4.*、CXXABI_1.3.*、
+CXXABI_TM/FLOAT128；平台 libc++ 导出统一使用 LLVM_22。直接携带
+`GLIBCXX_*` 需求的预制 DSO 在换库时通常在链接或 loader 版本校验阶段
+立即失败。正常 `std::__cxx11` 对 `std::__1` 符号差异也通常链接期暴露。
+
+只在运行期暴露的主要是：
+
+- header-only/inline 对象布局不一致但没有对应 UND；
+- RTTI/typeinfo、exception_ptr 和异常跨 DSO/跨 runtime；
+- 两份静态 runtime 或加载顺序导致同一逻辑类型/全局状态不唯一；
+- unversioned C++ ABI 函数被错误 provider 满足；
+- 同名函数接口相同但状态机/错误语义不同。
+
+17 个精确同名主要是 `logic_error`/`runtime_error` 构造赋值、
+`nested_exception` 析构、`current_exception`/`uncaught_exception(s)` 和
+`__throw_bad_alloc`。manifest 没有对象大小和 DWARF，**不能从本次符号表
+判断其同名语义或形态是否一致**，记
+`NOT_DETERMINABLE_FROM_SYMBOL_MANIFEST`；没有把“同名”伪写成“兼容”。
+
+## 范围限制
+
+- 数量对照使用 x86_64；ARM 的架构辅助符号不同，未把 x86 数字外推为
+  ARM 精确数字。
+- GCC 输入是上游源码所带 x86_64 baseline manifest，libc++ 输入是平台
+  T4 实测库；二者版本身份不同，适合证明导出面/版本体系分离，不适合做
+  同版本替换兼容承诺。
+- 未运行 OOM、locale、entropy 或无异常构建；潜在后果均明确保持“候选”。

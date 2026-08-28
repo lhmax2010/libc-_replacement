@@ -1,0 +1,354 @@
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	
+     9	#include "../../include/refstring.h"
+    10	
+    11	/* For _LIBCPPABI_VERSION */
+    12	#if !defined(_LIBCPP_BUILDING_HAS_NO_ABI_LIBRARY) && (defined(LIBCXX_BUILDING_LIBCXXABI) || defined(LIBCXXRT))
+    13	#  include <cxxabi.h>
+    14	#endif
+    15	
+    16	static_assert(sizeof(std::__libcpp_refstring) == sizeof(const char*), "");
+    17	
+    18	namespace std // purposefully not using versioning namespace
+    19	{
+    20	
+    21	logic_error::logic_error(const string& msg) : __imp_(msg.c_str()) {}
+    22	
+    23	logic_error::logic_error(const char* msg) : __imp_(msg) {}
+    24	
+    25	logic_error::logic_error(const logic_error& le) noexcept : __imp_(le.__imp_) {}
+    26	
+    27	logic_error& logic_error::operator=(const logic_error& le) noexcept {
+    28	  __imp_ = le.__imp_;
+    29	  return *this;
+    30	}
+    31	
+    32	runtime_error::runtime_error(const string& msg) : __imp_(msg.c_str()) {}
+    33	
+    34	runtime_error::runtime_error(const char* msg) : __imp_(msg) {}
+    35	
+    36	runtime_error::runtime_error(const runtime_error& re) noexcept : __imp_(re.__imp_) {}
+    37	
+    38	runtime_error& runtime_error::operator=(const runtime_error& re) noexcept {
+    39	  __imp_ = re.__imp_;
+    40	  return *this;
+    41	}
+    42	
+    43	#if !defined(_LIBCPPABI_VERSION) && !defined(LIBSTDCXX)
+    44	
+    45	const char* logic_error::what() const noexcept { return __imp_.c_str(); }
+    46	
+    47	const char* runtime_error::what() const noexcept { return __imp_.c_str(); }
+    48	
+    49	logic_error::~logic_error() noexcept {}
+    50	domain_error::~domain_error() noexcept {}
+    51	invalid_argument::~invalid_argument() noexcept {}
+    52	length_error::~length_error() noexcept {}
+    53	out_of_range::~out_of_range() noexcept {}
+    54	
+    55	runtime_error::~runtime_error() noexcept {}
+    56	range_error::~range_error() noexcept {}
+    57	overflow_error::~overflow_error() noexcept {}
+    58	underflow_error::~underflow_error() noexcept {}
+    59	
+    60	#endif
+    61	
+    62	} // namespace std
+     1	// -*- C++ -*-
+     2	//===----------------------------------------------------------------------===//
+     3	//
+     4	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     5	// See https://llvm.org/LICENSE.txt for license information.
+     6	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     7	//
+     8	//===----------------------------------------------------------------------===//
+     9	
+    10	#include <exception>
+    11	
+    12	#include <cxxabi.h>
+    13	
+    14	#ifndef _LIBCPPABI_VERSION
+    15	#  error this header can only be used with libc++abi
+    16	#endif
+    17	
+    18	namespace std {
+    19	
+    20	bool uncaught_exception() noexcept { return uncaught_exceptions() > 0; }
+    21	
+    22	int uncaught_exceptions() noexcept {
+    23	#if _LIBCPPABI_VERSION > 1001
+    24	  return abi::__cxa_uncaught_exceptions();
+    25	#else
+    26	  return abi::__cxa_uncaught_exception() ? 1 : 0;
+    27	#endif
+    28	}
+    29	
+    30	} // namespace std
+     1	// -*- C++ -*-
+     2	//===----------------------------------------------------------------------===//
+     3	//
+     4	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     5	// See https://llvm.org/LICENSE.txt for license information.
+     6	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     7	//
+     8	//===----------------------------------------------------------------------===//
+     9	
+    10	#include <cxxabi.h>
+    11	#include <exception>
+    12	
+    13	namespace std {
+    14	
+    15	exception_ptr::~exception_ptr() noexcept { abi::__cxa_decrement_exception_refcount(__ptr_); }
+    16	
+    17	exception_ptr::exception_ptr(const exception_ptr& other) noexcept : __ptr_(other.__ptr_) {
+    18	  abi::__cxa_increment_exception_refcount(__ptr_);
+    19	}
+    20	
+    21	exception_ptr& exception_ptr::operator=(const exception_ptr& other) noexcept {
+    22	  if (__ptr_ != other.__ptr_) {
+    23	    abi::__cxa_increment_exception_refcount(other.__ptr_);
+    24	    abi::__cxa_decrement_exception_refcount(__ptr_);
+    25	    __ptr_ = other.__ptr_;
+    26	  }
+    27	  return *this;
+    28	}
+    29	
+    30	exception_ptr exception_ptr::__from_native_exception_pointer(void* __e) noexcept {
+    31	  exception_ptr ptr;
+    32	  ptr.__ptr_ = __e;
+    33	  abi::__cxa_increment_exception_refcount(ptr.__ptr_);
+    34	
+    35	  return ptr;
+    36	}
+    37	
+    38	nested_exception::nested_exception() noexcept : __ptr_(current_exception()) {}
+    39	
+    40	nested_exception::~nested_exception() noexcept {}
+    41	
+    42	void nested_exception::rethrow_nested() const {
+    43	  if (__ptr_ == nullptr)
+    44	    terminate();
+    45	  rethrow_exception(__ptr_);
+    46	}
+    47	
+    48	exception_ptr current_exception() noexcept {
+    49	  // be nicer if there was a constructor that took a ptr, then
+    50	  // this whole function would be just:
+    51	  //    return exception_ptr(__cxa_current_primary_exception());
+    52	  exception_ptr ptr;
+    53	  ptr.__ptr_ = abi::__cxa_current_primary_exception();
+    54	  return ptr;
+    55	}
+    56	
+    57	void rethrow_exception(exception_ptr p) {
+    58	  abi::__cxa_rethrow_primary_exception(p.__ptr_);
+    59	  // if p.__ptr_ is NULL, above returns so we terminate
+    60	  terminate();
+    61	}
+    62	
+    63	} // namespace std
+    45	#  include <__cxx03/stdexcept>
+    46	#else
+    47	#  include <__config>
+    48	#  include <__exception/exception.h>
+    49	#  include <__fwd/string.h>
+    50	#  include <__verbose_abort>
+    51	
+    52	#  if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
+    53	#    pragma GCC system_header
+    54	#  endif
+    55	
+    56	_LIBCPP_BEGIN_NAMESPACE_STD
+    57	
+    58	#  ifndef _LIBCPP_ABI_VCRUNTIME
+    59	class _LIBCPP_HIDDEN __libcpp_refstring {
+    60	  const char* __imp_;
+    61	
+    62	  bool __uses_refcount() const;
+    63	
+    64	public:
+    65	  explicit __libcpp_refstring(const char* __msg);
+    66	  __libcpp_refstring(const __libcpp_refstring& __s) _NOEXCEPT;
+    67	  __libcpp_refstring& operator=(const __libcpp_refstring& __s) _NOEXCEPT;
+    68	  ~__libcpp_refstring();
+    69	
+    70	  _LIBCPP_HIDE_FROM_ABI const char* c_str() const _NOEXCEPT { return __imp_; }
+    71	};
+    72	#  endif // !_LIBCPP_ABI_VCRUNTIME
+    73	
+    74	_LIBCPP_END_NAMESPACE_STD
+    75	
+    76	namespace std // purposefully not using versioning namespace
+    77	{
+    78	
+    79	class _LIBCPP_EXPORTED_FROM_ABI logic_error : public exception {
+    80	#  ifndef _LIBCPP_ABI_VCRUNTIME
+    81	
+    82	private:
+    83	  std::__libcpp_refstring __imp_;
+    84	
+    85	public:
+    86	  explicit logic_error(const string&);
+    87	  explicit logic_error(const char*);
+    88	
+    89	  logic_error(const logic_error&) _NOEXCEPT;
+    90	  logic_error& operator=(const logic_error&) _NOEXCEPT;
+    91	
+    92	  ~logic_error() _NOEXCEPT override;
+    93	
+    94	  [[__nodiscard__]] const char* what() const _NOEXCEPT override;
+    95	#  else
+    96	
+    97	public:
+    98	  explicit logic_error(const std::string&); // Symbol uses versioned std::string
+    99	  _LIBCPP_HIDE_FROM_ABI explicit logic_error(const char* __s) : exception(__s) {}
+   100	#  endif
+   101	};
+   102	
+   103	class _LIBCPP_EXPORTED_FROM_ABI runtime_error : public exception {
+   104	#  ifndef _LIBCPP_ABI_VCRUNTIME
+   105	
+   106	private:
+   107	  std::__libcpp_refstring __imp_;
+   108	
+   109	public:
+   110	  explicit runtime_error(const string&);
+   111	  explicit runtime_error(const char*);
+   112	
+   113	  runtime_error(const runtime_error&) _NOEXCEPT;
+   114	  runtime_error& operator=(const runtime_error&) _NOEXCEPT;
+   115	
+   116	  ~runtime_error() _NOEXCEPT override;
+   117	
+   118	  [[__nodiscard__]] const char* what() const _NOEXCEPT override;
+   119	#  else
+   120	
+   121	public:
+   122	  explicit runtime_error(const std::string&); // Symbol uses versioned std::string
+   123	  _LIBCPP_HIDE_FROM_ABI explicit runtime_error(const char* __s) : exception(__s) {}
+   124	#  endif // _LIBCPP_ABI_VCRUNTIME
+   125	};
+    25	
+    26	#if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
+    27	#  pragma GCC system_header
+    28	#endif
+    29	
+    30	_LIBCPP_BEGIN_UNVERSIONED_NAMESPACE_STD
+    31	
+    32	class _LIBCPP_EXPORTED_FROM_ABI nested_exception {
+    33	  exception_ptr __ptr_;
+    34	
+    35	public:
+    36	  nested_exception() _NOEXCEPT;
+    37	  _LIBCPP_HIDE_FROM_ABI nested_exception(const nested_exception&) _NOEXCEPT            = default;
+    38	  _LIBCPP_HIDE_FROM_ABI nested_exception& operator=(const nested_exception&) _NOEXCEPT = default;
+    39	  virtual ~nested_exception() _NOEXCEPT;
+    40	
+    41	  // access functions
+    42	  [[__noreturn__]] void rethrow_nested() const;
+    43	  [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI exception_ptr nested_ptr() const _NOEXCEPT { return __ptr_; }
+    44	};
+    45	
+    46	template <class _Tp>
+    47	struct __nested : public _Tp, public nested_exception {
+    48	  _LIBCPP_HIDE_FROM_ABI explicit __nested(const _Tp& __t) : _Tp(__t) {}
+    49	};
+    50	
+    51	#if _LIBCPP_HAS_EXCEPTIONS
+    52	template <class _Tp, class _Up, bool>
+    55	
+    56	} // namespace __cxxabiv1
+    57	
+    58	#  endif
+    59	
+    60	#endif
+    61	
+    62	_LIBCPP_BEGIN_UNVERSIONED_NAMESPACE_STD
+    63	
+    64	#ifndef _LIBCPP_ABI_MICROSOFT
+    65	
+    66	inline _LIBCPP_HIDE_FROM_ABI void swap(exception_ptr& __x, exception_ptr& __y) _NOEXCEPT;
+    67	
+    68	class _LIBCPP_EXPORTED_FROM_ABI exception_ptr {
+    69	  void* __ptr_;
+    70	
+    71	  static exception_ptr __from_native_exception_pointer(void*) _NOEXCEPT;
+    72	
+    73	  template <class _Ep>
+    74	  friend _LIBCPP_HIDE_FROM_ABI exception_ptr __make_exception_ptr_explicit(_Ep&) _NOEXCEPT;
+    75	
+    76	public:
+    77	  // exception_ptr is basically a COW string so it is trivially relocatable.
+    78	  using __trivially_relocatable _LIBCPP_NODEBUG = exception_ptr;
+    79	
+    80	  _LIBCPP_HIDE_FROM_ABI exception_ptr() _NOEXCEPT : __ptr_() {}
+    81	  _LIBCPP_HIDE_FROM_ABI exception_ptr(nullptr_t) _NOEXCEPT : __ptr_() {}
+    82	
+    83	  exception_ptr(const exception_ptr&) _NOEXCEPT;
+    84	  _LIBCPP_HIDE_FROM_ABI exception_ptr(exception_ptr&& __other) _NOEXCEPT : __ptr_(__other.__ptr_) {
+    85	    __other.__ptr_ = nullptr;
+    86	  }
+    87	  exception_ptr& operator=(const exception_ptr&) _NOEXCEPT;
+    88	  _LIBCPP_HIDE_FROM_ABI exception_ptr& operator=(exception_ptr&& __other) _NOEXCEPT {
+    89	    exception_ptr __tmp(std::move(__other));
+    90	    std::swap(__tmp, *this);
+    91	    return *this;
+    92	  }
+    93	  ~exception_ptr() _NOEXCEPT;
+    94	
+    95	  _LIBCPP_HIDE_FROM_ABI explicit operator bool() const _NOEXCEPT { return __ptr_ != nullptr; }
+    96	
+    97	  friend _LIBCPP_HIDE_FROM_ABI bool operator==(const exception_ptr& __x, const exception_ptr& __y) _NOEXCEPT {
+    98	    return __x.__ptr_ == __y.__ptr_;
+    99	  }
+   100	
+   101	  friend _LIBCPP_HIDE_FROM_ABI bool operator!=(const exception_ptr& __x, const exception_ptr& __y) _NOEXCEPT {
+   102	    return !(__x == __y);
+   103	  }
+   104	
+   105	  friend _LIBCPP_HIDE_FROM_ABI void swap(exception_ptr& __x, exception_ptr& __y) _NOEXCEPT;
+   106	
+   107	  friend _LIBCPP_EXPORTED_FROM_ABI exception_ptr current_exception() _NOEXCEPT;
+   108	  friend _LIBCPP_EXPORTED_FROM_ABI void rethrow_exception(exception_ptr);
+   109	};
+   110	
+   111	inline _LIBCPP_HIDE_FROM_ABI void swap(exception_ptr& __x, exception_ptr& __y) _NOEXCEPT {
+   112	  std::swap(__x.__ptr_, __y.__ptr_);
+   113	}
+   114	
+   115	#  if _LIBCPP_HAS_EXCEPTIONS
+   116	#    if _LIBCPP_AVAILABILITY_HAS_INIT_PRIMARY_EXCEPTION
+   117	template <class _Ep>
+   118	_LIBCPP_HIDE_FROM_ABI exception_ptr __make_exception_ptr_explicit(_Ep& __e) _NOEXCEPT {
+   119	  using _Ep2 = __decay_t<_Ep>;
+   120	  void* __ex = __cxxabiv1::__cxa_allocate_exception(sizeof(_Ep));
+   121	#      ifdef __wasm__
+   122	  auto __cleanup = [](void* __p) -> void* {
+   123	    std::__destroy_at(static_cast<_Ep2*>(__p));
+   124	    return __p;
+   125	  };
+    12	namespace std { // purposefully not versioned
+    13	
+    14	#ifndef __GLIBCXX__
+    15	const nothrow_t nothrow{};
+    16	#endif
+    17	
+    18	#ifndef LIBSTDCXX
+    19	
+    20	void __throw_bad_alloc() {
+    21	#  if _LIBCPP_HAS_EXCEPTIONS
+    22	  throw bad_alloc();
+    23	#  else
+    24	  _LIBCPP_VERBOSE_ABORT("bad_alloc was thrown in -fno-exceptions mode");
+    25	#  endif
+    26	}
+    27	
+    28	#endif // !LIBSTDCXX
+    29	
+    30	} // namespace std

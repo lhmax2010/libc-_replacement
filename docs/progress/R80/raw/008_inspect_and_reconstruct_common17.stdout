@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Compare a libstdc++ baseline manifest with a libc++ readelf export log."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import pathlib
+import re
+import subprocess
+
+
+def demangle(names):
+    process = subprocess.run(["c++filt"], input="\n".join(names) + "\n",
+                             text=True, check=True, stdout=subprocess.PIPE)
+    return dict(zip(names, process.stdout.splitlines()))
+
+
+def group(name, text):
+    if name.startswith("_ZT") or "typeinfo" in text or "vtable" in text:
+        return "RTTI_OR_VTABLE"
+    if name.startswith("__cxa_") or name.startswith("__gxx_") or "__cxxabiv1" in text:
+        return "CXX_ABI_RUNTIME"
+    if "std::" in text or "__gnu_cxx::" in text:
+        return "CXX_LIBRARY_API"
+    if "Unwind" in name:
+        return "UNWINDER"
+    return "OTHER"
+
+
+def stdcxx(path):
+    result = {}
+    for line in pathlib.Path(path).read_text(errors="replace").splitlines():
+        if ":" not in line:
+            continue
+        kind, versioned = line.split(":", 1)
+        base = versioned.split("@", 1)[0]
+        suffix = versioned[len(base):]
+        result[base] = (kind, suffix)
+    return result
+
+
+def libcxx(path):
+    result = {}
+    regex = re.compile(r"^\s*\d+:\s+\S+\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+\S+\s+(\S+)")
+    for line in pathlib.Path(path).read_text(errors="replace").splitlines():
+        match = regex.match(line)
+        if not match:
+            continue
+        size, kind, bind, visibility, versioned = match.groups()
+        base = versioned.split("@", 1)[0]
+        suffix = versioned[len(base):]
+        result[base] = (kind, suffix, bind, visibility, size)
+    return result
+
+
+def write(path, rows):
+    with pathlib.Path(path).open("w", newline="") as stream:
+        csv.writer(stream, delimiter="\t", lineterminator="\n").writerows(rows)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--libstdcxx", required=True)
+    parser.add_argument("--libcxx", required=True)
+    parser.add_argument("--output-prefix", required=True)
+    args = parser.parse_args()
+    left, right = stdcxx(args.libstdcxx), libcxx(args.libcxx)
+    names = sorted(set(left) | set(right))
+    readable = demangle(names)
+    detail = [["side", "category", "mangled", "demangled", "kind", "version"]]
+    counts = {}
+    for side, own, peer in (("libstdc++", left, right), ("libc++", right, left)):
+        for name in sorted(set(own) - set(peer)):
+            category = group(name, readable[name])
+            counts[(side, category)] = counts.get((side, category), 0) + 1
+            detail.append([side, category, name, readable[name], own[name][0], own[name][1]])
+    prefix = args.output_prefix
+    write(prefix + "_only.tsv", detail)
+    summary = [["metric", "libstdc++", "libc++"],
+               ["manifest_exports", len(left), len(right)],
+               ["implementation_only", len(set(left)-set(right)), len(set(right)-set(left))],
+               ["exact_mangled_common", len(set(left)&set(right)), len(set(left)&set(right))]]
+    for category in sorted({key[1] for key in counts}):
+        summary.append(["only_" + category, counts.get(("libstdc++", category), 0),
+                        counts.get(("libc++", category), 0)])
+    write(prefix + "_summary.tsv", summary)
+    nodes = [["side", "version_node"]]
+    for side, values in (("libstdc++", left), ("libc++", right)):
+        found = sorted({item[1].lstrip("@") for item in values.values() if item[1]})
+        nodes.extend([[side, node] for node in found])
+    write(prefix + "_version_nodes.tsv", nodes)
+
+
+if __name__ == "__main__":
+    main()
+
+RECONSTRUCTED_COMMON
+left 6057 right 1969 common 17
+mangled	libstdcxx_record	libcxx_record
+_ZNSt11logic_errorC1EPKc	('FUNC', '@@GLIBCXX_3.4.21')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '121')
+_ZNSt11logic_errorC1ERKS_	('FUNC', '@@GLIBCXX_3.4.21')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '27')
+_ZNSt11logic_errorC2EPKc	('FUNC', '@@GLIBCXX_3.4.21')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '121')
+_ZNSt11logic_errorC2ERKS_	('FUNC', '@@GLIBCXX_3.4.21')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '27')
+_ZNSt11logic_erroraSERKS_	('FUNC', '@@GLIBCXX_3.4.21')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '50')
+_ZNSt13runtime_errorC1EPKc	('FUNC', '@@GLIBCXX_3.4.21')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '121')
+_ZNSt13runtime_errorC1ERKS_	('FUNC', '@@GLIBCXX_3.4.21')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '27')
+_ZNSt13runtime_errorC2EPKc	('FUNC', '@@GLIBCXX_3.4.21')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '121')
+_ZNSt13runtime_errorC2ERKS_	('FUNC', '@@GLIBCXX_3.4.21')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '27')
+_ZNSt13runtime_erroraSERKS_	('FUNC', '@@GLIBCXX_3.4.21')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '50')
+_ZNSt16nested_exceptionD0Ev	('FUNC', '@@CXXABI_1.3.5')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '33')
+_ZNSt16nested_exceptionD1Ev	('FUNC', '@@CXXABI_1.3.5')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '23')
+_ZNSt16nested_exceptionD2Ev	('FUNC', '@@CXXABI_1.3.5')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '23')
+_ZSt17__throw_bad_allocv	('FUNC', '@@GLIBCXX_3.4')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '49')
+_ZSt17current_exceptionv	('FUNC', '@@CXXABI_1.3.3')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '27')
+_ZSt18uncaught_exceptionv	('FUNC', '@@GLIBCXX_3.4')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '16')
+_ZSt19uncaught_exceptionsv	('FUNC', '@@GLIBCXX_3.4.22')	('FUNC', '@@LLVM_22', 'GLOBAL', 'DEFAULT', '5')

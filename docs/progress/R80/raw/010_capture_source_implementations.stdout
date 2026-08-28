@@ -1,0 +1,940 @@
+
+===== codes/gcc/libstdc++-v3/src/c++11/cow-stdexcept.cc =====
+     1	// Methods for Exception Support for -*- C++ -*-
+     2	
+     3	// Copyright (C) 2014-2024 Free Software Foundation, Inc.
+     4	//
+     5	// This file is part of the GNU ISO C++ Library.  This library is free
+     6	// software; you can redistribute it and/or modify it under the
+     7	// terms of the GNU General Public License as published by the
+     8	// Free Software Foundation; either version 3, or (at your option)
+     9	// any later version.
+    10	
+    11	// This library is distributed in the hope that it will be useful,
+    12	// but WITHOUT ANY WARRANTY; without even the implied warranty of
+    13	// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    14	// GNU General Public License for more details.
+    15	
+    16	// Under Section 7 of GPL version 3, you are granted additional
+    17	// permissions described in the GCC Runtime Library Exception, version
+    18	// 3.1, as published by the Free Software Foundation.
+    19	
+    20	// You should have received a copy of the GNU General Public License and
+    21	// a copy of the GCC Runtime Library Exception along with this program;
+    22	// see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
+    23	// <http://www.gnu.org/licenses/>.
+    24	
+    25	//
+    26	// ISO C++ 14882: 19.1  Exception classes
+    27	//
+    28	
+    29	// Enable hooks for support for the Transactional Memory TS (N4514).
+    30	#define _GLIBCXX_TM_TS_INTERNAL
+    31	void
+    32	_txnal_cow_string_C1_for_exceptions(void* that, const char* s, void* exc);
+    33	const char*
+    34	_txnal_cow_string_c_str(const void* that);
+    35	void
+    36	_txnal_cow_string_D1(void* that);
+    37	void
+    38	_txnal_cow_string_D1_commit(void* that);
+    39	void*
+    40	_txnal_logic_error_get_msg(void* e);
+    41	void*
+    42	_txnal_runtime_error_get_msg(void* e);
+    43	
+    44	// All exception classes still use the classic COW std::string.
+    45	#define _GLIBCXX_USE_CXX11_ABI 0
+    46	#define _GLIBCXX_DEFINE_STDEXCEPT_COPY_OPS 1
+    47	#define __cow_string __cow_stringxxx
+    48	#include <stdexcept>
+    49	#include <system_error>
+    50	#undef __cow_string
+    51	
+    52	namespace std _GLIBCXX_VISIBILITY(default)
+    53	{
+    54	_GLIBCXX_BEGIN_NAMESPACE_VERSION
+    55	
+    56	  // Copy/move constructors and assignment operators defined using COW string.
+    57	  // These operations are noexcept even though copying a COW string is not,
+    58	  // but we know that the string member in an exception has not been "leaked"
+    59	  // so copying is a simple reference count increment.
+    60	
+    61	  logic_error::logic_error(const logic_error& e) noexcept
+    62	  : exception(e), _M_msg(e._M_msg) { }
+    63	
+    64	  logic_error& logic_error::operator=(const logic_error& e) noexcept
+    65	  { _M_msg = e._M_msg; return *this; }
+    66	
+    67	  logic_error::logic_error(logic_error&& e) noexcept = default;
+    68	
+    69	  logic_error&
+    70	  logic_error::operator=(logic_error&& e) noexcept = default;
+    71	
+    72	  runtime_error::runtime_error(const runtime_error& e) noexcept
+    73	  : exception(e), _M_msg(e._M_msg) { }
+    74	
+    75	  runtime_error&
+    76	  runtime_error::operator=(const runtime_error& e) noexcept
+    77	  { _M_msg = e._M_msg; return *this; }
+    78	
+    79	  runtime_error::runtime_error(runtime_error&& e) noexcept = default;
+    80	
+    81	  runtime_error&
+    82	  runtime_error::operator=(runtime_error&& e) noexcept = default;
+    83	
+    84	  // New C++11 constructors:
+    85	
+    86	  logic_error::logic_error(const char* __arg)
+    87	  : exception(), _M_msg(__arg) { }
+    88	
+    89	  domain_error::domain_error(const char* __arg)
+    90	  : logic_error(__arg) { }
+    91	
+    92	  invalid_argument::invalid_argument(const char* __arg)
+    93	  : logic_error(__arg) { }
+    94	
+    95	  length_error::length_error(const char* __arg)
+    96	  : logic_error(__arg) { }
+    97	
+    98	  out_of_range::out_of_range(const char* __arg)
+    99	  : logic_error(__arg) { }
+   100	
+   101	  runtime_error::runtime_error(const char* __arg)
+   102	  : exception(), _M_msg(__arg) { }
+   103	
+   104	  range_error::range_error(const char* __arg)
+   105	  : runtime_error(__arg) { }
+   106	
+   107	  overflow_error::overflow_error(const char* __arg)
+   108	  : runtime_error(__arg) { }
+   109	
+   110	  underflow_error::underflow_error(const char* __arg)
+   111	  : runtime_error(__arg) { }
+   112	
+   113	#if _GLIBCXX_USE_DUAL_ABI
+   114	  // Converting constructor from COW std::string to SSO string.
+   115	  __sso_string::__sso_string(const string& s)
+   116	  : __sso_string(s.c_str(), s.length()) { }
+   117	
+   118	  // Redefine __cow_string so that we can define and export its members
+   119	  // in terms of the COW std::string.
+   120	  struct __cow_string
+   121	  {
+   122	    union {
+   123	      const char* _M_p;
+   124	      char _M_bytes[sizeof(_M_p)];
+   125	      std::string _M_str;
+   126	    };
+   127	
+   128	    __cow_string();
+   129	    __cow_string(const std::string& s);
+   130	    __cow_string(const char*, size_t n);
+   131	    __cow_string(const __cow_string&) noexcept;
+   132	    __cow_string& operator=(const __cow_string&) noexcept;
+   133	    ~__cow_string();
+   134	    __cow_string(__cow_string&&) noexcept;
+   135	    __cow_string& operator=(__cow_string&&) noexcept;
+   136	  };
+   137	
+   138	  __cow_string::__cow_string() : _M_str() { }
+   139	
+   140	  __cow_string::__cow_string(const std::string& s) : _M_str(s) { }
+   141	
+   142	  __cow_string::__cow_string(const char* s, size_t n) : _M_str(s, n) { }
+   143	
+   144	  __cow_string::__cow_string(const __cow_string& s) noexcept
+   145	  : _M_str(s._M_str) { }
+   146	
+   147	  __cow_string&
+   148	  __cow_string::operator=(const __cow_string& s) noexcept
+   149	  {
+   150	    _M_str = s._M_str;
+   151	    return *this;
+   152	  }
+   153	
+   154	  __cow_string::~__cow_string() { _M_str.~basic_string(); }
+   155	
+   156	  __cow_string::__cow_string(__cow_string&& s) noexcept
+   157	  : _M_str(std::move(s._M_str)) { }
+   158	
+   159	  __cow_string&
+   160	  __cow_string::operator=(__cow_string&& s) noexcept
+   161	  {
+   162	    _M_str = std::move(s._M_str);
+   163	    return *this;
+   164	  }
+   165	
+   166	  static_assert(sizeof(__cow_string) == sizeof(std::string),
+   167	                "sizeof(std::string) has changed");
+   168	  static_assert(alignof(__cow_string) == alignof(std::string),
+   169	                "alignof(std::string) has changed");
+   170	#endif
+   171	
+   172	  // Return error_category::message() as an SSO string
+   173	  __sso_string
+   174	  error_category::_M_message(int i) const
+   175	  {
+   176	    string msg = this->message(i);
+   177	    return {msg.c_str(), msg.length()};
+   178	  }
+   179	
+   180	_GLIBCXX_END_NAMESPACE_VERSION
+   181	} // namespace
+   182	
+   183	// Support for the Transactional Memory TS (N4514).
+   184	//
+   185	// logic_error and runtime_error both carry a message in the form of a COW
+   186	// string.  This COW string is never made visible to users of the exception
+   187	// because what() returns a C string.  The COW string can be constructed as
+   188	// either a copy of a COW string of another logic_error/runtime_error, or
+   189	// using a C string or SSO string; thus, the COW string's _Rep is only
+   190	// accessed by logic_error operations.  We control all txnal clones of those
+   191	// operations and thus can ensure that _Rep is never accessed transactionally.
+   192	// Furthermore, _Rep will always have been allocated or deallocated via
+   193	// global new or delete, so nontransactional writes we do to _Rep cannot
+   194	// interfere with transactional accesses.
+   195	
+   196	// We depend on having support for referencing functions declared weak that
+   197	// are not defined by us.  Without such support, the exceptions will not be
+   198	// declared transaction-safe, so we just don't provide transactional clones
+   199	// in this case.
+   200	#if _GLIBCXX_USE_WEAK_REF
+   201	#ifdef _GLIBCXX_USE_C99_STDINT
+   202	
+   203	#include <stdint.h>
+   204	
+   205	using std::size_t;
+   206	
+   207	extern "C" {
+   208	
+   209	#ifndef _GLIBCXX_MANGLE_SIZE_T
+   210	#error Mangled name of size_t type not defined.
+   211	#endif
+   212	#define CONCAT1(x,y)		x##y
+   213	#define CONCAT(x,y)		CONCAT1(x,y)
+   214	#define _ZGTtnaX		CONCAT(_ZGTtna,_GLIBCXX_MANGLE_SIZE_T)
+   215	
+   216	#ifdef __i386__
+   217	/* Only for 32-bit x86.  */
+   218	# define ITM_REGPARM	__attribute__((regparm(2)))
+   219	#else
+   220	# define ITM_REGPARM
+
+===== codes/gcc/libstdc++-v3/libsupc++/nested_exception.cc =====
+     1	// Copyright (C) 2011-2024 Free Software Foundation, Inc.
+     2	//
+     3	// This file is part of GCC.
+     4	//
+     5	// GCC is free software; you can redistribute it and/or modify
+     6	// it under the terms of the GNU General Public License as published by
+     7	// the Free Software Foundation; either version 3, or (at your option)
+     8	// any later version.
+     9	
+    10	// GCC is distributed in the hope that it will be useful,
+    11	// but WITHOUT ANY WARRANTY; without even the implied warranty of
+    12	// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    13	// GNU General Public License for more details.
+    14	
+    15	// Under Section 7 of GPL version 3, you are granted additional
+    16	// permissions described in the GCC Runtime Library Exception, version
+    17	// 3.1, as published by the Free Software Foundation.
+    18	
+    19	// You should have received a copy of the GNU General Public License and
+    20	// a copy of the GCC Runtime Library Exception along with this program;
+    21	// see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
+    22	// <http://www.gnu.org/licenses/>.
+    23	
+    24	#include <exception>
+    25	
+    26	namespace std 
+    27	{
+    28	  nested_exception::~nested_exception() noexcept = default;
+    29	} // namespace std
+
+===== codes/gcc/libstdc++-v3/libsupc++/eh_ptr.cc =====
+     1	// -*- C++ -*- Implement the members of exception_ptr.
+     2	// Copyright (C) 2008-2024 Free Software Foundation, Inc.
+     3	//
+     4	// This file is part of GCC.
+     5	//
+     6	// GCC is free software; you can redistribute it and/or modify
+     7	// it under the terms of the GNU General Public License as published by
+     8	// the Free Software Foundation; either version 3, or (at your option)
+     9	// any later version.
+    10	//
+    11	// GCC is distributed in the hope that it will be useful,
+    12	// but WITHOUT ANY WARRANTY; without even the implied warranty of
+    13	// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    14	// GNU General Public License for more details.
+    15	//
+    16	// Under Section 7 of GPL version 3, you are granted additional
+    17	// permissions described in the GCC Runtime Library Exception, version
+    18	// 3.1, as published by the Free Software Foundation.
+    19	
+    20	// You should have received a copy of the GNU General Public License and
+    21	// a copy of the GCC Runtime Library Exception along with this program;
+    22	// see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
+    23	// <http://www.gnu.org/licenses/>.
+    24	
+    25	#include <bits/c++config.h>
+    26	#include "eh_atomics.h"
+    27	
+    28	// This macro causes exception_ptr to declare an older API (with corresponding
+    29	// definitions in this file).
+    30	#define _GLIBCXX_EH_PTR_COMPAT
+    31	
+    32	#if ! _GLIBCXX_INLINE_VERSION
+    33	// This macro causes some inline functions in exception_ptr to be marked
+    34	// as "used" so that definitions will be emitted in this translation unit.
+    35	// We need this because those functions were not inline in previous releases.
+    36	#define _GLIBCXX_EH_PTR_RELOPS_COMPAT
+    37	#endif
+    38	
+    39	#include <exception>
+    40	#include <bits/exception_ptr.h>
+    41	#include "unwind-cxx.h"
+    42	
+    43	using namespace __cxxabiv1;
+    44	
+    45	// Verify assumptions about member layout in exception types
+    46	namespace
+    47	{
+    48	template<typename Ex>
+    49	  constexpr std::size_t unwindhdr()
+    50	  { return offsetof(Ex, unwindHeader); }
+    51	
+    52	template<typename Ex>
+    53	  constexpr std::size_t termHandler()
+    54	  { return unwindhdr<Ex>() - offsetof(Ex, terminateHandler); }
+    55	
+    56	static_assert( termHandler<__cxa_exception>()
+    57		       == termHandler<__cxa_dependent_exception>(),
+    58		       "__cxa_dependent_exception::termHandler layout must be"
+    59		       " consistent with __cxa_exception::termHandler" );
+    60	
+    61	#ifndef __ARM_EABI_UNWINDER__
+    62	template<typename Ex>
+    63	  constexpr std::ptrdiff_t adjptr()
+    64	  { return unwindhdr<Ex>() - offsetof(Ex, adjustedPtr); }
+    65	
+    66	static_assert( adjptr<__cxa_exception>()
+    67		       == adjptr<__cxa_dependent_exception>(),
+    68		       "__cxa_dependent_exception::adjustedPtr layout must be"
+    69		       " consistent with __cxa_exception::adjustedPtr" );
+    70	#endif
+    71	}
+    72	
+    73	// Define non-inline functions.
+    74	
+    75	std::__exception_ptr::exception_ptr::exception_ptr(void* obj) noexcept
+    76	: _M_exception_object(obj)  { _M_addref(); }
+    77	
+    78	
+    79	std::__exception_ptr::exception_ptr::exception_ptr(__safe_bool) noexcept
+    80	: _M_exception_object(nullptr) { }
+    81	
+    82	
+    83	void
+    84	std::__exception_ptr::exception_ptr::_M_addref() noexcept
+    85	{
+    86	  if (__builtin_expect(_M_exception_object != nullptr, true))
+    87	    {
+    88	      __cxa_refcounted_exception *eh =
+    89		__get_refcounted_exception_header_from_obj (_M_exception_object);
+    90	      __gnu_cxx::__eh_atomic_inc (&eh->referenceCount);
+    91	    }
+    92	}
+    93	
+    94	
+    95	void
+    96	std::__exception_ptr::exception_ptr::_M_release() noexcept
+    97	{
+    98	  if (__builtin_expect(_M_exception_object != nullptr, true))
+    99	    {
+   100	      __cxa_refcounted_exception *eh =
+   101		__get_refcounted_exception_header_from_obj (_M_exception_object);
+   102	      if (__gnu_cxx::__eh_atomic_dec (&eh->referenceCount))
+   103	        {
+   104		  if (eh->exc.exceptionDestructor)
+   105		    eh->exc.exceptionDestructor (_M_exception_object);
+   106	
+   107	          __cxa_free_exception (_M_exception_object);
+   108	          _M_exception_object = nullptr;
+   109	        }
+   110	    }
+   111	}
+   112	
+   113	
+   114	void*
+   115	std::__exception_ptr::exception_ptr::_M_get() const noexcept
+   116	{ return _M_exception_object; }
+   117	
+   118	
+   119	
+   120	// Retained for compatibility with CXXABI_1.3.
+   121	void
+   122	std::__exception_ptr::exception_ptr::_M_safe_bool_dummy() noexcept { }
+   123	
+   124	
+   125	// Retained for compatibility with CXXABI_1.3.
+   126	bool
+   127	std::__exception_ptr::exception_ptr::operator!() const noexcept
+   128	{ return _M_exception_object == nullptr; }
+   129	
+   130	
+   131	// Retained for compatibility with CXXABI_1.3.
+   132	std::__exception_ptr::exception_ptr::operator __safe_bool() const noexcept
+   133	{
+   134	  return _M_exception_object ? &exception_ptr::_M_safe_bool_dummy : nullptr;
+   135	}
+   136	
+   137	const std::type_info*
+   138	std::__exception_ptr::exception_ptr::__cxa_exception_type() const noexcept
+   139	{
+   140	  __cxa_exception *eh = __get_exception_header_from_obj (_M_exception_object);
+   141	  return eh->exceptionType;
+   142	}
+   143	
+   144	std::exception_ptr
+   145	std::current_exception() noexcept
+   146	{
+   147	  __cxa_eh_globals *globals = __cxa_get_globals ();
+   148	  __cxa_exception *header = globals->caughtExceptions;
+   149	
+   150	  if (!header)
+   151	    return std::exception_ptr();
+   152	
+   153	  // Since foreign exceptions can't be counted, we can't return them.
+   154	  if (!__is_gxx_exception_class (header->unwindHeader.exception_class))
+   155	    return std::exception_ptr();
+   156	
+   157	  return std::exception_ptr(
+   158	    __get_object_from_ambiguous_exception (header));
+   159	}
+   160	
+   161	
+   162	static void
+   163	__gxx_dependent_exception_cleanup(_Unwind_Reason_Code code,
+   164					  _Unwind_Exception *exc)
+   165	{
+   166	  // This cleanup is set only for dependents.
+   167	  __cxa_dependent_exception *dep = __get_dependent_exception_from_ue (exc);
+   168	  __cxa_refcounted_exception *header =
+   169	    __get_refcounted_exception_header_from_obj (dep->primaryException);
+   170	
+   171	  // We only want to be called through _Unwind_DeleteException.
+   172	  // _Unwind_DeleteException in the HP-UX IA64 libunwind library
+   173	  // returns _URC_NO_REASON and not _URC_FOREIGN_EXCEPTION_CAUGHT
+   174	  // like the GCC _Unwind_DeleteException function does.
+   175	  if (code != _URC_FOREIGN_EXCEPTION_CAUGHT && code != _URC_NO_REASON)
+   176	    __terminate (header->exc.terminateHandler);
+   177	
+   178	  __cxa_free_dependent_exception (dep);
+   179	
+   180	  if (__gnu_cxx::__eh_atomic_dec (&header->referenceCount))
+   181	    {
+   182	      if (header->exc.exceptionDestructor)
+   183		header->exc.exceptionDestructor (header + 1);
+   184	
+   185	      __cxa_free_exception (header + 1);
+   186	    }
+   187	}
+   188	
+   189	
+   190	void
+   191	std::rethrow_exception(std::exception_ptr ep)
+   192	{
+   193	  void *obj = ep._M_get();
+   194	  __cxa_refcounted_exception *eh
+   195	    = __get_refcounted_exception_header_from_obj (obj);
+   196	
+   197	  __cxa_dependent_exception *dep = __cxa_allocate_dependent_exception ();
+   198	  dep->primaryException = obj;
+   199	  __gnu_cxx::__eh_atomic_inc (&eh->referenceCount);
+   200	
+   201	#pragma GCC diagnostic push
+   202	#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+   203	  dep->unexpectedHandler = get_unexpected ();
+   204	#pragma GCC diagnostic pop
+   205	  dep->terminateHandler = get_terminate ();
+   206	  __GXX_INIT_DEPENDENT_EXCEPTION_CLASS(dep->unwindHeader.exception_class);
+   207	  dep->unwindHeader.exception_cleanup = __gxx_dependent_exception_cleanup;
+   208	
+   209	  __cxa_eh_globals *globals = __cxa_get_globals ();
+   210	  globals->uncaughtExceptions += 1;
+   211	
+   212	#ifdef __USING_SJLJ_EXCEPTIONS__
+   213	  _Unwind_SjLj_RaiseException (&dep->unwindHeader);
+   214	#else
+   215	  _Unwind_RaiseException (&dep->unwindHeader);
+   216	#endif
+   217	
+   218	  // Some sort of unwinding error.  Note that terminate is a handler.
+   219	  __cxa_begin_catch (&dep->unwindHeader);
+   220	  std::terminate();
+
+===== codes/gcc/libstdc++-v3/libsupc++/eh_catch.cc =====
+     1	// -*- C++ -*- Exception handling routines for catching.
+     2	// Copyright (C) 2001-2024 Free Software Foundation, Inc.
+     3	//
+     4	// This file is part of GCC.
+     5	//
+     6	// GCC is free software; you can redistribute it and/or modify
+     7	// it under the terms of the GNU General Public License as published by
+     8	// the Free Software Foundation; either version 3, or (at your option)
+     9	// any later version.
+    10	//
+    11	// GCC is distributed in the hope that it will be useful,
+    12	// but WITHOUT ANY WARRANTY; without even the implied warranty of
+    13	// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    14	// GNU General Public License for more details.
+    15	//
+    16	// Under Section 7 of GPL version 3, you are granted additional
+    17	// permissions described in the GCC Runtime Library Exception, version
+    18	// 3.1, as published by the Free Software Foundation.
+    19	
+    20	// You should have received a copy of the GNU General Public License and
+    21	// a copy of the GCC Runtime Library Exception along with this program;
+    22	// see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
+    23	// <http://www.gnu.org/licenses/>.
+    24	
+    25	#include <cstdlib>
+    26	#include "unwind-cxx.h"
+    27	
+    28	using namespace __cxxabiv1;
+    29	
+    30	extern "C" void *
+    31	__cxxabiv1::__cxa_get_exception_ptr(void *exc_obj_in) _GLIBCXX_NOTHROW
+    32	{
+    33	  _Unwind_Exception *exceptionObject
+    34	    = reinterpret_cast <_Unwind_Exception *>(exc_obj_in);
+    35	
+    36	  return __gxx_caught_object(exceptionObject);
+    37	}
+    38	
+    39	extern "C" void *
+    40	__cxxabiv1::__cxa_begin_catch (void *exc_obj_in) _GLIBCXX_NOTHROW
+    41	{
+    42	  _Unwind_Exception *exceptionObject
+    43	    = reinterpret_cast <_Unwind_Exception *>(exc_obj_in);
+    44	  __cxa_eh_globals *globals = __cxa_get_globals ();
+    45	  __cxa_exception *prev = globals->caughtExceptions;
+    46	  __cxa_exception *header = __get_exception_header_from_ue (exceptionObject);
+    47	  void* objectp;
+    48	
+    49	  // Foreign exceptions can't be stacked here.  If the exception stack is
+    50	  // empty, then fine.  Otherwise we really have no choice but to terminate.
+    51	  // Note that this use of "header" is a lie.  It's fine so long as we only
+    52	  // examine header->unwindHeader though.
+    53	  if (!__is_gxx_exception_class(header->unwindHeader.exception_class))
+    54	    {
+    55	      if (prev != 0)
+    56		std::terminate ();
+    57	
+    58	      // Remember for end_catch and rethrow.
+    59	      globals->caughtExceptions = header;
+    60	
+    61	      // ??? No sensible value to return; we don't know what the 
+    62	      // object is, much less where it is in relation to the header.
+    63	      return 0;
+    64	    }
+    65	
+    66	  int count = header->handlerCount;
+    67	  // Count is less than zero if this exception was rethrown from an
+    68	  // immediately enclosing region.
+    69	  if (count < 0)
+    70	    count = -count + 1;
+    71	  else
+    72	    count += 1;
+    73	  header->handlerCount = count;
+    74	  globals->uncaughtExceptions -= 1;
+    75	
+    76	  if (header != prev)
+    77	    {
+    78	      header->nextException = prev;
+    79	      globals->caughtExceptions = header;
+    80	    }
+    81	
+    82	  objectp = __gxx_caught_object(exceptionObject);
+    83	
+    84	  PROBE2 (catch, objectp, header->exceptionType);
+    85	
+    86	#ifdef __ARM_EABI_UNWINDER__
+    87	  _Unwind_Complete(exceptionObject);
+    88	#endif
+    89	  return objectp;
+    90	}
+    91	
+    92	
+    93	extern "C" void
+    94	__cxxabiv1::__cxa_end_catch ()
+    95	{
+    96	  __cxa_eh_globals *globals = __cxa_get_globals_fast ();
+    97	  __cxa_exception *header = globals->caughtExceptions;
+    98	
+    99	  // A rethrow of a foreign exception will be removed from the
+   100	  // the exception stack immediately by __cxa_rethrow.
+   101	  if (!header)
+   102	    return;
+   103	
+   104	  // A foreign exception couldn't have been stacked (see above),
+   105	  // so by definition processing must be complete.
+   106	  if (!__is_gxx_exception_class(header->unwindHeader.exception_class))
+   107	    {
+   108	      globals->caughtExceptions = 0;
+   109	      _Unwind_DeleteException (&header->unwindHeader);
+   110	      return;
+   111	    }
+   112	
+   113	  int count = header->handlerCount;
+   114	  if (count < 0)
+   115	    {
+   116	      // This exception was rethrown.  Decrement the (inverted) catch
+   117	      // count and remove it from the chain when it reaches zero.
+   118	      if (++count == 0)
+   119		globals->caughtExceptions = header->nextException;
+   120	    }
+   121	  else if (--count == 0)
+   122	    {
+   123	      // Handling for this exception is complete.  Destroy the object.
+   124	      globals->caughtExceptions = header->nextException;
+   125	      _Unwind_DeleteException (&header->unwindHeader);
+   126	      return;
+   127	    }
+   128	  else if (count < 0)
+   129	    // A bug in the exception handling library or compiler.
+   130	    std::terminate ();
+   131	
+   132	  header->handlerCount = count;
+   133	}
+   134	
+   135	
+   136	bool
+   137	std::uncaught_exception() throw()
+   138	{
+   139	#if __cpp_exceptions
+   140	  __cxa_eh_globals *globals = __cxa_get_globals ();
+   141	  return globals->uncaughtExceptions != 0;
+   142	#else
+   143	  return false;
+   144	#endif
+   145	}
+   146	
+   147	int
+   148	std::uncaught_exceptions() throw()
+   149	{
+   150	#if __cpp_exceptions
+   151	  __cxa_eh_globals *globals = __cxa_get_globals ();
+   152	  return globals->uncaughtExceptions;
+   153	#else
+   154	  return 0;
+   155	#endif
+   156	}
+
+===== codes/gcc/libstdc++-v3/src/c++11/functexcept.cc =====
+     1	// Copyright (C) 2001-2024 Free Software Foundation, Inc.
+     2	//
+     3	// This file is part of the GNU ISO C++ Library.  This library is free
+     4	// software; you can redistribute it and/or modify it under the
+     5	// terms of the GNU General Public License as published by the
+     6	// Free Software Foundation; either version 3, or (at your option)
+     7	// any later version.
+     8	
+     9	// This library is distributed in the hope that it will be useful,
+    10	// but WITHOUT ANY WARRANTY; without even the implied warranty of
+    11	// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    12	// GNU General Public License for more details.
+    13	
+    14	// Under Section 7 of GPL version 3, you are granted additional
+    15	// permissions described in the GCC Runtime Library Exception, version
+    16	// 3.1, as published by the Free Software Foundation.
+    17	
+    18	// You should have received a copy of the GNU General Public License and
+    19	// a copy of the GCC Runtime Library Exception along with this program;
+    20	// see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
+    21	// <http://www.gnu.org/licenses/>.
+    22	
+    23	#include <bits/functexcept.h>
+    24	#include <cstdlib>
+    25	#include <exception>
+    26	#include <stdexcept>
+    27	#include <new>
+    28	#include <typeinfo>
+    29	#include <stdarg.h>
+    30	
+    31	#ifdef _GLIBCXX_USE_NLS
+    32	# include <libintl.h>
+    33	# define _(msgid)   gettext (msgid)
+    34	#else
+    35	# define _(msgid)   (msgid)
+    36	#endif
+    37	
+    38	namespace __gnu_cxx
+    39	{
+    40	  int __snprintf_lite(char *__buf, size_t __bufsize, const char *__fmt,
+    41			      va_list __ap);
+    42	}
+    43	
+    44	namespace std _GLIBCXX_VISIBILITY(default)
+    45	{
+    46	_GLIBCXX_BEGIN_NAMESPACE_VERSION
+    47	
+    48	  void
+    49	  __throw_bad_exception()
+    50	  { _GLIBCXX_THROW_OR_ABORT(bad_exception()); }
+    51	
+    52	  void
+    53	  __throw_bad_alloc()
+    54	  { _GLIBCXX_THROW_OR_ABORT(bad_alloc()); }
+    55	
+    56	  void
+    57	  __throw_bad_array_new_length()
+    58	  { _GLIBCXX_THROW_OR_ABORT(bad_array_new_length()); }
+    59	
+    60	  void
+    61	  __throw_bad_cast()
+    62	  { _GLIBCXX_THROW_OR_ABORT(bad_cast()); }
+    63	
+    64	  void
+    65	  __throw_bad_typeid()
+    66	  { _GLIBCXX_THROW_OR_ABORT(bad_typeid()); }
+    67	
+    68	  void
+    69	  __throw_logic_error(const char* __s __attribute__((unused)))
+    70	  { _GLIBCXX_THROW_OR_ABORT(logic_error(_(__s))); }
+    71	
+    72	  void
+    73	  __throw_domain_error(const char* __s __attribute__((unused)))
+    74	  { _GLIBCXX_THROW_OR_ABORT(domain_error(_(__s))); }
+    75	
+    76	  void
+    77	  __throw_invalid_argument(const char* __s __attribute__((unused)))
+    78	  { _GLIBCXX_THROW_OR_ABORT(invalid_argument(_(__s))); }
+    79	
+    80	  void
+    81	  __throw_length_error(const char* __s __attribute__((unused)))
+    82	  { _GLIBCXX_THROW_OR_ABORT(length_error(_(__s))); }
+    83	
+    84	  void
+    85	  __throw_out_of_range(const char* __s __attribute__((unused)))
+    86	  { _GLIBCXX_THROW_OR_ABORT(out_of_range(_(__s))); }
+    87	
+    88	  void
+    89	  __throw_out_of_range_fmt(const char* __fmt, ...)
+    90	  {
+    91	#if _GLIBCXX_HOSTED && _GLIBCXX_VERBOSE && __cpp_exceptions
+    92	    const size_t __len = __builtin_strlen(__fmt);
+    93	    // We expect at most 2 numbers, and 1 short string. The additional
+    94	    // 512 bytes should provide more than enough space for expansion.
+    95	    const size_t __alloca_size = __len + 512;
+    96	    char *const __s = static_cast<char*>(__builtin_alloca(__alloca_size));
+    97	    va_list __ap;
+    98	
+    99	    va_start(__ap, __fmt);
+   100	    __gnu_cxx::__snprintf_lite(__s, __alloca_size, _(__fmt), __ap);
+   101	    throw out_of_range(__s);
+   102	    va_end(__ap);  // Not reached.
+   103	#else
+   104	    __throw_out_of_range(__fmt);
+   105	#endif
+   106	  }
+   107	
+   108	  void
+   109	  __throw_runtime_error(const char* __s __attribute__((unused)))
+   110	  { _GLIBCXX_THROW_OR_ABORT(runtime_error(_(__s))); }
+   111	
+   112	  void
+   113	  __throw_range_error(const char* __s __attribute__((unused)))
+   114	  { _GLIBCXX_THROW_OR_ABORT(range_error(_(__s))); }
+   115	
+   116	  void
+   117	  __throw_overflow_error(const char* __s __attribute__((unused)))
+   118	  { _GLIBCXX_THROW_OR_ABORT(overflow_error(_(__s))); }
+   119	
+   120	  void
+   121	  __throw_underflow_error(const char* __s __attribute__((unused)))
+   122	  { _GLIBCXX_THROW_OR_ABORT(underflow_error(_(__s))); }
+   123	
+   124	_GLIBCXX_END_NAMESPACE_VERSION
+   125	} // namespace
+
+===== codes/llvm/libcxx/src/stdexcept.cpp =====
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	
+     9	#include <__verbose_abort>
+    10	#include <new>
+    11	#include <stdexcept>
+    12	#include <string>
+    13	
+    14	#ifdef _LIBCPP_ABI_VCRUNTIME
+    15	#  include "support/runtime/stdexcept_vcruntime.ipp"
+    16	#else
+    17	#  include "support/runtime/stdexcept_default.ipp"
+    18	#endif
+    19	
+    20	_LIBCPP_BEGIN_NAMESPACE_STD
+    21	
+    22	void __throw_runtime_error(const char* msg) {
+    23	#if _LIBCPP_HAS_EXCEPTIONS
+    24	  throw runtime_error(msg);
+    25	#else
+    26	  _LIBCPP_VERBOSE_ABORT("runtime_error was thrown in -fno-exceptions mode with message \"%s\"", msg);
+    27	#endif
+    28	}
+    29	
+    30	_LIBCPP_END_NAMESPACE_STD
+
+===== codes/llvm/libcxx/src/exception.cpp =====
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	
+     9	#define _LIBCPP_ENABLE_CXX20_REMOVED_UNCAUGHT_EXCEPTION
+    10	#define _LIBCPP_DISABLE_DEPRECATION_WARNINGS
+    11	
+    12	#include <__config>
+    13	
+    14	#if defined(_LIBCPP_ABI_MICROSOFT)
+    15	#  include "support/runtime/exception_msvc.ipp"
+    16	#  include "support/runtime/exception_pointer_msvc.ipp"
+    17	#elif defined(LIBCXX_BUILDING_LIBCXXABI)
+    18	#  include "support/runtime/exception_libcxxabi.ipp"
+    19	#  include "support/runtime/exception_pointer_cxxabi.ipp"
+    20	#elif defined(LIBCXXRT)
+    21	#  include "support/runtime/exception_libcxxrt.ipp"
+    22	#  include "support/runtime/exception_pointer_cxxabi.ipp"
+    23	#elif defined(__GLIBCXX__)
+    24	#  include "support/runtime/exception_glibcxx.ipp"
+    25	#  include "support/runtime/exception_pointer_glibcxx.ipp"
+    26	#else
+    27	#  include "include/atomic_support.h"
+    28	#  include "support/runtime/exception_fallback.ipp"
+    29	#  include "support/runtime/exception_pointer_unimplemented.ipp"
+    30	#endif
+
+===== codes/llvm/libcxx/src/new_helpers.cpp =====
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	
+     9	#include <__verbose_abort>
+    10	#include <new>
+    11	
+    12	namespace std { // purposefully not versioned
+    13	
+    14	#ifndef __GLIBCXX__
+    15	const nothrow_t nothrow{};
+    16	#endif
+    17	
+    18	#ifndef LIBSTDCXX
+    19	
+    20	void __throw_bad_alloc() {
+    21	#  if _LIBCPP_HAS_EXCEPTIONS
+    22	  throw bad_alloc();
+    23	#  else
+    24	  _LIBCPP_VERBOSE_ABORT("bad_alloc was thrown in -fno-exceptions mode");
+    25	#  endif
+    26	}
+    27	
+    28	#endif // !LIBSTDCXX
+    29	
+    30	} // namespace std
+
+LLVM_EXTRA_LOCATIONS
+codes/llvm/libcxxabi/src/cxa_noexception.cpp:50:__cxa_uncaught_exceptions() throw() { return 0; }
+codes/llvm/libcxxabi/src/cxa_exception.cpp:602:std::type_info *__cxa_current_exception_type() {
+codes/llvm/libcxxabi/src/cxa_exception.cpp:785:__cxa_uncaught_exception() throw() { return __cxa_uncaught_exceptions() != 0; }
+codes/llvm/libcxxabi/src/cxa_exception.cpp:788:__cxa_uncaught_exceptions() throw()
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp:22:logic_error::~logic_error() noexcept {}
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp:25:logic_error::what() const noexcept
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp:30:runtime_error::~runtime_error() noexcept {}
+codes/llvm/libcxxabi/src/stdlib_stdexcept.cpp:33:runtime_error::what() const noexcept
+codes/llvm/libcxx/src/system_error.cpp:343:    : runtime_error(make_error_str(ec, what_arg)), __ec_(ec) {}
+codes/llvm/libcxx/src/system_error.cpp:346:    : runtime_error(make_error_str(ec, what_arg)), __ec_(ec) {}
+codes/llvm/libcxx/src/system_error.cpp:348:system_error::system_error(error_code ec) : runtime_error(make_error_str(ec)), __ec_(ec) {}
+codes/llvm/libcxx/src/system_error.cpp:351:    : runtime_error(make_error_str(error_code(ev, ecat), what_arg)), __ec_(error_code(ev, ecat)) {}
+codes/llvm/libcxx/src/system_error.cpp:354:    : runtime_error(make_error_str(error_code(ev, ecat), what_arg)), __ec_(error_code(ev, ecat)) {}
+codes/llvm/libcxx/src/system_error.cpp:357:    : runtime_error(make_error_str(error_code(ev, ecat))), __ec_(error_code(ev, ecat)) {}
+codes/llvm/libcxx/src/optional.cpp:28:class _LIBCPP_EXPORTED_FROM_ABI bad_optional_access : public std::logic_error {
+codes/llvm/libcxx/src/optional.cpp:30:  bad_optional_access() : std::logic_error("Bad optional Access") {}
+codes/llvm/libcxx/src/stdexcept.cpp:22:void __throw_runtime_error(const char* msg) {
+codes/llvm/libcxx/src/stdexcept.cpp:24:  throw runtime_error(msg);
+codes/llvm/libcxx/src/stdexcept.cpp:26:  _LIBCPP_VERBOSE_ABORT("runtime_error was thrown in -fno-exceptions mode with message \"%s\"", msg);
+codes/llvm/libcxx/src/locale.cpp:508:    : __locale_(name ? new __imp(name) : (__throw_runtime_error("locale constructed with null"), nullptr)) {
+codes/llvm/libcxx/src/locale.cpp:516:                     : (__throw_runtime_error("locale constructed with null"), nullptr)) {
+codes/llvm/libcxx/src/locale.cpp:576:    std::__throw_runtime_error(
+codes/llvm/libcxx/src/locale.cpp:586:    std::__throw_runtime_error(
+codes/llvm/libcxx/src/locale.cpp:620:    std::__throw_runtime_error(
+codes/llvm/libcxx/src/locale.cpp:630:    std::__throw_runtime_error(
+codes/llvm/libcxx/src/locale.cpp:938:    std::__throw_runtime_error(
+codes/llvm/libcxx/src/locale.cpp:948:    std::__throw_runtime_error(
+codes/llvm/libcxx/src/locale.cpp:983:    std::__throw_runtime_error(
+codes/llvm/libcxx/src/locale.cpp:993:    std::__throw_runtime_error(
+codes/llvm/libcxx/src/locale.cpp:1233:    std::__throw_runtime_error(
+codes/llvm/libcxx/src/locale.cpp:3944:      std::__throw_runtime_error(
+codes/llvm/libcxx/src/locale.cpp:3971:      std::__throw_runtime_error(
+codes/llvm/libcxx/src/locale.cpp:4327:    std::__throw_runtime_error(("time_get_byname failed to construct for " + string(nm)).c_str());
+codes/llvm/libcxx/src/locale.cpp:4332:    std::__throw_runtime_error(("time_get_byname failed to construct for " + nm).c_str());
+codes/llvm/libcxx/src/locale.cpp:4493:    std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:4654:      std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:4662:      std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:4674:      std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:4682:      std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:4693:    std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:4702:    std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:4912:    std::__throw_runtime_error(("time_put_byname failed to construct for " + string(nm)).c_str());
+codes/llvm/libcxx/src/locale.cpp:4917:    std::__throw_runtime_error(("time_put_byname failed to construct for " + nm).c_str());
+codes/llvm/libcxx/src/locale.cpp:4942:    std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:5314:    std::__throw_runtime_error(("moneypunct_byname failed to construct for " + string(nm)).c_str());
+codes/llvm/libcxx/src/locale.cpp:5349:    std::__throw_runtime_error(("moneypunct_byname failed to construct for " + string(nm)).c_str());
+codes/llvm/libcxx/src/locale.cpp:5405:    std::__throw_runtime_error(("moneypunct_byname failed to construct for " + string(nm)).c_str());
+codes/llvm/libcxx/src/locale.cpp:5417:    std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:5431:      std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:5442:      std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:5459:    std::__throw_runtime_error(("moneypunct_byname failed to construct for " + string(nm)).c_str());
+codes/llvm/libcxx/src/locale.cpp:5472:    std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:5490:      std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/locale.cpp:5505:      std::__throw_runtime_error("locale not supported");
+codes/llvm/libcxx/src/experimental/time_zone.cpp:140:          std::__throw_runtime_error(
+codes/llvm/libcxx/src/experimental/time_zone.cpp:158:        std::__throw_runtime_error(
+codes/llvm/libcxx/src/experimental/time_zone.cpp:174:      std::__throw_runtime_error(
+codes/llvm/libcxx/src/experimental/time_zone.cpp:182:    std::__throw_runtime_error("corrupt tzdb FORMAT field: input ended with the start of the escape sequence '%'");
+codes/llvm/libcxx/src/experimental/time_zone.cpp:185:    std::__throw_runtime_error("corrupt tzdb FORMAT field: result is empty");
+codes/llvm/libcxx/src/experimental/time_zone.cpp:319:    std::__throw_runtime_error(("corrupt tzdb: rule '" + __rule_name + " 'does not exist").c_str());
+codes/llvm/libcxx/src/experimental/time_zone.cpp:346:    std::__throw_runtime_error("corrupt tzdb: rule has zero entries");
+codes/llvm/libcxx/src/experimental/time_zone.cpp:913:  std::__throw_runtime_error("tzdb: corrupt db");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:78:    std::__throw_runtime_error("corrupt tzdb: expected whitespace");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:107:    std::__throw_runtime_error(
+codes/llvm/libcxx/src/experimental/tzdb.cpp:116:      std::__throw_runtime_error(
+codes/llvm/libcxx/src/experimental/tzdb.cpp:135:        std::__throw_runtime_error("corrupt tzdb: expected a string");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:149:      std::__throw_runtime_error("corrupt tzdb: expected a digit");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:152:      std::__throw_runtime_error("corrupt tzdb: expected a non-zero digit");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:171:      std::__throw_runtime_error("corrupt tzdb: integral too large");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:185:    std::__throw_runtime_error("corrupt tzdb day: value too large");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:228:  std::__throw_runtime_error("corrupt tzdb weekday: invalid name");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:297:  std::__throw_runtime_error("corrupt tzdb month: invalid name");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:308:      std::__throw_runtime_error("corrupt tzdb year: year is less than the minimum");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:310:    std::__throw_runtime_error("corrupt tzdb year: year is greater than the maximum");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:337:  std::__throw_runtime_error("corrupt tzdb year: expected 'min' or 'max'");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:363:  std::__throw_runtime_error("corrupt tzdb on: expected '>=' or '<='");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:635:      std::__throw_runtime_error("corrupt tzdb: unexpected input");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:711:  std::__throw_runtime_error("unknown time zone");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:786:    std::__throw_runtime_error("tzdb: unable to determine the name of the current time zone");
+codes/llvm/libcxx/src/experimental/tzdb.cpp:791:  std::__throw_runtime_error(("tzdb: the time zone '" + __name + "' is not found in the database").c_str());
+codes/llvm/libcxx/src/future.cpp:56:future_error::future_error(error_code __ec) : logic_error(__ec.message()), __ec_(__ec) {}
+codes/llvm/libcxx/src/regex.cpp:61:    : runtime_error(make_error_type_string(ecode)), __code_(ecode) {}
