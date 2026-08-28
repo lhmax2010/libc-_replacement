@@ -1,0 +1,465 @@
+
+### progress/R75/code/build_arm_final.sh
+#!/usr/bin/env bash
+set -e
+set -u
+set -o pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+source="${workspace}/progress/R75/code/shrink_to_fit_reproducer.cpp"
+out="${workspace}/progress/R75/raw/arm_build"
+bin="${workspace}/progress/R75/bin/armv7l"
+cxx="${workspace}/progress/R36/tools/armv7l-clang++"
+include="${workspace}/tmp/R69/build-armv7l/include/c++/v1"
+runtime="${workspace}/tmp/R69/build-armv7l/lib"
+mkdir -p "${out}" "${bin}"
+
+gnu_compile=("${cxx}" -std=c++17 -O0 -g -fexceptions -pthread -c "${source}" -o "${bin}/shrink_to_fit_reproducer.libstdcxx.o")
+gnu_link=("${cxx}" "${bin}/shrink_to_fit_reproducer.libstdcxx.o" -pthread -Wl,-z,now -o "${bin}/shrink_to_fit_reproducer.libstdcxx")
+libcxx_compile=("${cxx}" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ -nostdinc++ -I "${include}" -c "${source}" -o "${bin}/shrink_to_fit_reproducer.libcxx.o")
+libcxx_link=("${cxx}" "${bin}/shrink_to_fit_reproducer.libcxx.o" -nostdlib++ -L "${runtime}" -Wl,-z,now -lc++ -lc++abi -lpthread -ldl -lm -latomic -lc -lgcc_s -lgcc -o "${bin}/shrink_to_fit_reproducer.libcxx")
+
+run_checked() {
+  local log=$1
+  shift
+  {
+    printf 'COMMAND:'
+    printf ' %q' "$@"
+    printf '\n'
+  } > "${log}"
+  set +e
+  nice -n 15 ionice -c 3 "$@" >> "${log}" 2>&1
+  local rc=$?
+  set -e
+  printf 'EXIT_CODE: %s\n' "${rc}" >> "${log}"
+  return "${rc}"
+}
+
+run_checked "${out}/libstdcxx.compile.log" "${gnu_compile[@]}"
+run_checked "${out}/libstdcxx.link.log" "${gnu_link[@]}"
+run_checked "${out}/libcxx.compile.log" "${libcxx_compile[@]}"
+run_checked "${out}/libcxx.link.log" "${libcxx_link[@]}"
+
+{
+  printf 'COMMAND: file and sha256sum armv7l products\n'
+  file "${bin}/shrink_to_fit_reproducer.libstdcxx" "${bin}/shrink_to_fit_reproducer.libcxx"
+  sha256sum \
+    "${bin}/shrink_to_fit_reproducer.libstdcxx" \
+    "${bin}/shrink_to_fit_reproducer.libcxx" \
+    "${runtime}/libc++.so.1.0" \
+    "${runtime}/libc++abi.so.1.0"
+  printf 'EXIT_CODE: 0\n'
+} > "${out}/identity.log"
+
+### progress/R75/code/run_arm_final.sh
+#!/usr/bin/env bash
+set -e
+set -u
+set -o pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+sdb=/home/toolchain/.local/bin/sdb
+remote=/opt/usr/home/owner/share/tmp/r75_20260828
+bin="${workspace}/progress/R75/bin/armv7l"
+runtime="${workspace}/tmp/R69/build-armv7l/lib"
+out="${workspace}/progress/R75/raw/arm_final"
+mkdir -p "${out}"
+
+run_checked() {
+  local log=$1
+  shift
+  {
+    printf 'COMMAND:'
+    printf ' %q' "$@"
+    printf '\n'
+  } > "${log}"
+  set +e
+  "$@" >> "${log}" 2>&1
+  local rc=$?
+  set -e
+  printf 'EXIT_CODE: %s\n' "${rc}" >> "${log}"
+  return "${rc}"
+}
+
+run_checked "${out}/001_devices.log" "${sdb}" devices
+run_checked "${out}/002_preflight_processes.log" "${sdb}" shell "ps -ef"
+run_checked "${out}/003_preflight_path.log" "${sdb}" shell "if test -e '${remote}'; then find '${remote}' -maxdepth 3 -print; else echo R75_PATH_ABSENT; fi"
+run_checked "${out}/004_mkdir.log" "${sdb}" shell "mkdir -p '${remote}/bin' '${remote}/lib'"
+
+for stdlib in libstdcxx libcxx; do
+  run_checked "${out}/push_${stdlib}.log" "${sdb}" push "${bin}/shrink_to_fit_reproducer.${stdlib}" "${remote}/bin/shrink_to_fit_reproducer.${stdlib}"
+done
+for library in libc++.so.1.0 libc++abi.so.1.0; do
+  run_checked "${out}/push_${library}.log" "${sdb}" push "${runtime}/${library}" "${remote}/lib/${library}"
+done
+run_checked "${out}/005_symlinks.log" "${sdb}" shell "cd '${remote}/lib' && ln -sf libc++.so.1.0 libc++.so.1 && ln -sf libc++abi.so.1.0 libc++abi.so.1"
+run_checked "${out}/006_identity.log" "${sdb}" shell "sha256sum '${remote}/bin/shrink_to_fit_reproducer.libstdcxx' '${remote}/bin/shrink_to_fit_reproducer.libcxx' '${remote}/lib/libc++.so.1.0' '${remote}/lib/libc++abi.so.1.0'; ldd '${remote}/bin/shrink_to_fit_reproducer.libstdcxx'; LD_LIBRARY_PATH='${remote}/lib' ldd '${remote}/bin/shrink_to_fit_reproducer.libcxx'"
+
+printf 'stdlib\trun\ttransport_rc\tremote_rc\ttarget_seen\tprepared_seen\n' > "${out}/matrix.tsv"
+for stdlib in libstdcxx libcxx; do
+  for run in $(seq 1 20); do
+    stem="${out}/${stdlib}.run$(printf '%02d' "${run}")"
+    if [[ "${stdlib}" == libcxx ]]; then
+      remote_command="set +e; LD_LIBRARY_PATH='${remote}/lib' '${remote}/bin/shrink_to_fit_reproducer.libcxx'; rc=\$?; printf '\\n__R75_REMOTE_RC__=%s\\n' \"\$rc\"; exit 0"
+    else
+      remote_command="set +e; '${remote}/bin/shrink_to_fit_reproducer.libstdcxx'; rc=\$?; printf '\\n__R75_REMOTE_RC__=%s\\n' \"\$rc\"; exit 0"
+    fi
+    {
+      printf 'COMMAND:'
+      printf ' %q' timeout --signal=TERM --kill-after=2s 15s "${sdb}" shell "${remote_command}"
+      printf '\n'
+    } > "${stem}.command"
+    set +e
+    timeout --signal=TERM --kill-after=2s 15s "${sdb}" shell "${remote_command}" > "${stem}.stdout" 2> "${stem}.stderr"
+    transport_rc=$?
+    set -e
+    remote_rc=$(awk -F= '/^__R75_REMOTE_RC__=/{value=$2} END{gsub(/[^0-9]/,"",value); print value}' "${stem}.stdout")
+    if [[ ! "${remote_rc}" =~ ^[0-9]+$ ]]; then
+      remote_rc=NOT_AVAILABLE
+    fi
+    target_seen=$(awk '/EVENT target_allocate/{found=1} END{print found+0}' "${stem}.stdout" "${stem}.stderr")
+    prepared_seen=$(awk '/EVENT prepared/{found=1} END{print found+0}' "${stem}.stdout" "${stem}.stderr")
+    printf 'TRANSPORT_EXIT_CODE: %s\nREMOTE_EXIT_CODE: %s\n' "${transport_rc}" "${remote_rc}" >> "${stem}.command"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${stdlib}" "${run}" "${transport_rc}" "${remote_rc}" "${target_seen}" "${prepared_seen}" >> "${out}/matrix.tsv"
+  done
+done
+
+for stdlib in libstdcxx libcxx; do
+  stem="${out}/${stdlib}.ld_debug"
+  if [[ "${stdlib}" == libcxx ]]; then
+    remote_command="set +e; LD_DEBUG=libs LD_LIBRARY_PATH='${remote}/lib' '${remote}/bin/shrink_to_fit_reproducer.libcxx'; rc=\$?; printf '\\n__R75_REMOTE_RC__=%s\\n' \"\$rc\"; exit 0"
+  else
+    remote_command="set +e; LD_DEBUG=libs '${remote}/bin/shrink_to_fit_reproducer.libstdcxx'; rc=\$?; printf '\\n__R75_REMOTE_RC__=%s\\n' \"\$rc\"; exit 0"
+  fi
+  set +e
+  timeout --signal=TERM --kill-after=2s 15s "${sdb}" shell "${remote_command}" > "${stem}.stdout" 2> "${stem}.stderr"
+  transport_rc=$?
+  set -e
+  printf 'COMMAND: board LD_DEBUG identity run for %s\nTRANSPORT_EXIT_CODE: %s\n' "${stdlib}" "${transport_rc}" > "${stem}.command"
+done
+
+awk -F '\t' 'NR>1 {key=$1 ":transport=" $3 ":remote=" $4 ":target=" $5 ":prepared=" $6; count[key]++} END {for (key in count) print key "\t" count[key]}' \
+  "${out}/matrix.tsv" | sort > "${out}/summary.tsv"
+
+run_checked "${out}/007_cleanup.log" "${sdb}" shell "rm -rf '${remote}'"
+run_checked "${out}/008_cleanup_verify.log" "${sdb}" shell "if test -e '${remote}'; then echo R75_PATH_REMAINS; exit 1; else echo R75_PATH_REMOVED; fi"
+run_checked "${out}/009_process_verify.log" "${sdb}" shell "ps -ef"
+
+### progress/R75/code/run_x86_attempts.sh
+#!/usr/bin/env bash
+set -u
+set -o pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+source_dir="${workspace}/progress/R75/code"
+out="${workspace}/progress/R75/raw/x86_attempts"
+bin="${workspace}/progress/R75/bin/x86_64"
+gnu_cxx=/usr/bin/g++
+libcxx_cxx="${workspace}/progress/R33/tools/tizen-clang++"
+libcxx_include="${workspace}/tmp/R69/build-x86_64/include/c++/v1"
+libcxx_lib="${workspace}/tmp/R69/build-x86_64/lib"
+mkdir -p "${out}" "${bin}"
+
+attempts=(attempt1_no_delivery_point attempt2_ungated_allocator shrink_to_fit_reproducer)
+printf 'attempt\tstdlib\tcompile_rc\trun_rc\n' > "${out}/matrix.tsv"
+
+for attempt in "${attempts[@]}"; do
+  source="${source_dir}/${attempt}.cpp"
+  for stdlib in libstdcxx libcxx; do
+    binary="${bin}/${attempt}.${stdlib}"
+    compile_log="${out}/${attempt}.${stdlib}.compile.log"
+    if [[ "${stdlib}" == libstdcxx ]]; then
+      compile=("${gnu_cxx}" -std=c++17 -O0 -g -fexceptions -pthread "${source}" -o "${binary}")
+    else
+      compile=("${libcxx_cxx}" -std=c++17 -O0 -g -fexceptions -pthread -stdlib=libc++ -nostdinc++ -I "${libcxx_include}" "${source}" -L "${libcxx_lib}" -Wl,-rpath,"${libcxx_lib}" -Wl,-z,now -lc++ -lc++abi -o "${binary}")
+    fi
+    {
+      printf 'COMMAND:'
+      printf ' %q' "${compile[@]}"
+      printf '\n'
+    } > "${compile_log}"
+    set +e
+    nice -n 15 ionice -c 3 "${compile[@]}" >> "${compile_log}" 2>&1
+    compile_rc=$?
+    set -e
+    printf 'EXIT_CODE: %s\n' "${compile_rc}" >> "${compile_log}"
+
+    run_rc=125
+    if [[ "${compile_rc}" -eq 0 ]]; then
+      stdout="${out}/${attempt}.${stdlib}.stdout"
+      stderr="${out}/${attempt}.${stdlib}.stderr"
+      run_log="${out}/${attempt}.${stdlib}.run.log"
+      if [[ "${stdlib}" == libstdcxx ]]; then
+        run=(timeout --signal=TERM --kill-after=2s 5s "${binary}")
+      else
+        run=(timeout --signal=TERM --kill-after=2s 5s env "LD_LIBRARY_PATH=${libcxx_lib}" "${binary}")
+      fi
+      {
+        printf 'COMMAND:'
+        printf ' %q' "${run[@]}"
+        printf '\n'
+      } > "${run_log}"
+      set +e
+      nice -n 15 ionice -c 3 "${run[@]}" > "${stdout}" 2> "${stderr}"
+      run_rc=$?
+      set -e
+      printf 'EXIT_CODE: %s\n' "${run_rc}" >> "${run_log}"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "${attempt}" "${stdlib}" "${compile_rc}" "${run_rc}" >> "${out}/matrix.tsv"
+  done
+done
+
+cat "${out}/matrix.tsv"
+
+### progress/R75/code/run_x86_final.sh
+#!/usr/bin/env bash
+set -e
+set -u
+set -o pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+out="${workspace}/progress/R75/raw/x86_final"
+commands="${workspace}/progress/R75/commands"
+bin="${workspace}/progress/R75/bin/x86_64"
+runtime="${workspace}/tmp/R69/build-x86_64/lib"
+mkdir -p "${out}" "${commands}"
+
+printf 'stdlib\trun\texit_code\ttarget_seen\tprepared_seen\n' > "${out}/matrix.tsv"
+
+for stdlib in libstdcxx libcxx; do
+  binary="${bin}/shrink_to_fit_reproducer.${stdlib}"
+  for run in $(seq 1 20); do
+    stdout="${out}/${stdlib}.run$(printf '%02d' "${run}").stdout"
+    stderr="${out}/${stdlib}.run$(printf '%02d' "${run}").stderr"
+    command_log="${out}/${stdlib}.run$(printf '%02d' "${run}").command"
+    if [[ "${stdlib}" == libcxx ]]; then
+      command=(timeout --signal=TERM --kill-after=2s 10s env "LD_LIBRARY_PATH=${runtime}" "${binary}")
+    else
+      command=(timeout --signal=TERM --kill-after=2s 10s "${binary}")
+    fi
+    {
+      printf 'COMMAND:'
+      printf ' %q' "${command[@]}"
+      printf '\n'
+    } > "${command_log}"
+    set +e
+    nice -n 15 ionice -c 3 "${command[@]}" > "${stdout}" 2> "${stderr}"
+    rc=$?
+    set -e
+    printf 'EXIT_CODE: %s\n' "${rc}" >> "${command_log}"
+    target_seen=$(awk '/EVENT target_allocate/{found=1} END{print found+0}' "${stderr}")
+    prepared_seen=$(awk '/EVENT prepared/{found=1} END{print found+0}' "${stderr}")
+    printf '%s\t%s\t%s\t%s\t%s\n' "${stdlib}" "${run}" "${rc}" "${target_seen}" "${prepared_seen}" >> "${out}/matrix.tsv"
+  done
+done
+
+{
+  printf 'COMMAND: sha256sum binaries and runtime libraries\n'
+  sha256sum \
+    "${bin}/shrink_to_fit_reproducer.libstdcxx" \
+    "${bin}/shrink_to_fit_reproducer.libcxx" \
+    "${runtime}/libc++.so.1.0" \
+    "${runtime}/libc++abi.so.1.0"
+  printf 'EXIT_CODE: 0\n'
+} > "${out}/identity.sha256"
+
+{
+  printf 'COMMAND: ldd %q\n' "${bin}/shrink_to_fit_reproducer.libstdcxx"
+  ldd "${bin}/shrink_to_fit_reproducer.libstdcxx"
+  printf 'EXIT_CODE: 0\n'
+} > "${out}/libstdcxx.ldd" 2>&1
+
+{
+  printf 'COMMAND: env LD_LIBRARY_PATH=%q ldd %q\n' "${runtime}" "${bin}/shrink_to_fit_reproducer.libcxx"
+  env "LD_LIBRARY_PATH=${runtime}" ldd "${bin}/shrink_to_fit_reproducer.libcxx"
+  printf 'EXIT_CODE: 0\n'
+} > "${out}/libcxx.ldd" 2>&1
+
+set +e
+LD_DEBUG=libs timeout --signal=TERM --kill-after=2s 10s \
+  "${bin}/shrink_to_fit_reproducer.libstdcxx" \
+  > "${out}/libstdcxx.ld_debug.stdout" 2> "${out}/libstdcxx.ld_debug.stderr"
+rc=$?
+set -e
+printf 'COMMAND: LD_DEBUG=libs timeout ... shrink_to_fit_reproducer.libstdcxx\nEXIT_CODE: %s\n' "${rc}" > "${out}/libstdcxx.ld_debug.command"
+
+set +e
+LD_DEBUG=libs LD_LIBRARY_PATH="${runtime}" timeout --signal=TERM --kill-after=2s 10s \
+  "${bin}/shrink_to_fit_reproducer.libcxx" \
+  > "${out}/libcxx.ld_debug.stdout" 2> "${out}/libcxx.ld_debug.stderr"
+rc=$?
+set -e
+printf 'COMMAND: LD_DEBUG=libs LD_LIBRARY_PATH=%q timeout ... shrink_to_fit_reproducer.libcxx\nEXIT_CODE: %s\n' "${runtime}" "${rc}" > "${out}/libcxx.ld_debug.command"
+
+awk -F '\t' 'NR>1 {key=$1 ":rc=" $3 ":target=" $4 ":prepared=" $5; count[key]++} END {for (key in count) print key "\t" count[key]}' \
+  "${out}/matrix.tsv" | sort > "${out}/summary.tsv"
+
+### progress/R75/code/attempt1_no_delivery_point.cpp
+#include <atomic>
+#include <cstdio>
+#include <pthread.h>
+#include <unistd.h>
+
+static std::atomic<bool> ready{false};
+
+static void* worker(void*) {
+  ready.store(true, std::memory_order_release);
+  for (;;)
+    asm volatile("" ::: "memory");
+  return nullptr;
+}
+
+int main() {
+  pthread_t thread{};
+  const int create_rc = pthread_create(&thread, nullptr, worker, nullptr);
+  std::fprintf(stderr, "CREATE_RC=%d\n", create_rc);
+  if (create_rc != 0)
+    return 2;
+  while (!ready.load(std::memory_order_acquire))
+    usleep(1000);
+  const int cancel_rc = pthread_cancel(thread);
+  std::fprintf(stderr, "REQUEST_RC=%d\n", cancel_rc);
+  void* joined = nullptr;
+  const int join_rc = pthread_join(thread, &joined);
+  std::fprintf(stderr, "JOIN_RC=%d JOINED=%s\n", join_rc,
+               joined == PTHREAD_CANCELED ? "PTHREAD_CANCELED" : "other");
+  return 0;
+}
+
+### progress/R75/code/attempt2_ungated_allocator.cpp
+#include <atomic>
+#include <cstdio>
+#include <new>
+#include <pthread.h>
+#include <string>
+#include <unistd.h>
+
+static std::atomic<bool> ready{false};
+
+template <class T>
+class CancelAllocator {
+public:
+  using value_type = T;
+
+  CancelAllocator() noexcept = default;
+  template <class U>
+  CancelAllocator(const CancelAllocator<U>&) noexcept {}
+
+  T* allocate(std::size_t count) {
+    std::fprintf(stderr, "EVENT allocate count=%zu\n", count);
+    ready.store(true, std::memory_order_release);
+    for (;;)
+      pthread_testcancel();
+  }
+
+  void deallocate(T* pointer, std::size_t) noexcept { ::operator delete(pointer); }
+
+  template <class U>
+  bool operator==(const CancelAllocator<U>&) const noexcept { return true; }
+  template <class U>
+  bool operator!=(const CancelAllocator<U>&) const noexcept { return false; }
+};
+
+using CancelString =
+    std::basic_string<char, std::char_traits<char>, CancelAllocator<char>>;
+
+static void* worker(void*) {
+  CancelString value(1024, 'x');
+  value.reserve(65536);
+  value.shrink_to_fit();
+  return nullptr;
+}
+
+int main() {
+  pthread_t thread{};
+  const int create_rc = pthread_create(&thread, nullptr, worker, nullptr);
+  std::fprintf(stderr, "CREATE_RC=%d\n", create_rc);
+  if (create_rc != 0)
+    return 2;
+  while (!ready.load(std::memory_order_acquire))
+    usleep(1000);
+  const int cancel_rc = pthread_cancel(thread);
+  std::fprintf(stderr, "REQUEST_RC=%d\n", cancel_rc);
+  void* joined = nullptr;
+  const int join_rc = pthread_join(thread, &joined);
+  std::fprintf(stderr, "JOIN_RC=%d JOINED=%s\n", join_rc,
+               joined == PTHREAD_CANCELED ? "PTHREAD_CANCELED" : "other");
+  return joined == PTHREAD_CANCELED ? 0 : 1;
+}
+
+### progress/R75/code/shrink_to_fit_reproducer.cpp
+#include <atomic>
+#include <cstdio>
+#include <new>
+#include <pthread.h>
+#include <string>
+#include <unistd.h>
+
+static std::atomic<bool> target_allocation_enabled{false};
+static std::atomic<bool> target_allocation_entered{false};
+static std::atomic<unsigned> allocation_count{0};
+
+template <class T>
+class CancelAllocator {
+public:
+  using value_type = T;
+
+  CancelAllocator() noexcept = default;
+  template <class U>
+  CancelAllocator(const CancelAllocator<U>&) noexcept {}
+
+  T* allocate(std::size_t count) {
+    const unsigned sequence =
+        allocation_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (target_allocation_enabled.load(std::memory_order_acquire)) {
+      std::fprintf(stderr,
+                   "EVENT target_allocate sequence=%u count=%zu\n",
+                   sequence, count);
+      target_allocation_entered.store(true, std::memory_order_release);
+      for (;;)
+        pthread_testcancel();
+    }
+    return static_cast<T*>(::operator new(count * sizeof(T)));
+  }
+
+  void deallocate(T* pointer, std::size_t) noexcept { ::operator delete(pointer); }
+
+  template <class U>
+  bool operator==(const CancelAllocator<U>&) const noexcept { return true; }
+  template <class U>
+  bool operator!=(const CancelAllocator<U>&) const noexcept { return false; }
+};
+
+using CancelString =
+    std::basic_string<char, std::char_traits<char>, CancelAllocator<char>>;
+
+static void* worker(void*) {
+  CancelString value(1024, 'x');
+  value.reserve(65536);
+  std::fprintf(stderr, "EVENT prepared size=%zu capacity=%zu allocations=%u\n",
+               value.size(), value.capacity(),
+               allocation_count.load(std::memory_order_relaxed));
+  target_allocation_enabled.store(true, std::memory_order_release);
+  value.shrink_to_fit();
+  std::fprintf(stderr, "ERROR shrink_to_fit returned\n");
+  return nullptr;
+}
+
+int main() {
+  pthread_t thread{};
+  const int create_rc = pthread_create(&thread, nullptr, worker, nullptr);
+  std::fprintf(stderr, "CREATE_RC=%d\n", create_rc);
+  if (create_rc != 0)
+    return 2;
+
+  while (!target_allocation_entered.load(std::memory_order_acquire))
+    usleep(1000);
+
+  const int cancel_rc = pthread_cancel(thread);
+  std::fprintf(stderr, "REQUEST_RC=%d\n", cancel_rc);
+  void* joined = nullptr;
+  const int join_rc = pthread_join(thread, &joined);
+  std::fprintf(stderr, "ERROR join returned rc=%d result=%s\n", join_rc,
+               joined == PTHREAD_CANCELED ? "PTHREAD_CANCELED" : "other");
+  return 1;
+}

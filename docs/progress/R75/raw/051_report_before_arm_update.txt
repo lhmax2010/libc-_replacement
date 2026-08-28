@@ -1,0 +1,68 @@
+     1	# R75：问题五 `shrink_to_fit` 复现用例修正与实测
+     2	
+     3	日期：2026-08-28  
+     4	承接：`progress/R74/REPORT.md` 中“不一致清单”第 1 项
+     5	
+     6	## 1. 结论摘要
+     7	
+     8	R74 指出的复现缺陷已经被消除：最终用例先完成字符串构造和 `reserve(65536)`，再开启分配门禁；主线程只在 `shrink_to_fit()` 触发的下一次 `allocate()` 已进入后请求取消。调试栈直接证明目标分配位于 `basic_string::shrink_to_fit` 内部，而不再位于字符串构造阶段。
+     9	
+    10	最终用例在 x86_64 与 armv7l、libstdc++ 与项目 libc++ 四个格上均稳定导致进程异常终止，没有一次线程干净取消或正常返回。因此，“取消在 `shrink_to_fit` 的不抛异常边界内送达时，两套实现都不能把它变成线程干净退出”得到实测支持。
+    11	
+    12	但终止形态并不完全相同：x86_64 两套库均为 20/20 退出 134；armv7l 项目 libc++ 为 20/20 退出 134，系统 libstdc++ 为 20/20 退出 139。故对外表述宜写“均异常终止”，不宜把所有平台都写成同一种终止信号。
+    13	
+    14	## 2. 用例修正
+    15	
+    16	原报告用例的自定义分配器从第一次分配起就永久停在 `pthread_testcancel()`，使取消在 `CancelString(1024, 'x')` 构造期间送达，控制流从未到达 `reserve()` 或 `shrink_to_fit()`。
+    17	
+    18	最终用例增加两个独立门禁：
+    19	
+    20	1. `target_allocation_enabled` 只在构造和 `reserve()` 完成后开启；
+    21	2. `target_allocation_entered` 只在开启后的目标分配中置位，主线程据此发出取消请求。
+    22	
+    23	同时记录分配序号、容量和目标分配大小。x86_64 的目标分配为 libstdc++ 第 3 次、1025 字节，libc++ 第 3 次、1032 字节；armv7l 对应序号同为第 3 次。原用例与最终用例的逐行差异见 `raw/022_problem5_final_correct.diff`。
+    24	
+    25	两次探索尝试也完整保留：无取消送达点的版本两套库均超时；未加门禁的版本两套库均线程干净取消；最终门禁版本两套库均退出 134。结果见 `raw/018_attempts_digest.txt`。
+    26	
+    27	## 3. x86_64 结果与调用栈
+    28	
+    29	最终矩阵每套库运行 20 次：
+    30	
+    31	- libstdc++：20/20 命中 `EVENT prepared` 和 `EVENT target_allocate`，20/20 退出 134；
+    32	- 项目 libc++：20/20 命中上述两个事件，20/20 退出 134。
+    33	
+    34	调试器在目标分配处和最终 SIGABRT 处各取一次全线程栈：
+    35	
+    36	- libstdc++：`CancelAllocator<char>::allocate` → `basic_string::shrink_to_fit` → `worker`；最终栈含 `std::terminate()`；
+    37	- libc++：`CancelAllocator<char>::allocate` → `basic_string::shrink_to_fit` → `worker`；最终栈含 `__clang_call_terminate`、`std::terminate()` 和 libc++abi 的 foreign-exception 终止处理。
+    38	
+    39	自动证据门禁要求两份调试记录都同时包含目标函数、分配器帧和预期终止信号，结果为 PASS。关键行见 `raw/017_debug_key_lines.txt`，完整记录见 `raw/x86_debug/`。
+    40	
+    41	运行时身份通过 SHA256、`ldd` 和 `LD_DEBUG=libs` 留证。项目 libc++ 实际加载 `tmp/R69/build-x86_64/lib/libc++.so.1` 与 `libc++abi.so.1`，不是宿主同名库；身份摘要见 `raw/016_identity_digest_inputs.txt`。
+    42	
+    43	## 4. armv7l 结果
+    44	
+    45	两个二进制均为 ARM EABI5、带调试信息的动态 PIE。部署后再次计算二进制和项目运行库 SHA256，与宿主构建产物一致；`ldd` 证明 libc++ 格从独立目录加载项目 `libc++.so.1` 与 `libc++abi.so.1`。
+    46	
+    47	每套库运行 20 次：
+    48	
+    49	- 系统 libstdc++：20/20 传输成功、远端退出 139、目标事件 20/20；
+    50	- 项目 libc++：20/20 传输成功、远端退出 134、目标事件 20/20。
+    51	
+    52	40 次运行均取得可解析的远端退出码，没有超时或传输失败。结构化矩阵和聚合见 `raw/arm_final/matrix.tsv`、`raw/arm_final/summary.tsv`。
+    53	
+    54	板端只使用独立目录 `/opt/usr/home/owner/share/tmp/r75_20260828`。完成后该目录已移除并核验不存在，进程清单也已复核。
+    55	
+    56	## 5. 机制边界
+    57	
+    58	两套头文件都把 `basic_string::shrink_to_fit()` 声明为 `noexcept`/`_NOEXCEPT`。当前项目 libc++ 的函数体确有 `catch (const __forced_unwind&) { throw; }`，但该重抛仍需离开不抛异常函数，因此到达终止路径；源码摘录见 `raw/023_shrink_to_fit_declarations.txt` 与 `raw/024_libcxx_shrink_to_fit_body.txt`。
+    59	
+    60	本轮证明的是一个刻意构造的确定性边界条件：取消被送达于 `shrink_to_fit()` 内部的分配器取消点。它不能证明普通分配器会自然提供取消点，也不能把 armv7l libstdc++ 的 139 直接等同于 x86_64 的 `std::terminate` 路径；设备侧没有取得对应调试栈。
+    61	
+    62	## 6. 边界与异常申报
+    63	
+    64	- 没有修改平台源码、补丁或对外报告；只新增 R75 复现代码、驱动、证据和本报告。
+    65	- ARM 构建驱动首次退出 1，原始驱动输出为空；未改代码的重试退出 0。构建子日志使用固定文件名，重试覆盖了首次子日志，因此无法从现存材料可靠断言首次失败原因。
+    66	- 复核阶段曾让 `rg` 把正在生成的输出文件纳入搜索，形成自扩张扫描；发现后停止，并改用明确排除 `progress/R75/**` 的检索。误生成文件保留为 `resume_rg_context.txt`，不计入结论。
+    67	- 复核时曾误把 R74 的第 5 个代码块当作“问题五复现”；错误 diff 保留为 `raw/020_problem5_final.diff`。随后依据 `blocks.json` 定位到第 10 个代码块并生成正确 diff。
+    68	- 自行判断与尚存疑问见 `SELF_DECISIONS_AND_QUESTIONS.md`。

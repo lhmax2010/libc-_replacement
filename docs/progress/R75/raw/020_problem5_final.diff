@@ -1,0 +1,83 @@
+--- progress/R74/extracted/05_unlabelled_unlabelled.cpp	2026-08-28 09:37:00.551781069 +0800
++++ progress/R75/code/shrink_to_fit_reproducer.cpp	2026-08-28 10:17:04.372849158 +0800
+@@ -1,7 +1,75 @@
+-// codes/llvm/libcxx/src/ios.cpp
++#include <atomic>
++#include <cstdio>
++#include <new>
++#include <pthread.h>
++#include <string>
++#include <unistd.h>
+ 
+-void ios_base::__set_badbit_and_consider_rethrow() {
+-    __rdstate_ |= badbit;
+-    if (__exceptions_ & badbit)
+-        throw;
++static std::atomic<bool> target_allocation_enabled{false};
++static std::atomic<bool> target_allocation_entered{false};
++static std::atomic<unsigned> allocation_count{0};
++
++template <class T>
++class CancelAllocator {
++public:
++  using value_type = T;
++
++  CancelAllocator() noexcept = default;
++  template <class U>
++  CancelAllocator(const CancelAllocator<U>&) noexcept {}
++
++  T* allocate(std::size_t count) {
++    const unsigned sequence =
++        allocation_count.fetch_add(1, std::memory_order_relaxed) + 1;
++    if (target_allocation_enabled.load(std::memory_order_acquire)) {
++      std::fprintf(stderr,
++                   "EVENT target_allocate sequence=%u count=%zu\n",
++                   sequence, count);
++      target_allocation_entered.store(true, std::memory_order_release);
++      for (;;)
++        pthread_testcancel();
++    }
++    return static_cast<T*>(::operator new(count * sizeof(T)));
++  }
++
++  void deallocate(T* pointer, std::size_t) noexcept { ::operator delete(pointer); }
++
++  template <class U>
++  bool operator==(const CancelAllocator<U>&) const noexcept { return true; }
++  template <class U>
++  bool operator!=(const CancelAllocator<U>&) const noexcept { return false; }
++};
++
++using CancelString =
++    std::basic_string<char, std::char_traits<char>, CancelAllocator<char>>;
++
++static void* worker(void*) {
++  CancelString value(1024, 'x');
++  value.reserve(65536);
++  std::fprintf(stderr, "EVENT prepared size=%zu capacity=%zu allocations=%u\n",
++               value.size(), value.capacity(),
++               allocation_count.load(std::memory_order_relaxed));
++  target_allocation_enabled.store(true, std::memory_order_release);
++  value.shrink_to_fit();
++  std::fprintf(stderr, "ERROR shrink_to_fit returned\n");
++  return nullptr;
++}
++
++int main() {
++  pthread_t thread{};
++  const int create_rc = pthread_create(&thread, nullptr, worker, nullptr);
++  std::fprintf(stderr, "CREATE_RC=%d\n", create_rc);
++  if (create_rc != 0)
++    return 2;
++
++  while (!target_allocation_entered.load(std::memory_order_acquire))
++    usleep(1000);
++
++  const int cancel_rc = pthread_cancel(thread);
++  std::fprintf(stderr, "REQUEST_RC=%d\n", cancel_rc);
++  void* joined = nullptr;
++  const int join_rc = pthread_join(thread, &joined);
++  std::fprintf(stderr, "ERROR join returned rc=%d result=%s\n", join_rc,
++               joined == PTHREAD_CANCELED ? "PTHREAD_CANCELED" : "other");
++  return 1;
+ }
