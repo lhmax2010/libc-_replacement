@@ -1,0 +1,525 @@
+$ sed -n "1,280p" docs/progress/R77/code/sdb_executor.py
+#!/usr/bin/env python3
+"""Run one libc++ lit test directory on the registered armv7l SDB target."""
+
+import argparse
+import hashlib
+import io
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+
+SDB = "/home/toolchain/.local/bin/sdb"
+SERIAL = "192.168.108.26:26101"
+REMOTE_ROOT = "/opt/usr/home/owner/share/tmp/r77_lit_20260829"
+SHARED_ROOT = "/opt/usr/home/owner/share/tmp"
+EXIT_MARKER = "__R77_SDB_EXIT__="
+MAX_TEST_TIMEOUT_SECONDS = 120
+
+
+def run_host(command, *, check=True, **kwargs):
+    if os.environ.get("R68_SDB_EXECUTOR_VERBOSE") == "1":
+        print(f"HOST_COMMAND={shlex.join(command)}", file=sys.stderr)
+    return subprocess.run(command, check=check, **kwargs)
+
+
+def sdb_command(*arguments):
+    return [SDB, "-s", SERIAL, *arguments]
+
+
+def build_environment(env_args, prepend_args):
+    components = []
+    for assignment in env_args:
+        key, value = assignment.split("=", 1)
+        components.append(f"export {key}={shlex.quote(value)}; ")
+    for assignment in prepend_args:
+        key, value = assignment.split("=", 1)
+        components.append(
+            f"export {key}={shlex.quote(value)}${{{key}:+:${key}}}; "
+        )
+    components.append(
+        f"export LD_LIBRARY_PATH={shlex.quote(REMOTE_ROOT + '/runtime')}"
+        "${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}; "
+    )
+    return "".join(components)
+
+
+def stop_remote_test(remote_pid_file):
+    cleanup_process = (
+        f"if test -s {shlex.quote(remote_pid_file)}; then "
+        f"pgid=$(cat {shlex.quote(remote_pid_file)}); "
+        "pkill -TERM -g \"$pgid\" 2>/dev/null || true; "
+        "sleep 2; "
+        "pkill -KILL -g \"$pgid\" 2>/dev/null || true; "
+        "fi"
+    )
+    return run_host(
+        sdb_command("shell", cleanup_process),
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+    )
+
+
+def write_timeout_stream(stream, destination):
+    if not stream:
+        return
+    if isinstance(stream, bytes):
+        stream = stream.decode("utf-8", errors="replace")
+    destination.write(stream)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--execdir", required=True)
+    parser.add_argument("--env", nargs="*", default=[])
+    parser.add_argument("--prepend_env", nargs="*", default=[])
+    parser.add_argument("command", nargs=argparse.ONE_OR_MORE)
+    args = parser.parse_args()
+
+    try:
+        test_timeout_seconds = int(
+            os.environ.get(
+                "R77_SDB_TEST_TIMEOUT_SECONDS", str(MAX_TEST_TIMEOUT_SECONDS)
+            )
+        )
+    except ValueError:
+        print("ERROR: R77_SDB_TEST_TIMEOUT_SECONDS is not an integer", file=sys.stderr)
+        return 10
+    if not 1 <= test_timeout_seconds <= MAX_TEST_TIMEOUT_SECONDS:
+        print(
+            "ERROR: R77_SDB_TEST_TIMEOUT_SECONDS must be in [1, 120]",
+            file=sys.stderr,
+        )
+        return 10
+
+    local_dir = os.path.abspath(args.execdir)
+    if not os.path.isdir(local_dir):
+        print(f"ERROR: execdir is not a directory: {local_dir}", file=sys.stderr)
+        return 10
+
+    digest = hashlib.sha256(local_dir.encode()).hexdigest()[:16]
+    invocation = f"run-{digest}-{os.getpid()}"
+    remote_dir = f"{REMOTE_ROOT}/runs/{invocation}"
+    shared_tar = f"{SHARED_ROOT}/{invocation}.tar"
+    remote_tar = f"{REMOTE_ROOT}/{invocation}.tar"
+    remote_pid_file = f"{remote_dir}/.test_pgid"
+    remote_stdin_file = f"{remote_dir}/.stdin"
+    local_tar = None
+    local_tar_bytes = 0
+    stdin_data = b"" if sys.stdin.isatty() else sys.stdin.buffer.read()
+
+    def map_argument(argument):
+        prefix = local_dir + os.sep
+        if argument.startswith(prefix):
+            return remote_dir + "/" + argument[len(prefix) :]
+        return argument
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as temporary:
+            local_tar = temporary.name
+        with tarfile.open(local_tar, "w") as archive:
+            archive_root = os.path.basename(local_dir)
+            archive.add(local_dir, arcname=archive_root)
+            stdin_info = tarfile.TarInfo(name=f"{archive_root}/.stdin")
+            stdin_info.mode = 0o600
+            stdin_info.size = len(stdin_data)
+            archive.addfile(stdin_info, io.BytesIO(stdin_data))
+        local_tar_bytes = os.path.getsize(local_tar)
+
+        run_host(
+            sdb_command("push", local_tar, shared_tar),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        setup = (
+            "set -e; "
+            f"mkdir -p {shlex.quote(REMOTE_ROOT + '/runs')}; "
+            f"cp {shlex.quote(shared_tar)} {shlex.quote(remote_tar)}; "
+            f"rm -f {shlex.quote(shared_tar)}; "
+            f"mkdir {shlex.quote(remote_dir)}; "
+            f"tar -xf {shlex.quote(remote_tar)} -C {shlex.quote(remote_dir)} "
+            "--strip-components 1; "
+            f"rm -f {shlex.quote(remote_tar)}; "
+            f"chmod -R u+rwX {shlex.quote(remote_dir)}"
+        )
+        run_host(
+            sdb_command("shell", setup),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        remote_command = [map_argument(argument) for argument in args.command]
+        test_command = (
+            "exec "
+            + shlex.join(remote_command)
+            + f" < {shlex.quote(remote_stdin_file)}"
+        )
+        remote_test_script = (
+            f"printf '%d\\n' \"$$\" > {shlex.quote(remote_pid_file)}; "
+            + test_command
+        )
+        shell_command = (
+            "set +e; "
+            + build_environment(args.env, args.prepend_env)
+            + f"cd {shlex.quote(remote_dir)}; "
+            + f"setsid sh -c {shlex.quote(remote_test_script)}"
+            + "; rc=$?; "
+            + f"printf '\n{EXIT_MARKER}%d\n' \"$rc\"; exit 0"
+        )
+        try:
+            completed = run_host(
+                sdb_command("shell", shell_command),
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                errors="replace",
+                timeout=test_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as timeout_error:
+            stop_result = stop_remote_test(remote_pid_file)
+            write_timeout_stream(timeout_error.stdout, sys.stdout)
+            write_timeout_stream(timeout_error.stderr, sys.stderr)
+            sys.stderr.write(
+                f"ERROR: remote test exceeded {test_timeout_seconds} seconds; "
+                "terminated and recorded as failure\n"
+            )
+            if stop_result.stdout:
+                sys.stderr.write(stop_result.stdout)
+            return 124
+        telemetry_path = os.environ.get("R77_SDB_TELEMETRY")
+        if telemetry_path:
+            usage = run_host(
+                sdb_command("shell", f"du -sk {shlex.quote(remote_dir)}"),
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            with open(telemetry_path, "a", encoding="utf-8") as telemetry:
+                telemetry.write(
+                    f"{local_dir}\t{local_tar_bytes}\t"
+                    f"{usage.returncode}\t{usage.stdout.strip()}\n"
+                )
+        if completed.stderr:
+            sys.stderr.write(completed.stderr)
+        if completed.returncode != 0:
+            sys.stderr.write(
+                f"ERROR: SDB carrier exited with {completed.returncode}\n"
+            )
+            sys.stderr.write(completed.stdout)
+            return 90
+
+        output = completed.stdout.replace("\r\n", "\n")
+        match = re.search(rf"\n{re.escape(EXIT_MARKER)}([0-9]+)\n?$", output)
+        if match is None:
+            sys.stderr.write("ERROR: remote exit marker was not observed\n")
+            sys.stderr.write(output)
+            return 91
+        sys.stdout.write(output[: match.start()])
+        return int(match.group(1))
+    finally:
+        if local_tar is not None:
+            try:
+                os.remove(local_tar)
+            except FileNotFoundError:
+                pass
+        cleanup = (
+            f"rm -rf {shlex.quote(remote_dir)}; "
+            f"rm -f {shlex.quote(remote_tar)} {shlex.quote(shared_tar)}"
+        )
+        run_host(
+            sdb_command("shell", cleanup),
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+[exit_code] 0
+$ rg -n "class scoped_test_env|class static_test_env|static_test_env|scoped_test_env|TempDir|TempFile|sanitize_path" tmp/R69/replay/libcxx/test/support/filesystem_test_helper.h
+151:struct scoped_test_env
+153:    scoped_test_env() : test_root(available_cwd_path()) {
+171:    ~scoped_test_env() {
+208:    scoped_test_env(scoped_test_env const &) = delete;
+209:    scoped_test_env & operator=(scoped_test_env const &) = delete;
+211:    fs::path make_env_path(std::string p) { return sanitize_path(p); }
+213:    std::string sanitize_path(std::string raw) {
+231:        std::string filename = sanitize_path(filename_path.string());
+267:        filename = sanitize_path(std::move(filename));
+280:            source = sanitize_path(std::move(source));
+281:        to = sanitize_path(std::move(to));
+304:        source = sanitize_path(std::move(source));
+305:        to = sanitize_path(std::move(to));
+313:        file = sanitize_path(std::move(file));
+324:      file = sanitize_path(std::move(file));
+350:    // scoped_test_envs were created concurrently in the same test (hence
+352:    // we generally don't use scoped_test_env from multiple threads, so
+372:///     static_test_env
+388:class static_test_env {
+389:    scoped_test_env env_;
+391:    static_test_env() {
+[exit_code] 0
+$ sed -n "20,260p" tmp/R69/replay/libcxx/test/support/filesystem_test_helper.h
+#include <cstdio> // for printf
+#include <cstring>
+#include <string>
+#include <system_error>
+#include <type_traits>
+#include <vector>
+
+#include "assert_macros.h"
+#include "make_string.h"
+#include "test_macros.h"
+#include "format_string.h"
+
+// For creating socket files
+#if !defined(__FreeBSD__) && !defined(__APPLE__) && !defined(_WIN32)
+# include <sys/socket.h>
+# include <sys/un.h>
+#endif
+namespace fs = std::filesystem;
+
+namespace utils {
+#ifdef _WIN32
+    inline int mkdir(const char* path, int mode) { (void)mode; return ::_mkdir(path); }
+    inline int symlink(const char* oldname, const char* newname, bool is_dir) {
+        DWORD flags = is_dir ? SYMBOLIC_LINK_FLAG_DIRECTORY : 0;
+        if (CreateSymbolicLinkA(newname, oldname,
+                                flags | SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE))
+          return 0;
+        if (GetLastError() != ERROR_INVALID_PARAMETER)
+          return 1;
+        return !CreateSymbolicLinkA(newname, oldname, flags);
+    }
+    inline int link(const char *oldname, const char* newname) {
+        return !CreateHardLinkA(newname, oldname, NULL);
+    }
+    inline int setenv(const char *var, const char *val, int overwrite) {
+        (void)overwrite;
+        return ::_putenv((std::string(var) + "=" + std::string(val)).c_str());
+    }
+    inline int unsetenv(const char *var) {
+        return ::_putenv((std::string(var) + "=").c_str());
+    }
+    inline bool space(std::string path, std::uintmax_t &capacity,
+                      std::uintmax_t &free, std::uintmax_t &avail) {
+        ULARGE_INTEGER FreeBytesAvailableToCaller, TotalNumberOfBytes,
+                       TotalNumberOfFreeBytes;
+        if (!GetDiskFreeSpaceExA(path.c_str(), &FreeBytesAvailableToCaller,
+                                 &TotalNumberOfBytes, &TotalNumberOfFreeBytes))
+          return false;
+        capacity = TotalNumberOfBytes.QuadPart;
+        free = TotalNumberOfFreeBytes.QuadPart;
+        avail = FreeBytesAvailableToCaller.QuadPart;
+        assert(capacity > 0);
+        assert(free > 0);
+        assert(avail > 0);
+        return true;
+    }
+#else
+    using ::mkdir;
+    inline int symlink(const char* oldname, const char* newname, bool is_dir) { (void)is_dir; return ::symlink(oldname, newname); }
+    using ::link;
+    using ::setenv;
+    using ::unsetenv;
+    inline bool space(std::string path, std::uintmax_t &capacity,
+                      std::uintmax_t &free, std::uintmax_t &avail) {
+        struct statvfs expect;
+        if (::statvfs(path.c_str(), &expect) == -1)
+          return false;
+        assert(expect.f_bavail > 0);
+        assert(expect.f_bfree > 0);
+        assert(expect.f_bsize > 0);
+        assert(expect.f_blocks > 0);
+        assert(expect.f_frsize > 0);
+        auto do_mult = [&](std::uintmax_t val) {
+            std::uintmax_t fsize = expect.f_frsize;
+            std::uintmax_t new_val = val * fsize;
+            assert(new_val / fsize == val); // Test for overflow
+            return new_val;
+        };
+        capacity = do_mult(expect.f_blocks);
+        free = do_mult(expect.f_bfree);
+        avail = do_mult(expect.f_bavail);
+        return true;
+    }
+#endif
+
+    // N.B. libc might define some of the foo[64] identifiers using macros from
+    // foo64 -> foo or vice versa.
+#if defined(_WIN32)
+    using off64_t = std::int64_t;
+#elif defined(__MVS__) || defined(__LP64__)
+    using off64_t = ::off_t;
+#else
+    using ::off64_t;
+#endif
+
+    inline FILE* fopen64(const char* pathname, const char* mode) {
+        // Bionic does not distinguish between fopen and fopen64, but fopen64
+        // wasn't added until API 24.
+#if defined(_WIN32) || defined(__MVS__) || defined(__LP64__) || defined(__BIONIC__)
+        return ::fopen(pathname, mode);
+#else
+        return ::fopen64(pathname, mode);
+#endif
+    }
+
+    inline int ftruncate64(int fd, off64_t length) {
+#if defined(_WIN32)
+        // _chsize_s sets errno on failure and also returns the error number.
+        return ::_chsize_s(fd, length) ? -1 : 0;
+#elif defined(__MVS__) || defined(__LP64__)
+        return ::ftruncate(fd, length);
+#else
+        return ::ftruncate64(fd, length);
+#endif
+    }
+
+    inline std::string getcwd() {
+        // Assume that path lengths are not greater than this.
+        // This should be fine for testing purposes.
+        char buf[4096];
+        char* ret = ::getcwd(buf, sizeof(buf));
+        assert(ret && "getcwd failed");
+        return std::string(ret);
+    }
+
+    inline bool exists(std::string const& path) {
+        struct ::stat tmp;
+        return ::stat(path.c_str(), &tmp) == 0;
+    }
+} // namespace utils
+
+struct scoped_test_env
+{
+    scoped_test_env() : test_root(available_cwd_path()) {
+#ifdef _WIN32
+        // Windows mkdir can create multiple recursive directories
+        // if needed.
+        std::string cmd = "mkdir " + test_root.string();
+#else
+        std::string cmd = "mkdir -p " + test_root.string();
+#endif
+        int ret = std::system(cmd.c_str());
+        assert(ret == 0);
+
+        // Ensure that the root_path is fully resolved, i.e. it contains no
+        // symlinks. The filesystem tests depend on that. We do this after
+        // creating the root_path, because `fs::canonical` requires the
+        // path to exist.
+        test_root = fs::canonical(test_root);
+    }
+
+    ~scoped_test_env() {
+#ifdef _WIN32
+        std::string cmd = "rmdir /s /q " + test_root.string();
+        int ret = std::system(cmd.c_str());
+        assert(ret == 0);
+#else
+#if defined(__MVS__)
+        // The behaviour of chmod -R on z/OS prevents recursive
+        // permission change for directories that do not have read permission.
+        std::string cmd = "find  " + test_root.string() + " -exec chmod 777 {} \\;";
+#else
+        std::string cmd = "chmod -R 777 " + test_root.string();
+#endif // defined(__MVS__)
+        int ret = std::system(cmd.c_str());
+#  if !defined(_AIX) && !defined(__ANDROID__)
+        // On AIX the chmod command will return non-zero when trying to set
+        // the permissions on a directory that contains a bad symlink. This triggers
+        // the assert, despite being able to delete everything with the following
+        // `rm -r` command.
+        //
+        // Android's chmod was buggy in old OSs, but skipping this assert is
+        // sufficient to ensure that the `rm -rf` succeeds for almost all tests:
+        //  - Android L: chmod aborts after one error
+        //  - Android L and M: chmod -R tries to set permissions of a symlink
+        //    target.
+        // LIBCXX-ANDROID-FIXME: Other fixes to consider: place a toybox chmod
+        // onto old devices, re-enable this assert for devices running Android N
+        // and up, rewrite this chmod+rm in C or C++.
+        assert(ret == 0);
+#  endif
+
+        cmd = "rm -rf " + test_root.string();
+        ret = std::system(cmd.c_str());
+        assert(ret == 0);
+#endif
+    }
+
+    scoped_test_env(scoped_test_env const &) = delete;
+    scoped_test_env & operator=(scoped_test_env const &) = delete;
+
+    fs::path make_env_path(std::string p) { return sanitize_path(p); }
+
+    std::string sanitize_path(std::string raw) {
+        assert(raw.find("..") == std::string::npos);
+        std::string root = test_root.string();
+        if (root.compare(0, root.size(), raw, 0, root.size()) != 0) {
+            assert(raw.front() != '\\');
+            fs::path tmp(test_root);
+            tmp /= raw;
+            return tmp.string();
+        }
+        return raw;
+    }
+
+    // Purposefully using a size potentially larger than off_t here so we can
+    // test the behavior of libc++fs when it is built with _FILE_OFFSET_BITS=64
+    // but the caller is not (std::filesystem also uses uintmax_t rather than
+    // off_t). On a 32-bit system this allows us to create a file larger than
+    // 2GB.
+    std::string create_file(fs::path filename_path, std::uintmax_t size = 0) {
+        std::string filename = sanitize_path(filename_path.string());
+
+        if (size >
+            static_cast<typename std::make_unsigned<utils::off64_t>::type>(
+                std::numeric_limits<utils::off64_t>::max())) {
+            std::fprintf(stderr, "create_file(%s, %ju) too large\n",
+                         filename.c_str(), size);
+            std::abort();
+        }
+
+#if defined(_WIN32) || defined(__MVS__)
+#  define FOPEN_CLOEXEC_FLAG ""
+#else
+#  define FOPEN_CLOEXEC_FLAG "e"
+#endif
+        FILE* file = utils::fopen64(filename.c_str(), "w" FOPEN_CLOEXEC_FLAG);
+        if (file == nullptr) {
+            std::fprintf(stderr, "fopen %s failed: %s\n", filename.c_str(),
+                         std::strerror(errno));
+            std::abort();
+        }
+
+        if (utils::ftruncate64(
+                fileno(file), static_cast<utils::off64_t>(size)) == -1) {
+            std::fprintf(stderr, "ftruncate %s %ju failed: %s\n", filename.c_str(),
+                         size, std::strerror(errno));
+            std::fclose(file);
+            std::abort();
+        }
+
+[exit_code] 0
+$ test -d tmp/R68/source-baseline && git -C tmp/R68/source-baseline rev-parse HEAD
+5ed6c77278dfa7a470667cf1a137723d3c96fe60
+[exit_code] 0

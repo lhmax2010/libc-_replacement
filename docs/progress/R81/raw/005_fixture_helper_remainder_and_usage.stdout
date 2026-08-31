@@ -1,0 +1,1073 @@
+$ sed -n "140,450p" tmp/R69/replay/libcxx/test/support/filesystem_test_helper.h
+        char* ret = ::getcwd(buf, sizeof(buf));
+        assert(ret && "getcwd failed");
+        return std::string(ret);
+    }
+
+    inline bool exists(std::string const& path) {
+        struct ::stat tmp;
+        return ::stat(path.c_str(), &tmp) == 0;
+    }
+} // namespace utils
+
+struct scoped_test_env
+{
+    scoped_test_env() : test_root(available_cwd_path()) {
+#ifdef _WIN32
+        // Windows mkdir can create multiple recursive directories
+        // if needed.
+        std::string cmd = "mkdir " + test_root.string();
+#else
+        std::string cmd = "mkdir -p " + test_root.string();
+#endif
+        int ret = std::system(cmd.c_str());
+        assert(ret == 0);
+
+        // Ensure that the root_path is fully resolved, i.e. it contains no
+        // symlinks. The filesystem tests depend on that. We do this after
+        // creating the root_path, because `fs::canonical` requires the
+        // path to exist.
+        test_root = fs::canonical(test_root);
+    }
+
+    ~scoped_test_env() {
+#ifdef _WIN32
+        std::string cmd = "rmdir /s /q " + test_root.string();
+        int ret = std::system(cmd.c_str());
+        assert(ret == 0);
+#else
+#if defined(__MVS__)
+        // The behaviour of chmod -R on z/OS prevents recursive
+        // permission change for directories that do not have read permission.
+        std::string cmd = "find  " + test_root.string() + " -exec chmod 777 {} \\;";
+#else
+        std::string cmd = "chmod -R 777 " + test_root.string();
+#endif // defined(__MVS__)
+        int ret = std::system(cmd.c_str());
+#  if !defined(_AIX) && !defined(__ANDROID__)
+        // On AIX the chmod command will return non-zero when trying to set
+        // the permissions on a directory that contains a bad symlink. This triggers
+        // the assert, despite being able to delete everything with the following
+        // `rm -r` command.
+        //
+        // Android's chmod was buggy in old OSs, but skipping this assert is
+        // sufficient to ensure that the `rm -rf` succeeds for almost all tests:
+        //  - Android L: chmod aborts after one error
+        //  - Android L and M: chmod -R tries to set permissions of a symlink
+        //    target.
+        // LIBCXX-ANDROID-FIXME: Other fixes to consider: place a toybox chmod
+        // onto old devices, re-enable this assert for devices running Android N
+        // and up, rewrite this chmod+rm in C or C++.
+        assert(ret == 0);
+#  endif
+
+        cmd = "rm -rf " + test_root.string();
+        ret = std::system(cmd.c_str());
+        assert(ret == 0);
+#endif
+    }
+
+    scoped_test_env(scoped_test_env const &) = delete;
+    scoped_test_env & operator=(scoped_test_env const &) = delete;
+
+    fs::path make_env_path(std::string p) { return sanitize_path(p); }
+
+    std::string sanitize_path(std::string raw) {
+        assert(raw.find("..") == std::string::npos);
+        std::string root = test_root.string();
+        if (root.compare(0, root.size(), raw, 0, root.size()) != 0) {
+            assert(raw.front() != '\\');
+            fs::path tmp(test_root);
+            tmp /= raw;
+            return tmp.string();
+        }
+        return raw;
+    }
+
+    // Purposefully using a size potentially larger than off_t here so we can
+    // test the behavior of libc++fs when it is built with _FILE_OFFSET_BITS=64
+    // but the caller is not (std::filesystem also uses uintmax_t rather than
+    // off_t). On a 32-bit system this allows us to create a file larger than
+    // 2GB.
+    std::string create_file(fs::path filename_path, std::uintmax_t size = 0) {
+        std::string filename = sanitize_path(filename_path.string());
+
+        if (size >
+            static_cast<typename std::make_unsigned<utils::off64_t>::type>(
+                std::numeric_limits<utils::off64_t>::max())) {
+            std::fprintf(stderr, "create_file(%s, %ju) too large\n",
+                         filename.c_str(), size);
+            std::abort();
+        }
+
+#if defined(_WIN32) || defined(__MVS__)
+#  define FOPEN_CLOEXEC_FLAG ""
+#else
+#  define FOPEN_CLOEXEC_FLAG "e"
+#endif
+        FILE* file = utils::fopen64(filename.c_str(), "w" FOPEN_CLOEXEC_FLAG);
+        if (file == nullptr) {
+            std::fprintf(stderr, "fopen %s failed: %s\n", filename.c_str(),
+                         std::strerror(errno));
+            std::abort();
+        }
+
+        if (utils::ftruncate64(
+                fileno(file), static_cast<utils::off64_t>(size)) == -1) {
+            std::fprintf(stderr, "ftruncate %s %ju failed: %s\n", filename.c_str(),
+                         size, std::strerror(errno));
+            std::fclose(file);
+            std::abort();
+        }
+
+        std::fclose(file);
+        return filename;
+    }
+
+    std::string create_dir(fs::path filename_path) {
+        std::string filename = filename_path.string();
+        filename = sanitize_path(std::move(filename));
+        int ret = utils::mkdir(filename.c_str(), 0777); // rwxrwxrwx mode
+        assert(ret == 0);
+        return filename;
+    }
+
+    std::string create_file_dir_symlink(fs::path source_path,
+                                        fs::path to_path,
+                                        bool sanitize_source = true,
+                                        bool is_dir = false) {
+        std::string source = source_path.string();
+        std::string to = to_path.string();
+        if (sanitize_source)
+            source = sanitize_path(std::move(source));
+        to = sanitize_path(std::move(to));
+        int ret = utils::symlink(source.c_str(), to.c_str(), is_dir);
+        assert(ret == 0);
+        return to;
+    }
+
+    std::string create_symlink(fs::path source_path,
+                               fs::path to_path,
+                               bool sanitize_source = true) {
+        return create_file_dir_symlink(source_path, to_path, sanitize_source,
+                                       false);
+    }
+
+    std::string create_directory_symlink(fs::path source_path,
+                                         fs::path to_path,
+                                         bool sanitize_source = true) {
+        return create_file_dir_symlink(source_path, to_path, sanitize_source,
+                                       true);
+    }
+
+    std::string create_hardlink(fs::path source_path, fs::path to_path) {
+        std::string source = source_path.string();
+        std::string to = to_path.string();
+        source = sanitize_path(std::move(source));
+        to = sanitize_path(std::move(to));
+        int ret = utils::link(source.c_str(), to.c_str());
+        assert(ret == 0);
+        return to;
+    }
+
+#ifndef _WIN32
+    std::string create_fifo(std::string file) {
+        file = sanitize_path(std::move(file));
+        int ret = ::mkfifo(file.c_str(), 0666); // rw-rw-rw- mode
+        assert(ret == 0);
+        return file;
+    }
+#endif
+
+  // Some platforms doesn't support socket files so we shouldn't even
+  // allow tests to call this unguarded.
+#if !defined(__FreeBSD__) && !defined(__APPLE__) && !defined(_WIN32)
+    std::string create_socket(std::string file) {
+      file = sanitize_path(std::move(file));
+
+      ::sockaddr_un address;
+      address.sun_family = AF_UNIX;
+
+// If file.size() is too big, try to create a file directly inside
+// /tmp to make sure file path is short enough.
+// Android platform warns about tmpnam, since the problem does not appear
+// on Android, let's not apply it for Android.
+#  if !defined(__ANDROID__)
+    if (file.size() > sizeof(address.sun_path)) {
+      file = std::tmpnam(nullptr);
+    }
+#  endif
+    assert(file.size() <= sizeof(address.sun_path));
+    ::strncpy(address.sun_path, file.c_str(), sizeof(address.sun_path));
+    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(::bind(fd, reinterpret_cast<::sockaddr*>(&address), sizeof(address)) == 0);
+    return file;
+  }
+#endif
+
+    fs::path test_root;
+
+private:
+    // This could potentially introduce a filesystem race if multiple
+    // scoped_test_envs were created concurrently in the same test (hence
+    // sharing the same cwd). However, it is fairly unlikely to happen as
+    // we generally don't use scoped_test_env from multiple threads, so
+    // this is deemed acceptable.
+    // The cwd.filename() itself isn't unique across all tests in the suite,
+    // so start the numbering from a hash of the full cwd, to avoid
+    // different tests interfering with each other.
+    static inline fs::path available_cwd_path() {
+        fs::path const cwd = utils::getcwd();
+        fs::path const tmp = fs::temp_directory_path();
+        std::string base = cwd.filename().string();
+        std::size_t i = std::hash<std::string>()(cwd.string());
+        fs::path p = tmp / (base + "-static_env." + std::to_string(i));
+        while (utils::exists(p.string())) {
+            p = tmp / (base + "-static_env." + std::to_string(++i));
+        }
+        return p;
+    }
+};
+
+/// This class generates the following tree:
+///
+///     static_test_env
+///     |-- bad_symlink -> dne
+///     |-- dir1
+///     |   |-- dir2
+///     |   |   |-- afile3
+///     |   |   |-- dir3
+///     |   |   |   `-- file5
+///     |   |   |-- file4
+///     |   |   `-- symlink_to_dir3 -> dir3
+///     |   `-- file1
+///     |   `-- file2
+///     |-- empty_file
+///     |-- non_empty_file
+///     |-- symlink_to_dir -> dir1
+///     `-- symlink_to_empty_file -> empty_file
+///
+class static_test_env {
+    scoped_test_env env_;
+public:
+    static_test_env() {
+        env_.create_symlink("dne", "bad_symlink", false);
+        env_.create_dir("dir1");
+        env_.create_dir("dir1/dir2");
+        env_.create_file("dir1/dir2/afile3");
+        env_.create_dir("dir1/dir2/dir3");
+        env_.create_file("dir1/dir2/dir3/file5");
+        env_.create_file("dir1/dir2/file4");
+        env_.create_directory_symlink("dir3", "dir1/dir2/symlink_to_dir3", false);
+        env_.create_file("dir1/file1");
+        env_.create_file("dir1/file2", 42);
+        env_.create_file("empty_file");
+        env_.create_file("non_empty_file", 42);
+        env_.create_directory_symlink("dir1", "symlink_to_dir", false);
+        env_.create_symlink("empty_file", "symlink_to_empty_file", false);
+    }
+
+    const fs::path Root = env_.test_root;
+
+    fs::path makePath(fs::path const& p) const {
+        // env_path is expected not to contain symlinks.
+        fs::path const& env_path = Root;
+        return env_path / p;
+    }
+
+    const std::vector<fs::path> TestFileList = {
+        makePath("empty_file"),
+        makePath("non_empty_file"),
+        makePath("dir1/file1"),
+        makePath("dir1/file2")
+    };
+
+    const std::vector<fs::path> TestDirList = {
+        makePath("dir1"),
+        makePath("dir1/dir2"),
+        makePath("dir1/dir2/dir3")
+    };
+
+    const fs::path File          = TestFileList[0];
+    const fs::path Dir           = TestDirList[0];
+    const fs::path Dir2          = TestDirList[1];
+    const fs::path Dir3          = TestDirList[2];
+    const fs::path SymlinkToFile = makePath("symlink_to_empty_file");
+    const fs::path SymlinkToDir  = makePath("symlink_to_dir");
+    const fs::path BadSymlink    = makePath("bad_symlink");
+    const fs::path DNE           = makePath("DNE");
+    const fs::path EmptyFile     = TestFileList[0];
+    const fs::path NonEmptyFile  = TestFileList[1];
+    const fs::path CharFile      = "/dev/null"; // Hopefully this exists
+
+    const std::vector<fs::path> DirIterationList = {
+        makePath("dir1/dir2"),
+        makePath("dir1/file1"),
+        makePath("dir1/file2")
+    };
+
+    const std::vector<fs::path> DirIterationListDepth1 = {
+        makePath("dir1/dir2/afile3"),
+        makePath("dir1/dir2/dir3"),
+        makePath("dir1/dir2/symlink_to_dir3"),
+[exit_code] 0
+$ while read test ... rg fixture symbols in each of 28 sources
+
+===== std/input.output/file.streams/fstreams/ifstream.members/offset_range.pass.cpp =====
+45:    std::ofstream ofs;
+57:    std::ifstream ifs;
+
+===== std/input.output/filesystems/class.directory_entry/directory_entry.cons/path.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+25:#include "filesystem_test_helper.h"
+48:  static_test_env static_env;
+79:  scoped_test_env env;
+80:  const path dir = env.create_dir("dir");
+81:  const path file = env.create_file("dir/file", 42);
+82:  const path sym = env.create_symlink("dir/file", "sym");
+99:  env.create_file("dir/file", 101);
+110:    assert(ent.is_symlink());
+111:    assert(ent_ec.is_symlink());
+124:  static_test_env static_env;
+132:  // don't report dead symlinks as an error.
+169:  scoped_test_env env;
+170:  const path dir = env.create_dir("dir");
+171:  const path file = env.create_file("dir/file", 42);
+172:  const path file_out_of_dir = env.create_file("file1", 101);
+173:  const path sym_out_of_dir = env.create_symlink("dir/file", "sym");
+174:  const path sym_in_dir = env.create_symlink("dir/file1", "dir/sym2");
+175:  permissions(dir, perms::none);
+
+===== std/input.output/filesystems/class.directory_entry/directory_entry.mods/assign.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+26:#include "filesystem_test_helper.h"
+72:  scoped_test_env env;
+73:  const path dir = env.create_dir("dir");
+74:  const path file = env.create_file("dir/file", 42);
+75:  const path sym = env.create_symlink("dir/file", "sym");
+86:  env.create_file("dir/file", 101);
+94:    assert(ent.is_symlink());
+101:  scoped_test_env env;
+112:  const path sym_out_of_dir = env.create_symlink(file, "sym");
+120:  const path dir = env.create_dir("dir");
+121:  const path file = env.create_file("dir/file", 42);
+122:  const path sym_out_of_dir = env.create_symlink("dir/file", "sym");
+123:  const path file_out_of_dir = env.create_file("file1");
+124:  const path sym_in_dir = env.create_symlink("file1", "dir/sym1");
+126:  permissions(dir, perms::none);
+
+===== std/input.output/filesystems/class.directory_entry/directory_entry.mods/refresh.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+31:#include "filesystem_test_helper.h"
+72:  scoped_test_env env;
+73:  const path dir = env.create_dir("dir");
+74:  const path file = env.create_file("dir/file", 42);
+76:  const perms old_perms = status(dir).permissions();
+86:    permissions(dir, perms::none);
+89:  permissions(dir, old_perms);
+90:  env.create_file("dir/file", 101);
+100:    permissions(dir, perms::none);
+111:static void refresh_on_bad_symlink() {
+113:  scoped_test_env env;
+114:  const path dir = env.create_dir("dir");
+115:  const path file = env.create_file("dir/file", 42);
+116:  const path sym = env.create_symlink("dir/file", "sym");
+118:  const perms old_perms = status(dir).permissions();
+124:    assert(ent.is_symlink());
+131:    LIBCPP_ONLY(permissions(dir, perms::none));
+132:    assert(ent.is_symlink());
+138:  permissions(dir, old_perms);
+139:  env.create_file("dir/file", 101);
+143:    assert(ent.is_symlink());
+151:    assert(!ec); // we don't report bad symlinks as an error.
+153:    LIBCPP_ONLY(permissions(dir, perms::none));
+165:  scoped_test_env env;
+166:  const path dir = env.create_dir("dir");
+167:  const path file = env.create_file("dir/file", 42);
+168:  const path file_out_of_dir = env.create_file("file1", 99);
+169:  const path sym_out_of_dir = env.create_symlink("dir/file", "sym");
+170:  const path sym_in_dir = env.create_symlink("file1", "dir/sym1");
+171:  perms old_perms = status(dir).permissions();
+175:    permissions(dir, perms::none);
+189:  permissions(dir, old_perms);
+192:    permissions(dir, perms::none);
+193:    assert(ent.is_symlink());
+204:  permissions(dir, old_perms);
+207:    permissions(dir, perms::none);
+208:    assert(ent.is_symlink());
+210:    // Failure to resolve the linked entity due to permissions is not
+215:    assert(ent.is_symlink());
+222:  permissions(dir, old_perms);
+227:    permissions(dir, perms::none);
+239:  scoped_test_env env;
+241:  const path file = env.create_file("file1", 42);
+242:  const path sym = env.create_symlink("file1", "sym");
+265:  env.create_file("file1", 99);
+268:    assert(ent.is_symlink());
+291:  scoped_test_env env;
+292:  const path dir = env.create_dir("dir");
+293:  const path file = env.create_file("dir/file", 42);
+294:  const path file_out_of_dir = env.create_file("file1", 101);
+295:  const path sym = env.create_symlink("dir/file", "sym");
+296:  const path sym_in_dir = env.create_symlink("dir/file", "dir/sym2");
+298:  const perms old_perms = status(dir).permissions();
+309:    assert(!ent.is_symlink());
+313:    permissions(dir, perms::none);
+319:    CHECK_ACCESS(is_symlink, false);
+321:    CHECK_ACCESS(hard_link_count, std::uintmax_t(-1));
+323:  permissions(dir, old_perms);
+326:    assert(ent.is_symlink());
+330:    permissions(dir, perms::none);
+336:    CHECK_ACCESS(is_symlink, false);
+338:    CHECK_ACCESS(hard_link_count, std::uintmax_t(-1));
+340:  permissions(dir, old_perms);
+343:    assert(ent.is_symlink());
+347:    permissions(dir, perms::none);
+351:    assert(ent.is_symlink());
+356:    CHECK_ACCESS(hard_link_count, std::uintmax_t(-1));
+368:  refresh_on_bad_symlink();
+
+===== std/input.output/filesystems/class.directory_entry/directory_entry.mods/replace_filename.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+26:#include "filesystem_test_helper.h"
+55:  static_test_env static_env;
+93:  scoped_test_env env;
+94:  const path dir = env.create_dir("dir");
+95:  const path file = env.create_file("dir/file", 42);
+96:  const path file_two = env.create_file("dir/file_two", 101);
+97:  const path sym = env.create_symlink("dir/file", "sym");
+98:  const path sym_two = env.create_symlink("dir/file_two", "sym_two");
+110:  env.create_file("dir/file_two", 99);
+119:    assert(ent.is_symlink());
+130:  scoped_test_env env;
+131:  const path dir = env.create_dir("dir");
+132:  const path file = env.create_file("dir/file", 42);
+133:  const path file_two = env.create_file("dir/file_two", 99);
+134:  const path file_out_of_dir = env.create_file("file_three", 101);
+135:  const path sym_out_of_dir = env.create_symlink("dir/file", "sym");
+136:  const path sym_out_of_dir_two = env.create_symlink("dir/file", "sym_two");
+137:  const path sym_in_dir = env.create_symlink("file_two", "dir/sym_three");
+138:  const path sym_in_dir_two = env.create_symlink("file_two", "dir/sym_four");
+140:  const perms old_perms = status(dir).permissions();
+144:    permissions(dir, perms::none);
+149:  permissions(dir, old_perms);
+152:    permissions(dir, perms::none);
+157:  permissions(dir, old_perms);
+160:    permissions(dir, perms::none);
+164:    assert(ent.is_symlink());
+
+===== std/input.output/filesystems/class.directory_entry/directory_entry.obs/file_size.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+32:#include "filesystem_test_helper.h"
+52:  scoped_test_env env;
+53:  const path file = env.create_file("file", 42);
+54:  const path dir = env.create_dir("dir");
+55:  const path sym = env.create_symlink("file", "sym");
+69:  env.create_file("file", 99);
+87:  scoped_test_env env;
+92:      {env.create_dir("dir"), std::errc::is_a_directory},
+94:      {env.create_fifo("fifo"), std::errc::not_supported},
+96:      {env.create_directory_symlink("dir", "sym"), std::errc::is_a_directory}};
+121:  static_test_env static_env;
+122:  scoped_test_env env;
+124:  const path dir = env.create_dir("dir");
+125:  const path file = env.create_file("dir/file", 42);
+126:  const path file_out_of_dir = env.create_file("file2", 101);
+127:  const path sym_out_of_dir = env.create_symlink("dir/file", "sym");
+128:  const path sym_in_dir = env.create_symlink("file2", "dir/sym2");
+131:  const perms old_perms = status(dir).permissions();
+152:  // test a dead symlink
+178:  // test a file w/o appropriate permissions.
+182:    permissions(dir, perms::none);
+196:    permissions(dir, old_perms);
+202:  permissions(dir, old_perms);
+203:  // test a symlink w/o appropriate permissions.
+207:    permissions(dir, perms::none);
+222:    permissions(dir, old_perms);
+228:  permissions(dir, old_perms);
+229:  // test a symlink to a file w/o appropriate permissions
+233:    permissions(dir, perms::none);
+248:    permissions(dir, old_perms);
+
+===== std/input.output/filesystems/class.directory_entry/directory_entry.obs/file_type_obs.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+27:#include "filesystem_test_helper.h"
+56:  TEST_FUNC(is_symlink);
+67:  scoped_test_env env;
+68:  path f = env.create_file("foo", 42);
+69:  path d = env.create_dir("dir");
+70:  path hl = env.create_hardlink("foo", "hl");
+74:    file_status sym_st = symlink_status(p);
+86:    assert(e.is_symlink() == is_symlink(sym_st));
+92:  path fifo = env.create_fifo("fifo");
+103:  scoped_test_env env;
+104:  path f = env.create_file("foo", 42);
+105:  path d = env.create_dir("dir");
+106:  path hl = env.create_hardlink("foo", "hl");
+112:    file_status sym_st = symlink_status(p, sym_status_ec);
+149:    assert(e.is_symlink(ec) == is_symlink(sym_st));
+156:  path fifo = env.create_fifo("fifo");
+166:  static_test_env static_env;
+173:    file_status sym_st = symlink_status(p, sym_status_ec);
+210:    assert(e.is_symlink(ec) == is_symlink(sym_st));
+224:  scoped_test_env env;
+225:  const path dir = env.create_dir("dir");
+226:  const path file = env.create_file("dir/file", 42);
+227:  const path file_out_of_dir = env.create_file("file2", 99);
+228:  const path sym = env.create_symlink("file2", "dir/sym");
+230:  perms old_perms = fs::status(dir).permissions();
+233:    permissions(dir, old_perms);
+236:    permissions(dir, perms::none);
+244:    file_status sym_st = symlink_status(p, sym_status_ec);
+276:    assert(e.is_symlink(ec) == is_symlink(sym_st));
+
+===== std/input.output/filesystems/class.directory_entry/directory_entry.obs/hard_link_count.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+24:// uintmax_t hard_link_count() const;
+25:// uintmax_t hard_link_count(error_code const&) const noexcept;
+32:#include "filesystem_test_helper.h"
+41:    static_assert(std::is_same<decltype(e.hard_link_count()), std::uintmax_t>::value, "");
+42:    static_assert(std::is_same<decltype(e.hard_link_count(ec)), std::uintmax_t>::value,
+44:    static_assert(noexcept(e.hard_link_count()) == false, "");
+45:    static_assert(noexcept(e.hard_link_count(ec)) == true, "");
+52:  scoped_test_env env;
+53:  const path file = env.create_file("file", 42);
+54:  const path dir = env.create_dir("dir");
+55:  const path sym = env.create_symlink("file", "sym");
+59:    std::uintmax_t expect = hard_link_count(ent);
+65:    assert(ent.hard_link_count(ec) == expect);
+70:    std::uintmax_t expect = hard_link_count(ent);
+75:    assert(ent.hard_link_count(ec) == expect);
+78:  env.create_file("file", 99);
+79:  env.create_hardlink("file", "hl");
+83:    assert(ent.hard_link_count(ec) == 2);
+91:  scoped_test_env env;
+92:  const path dir = env.create_dir("dir");
+93:  const path dir2 = env.create_dir("dir/dir2");
+95:  const perms old_perms = status(dir).permissions();
+102:    std::uintmax_t expect = hard_link_count(p);
+104:    LIBCPP_ONLY(permissions(dir, perms::none));
+107:    assert(ent.hard_link_count(ec) == expect);
+109:    TEST_DOES_NOT_THROW(ent.hard_link_count());
+110:    permissions(dir, old_perms);
+114:  const path fifo = env.create_fifo("dir/fifo");
+115:  const path sym_to_fifo = env.create_symlink("dir/fifo", "dir/sym");
+124:  static_test_env static_env;
+125:  scoped_test_env env;
+127:  const path dir = env.create_dir("dir");
+128:  const path file = env.create_file("dir/file", 42);
+129:  const path file_out_of_dir = env.create_file("file2", 101);
+130:  const path sym_out_of_dir = env.create_symlink("dir/file", "sym");
+131:  const path sym_in_dir = env.create_symlink("file2", "dir/sym2");
+134:  const perms old_perms = status(dir).permissions();
+148:    assert(ent.hard_link_count(ec) == std::uintmax_t(-1));
+153:                             "directory_entry::hard_link_count");
+154:    TEST_VALIDATE_EXCEPTION(filesystem_error, Checker, ent.hard_link_count());
+156:  // test a dead symlink
+161:    std::uintmax_t expect_bad = hard_link_count(static_env.BadSymlink, ec);
+171:    assert(ent.hard_link_count(ec) == expect_bad);
+176:                             "directory_entry::hard_link_count");
+177:    TEST_VALIDATE_EXCEPTION(filesystem_error, Checker, ent.hard_link_count());
+182:  // test a file w/o appropriate permissions.
+185:    std::uintmax_t expect_good = hard_link_count(file);
+186:    permissions(dir, perms::none);
+194:    assert(ent.hard_link_count(ec) == std::uintmax_t(-1));
+198:                             "hard_link_count");
+199:    TEST_VALIDATE_EXCEPTION(filesystem_error, Checker, ent.hard_link_count());
+201:    permissions(dir, old_perms);
+203:    assert(ent.hard_link_count(ec) == expect_good);
+205:    TEST_DOES_NOT_THROW(ent.hard_link_count());
+207:  permissions(dir, old_perms);
+208:  // test a symlink w/o appropriate permissions.
+211:    std::uintmax_t expect_good = hard_link_count(sym_in_dir);
+212:    permissions(dir, perms::none);
+220:    assert(ent.hard_link_count(ec) == std::uintmax_t(-1));
+224:                             "hard_link_count");
+225:    TEST_VALIDATE_EXCEPTION(filesystem_error, Checker, ent.hard_link_count());
+227:    permissions(dir, old_perms);
+229:    assert(ent.hard_link_count(ec) == expect_good);
+231:    TEST_DOES_NOT_THROW(ent.hard_link_count());
+233:  permissions(dir, old_perms);
+234:  // test a symlink to a file w/o appropriate permissions
+237:    std::uintmax_t expect_good = hard_link_count(sym_out_of_dir);
+238:    permissions(dir, perms::none);
+246:    assert(ent.hard_link_count(ec) == std::uintmax_t(-1));
+250:                             "hard_link_count");
+251:    TEST_VALIDATE_EXCEPTION(filesystem_error, Checker, ent.hard_link_count());
+253:    permissions(dir, old_perms);
+255:    assert(ent.hard_link_count(ec) == expect_good);
+257:    TEST_DOES_NOT_THROW(ent.hard_link_count());
+
+===== std/input.output/filesystems/class.directory_entry/directory_entry.obs/last_write_time.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+28:#include "filesystem_test_helper.h"
+49:  scoped_test_env env;
+50:  const path file = env.create_file("file", 42);
+51:  const path dir = env.create_dir("dir");
+52:  const path sym = env.create_symlink("file", "sym");
+75:  env.create_file("file", 99);
+89:  static_test_env static_env;
+90:  scoped_test_env env;
+92:  const path dir = env.create_dir("dir");
+93:  const path file = env.create_file("dir/file", 42);
+94:  const path file_out_of_dir = env.create_file("file2", 101);
+95:  const path sym_out_of_dir = env.create_symlink("dir/file", "sym");
+96:  const path sym_in_dir = env.create_symlink("file2", "dir/sym2");
+99:  const perms old_perms = status(dir).permissions();
+120:  // test a dead symlink
+146:  // test a file w/o appropriate permissions.
+150:    permissions(dir, perms::none);
+165:    permissions(dir, old_perms);
+171:  permissions(dir, old_perms);
+172:  // test a symlink w/o appropriate permissions.
+176:    permissions(dir, perms::none);
+191:    permissions(dir, old_perms);
+197:  permissions(dir, old_perms);
+198:  // test a symlink to a file w/o appropriate permissions
+202:    permissions(dir, perms::none);
+217:    permissions(dir, old_perms);
+
+===== std/input.output/filesystems/class.directory_iterator/directory_iterator.members/ctor.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+29:#include "filesystem_test_helper.h"
+62:    static_test_env static_env;
+98:    scoped_test_env env;
+99:    path const testDir = env.make_env_path("dir1");
+101:    env.create_dir(testDir);
+102:    env.create_file(testFile, 42);
+109:    // Change the permissions so we can no longer iterate
+110:    permissions(testDir, perms::none);
+113:    // Check that the construction fails when skip_permissions_denied is
+122:    // 'skip_permissions_denied' is given.
+135:    scoped_test_env env;
+136:    path const testFile = env.make_env_path("file1");
+137:    env.create_file(testFile, 42);
+139:    // Change the permissions so we can no longer iterate
+140:    permissions(testFile, perms::none);
+142:    // Check that the construction fails when skip_permissions_denied is
+150:    // Check that construction still fails when 'skip_permissions_denied' is given
+162:    scoped_test_env env;
+163:    const path testDir = env.make_env_path("dir1");
+164:    env.create_dir(testDir);
+181:    static_test_env static_env;
+203:    static_test_env static_env;
+237:static void test_open_on_symlink()
+239:    static_test_env static_env;
+240:    const path symlinkToDir = static_env.SymlinkToDir;
+249:        directory_iterator it(symlinkToDir, ec);
+257:        directory_iterator it(symlinkToDir,
+258:                              directory_options::follow_directory_symlink, ec);
+276:    test_open_on_symlink();
+
+===== std/input.output/filesystems/class.rec.dir.itr/rec.dir.itr.members/ctor.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+30:#include "filesystem_test_helper.h"
+62:    static_test_env static_env;
+98:    scoped_test_env env;
+99:    path const testDir = env.make_env_path("dir1");
+101:    env.create_dir(testDir);
+102:    env.create_file(testFile, 42);
+110:    // Change the permissions so we can no longer iterate
+111:    permissions(testDir, perms::none);
+114:    // Check that the construction fails when skip_permissions_denied is
+123:    // 'skip_permissions_denied' is given.
+145:    scoped_test_env env;
+146:    path const testFile = env.make_env_path("file1");
+147:    env.create_file(testFile, 42);
+149:    // Change the permissions so we can no longer iterate
+150:    permissions(testFile, perms::none);
+153:    // Check that the construction fails when skip_permissions_denied is
+161:    // Check that construction still fails when 'skip_permissions_denied' is given
+173:    scoped_test_env env;
+174:    const path testDir = env.make_env_path("dir1");
+175:    env.create_dir(testDir);
+192:    static_test_env static_env;
+214:    static_test_env static_env;
+230:    static_test_env static_env;
+262:        const directory_options opts = directory_options::follow_directory_symlink;
+
+===== std/input.output/filesystems/class.rec.dir.itr/rec.dir.itr.members/increment.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+13:// On Android L, ~scoped_test_env() is unable to delete the temp dir using
+14:// chmod+rm because chmod is too broken.
+31:#include "filesystem_test_helper.h"
+49:    static_test_env static_env;
+73:    static_test_env static_env;
+97:    static_test_env static_env;
+120:static void test_follow_symlinks()
+122:    static_test_env static_env;
+131:                              directory_options::follow_directory_symlink, ec);
+153:    scoped_test_env env;
+155:        env.create_dir("dir1"),
+156:        env.create_dir("dir1/dir2"),
+157:        env.create_file("dir1/dir2/file1"),
+158:        env.create_file("dir1/file2")
+165:    // Change the permissions so we can no longer iterate
+166:    permissions(permDeniedDir, perms::none);
+252:    scoped_test_env env;
+254:        env.create_dir("dir1"),
+255:        env.create_dir("dir1/dir2"),
+256:        env.create_dir("dir1/dir2/dir3"),
+257:        env.create_file("dir1/file1"),
+258:        env.create_file("dir1/dir2/dir3/file2")
+265:    // Change the permissions so we can no longer iterate
+266:    permissions(permDeniedDir,
+330:static void test_PR35078_with_symlink()
+333:    scoped_test_env env;
+335:        env.create_dir("dir1"),
+336:        env.create_file("dir1/file1"),
+337:        env.create_dir("sym_dir"),
+338:        env.create_dir("sym_dir/nested_sym_dir"),
+339:        env.create_directory_symlink("sym_dir/nested_sym_dir", "dir1/dir2"),
+340:        env.create_dir("sym_dir/dir1"),
+341:        env.create_dir("sym_dir/dir1/dir2"),
+350:    // Change the permissions so we can no longer iterate
+351:    permissions(permDeniedDir,
+365:        Opts |= directory_options::follow_directory_symlink;
+413:static void test_PR35078_with_symlink_file()
+416:    scoped_test_env env;
+418:        env.create_dir("dir1"),
+419:        env.create_dir("dir1/dir2"),
+420:        env.create_file("dir1/file2"),
+421:        env.create_dir("sym_dir"),
+422:        env.create_dir("sym_dir/sdir1"),
+423:        env.create_file("sym_dir/sdir1/sfile1"),
+424:        env.create_symlink("sym_dir/sdir1/sfile1", "dir1/dir2/file1")
+433:    // Change the permissions so we can no longer iterate
+434:    permissions(permDeniedDir,
+448:        Opts |= directory_options::follow_directory_symlink;
+507:    test_follow_symlinks();
+511:    test_PR35078_with_symlink();
+512:    test_PR35078_with_symlink_file();
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.exists/exists.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+25:#include "filesystem_test_helper.h"
+50:        {file_type::symlink, true},
+65:    static_test_env static_env;
+95:    scoped_test_env env;
+96:    const path dir = env.create_dir("dir");
+97:    const path p = env.create_file("dir/file", 42);
+98:    permissions(dir, perms::none);
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.is_block_file/is_block_file.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+25:#include "filesystem_test_helper.h"
+50:        {file_type::symlink, false},
+65:    static_test_env static_env;
+72:    scoped_test_env env;
+81:    const path dir = env.create_dir("dir");
+82:    const path p = env.create_file("dir/file", 42);
+83:    permissions(dir, perms::none);
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.is_char_file/is_character_file.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+25:#include "filesystem_test_helper.h"
+50:        {file_type::symlink, false},
+65:    static_test_env static_env;
+72:    scoped_test_env env;
+81:    const path dir = env.create_dir("dir");
+82:    const path p = env.create_file("dir/file", 42);
+83:    permissions(dir, perms::none);
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.is_directory/is_directory.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+25:#include "filesystem_test_helper.h"
+50:        {file_type::symlink, false},
+65:    static_test_env static_env;
+72:    static_test_env static_env;
+80:    scoped_test_env env;
+89:    const path dir = env.create_dir("dir");
+90:    const path p = env.create_dir("dir/dir2");
+91:    permissions(dir, perms::none);
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.is_empty/is_empty.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+28:#include "filesystem_test_helper.h"
+42:    static_test_env static_env;
+52:    static_test_env static_env;
+59:    scoped_test_env env;
+61:    env.create_file("foo", 42);
+67:    static_test_env static_env;
+74:    scoped_test_env env;
+83:    const path dir = env.create_dir("dir");
+84:    const path p = env.create_dir("dir/dir2");
+85:    permissions(dir, perms::none);
+97:    scoped_test_env env;
+106:    const path dir = env.create_dir("dir");
+107:    const path file1 = env.create_file("dir/file", 42);
+108:    permissions(dir, perms::none);
+123:    scoped_test_env env;
+124:    const path fifo = env.create_fifo("fifo");
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.is_fifo/is_fifo.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+25:#include "filesystem_test_helper.h"
+50:        {file_type::symlink, false},
+65:    static_test_env static_env;
+72:    scoped_test_env env;
+81:    const path dir = env.create_dir("dir");
+82:    const path p = env.create_file("dir/file", 42);
+83:    permissions(dir, perms::none);
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.is_other/is_other.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+25:#include "filesystem_test_helper.h"
+50:        {file_type::symlink, false},
+65:    static_test_env static_env;
+72:    scoped_test_env env;
+81:    const path dir = env.create_dir("dir");
+82:    const path p = env.create_file("dir/file", 42);
+83:    permissions(dir, perms::none);
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.is_regular_file/is_regular_file.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+25:#include "filesystem_test_helper.h"
+50:        {file_type::symlink, false},
+65:    static_test_env static_env;
+75:    scoped_test_env env;
+84:    const path dir = env.create_dir("dir");
+85:    const path p = env.create_file("dir/file", 42);
+86:    permissions(dir, perms::none);
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.is_socket/is_socket.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+25:#include "filesystem_test_helper.h"
+50:        {file_type::symlink, false},
+65:    static_test_env static_env;
+72:    scoped_test_env env;
+81:    const path dir = env.create_dir("dir");
+82:    const path p = env.create_file("dir/file", 42);
+83:    permissions(dir, perms::none);
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.is_symlink/is_symlink.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+15:// bool is_symlink(file_status s) noexcept
+16:// bool is_symlink(path const& p);
+17:// bool is_symlink(path const& p, std::error_code& ec) noexcept;
+25:#include "filesystem_test_helper.h"
+34:    ASSERT_NOEXCEPT(is_symlink(s));
+35:    ASSERT_NOEXCEPT(is_symlink(p, ec));
+36:    ASSERT_NOT_NOEXCEPT(is_symlink(p));
+39:static void is_symlink_status_test()
+50:        {file_type::symlink, true},
+59:        assert(is_symlink(s) == TC.expect);
+65:    static_test_env static_env;
+78:        assert(is_symlink(TC.p) == TC.expect);
+84:    static_test_env static_env;
+86:    assert(is_symlink(p) == false);
+88:    assert(is_symlink(p, ec) == false);
+92:static void test_is_symlink_fails()
+94:    scoped_test_env env;
+103:    const path dir = env.create_dir("dir");
+104:    const path p = env.create_file("dir/file", 42);
+105:    permissions(dir, perms::none);
+109:    assert(is_symlink(p, ec) == false);
+112:    TEST_THROWS_TYPE(filesystem_error, is_symlink(p));
+117:    is_symlink_status_test();
+120:    test_is_symlink_fails();
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.last_write_time/last_write_time.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+34:#include "filesystem_test_helper.h"
+210:    scoped_test_env env;
+211:    const path file = env.create_file("file", 42);
+230:    scoped_test_env env;
+231:    const path file = env.create_file("file", 42);
+248:    scoped_test_env env;
+249:    const path file = env.create_file("file", 42);
+266:    scoped_test_env env;
+267:    const path p = env.create_file("file", 42);
+283:    scoped_test_env env;
+284:    const path p = env.create_file("file", 42);
+397:    static_test_env static_env;
+429:    scoped_test_env env;
+431:    const path file = env.create_file("file", 42);
+432:    const path dir = env.create_dir("dir");
+448:    std::FILE* of = std::fopen(file.string().c_str(), "a");
+451:    env.create_file("dir/file1", 1);
+466:    scoped_test_env env;
+468:    const path file = env.create_file("file", 42);
+469:    const path dir = env.create_dir("dir");
+532:static void last_write_time_symlink_test()
+536:    scoped_test_env env;
+538:    const path file = env.create_file("file", 42);
+539:    const path sym = env.create_symlink("file", "sym");
+567:    scoped_test_env env;
+568:    const path p = env.create_file("file", 42);
+601:  scoped_test_env env;
+602:  const path p = env.create_file("file", 42);
+621:    static_test_env static_env;
+633:    scoped_test_env env;
+634:    const path dir = env.create_dir("dir");
+635:    const path file = env.create_file("dir/file", 42);
+636:    permissions(dir, perms::none);
+653:    last_write_time_symlink_test();
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.remove/remove.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+21:#include "filesystem_test_helper.h"
+54:    scoped_test_env env;
+55:    const path non_empty_dir = env.create_dir("dir");
+56:    env.create_file(non_empty_dir / "file1", 42);
+57:    const path bad_perms_dir = env.create_dir("bad_dir");
+58:    const path file_in_bad_dir = env.create_file(bad_perms_dir / "file", 42);
+59:    permissions(bad_perms_dir, perms::none);
+81:        env.make_env_path("dne")
+94:    scoped_test_env env;
+95:    const path dne = env.make_env_path("dne");
+96:    const path link = env.create_symlink(dne, "link");
+97:    const path nested_link = env.make_env_path("nested_link");
+98:    create_symlink(link, nested_link);
+100:        env.create_file("file", 42),
+101:        env.create_dir("empty_dir"),
+109:        assert(!exists(symlink_status(p)));
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.remove_all/remove_all.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+21:#include "filesystem_test_helper.h"
+38:    scoped_test_env env;
+58:    const path non_empty_dir = env.create_dir("dir");
+59:    env.create_file(non_empty_dir / "file1", 42);
+60:    const path bad_perms_dir = env.create_dir("bad_dir");
+61:    const path file_in_bad_dir = env.create_file(bad_perms_dir / "file", 42);
+62:    permissions(bad_perms_dir, perms::none);
+63:    const path bad_perms_file = env.create_file("file2", 42);
+64:    permissions(bad_perms_file, perms::none);
+82:        env.make_env_path("dne")
+94:    scoped_test_env env;
+95:    const path dne = env.make_env_path("dne");
+96:    const path link = env.create_symlink(dne, "link");
+97:    const path nested_link = env.make_env_path("nested_link");
+98:    create_symlink(link, nested_link);
+100:        env.create_file("file", 42),
+101:        env.create_dir("empty_dir"),
+109:        assert(!exists(symlink_status(p)));
+113:static void symlink_to_dir()
+115:    scoped_test_env env;
+116:    const path dir = env.create_dir("dir");
+117:    const path file = env.create_file(dir / "file", 42);
+118:    const path link = env.create_directory_symlink(dir, "sym");
+124:        assert(!exists(symlink_status(link)));
+133:    scoped_test_env env;
+134:    const path dir = env.create_dir("dir");
+135:    const path dir1 = env.create_dir(dir / "dir1");
+136:    const path out_of_dir_file = env.create_file("file1", 42);
+139:        env.create_file(dir / "file1", 42),
+140:        env.create_symlink(out_of_dir_file, dir / "sym1"),
+141:        env.create_file(dir1 / "file2", 42),
+142:        env.create_directory_symlink(dir, dir1 / "sym2")
+150:        assert(!exists(symlink_status(p)));
+159:    symlink_to_dir();
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.status/status.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+26:#include "filesystem_test_helper.h"
+40:    static_test_env static_env;
+52:        assert(st.permissions() == perms::unknown);
+57:        assert(st.permissions() == perms::unknown);
+69:    scoped_test_env env;
+70:    const path dir = env.create_dir("dir");
+71:    const path file = env.create_file("dir/file", 42);
+72:    const path sym = env.create_symlink("dir/file", "sym");
+73:    permissions(dir, perms::none);
+94:            assert(st.permissions() == perms::unknown);
+113:    static_test_env static_env;
+114:    scoped_test_env env;
+128:        {env.create_socket("socket"), file_type::socket},
+131:        {env.create_fifo("fifo"), file_type::fifo}
+140:        assert(st.permissions() != perms::unknown);
+144:        assert(st.permissions() != perms::unknown);
+172:    assert(st.permissions() != perms::unknown);
+176:    assert(st.permissions() != perms::unknown);
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.symlink_status/symlink_status.pass.cpp =====
+9:// REQUIRES: can-create-symlinks
+19:// file_status symlink_status(const path& p);
+20:// file_status symlink_status(const path& p, error_code& ec) noexcept;
+26:#include "filesystem_test_helper.h"
+34:    ASSERT_NOT_NOEXCEPT(symlink_status(p));
+35:    ASSERT_NOEXCEPT(symlink_status(p, ec));
+38:static void test_symlink_status_not_found()
+40:    static_test_env static_env;
+48:        file_status st = symlink_status(p, ec);
+51:        assert(st.permissions() == perms::unknown);
+56:        assert(st.permissions() == perms::unknown);
+66:static void test_symlink_status_cannot_resolve()
+68:    scoped_test_env env;
+69:    const path dir = env.create_dir("dir");
+70:    const path file_in_dir = env.create_file("dir/file", 42);
+71:    const path sym_in_dir = env.create_symlink("dir/file", "dir/bad_sym");
+72:    const path sym_points_in_dir = env.create_symlink("dir/file", "sym");
+73:    permissions(dir, perms::none);
+85:            file_status st = symlink_status(p, ec);
+88:            assert(st.permissions() == perms::unknown);
+93:                (void)symlink_status(p);
+102:    // Test that a symlink that points into a directory without read perms
+103:    // can be stat-ed using symlink_status
+106:        file_status st = symlink_status(sym_points_in_dir, ec);
+108:        assert(st.type() == file_type::symlink);
+109:        assert(st.permissions() != perms::unknown);
+111:        TEST_DOES_NOT_THROW(st = symlink_status(sym_points_in_dir));
+112:        assert(st.type() == file_type::symlink);
+113:        assert(st.permissions() != perms::unknown);
+119:static void symlink_status_file_types_test()
+121:    static_test_env static_env;
+122:    scoped_test_env env;
+127:        {static_env.BadSymlink, file_type::symlink},
+129:        {static_env.SymlinkToFile, file_type::symlink},
+131:        {static_env.SymlinkToDir, file_type::symlink},
+137:        {env.create_socket("socket"), file_type::socket},
+140:        {env.create_fifo("fifo"), file_type::fifo}
+146:        file_status st = symlink_status(TC.p, ec);
+149:        assert(st.permissions() != perms::unknown);
+151:        TEST_DOES_NOT_THROW(st = symlink_status(TC.p));
+153:        assert(st.permissions() != perms::unknown);
+177:    scoped_test_env env;
+181:        file_status st = symlink_status(p, ec);
+184:        assert(st.permissions() != perms::unknown);
+186:        TEST_DOES_NOT_THROW(st = symlink_status(p));
+188:        assert(st.permissions() != perms::unknown);
+190:    const path sym = env.make_env_path("sym");
+191:    create_symlink(p, sym);
+192:    { // test symlink to block file
+195:        file_status st = symlink_status(sym, ec);
+197:        assert(st.type() == file_type::symlink);
+198:        assert(st.permissions() != perms::unknown);
+200:        TEST_DOES_NOT_THROW(st = symlink_status(sym));
+201:        assert(st.type() == file_type::symlink);
+202:        assert(st.permissions() != perms::unknown);
+208:    test_symlink_status_not_found();
+210:    test_symlink_status_cannot_resolve();
+212:    symlink_status_file_types_test();
+
+===== std/input.output/filesystems/fs.op.funcs/fs.op.temp_dir_path/temp_directory_path.pass.cpp =====
+14:// path temp_directory_path();
+15:// path temp_directory_path(error_code& ec);
+24:#include "filesystem_test_helper.h"
+39:    ASSERT_NOT_NOEXCEPT(temp_directory_path());
+40:    ASSERT_NOT_NOEXCEPT(temp_directory_path(ec));
+45:    scoped_test_env env;
+46:    const path dne = env.make_env_path("dne");
+47:    const path file = env.create_file("file", 42);
+54:    const path dir_perms = env.create_dir("bad_perms_dir");
+55:    const path inaccessible_dir = env.create_dir("bad_perms_dir/nested");
+56:    permissions(dir_perms, perms::none);
+64:        {"TMP", env.create_dir("dir1")},
+65:        {"TEMP", env.create_dir("dir2")},
+66:        {"USERPROFILE", env.create_dir("dir3")}
+68:        {"TMPDIR", env.create_dir("dir1")},
+69:        {"TMP", env.create_dir("dir2")},
+70:        {"TEMP", env.create_dir("dir3")},
+71:        {"TEMPDIR", env.create_dir("dir4")}
+76:        {"TMPDIR", env.create_dir("dir5")},
+77:        {"TEMPDIR", env.create_dir("dir6")},
+79:        {"USERPROFILE", env.create_dir("dir5")},
+87:        path ret = temp_directory_path(ec);
+96:        ret = temp_directory_path(ec);
+105:        ret = temp_directory_path(ec);
+115:            ret = temp_directory_path(ec);
+123:        ret = temp_directory_path(ec);
+135:        path ret = temp_directory_path(ec);
+156:        path ret = temp_directory_path(ec);
+[exit_code] 0
