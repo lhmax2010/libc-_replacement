@@ -1,0 +1,297 @@
+== exported patch headers 0007-0010 ==
+### 0007.patch
+### 0008.patch
+### 0009.patch
+### 0010-libcxx-preserve-forced-unwind-in-library-delivered-h.patch
+From: He Fangyu <fangyu.he@samsung.com>
+Date: Tue, 25 Aug 2026 20:52:54 +0800
+Subject: libcxx: preserve forced unwind in library-delivered handlers
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Catch-all handlers in explicitly instantiated iostream paths consume foreign
+forced unwind and can turn pthread cancellation into process termination.
+Add typed handlers at the thirty sites whose implementation is delivered by
+the shared libc++ library, preserving stream state before rethrowing.
+
+For the badbit and failbit aggregation helpers, classify and rethrow while
+the nested handler remains active; a later bare rethrow has no active
+exception for foreign exception paths.  Streambuf extraction commits its
+state with the non-throwing setter before rethrowing so an exception mask
+cannot replace the forced unwind.
+
+This library batch is separate from consumer-instantiated header sites and
+depends on the libc++abi forced-unwind marker and unwind fixes.
+
+中文说明：
+为由 libc++ 动态库交付的三十处 iostream 站点补齐强制展开防护。
+badbit/failbit 汇聚函数在活动 handler 内完成条件重抛，streambuf
+提取路径以不抛异常的接口先提交状态位，再继续传播取消展开。
+
+Validation covers x86_64 and armv7l cancellation paths, library-only
+replacement, stream exception masks, state-bit assertions, and normal I/O
+== four commit names and changed files ==
+COMMIT 77e0f73ba61ef3e865f65eaf089bd1eafd9bfdea
+SUBJECT libc++abi: preserve foreign forced-unwind state
+
+M	libcxxabi/src/cxa_exception.cpp
+M	libcxxabi/src/cxa_personality.cpp
+COMMIT 82afebabd7782ed25017e248f319c10284f7bec7
+SUBJECT libc++abi: expose GNU forced-unwind marker type
+
+M	libcxxabi/include/cxxabi.h
+M	libcxxabi/src/cxa_exception.cpp
+M	libcxxabi/src/cxa_personality.cpp
+COMMIT 9039afa48d5bdbd30f63589b0ca68e3c564f45ab
+SUBJECT libcxx: preserve forced unwind in consumer-instantiated handlers
+
+M	libcxx/include/__ostream/basic_ostream.h
+M	libcxx/include/future
+M	libcxx/include/istream
+M	libcxx/include/string
+M	libcxx/src/future.cpp
+COMMIT 08a64b6eb95ed74339f1d862a6c22a2f93fa78f9
+SUBJECT libcxx: preserve forced unwind in library-delivered handlers
+
+M	libcxx/include/istream
+M	libcxx/src/ios.cpp
+== layer C header paths only ==
+libcxx/include/__ostream/basic_ostream.h
+libcxx/include/future
+libcxx/include/istream
+libcxx/include/string
+libcxx/src/future.cpp
+== libcxx header install rules ==
+tmp/R83/sandbox/libcxx/cmake/Modules/HandleLibCXXABI.cmake:170:    message(STATUS "LIBCXX_CXX_ABI_INCLUDE_PATHS not set, using /usr/include/c++/v1")
+tmp/R83/sandbox/libcxx/cmake/Modules/HandleLibCXXABI.cmake:171:    set(LIBCXX_CXX_ABI_INCLUDE_PATHS "/usr/include/c++/v1")
+tmp/R83/sandbox/libcxx/cmake/caches/s390x32-ibm-zos-ascii.cmake:8:set(LIBCXX_INSTALL_HEADERS OFF CACHE BOOL "")
+tmp/R83/sandbox/libcxx/CMakeLists.txt:144:   the shared library they shipped should turn this on and see `include/__configuration/availability.h`
+tmp/R83/sandbox/libcxx/CMakeLists.txt:191:option(LIBCXX_INSTALL_HEADERS "Install the libc++ headers." ON)
+tmp/R83/sandbox/libcxx/CMakeLists.txt:232:   See the documentation in <libcxx/include/typeinfo> for details on what each
+tmp/R83/sandbox/libcxx/CMakeLists.txt:412:# instead of hard-coding include/c++/v1.
+tmp/R83/sandbox/libcxx/CMakeLists.txt:414:set(LIBCXX_INSTALL_INCLUDE_DIR "${CMAKE_INSTALL_INCLUDEDIR}/c++/v1" CACHE STRING
+tmp/R83/sandbox/libcxx/CMakeLists.txt:418:set(LIBCXX_INSTALL_MODULES_DIR "share/libc++/v1" CACHE STRING
+tmp/R83/sandbox/libcxx/CMakeLists.txt:431:  set(LIBCXX_GENERATED_INCLUDE_DIR "${LLVM_BINARY_DIR}/include/c++/v1")
+tmp/R83/sandbox/libcxx/CMakeLists.txt:432:  set(LIBCXX_GENERATED_MODULE_DIR "${LLVM_BINARY_DIR}/modules/c++/v1")
+tmp/R83/sandbox/libcxx/CMakeLists.txt:433:  set(LIBCXX_GENERATED_INCLUDE_TARGET_DIR "${LLVM_BINARY_DIR}/include/${LIBCXX_TARGET_SUBDIR}/c++/v1")
+tmp/R83/sandbox/libcxx/CMakeLists.txt:436:  set(LIBCXX_INSTALL_INCLUDE_TARGET_DIR "${CMAKE_INSTALL_INCLUDEDIR}/${LIBCXX_TARGET_SUBDIR}/c++/v1" CACHE STRING
+tmp/R83/sandbox/libcxx/CMakeLists.txt:442:    set(LIBCXX_GENERATED_INCLUDE_DIR "${LLVM_BINARY_DIR}/include/c++/v1")
+tmp/R83/sandbox/libcxx/CMakeLists.txt:443:    set(LIBCXX_GENERATED_MODULE_DIR "${LLVM_BINARY_DIR}/modules/c++/v1")
+tmp/R83/sandbox/libcxx/CMakeLists.txt:446:    set(LIBCXX_GENERATED_INCLUDE_DIR "${CMAKE_BINARY_DIR}/include/c++/v1")
+tmp/R83/sandbox/libcxx/CMakeLists.txt:447:    set(LIBCXX_GENERATED_MODULE_DIR "${CMAKE_BINARY_DIR}/modules/c++/v1")
+tmp/R83/sandbox/libcxx/cmake/caches/s390x-ibm-zos-ascii.cmake:8:set(LIBCXX_INSTALL_HEADERS OFF CACHE BOOL "")
+== spec package file ownership and build config ==
+     1	%define llvm_major 22
+     2	%define llvm_version 22.1.8
+     3	
+     4	Name:           libcxx-runtimes
+     5	Version:        22.1.8
+     6	Release:        1
+     7	ExclusiveArch:  armv7l aarch64 x86_64
+     8	Summary:        LLVM libc++ and libc++abi runtimes
+     9	Group:          Development/Toolchain
+    10	License:        Apache-2.0 WITH LLVM-exception
+    11	URL:            https://llvm.org/
+    12	Source0:        llvm-%{version}.tar.gz
+    13	Source1:        libcxx-llvm22.map
+    14	Source2:        libcxx-runtimes.manifest
+    15	Source3:        SOURCE_PROVENANCE
+    16	
+    17	BuildRequires:  clang = %{version}
+    18	BuildRequires:  cmake
+    19	BuildRequires:  ninja
+    20	BuildRequires:  python3
+    21	BuildRequires:  glibc-devel
+    22	BuildRequires:  libgcc
+    23	
+    24	%description
+    25	Source package for the LLVM libc++ standard library and libc++abi runtime.
+    26	The libraries use libgcc_s as the unwinder and export only default-version
+    27	LLVM_22 symbols.
+    28	
+    29	%package -n libc++
+    30	Summary:        LLVM C++ standard library runtime
+    31	Requires:       libc++abi = %{version}-%{release}
+    32	
+    33	%description -n libc++
+    34	Shared LLVM libc++ runtime, built against libc++abi and libgcc_s.
+    35	
+    36	%package -n libc++-devel
+    37	Summary:        LLVM C++ standard library headers and development files
+    38	Requires:       libc++ = %{version}-%{release}
+    39	Requires:       libc++abi-devel = %{version}-%{release}
+    40	
+    41	%description -n libc++-devel
+    42	Headers, ABI linker script, module metadata, and development files for LLVM
+    43	libc++.
+    44	
+    45	%package -n libc++abi
+    46	Summary:        LLVM C++ ABI runtime
+    47	
+    48	%description -n libc++abi
+    49	Shared LLVM libc++abi runtime using libgcc_s rather than LLVM libunwind.
+    50	
+    51	%package -n libc++abi-devel
+    52	Summary:        LLVM C++ ABI development files
+    53	Requires:       libc++abi = %{version}-%{release}
+    54	
+    55	%description -n libc++abi-devel
+    56	Linker name for LLVM libc++abi.  Its public headers are installed in the
+    57	common c++/v1 tree shipped by libc++-devel.
+    58	
+    59	%prep
+    60	%setup -q -n llvm-%{version}
+    61	cp %{SOURCE2} .
+    62	cp %{SOURCE3} .
+    63	
+    64	%build
+    65	mkdir -p build
+    66	cd build
+    67	
+    68	cmake -G Ninja \
+    69	  -DCMAKE_BUILD_TYPE=Release \
+    70	  -DCMAKE_C_COMPILER=%{__cc} \
+    71	  -DCMAKE_CXX_COMPILER=%{__cxx} \
+    72	  -DCMAKE_ASM_COMPILER=%{__cc} \
+    73	  -DCMAKE_C_COMPILER_TARGET=%{_host} \
+    74	  -DCMAKE_CXX_COMPILER_TARGET=%{_host} \
+    75	  -DCMAKE_ASM_COMPILER_TARGET=%{_host} \
+    76	  -DCMAKE_C_FLAGS="$CFLAGS --rtlib=libgcc" \
+    77	  -DCMAKE_CXX_FLAGS="$CXXFLAGS --rtlib=libgcc" \
+    78	  -DCMAKE_ASM_FLAGS="$CFLAGS" \
+    79	  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--version-script=%{SOURCE1} -Wl,-z,now --rtlib=libgcc" \
+    80	  -DCMAKE_EXE_LINKER_FLAGS="--rtlib=libgcc" \
+    81	  -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+    82	  -DCMAKE_INSTALL_LIBDIR=%{_lib} \
+    83	  -DLIBCXX_INSTALL_LIBRARY_DIR=%{_lib} \
+    84	  -DLIBCXXABI_INSTALL_LIBRARY_DIR=%{_lib} \
+    85	  -DLLVM_ENABLE_RUNTIMES="libcxxabi;libcxx" \
+    86	  -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+    87	  -DLLVM_INCLUDE_TESTS=OFF \
+    88	  -DLIBCXX_ENABLE_SHARED=ON \
+    89	  -DLIBCXX_ENABLE_STATIC=OFF \
+    90	  -DLIBCXX_INSTALL_SHARED_LIBRARY=ON \
+    91	  -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF \
+    92	  -DLIBCXX_CXX_ABI=libcxxabi \
+    93	  -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF \
+    94	  -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=ON \
+    95	  -DLIBCXX_USE_COMPILER_RT=OFF \
+    96	  -DLIBCXXABI_ENABLE_SHARED=ON \
+    97	  -DLIBCXXABI_ENABLE_STATIC=OFF \
+    98	  -DLIBCXXABI_INSTALL_SHARED_LIBRARY=ON \
+    99	  -DLIBCXXABI_INSTALL_STATIC_LIBRARY=OFF \
+   100	  -DLIBCXXABI_USE_COMPILER_RT=OFF \
+   101	  -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
+   102	  -DLIBCXXABI_ENABLE_STATIC_UNWINDER=OFF \
+   103	  -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=OFF \
+   104	  -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=OFF \
+   105	  -DLIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS=ON \
+   106	  -DLIBCXX_INCLUDE_TESTS=OFF \
+   107	  -DLIBCXXABI_INCLUDE_TESTS=OFF \
+   108	  -DLIBCXX_INCLUDE_BENCHMARKS=OFF \
+   109	  ../runtimes
+   110	
+   111	cmake --build . --target cxxabi cxx cxx_experimental %{?_smp_mflags}
+   112	
+   113	%install
+   114	cd build
+   115	DESTDIR=%{buildroot} cmake --install .
+   116	
+   117	install -d %{buildroot}%{_datadir}/doc/%{name}
+   118	install -m 0644 ../SOURCE_PROVENANCE \
+   119	  %{buildroot}%{_datadir}/doc/%{name}/SOURCE_PROVENANCE
+   120	
+   121	%files -n libc++
+   122	%manifest %{name}.manifest
+   123	%defattr(-,root,root,-)
+   124	%license libcxx/LICENSE.TXT
+   125	%{_libdir}/libc++.so.1*
+   126	
+   127	%files -n libc++-devel
+   128	%manifest %{name}.manifest
+   129	%defattr(-,root,root,-)
+   130	%{_includedir}/c++/v1
+   131	%{_libdir}/libc++.so
+   132	%{_libdir}/libc++experimental.a
+   133	%{_libdir}/libc++.modules.json
+   134	%{_datadir}/libc++/v1
+   135	%{_datadir}/doc/%{name}/SOURCE_PROVENANCE
+   136	
+   137	%files -n libc++abi
+   138	%manifest %{name}.manifest
+   139	%defattr(-,root,root,-)
+   140	%license libcxxabi/LICENSE.TXT
+   141	%{_libdir}/libc++abi.so.1*
+   142	
+   143	%files -n libc++abi-devel
+   144	%manifest %{name}.manifest
+   145	%defattr(-,root,root,-)
+   146	%{_libdir}/libc++abi.so
+   147	
+   148	%changelog
+   149	* Tue Aug 04 2026 Toolchain ABI Team <toolchain@example.invalid> 22.1.8-1
+   150	- Migrate to the verbatim platform llvm-22.1.8 source tarball and LLVM_22 symbol node.
+   151	- Preserve the adjudicated 21.1.1 multi-architecture packaging decisions.
+   152	
+   153	* Sat Jul 25 2026 Toolchain ABI Team <toolchain@example.invalid> 21.1.1-2
+   154	- Build armv7l, aarch64, and x86_64 repository-candidate runtimes.
+   155	
+   156	* Thu Jul 23 2026 Toolchain ABI Team <toolchain@example.invalid> 21.1.1-1
+   157	- Initial armv7l PoC packaging with LLVM_21 default symbol versions.
+== source provenance full ==
+     1	component=llvm-project libcxx+libcxxabi
+     2	version=22.1.8
+     3	source_tarball=llvm-22.1.8.tar.gz
+     4	source_tarball_sha256=1f5fe8da0a18255a63cde36f1570c88265bb8ffc6458deae06d04e77abc6f7d2
+     5	source_tarball_anchor=R9C_GBS_STANDARD_EXPORT
+     6	local_tizen_base_vcs=platform/upstream/llvm#3d3e3da49e00ae89b0ff928dee811d6d0d1d4f0b
+     7	local_tizen_base_branch=tizen_base
+     8	upstream_tag=llvmorg-22.1.8
+     9	gbs_export_tag=upstream/22.1.8
+    10	upstream_peeled_commit=ca7933e47d3a3451d81e72ac174dcb5aa28b59d1
+    11	official_release_archive=llvm-project-22.1.8.src.tar.xz
+    12	official_release_archive_sha256=922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888
+    13	official_release_anchor_scope=CONTENT_COMPARISON_ONLY
+    14	export_patch_count=6
+    15	export_patch_0001_file=0001-Add-support-for-Tizen-toolchain-vendor.patch
+    16	export_patch_0001_sha256=a71a7503e851f4ebe1c192326d832c28f79a81ff1c9db43696d0487c118d587c
+    17	export_patch_0001_patch_id=cf2d5d98ab6c48ef843b1c5d9372cc5640ad2b6c
+    18	export_patch_0001_commit=53accdc47cd72c0daf61bf70e52946b2d8d80f2e
+    19	export_patch_0002_file=0002-Link-libclang_rt.asan.so-against-libatomic-when-nece.patch
+    20	export_patch_0002_sha256=cefb73ec25a64f8c70cc0e585dfc688a23eb44b740093755ffaf8ee86f7e716e
+    21	export_patch_0002_patch_id=d47008f74357f06fa89e89aa04ac02242138568e
+    22	export_patch_0002_commit=f31417256f953cc5d26cd188704c89ad41572b50
+    23	export_patch_0003_file=0003-Fix-armv7l-build-when-compiler-is-clang.patch
+    24	export_patch_0003_sha256=9ce436eb2f73e01b112cfeb10d6108e33c719b1db54a8fc404abdc10c367102b
+    25	export_patch_0003_patch_id=3f0c4ed2b51658bc1585361385439d453458851d
+    26	export_patch_0003_commit=9576175b59fa577c940eff1712a59b129ae03f03
+    27	export_patch_0004_file=0004-clang-add-support-for-LLVM-gold-plugin-in-case-of-ac.patch
+    28	export_patch_0004_sha256=45d68e84754f93ebe10ba80725e6cbb28826890e344f0ae910e061690105e944
+    29	export_patch_0004_patch_id=4584830adae087a4fb6348b80da4c755699bae35
+    30	export_patch_0004_commit=9ad40bd946a75b44d8e05de8ba3263a5ce2ed885
+    31	export_patch_0005_file=0005-Merge-MLGO-AOT-compilation-support-and-optimization-.patch
+    32	export_patch_0005_sha256=da2cacae22ef8ececf808596b14ff53b6741db23e3f34d7fc5e07a75fa3543c2
+    33	export_patch_0005_patch_id=bac21649416c0ea19ee8fa7ef00d4a7d8fa3dafa
+    34	export_patch_0005_commit=fd7a4929c0e424d564cdd1f0c55af9153dcea321
+    35	export_patch_0006_file=0006-libcxxabi-declare-__gnu_unwind_frame-in-cxa_personal.patch
+    36	export_patch_0006_sha256=b9fdf66418276bbb97183be952aab96606c0662b17b95de077e99fecc7d2d79c
+    37	export_patch_0006_patch_id=ab69099b6f2dd679eeaf8b1dfe82bb13fdabc479
+    38	export_patch_0006_commit=3d3e3da49e00ae89b0ff928dee811d6d0d1d4f0b
+    39	ehabi_backport_export_patch=0006-libcxxabi-declare-__gnu_unwind_frame-in-cxa_personal.patch
+    40	ehabi_backport_spec_patch_entry=Patch5
+    41	platform_frozen_tarball_sha256=16a932e1bad4e1ed68938b48aa9fe5613992426584a75dd17dacabf2151d122e
+    42	platform_frozen_tarball_status=SUPERSEDED_BY_R9C
+    43	superseded_platform_spec_vcs=platform/upstream/llvm#c12cbe887ff08f04628e1b1165f8d02ce69a9146
+    44	superseded_platform_spec_vcs_status=SUPERSEDED_BY_R9C_TEST_COMMIT_ID_NON_AUTHORITATIVE
+    45	platform_vs_r9c_source0_difference=clang/bindings/python/.git_archival.txt only
+    46	platform_vs_r9c_source0_difference_cause=git export-subst expansion in local standard export
+    47	platform_vs_r9c_source0_build_impact=NO_BUILD_IMPACT
+    48	platform_vs_r9c_source0_build_impact_evidence=progress/R9C/build_impact_verdict.tsv
+    49	source_export=GBS standard non-native export from upstream/22.1.8 plus six auto-generated downstream patches; --no-patch-export forbidden
+    50	provenance_revision_basis=R9-C adjudication 2026-08-05; local standard export object is the primary Source0 anchor
+    51	stdlib_abi=libcxxabi
+    52	unwinder=libgcc_s
+    53	compiler_rt=disabled
+    54	llvm_unwinder=disabled
+    55	symbol_version_node=LLVM_22

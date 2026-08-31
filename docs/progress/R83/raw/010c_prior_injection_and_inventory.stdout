@@ -1,0 +1,1246 @@
+== R29 central injection files ==
+total 40
+-rw-rw-r-- 1 toolchain toolchain 15458 Aug 12 21:19 buildconf-default.conf
+-rw-rw-r-- 1 toolchain toolchain 15974 Aug 12 21:19 buildconf-libcxx.conf
+-rw-rw-r-- 1 toolchain toolchain   298 Aug 12 21:19 gbs_consumer_default.conf
+-rw-rw-r-- 1 toolchain toolchain   297 Aug 12 21:19 gbs_consumer_libcxx.conf
+== diff default -> libcxx ==
+--- docs/progress/R29/proposed/central-injection/buildconf-default.conf	2026-08-12 21:19:39.111005651 +0800
++++ docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf	2026-08-12 21:19:39.111058697 +0800
+@@ -218,6 +218,7 @@
+ Preinstall: qemu-linux-user-%{build_hostarch}-cross
+ Runscripts: qemu-linux-user-%{build_hostarch}-cross
+ Keep: qemu-linux-user-%{build_hostarch}-cross
++
+ Macros:
+ %qemu_user_space_build 1
+ :Macros
+@@ -393,6 +394,7 @@
+ :Macros
+ 
+ ################################################################################
++
+ # OBS Project config for Tizen:Unified-Toolchain
+ #
+ # vim: set syntax=spec:
+@@ -562,3 +564,15 @@
+ # derived from Tizen:Base
+ ################################################################################
+ 
++# R29 central libc++ consumer injection.  This changes no consumer spec.
++Macros:
++%build %%build\
++export AR=%{__ar} RANLIB=%{__ranlib};\
++export CC=%{__cc} CXX=%{__cxx};\
++export MAKEFLAGS+=" -k";\
++export CXXFLAGS="${CXXFLAGS} -stdlib=libc++";\
++export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed";\
++export PKG_CONFIG_PATH="%{_libdir}/libcxx-pkgconfig/pcre:%{_libdir}/libcxx-pkgconfig/lottie-player";\
++export CMAKE_PREFIX_PATH="%{_libdir}/libcxx-prefix/flatbuffers";\
++%{nil}
++:Macros
+== relevant R29 references ==
+docs/progress/R29/REPORT.md:13:同一份最小消费者 spec（SHA256 `9bf1c6e056fa5e383c1f933647338207f695aa0696d9aea65df0c1387fa165ee`）在两根全新 buildroot 中构建：默认中央配置解析默认库，libc++ 中央配置通过 `CXXFLAGS`/`LDFLAGS`、`PKG_CONFIG_PATH`、`CMAKE_PREFIX_PATH` 解析三套变体。两次均退出 0；六个消费者 ELF 的 `ldd -r` 均退出 0。消费者 spec 与源码未因模式切换而改变。
+docs/progress/R29/REPORT.md:57:provider 的第二遍构建由各 spec 显式使用 `clang++ -stdlib=libc++`，并以 `-Wl,--no-as-needed -lc++abi -Wl,--as-needed` 保留直接 libc++abi 依赖。这是变体产出的包内职责。消费者选择则完全由中央 buildconf 注入，不修改消费者 spec。
+docs/progress/R29/REPORT.md:71:首次第二遍编译失败：Meson 生成 `-I..`，源码根下名为 `format` 的开发辅助脚本遮蔽 libc++ 标准头 `<format>`，clang 将脚本首行解析为 C++ 并报错。错误原文在 `commands/022_build_lottie.full.log`。
+docs/progress/R29/REPORT.md:79:最终六个主要共享库的判据全部满足：默认侧含 `DT_NEEDED libstdc++.so.6`；libc++ 侧含 `libc++.so.1` 和 `libc++abi.so.1`，不含 `libstdc++.so.6`；两侧 SONAME 不同。
+docs/progress/R29/REPORT.md:81:导出符号实测：pcre/flatbuffers/lottie 默认侧分别有 22/226/21 个 `std::__cxx11` 命中、0 个 `std::__1`；libc++ 侧分别有 28/233/69 个 `std::__1` 命中、0 个 `std::__cxx11`。逐 ELF 数据见 `tables/provider_elf_results.tsv`，原文见 `commands/030_final_elf_validation.log`。
+docs/progress/R29/REPORT.md:87:消费者包同时 BuildRequires 两套 devel 包，保证选择不是靠卸载另一套完成。A/B 使用同一个 spec 和同一源码归档；仅 buildconf 不同。
+docs/progress/R29/REPORT.md:94:- 三个消费者 ELF 均含 `libstdc++.so.6`，不含 libc++ provider SONAME。
+docs/progress/R29/REPORT.md:96:中央 libc++ 注入模式解析：
+docs/progress/R29/REPORT.md:101:- 三个消费者 ELF 均含 `libc++.so.1`、`libc++abi.so.1`，不含 `libstdc++.so.6`。
+docs/progress/R29/REPORT.md:105:解析路径、spec/buildconf SHA 和结果见 `tables/consumer_results.tsv`。这验证了消费者 spec 无需修改；切换由中央配置完成。
+docs/progress/R29/commands/010_prepare_local_repo_and_commits.log:1:PWD=/home/toolchain/development/libc++_replacement
+docs/progress/R29/commands/010_prepare_local_repo_and_commits.log:2:COMMAND=bash -lc set\ -e\;\ mkdir\ -p\ tmp/R29/repo/x86_64\;\ cp\ -a\ artifacts/rebuild_2218_c2/x86_64/libc++-22.1.8-1.x86_64.rpm\ artifacts/rebuild_2218_c2/x86_64/libc++-devel-22.1.8-1.x86_64.rpm\ artifacts/rebuild_2218_c2/x86_64/libc++abi-22.1.8-1.x86_64.rpm\ artifacts/rebuild_2218_c2/x86_64/libc++abi-devel-22.1.8-1.x86_64.rpm\ tmp/R29/repo/x86_64/\;\ createrepo\ --changelog-limit=0\ tmp/R29/repo/x86_64\;\ for\ name\ in\ pcre\ flatbuffers\ lottie-player\;\ do\ spec=\$\(find\ \"tmp/R29/work/\$name/packaging\"\ -maxdepth\ 1\ -name\ \"\*.spec\"\ -print\ -quit\)\;\ git\ -C\ \"tmp/R29/work/\$name\"\ add\ --\ \"\$\{spec#tmp/R29/work/\$name/\}\"\;\ git\ -C\ \"tmp/R29/work/\$name\"\ commit\ -m\ \"Prototype\ single-spec\ dual-runtime\ packaging\"\;\ echo\ \"###\ \$name\"\;\ git\ -C\ \"tmp/R29/work/\$name\"\ rev-parse\ HEAD\;\ git\ -C\ \"tmp/R29/work/\$name\"\ status\ --porcelain\;\ done\;\ sha256sum\ tmp/R29/gbs_r29.conf\ artifacts/rebuild_2218_c2/x86_64/tizen_unified_standard.conf\ tmp/R29/repo/x86_64/repodata/repomd.xml\;\ find\ tmp/R29/repo/x86_64\ -maxdepth\ 1\ -type\ f\ -name\ \"\*.rpm\"\ -print0\ \|\ sort\ -z\ \|\ xargs\ -0\ sha256sum 
+docs/progress/R29/commands/010_prepare_local_repo_and_commits.log:24:2f37335ae5bfd7e83fd631a3b138d4ca564dc2c568325ebfa60197c72b73e95b  tmp/R29/repo/x86_64/libc++-22.1.8-1.x86_64.rpm
+docs/progress/R29/commands/010_prepare_local_repo_and_commits.log:25:3e51acd79decd8395367709648c071b8ecf062d47dcc53ef80ebda8694d22620  tmp/R29/repo/x86_64/libc++-devel-22.1.8-1.x86_64.rpm
+docs/progress/R29/commands/010_prepare_local_repo_and_commits.log:26:c141c89a8d7781cb0f06f035c73d56d4bf40fbedc54385767ab83afe8f0a151d  tmp/R29/repo/x86_64/libc++abi-22.1.8-1.x86_64.rpm
+docs/progress/R29/commands/010_prepare_local_repo_and_commits.log:27:2c6281492ff2bcce2b8169763d05dbe783124a03948198d5e737d18004a2f64d  tmp/R29/repo/x86_64/libc++abi-devel-22.1.8-1.x86_64.rpm
+docs/progress/R29/design/packaging_shape.md:6:2. libc++ 变体子包统一采用 `<原子包>-libcxx` / `<源包>-libcxx-devel` 命名；静态库另入 `<源包>-libcxx-devel-static`（原包本就拆静态子包时）。
+docs/progress/R29/design/packaging_shape.md:8:4. libc++ 头文件置于 `%{_includedir}/<源包>-libcxx/`；静态库重命名为 `libfoo-libcxx.a`。两套包不得拥有任何同路径普通文件。
+docs/progress/R29/design/packaging_shape.md:9:5. libc++ 的 pkg-config 文件保留消费者使用的逻辑模块名（如 `flatbuffers.pc`），但置于 `%{_libdir}/libcxx-pkgconfig/<源包>/`；它只显式 `Provides: pkgconfig(<模块>-libcxx)`，并用 `%__provides_exclude_from` 阻止私有目录生成同名自动 Provides。中央 `PKG_CONFIG_PATH` 选择该覆盖层。
+docs/progress/R29/design/packaging_shape.md:11:7. provider 的第二遍构建由 spec 显式设置 `CXX=clang++`、`-stdlib=libc++` 和 `-lc++abi`；这是产出变体本身的包内职责。消费者选择变体只允许通过中央 CXXFLAGS/LDFLAGS、`PKG_CONFIG_PATH`、`CMAKE_PREFIX_PATH`，消费者 spec 与源码在 A/B 两次构建间逐字不变。
+docs/progress/R29/design/packaging_shape.md:12:8. 原构建先安装到 `%{buildroot}`；libc++ 构建先安装到独立 staging 根，随后仅复制、重命名所需文件。`patchelf --set-soname` 修改变体 SONAME，并对变体内部依赖执行 `--replace-needed`。
+docs/progress/R29/design/packaging_shape.md:16:| 样本 | 构建系统 | libc++ 运行时 | 私有开发接口 | 静态库 |
+docs/progress/R29/design/packaging_shape.md:26:- 原 devel 与 libc++ devel 包存在同路径普通文件；
+docs/progress/R29/templates/autotools_dual_runtime.spec.template:6:BuildRequires: libc++-devel
+docs/progress/R29/templates/autotools_dual_runtime.spec.template:7:BuildRequires: libc++abi-devel
+docs/progress/R29/templates/autotools_dual_runtime.spec.template:11:Summary: libc++ build of @@PROJECT@@
+docs/progress/R29/templates/autotools_dual_runtime.spec.template:13:Summary: Development files for the libc++ build
+docs/progress/R29/templates/autotools_dual_runtime.spec.template:15:Requires: libc++-devel
+docs/progress/R29/templates/autotools_dual_runtime.spec.template:24:CXXFLAGS="${CXXFLAGS} -stdlib=libc++" \
+docs/progress/R29/templates/autotools_dual_runtime.spec.template:25:LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
+docs/progress/R29/templates/cmake_dual_runtime.spec.template:4:BuildRequires: libc++-devel
+docs/progress/R29/templates/cmake_dual_runtime.spec.template:5:BuildRequires: libc++abi-devel
+docs/progress/R29/templates/cmake_dual_runtime.spec.template:15:CXXFLAGS="${CXXFLAGS} -stdlib=libc++" \
+docs/progress/R29/templates/cmake_dual_runtime.spec.template:16:LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
+docs/progress/R29/templates/meson_dual_runtime.spec.template:1:# R29 Meson 双运行时模板；构建前须检查源根文件名是否遮蔽 libc++ 标准头。
+docs/progress/R29/templates/meson_dual_runtime.spec.template:4:BuildRequires: libc++-devel
+docs/progress/R29/templates/meson_dual_runtime.spec.template:5:BuildRequires: libc++abi-devel
+docs/progress/R29/templates/meson_dual_runtime.spec.template:14:CXXFLAGS="${CXXFLAGS} -stdlib=libc++" \
+docs/progress/R29/templates/meson_dual_runtime.spec.template:15:LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
+docs/progress/R29/MANIFEST.sha256:65:9eac0e23968b9bd7dabd463d400f0281d2464815fc2299431052f7b8cfb736a5  proposed/central-injection/buildconf-default.conf
+docs/progress/R29/MANIFEST.sha256:66:c0e39a006f1a4edc9fab3f2e07419306eb4eec6d4f286bcb05febc9dfad5cd8a  proposed/central-injection/buildconf-libcxx.conf
+docs/progress/R29/commands/005_sample_binary_inventory.log:1:PWD=/home/toolchain/development/libc++_replacement
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:16:BuildRequires:  libc++-devel
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:17:BuildRequires:  libc++abi-devel
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:54:Summary:    libc++ build of rlottie
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:60:The rlottie shared library built with LLVM libc++, with an isolated SONAME.
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:63:Summary:    Development files for the libc++ rlottie build
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:66:Requires:   libc++-devel
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:70:Private headers and pkg-config overlay for the libc++ rlottie build.
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:79:# The upstream development helper named "format" shadows libc++'s <format>
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:81:# non-header helper only from the isolated libc++ build copy.
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:91:%{?_toolchain:
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:93:%if %{toolchain_is clang}
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:109:CXXFLAGS="${CXXFLAGS} -std=gnu++14 -stdlib=libc++" \
+docs/progress/R29/proposed/lottie-player/packaging/rlottie.spec:110:LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
+docs/progress/R29/proposed/central-injection/gbs_consumer_libcxx.conf:3:buildroot = /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-consumer-unused
+docs/progress/R29/proposed/central-injection/gbs_consumer_libcxx.conf:7:buildconf = /home/toolchain/development/libc++_replacement/tmp/R29/buildconf-libcxx.conf
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:1:%define _project Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:5:%_project Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:8:%define _project Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:12:%_project Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:16:### from Tizen-Base-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:22:%_project Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:24:### from Tizen-Base-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:30:# Project config for Tizen-Base-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:40:Support: build
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:41:Support: build-compare build-mkbaselibs
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:42:# Support: rpmlint-mini rpmlint-tizen
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:49:Prefer: util-linux
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:50:Prefer: mono-wcf
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:51:Prefer: monodoc
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:52:Prefer: mono-extras
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:53:Prefer: mono-web
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:54:Prefer: mono-data
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:55:Prefer: mono-mvc
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:56:Prefer: mono-winforms
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:57:Prefer: mono-data-sqlite
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:65:Prefer: libgcc libstdc++ libunwind libuuid zlib libopenssl libopenssl11 libopenssl3
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:66:Prefer: lldb
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:131:%___optflags_toolchain_gcc --param=ssp-buffer-size=4
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:136:%___optflags_toolchain_gcc -feliminate-unused-debug-types
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:141:%___optflags_toolchain_gcc --param=ssp-buffer-size=4 -feliminate-unused-debug-types
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:142:%___optflags_toolchain_clang -momit-leaf-frame-pointer %{?_with_mlgo:-mllvm=-regalloc-enable-advisor=release -mllvm=-enable-ml-inliner=release}
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:152:%__optflags_toolchain_clang -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument %{?___optflags_toolchain_clang:%{___optflags_toolchain_clang}}
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:159:%__optflags_toolchain_gcc -O2 -fno-inline-functions -fstack-protector-strong %{?___optflags_toolchain_gcc:%{___optflags_toolchain_gcc}}
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:161:%_toolchain %{?_toolchain_override}%{!?_toolchain_override:clang}
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:162:%toolchain_is() %((echo "%_toolchain" | %{__grep} -qE "%{1}") && echo 1 || echo 0)
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:164:%__ar %{expand:%%{__ar_%{_toolchain}}}
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:165:%__ranlib %{expand:%%{__ranlib_%{_toolchain}}}
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:166:%__cc %{expand:%%{__cc_%{_toolchain}}}
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:167:%__cxx %{expand:%%{__cxx_%{_toolchain}}}
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:168:%__optflags_toolchain %{expand:%%{__optflags_toolchain_%{_toolchain}}}
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:220:Keep: qemu-linux-user-%{build_hostarch}-cross
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:304:Support: gcc gcc-c++
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:305:Support: clang llvm-devel
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:306:Support: glibc-locale
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:307:Support: perl
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:308:Support: hostname
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:309:Support: cpio findutils
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:310:Support: file findutils zlib bzip2
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:311:Support: gzip hostname net-tools
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:312:Support: make  patch sed  gawk tar grep coreutils pkg-config
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:313:Support: m4  tzdata
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:314:Support: util-linux
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:315:Support: less
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:316:Support: which  elfutils
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:317:Support: update-alternatives
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:318:Support: libstdc++-devel
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:319:Support: cpp
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:320:Support: libatomic
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:321:Support: libgomp
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:322:Support: libitm
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:323:Support: hal-rootstrap-checker
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:324:Support: app-rootstrap-checker
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:326:Keep: libstdc++-devel
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:327:Keep: cpp gcc libstdc++
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:328:Keep: pam
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:329:Keep: binutils cpp  libmagic-data file findutils gawk gcc  gcc-c++
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:330:Keep: gdbm gzip libada libunwind  glibc-devel libpcre xz-lzma-compat
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:331:Keep: make  gmp libcap groff cpio
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:332:Keep: patch rpm-build  nss nspr elfutils python grep libgcc gcc-c++
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:333:Keep: kernel-headers  perl-libs perl
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:334:Keep: pkgconfig glib2 tizen-rpm-config
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:335:Keep: libmpc libmpfr libppl libgmp libppl_c
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:336:Keep: libcloog libppl libgmpxx
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:337:Keep: nss-softokn-freebl libmagic libmagic-data
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:338:Keep: setup
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:339:Keep: update-alternatives
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:340:Keep: clang llvm libllvm llvm-devel
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:341:Keep: gcc-c++
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:342:Keep: libatomic
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:343:Keep: libgomp
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:344:Keep: libitm
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:356:%define __optflags %{__optflags_toolchain} -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:382:### from Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:387:%distribution Tizen-Unified-Toolchain / standard
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:388:%_project Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:390:### from Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:396:# OBS Project config for Tizen:Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:404:Prefer: bluetooth-tools-no-firmware
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:448:Prefer: coregl coregl-devel
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:449:Prefer: libwayland-egl libwayland-egl-devel
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:450:Prefer: vulkan-loader vulkan-loader-devel
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:452:Prefer: elementary
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:472:Prefer: mesa libgbm
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:487:Prefer: libgbm
+docs/progress/R29/proposed/central-injection/buildconf-default.conf:488:Prefer: emulator-yagl emulator-yagl-devel
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:1:%define _project Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:5:%_project Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:8:%define _project Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:12:%_project Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:16:### from Tizen-Base-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:22:%_project Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:24:### from Tizen-Base-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:30:# Project config for Tizen-Base-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:40:Support: build
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:41:Support: build-compare build-mkbaselibs
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:42:# Support: rpmlint-mini rpmlint-tizen
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:49:Prefer: util-linux
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:50:Prefer: mono-wcf
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:51:Prefer: monodoc
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:52:Prefer: mono-extras
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:53:Prefer: mono-web
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:54:Prefer: mono-data
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:55:Prefer: mono-mvc
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:56:Prefer: mono-winforms
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:57:Prefer: mono-data-sqlite
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:65:Prefer: libgcc libstdc++ libunwind libuuid zlib libopenssl libopenssl11 libopenssl3
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:66:Prefer: lldb
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:131:%___optflags_toolchain_gcc --param=ssp-buffer-size=4
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:136:%___optflags_toolchain_gcc -feliminate-unused-debug-types
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:141:%___optflags_toolchain_gcc --param=ssp-buffer-size=4 -feliminate-unused-debug-types
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:142:%___optflags_toolchain_clang -momit-leaf-frame-pointer %{?_with_mlgo:-mllvm=-regalloc-enable-advisor=release -mllvm=-enable-ml-inliner=release}
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:152:%__optflags_toolchain_clang -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument %{?___optflags_toolchain_clang:%{___optflags_toolchain_clang}}
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:159:%__optflags_toolchain_gcc -O2 -fno-inline-functions -fstack-protector-strong %{?___optflags_toolchain_gcc:%{___optflags_toolchain_gcc}}
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:161:%_toolchain %{?_toolchain_override}%{!?_toolchain_override:clang}
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:162:%toolchain_is() %((echo "%_toolchain" | %{__grep} -qE "%{1}") && echo 1 || echo 0)
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:164:%__ar %{expand:%%{__ar_%{_toolchain}}}
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:165:%__ranlib %{expand:%%{__ranlib_%{_toolchain}}}
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:166:%__cc %{expand:%%{__cc_%{_toolchain}}}
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:167:%__cxx %{expand:%%{__cxx_%{_toolchain}}}
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:168:%__optflags_toolchain %{expand:%%{__optflags_toolchain_%{_toolchain}}}
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:220:Keep: qemu-linux-user-%{build_hostarch}-cross
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:305:Support: gcc gcc-c++
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:306:Support: clang llvm-devel
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:307:Support: glibc-locale
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:308:Support: perl
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:309:Support: hostname
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:310:Support: cpio findutils
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:311:Support: file findutils zlib bzip2
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:312:Support: gzip hostname net-tools
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:313:Support: make  patch sed  gawk tar grep coreutils pkg-config
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:314:Support: m4  tzdata
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:315:Support: util-linux
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:316:Support: less
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:317:Support: which  elfutils
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:318:Support: update-alternatives
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:319:Support: libstdc++-devel
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:320:Support: cpp
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:321:Support: libatomic
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:322:Support: libgomp
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:323:Support: libitm
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:324:Support: hal-rootstrap-checker
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:325:Support: app-rootstrap-checker
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:327:Keep: libstdc++-devel
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:328:Keep: cpp gcc libstdc++
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:329:Keep: pam
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:330:Keep: binutils cpp  libmagic-data file findutils gawk gcc  gcc-c++
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:331:Keep: gdbm gzip libada libunwind  glibc-devel libpcre xz-lzma-compat
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:332:Keep: make  gmp libcap groff cpio
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:333:Keep: patch rpm-build  nss nspr elfutils python grep libgcc gcc-c++
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:334:Keep: kernel-headers  perl-libs perl
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:335:Keep: pkgconfig glib2 tizen-rpm-config
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:336:Keep: libmpc libmpfr libppl libgmp libppl_c
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:337:Keep: libcloog libppl libgmpxx
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:338:Keep: nss-softokn-freebl libmagic libmagic-data
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:339:Keep: setup
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:340:Keep: update-alternatives
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:341:Keep: clang llvm libllvm llvm-devel
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:342:Keep: gcc-c++
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:343:Keep: libatomic
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:344:Keep: libgomp
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:345:Keep: libitm
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:357:%define __optflags %{__optflags_toolchain} -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:383:### from Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:388:%distribution Tizen-Unified-Toolchain / standard
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:389:%_project Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:391:### from Tizen-Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:398:# OBS Project config for Tizen:Unified-Toolchain
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:406:Prefer: bluetooth-tools-no-firmware
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:450:Prefer: coregl coregl-devel
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:451:Prefer: libwayland-egl libwayland-egl-devel
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:452:Prefer: vulkan-loader vulkan-loader-devel
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:454:Prefer: elementary
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:474:Prefer: mesa libgbm
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:489:Prefer: libgbm
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:490:Prefer: emulator-yagl emulator-yagl-devel
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:567:# R29 central libc++ consumer injection.  This changes no consumer spec.
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:573:export CXXFLAGS="${CXXFLAGS} -stdlib=libc++";\
+docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf:574:export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed";\
+docs/progress/R29/proposed/central-injection/gbs_consumer_default.conf:3:buildroot = /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-consumer-unused
+docs/progress/R29/proposed/central-injection/gbs_consumer_default.conf:7:buildconf = /home/toolchain/development/libc++_replacement/tmp/R29/buildconf-default.conf
+docs/progress/R29/tables/consumer_results.tsv:1:mode	consumer_spec_sha256	buildconf_sha256	pcre_resolution	rlottie_resolution	flatbuffers_cmake_library	flatbuffers_cmake_include	consumer_needed	ldd_r	result
+docs/progress/R29/tables/consumer_results.tsv:3:libcxx	9bf1c6e056fa5e383c1f933647338207f695aa0696d9aea65df0c1387fa165ee	c0e39a006f1a4edc9fab3f2e07419306eb4eec6d4f286bcb05febc9dfad5cd8a	/usr/include/pcre-libcxx + libpcrecpp-libcxx.so.0	/usr/include/lottie-player-libcxx + librlottie-libcxx.so.0	/usr/lib64/libflatbuffers-libcxx.so.24.3.25	/usr/include/flatbuffers-libcxx	libc++.so.1;libc++abi.so.1;libpcrecpp-libcxx.so.0;librlottie-libcxx.so.0	3/3 exit 0	PASS
+docs/progress/R29/tables/provider_elf_results.tsv:2:pcre	default	/usr/lib64/libpcrecpp.so.0.0.2	libpcrecpp.so.0	libstdc++.so.6	libc++.so.1,libc++abi.so.1	std::__cxx11=22	PASS
+docs/progress/R29/tables/provider_elf_results.tsv:3:pcre	libcxx	/usr/lib64/libpcrecpp-libcxx.so.0.0.2	libpcrecpp-libcxx.so.0	libc++.so.1,libc++abi.so.1	libstdc++.so.6	std::__1=28	PASS
+docs/progress/R29/tables/provider_elf_results.tsv:4:flatbuffers	default	/usr/lib64/libflatbuffers.so.24.3.25	libflatbuffers.so.24.3.25	libstdc++.so.6	libc++.so.1,libc++abi.so.1	std::__cxx11=226	PASS
+docs/progress/R29/tables/provider_elf_results.tsv:5:flatbuffers	libcxx	/usr/lib64/libflatbuffers-libcxx.so.24.3.25	libflatbuffers-libcxx.so.24.3.25	libc++.so.1,libc++abi.so.1	libstdc++.so.6	std::__1=233	PASS
+docs/progress/R29/tables/provider_elf_results.tsv:6:lottie-player	default	/usr/lib64/librlottie.so.0.2	librlottie.so.0	libstdc++.so.6	libc++.so.1,libc++abi.so.1	std::__cxx11=21	PASS
+docs/progress/R29/tables/provider_elf_results.tsv:7:lottie-player	libcxx	/usr/lib64/librlottie-libcxx.so.0.2	librlottie-libcxx.so.0	libc++.so.1,libc++abi.so.1	libstdc++.so.6	std::__1=69	PASS
+docs/progress/R29/tables/build_results.tsv:4:lottie-player	meson	tmp/GBS-ROOT/R29-lottie-x86_64-20260812-02	0	lottie-player,lottie-player-devel	lottie-player-libcxx,lottie-player-libcxx-devel	PASS	隔离副本重命名非头文件 format，避免遮蔽 libc++ <format>
+docs/progress/R29/tables/build_results.tsv:6:consumer-libcxx	CMake	tmp/GBS-ROOT/R29-consumer-libcxx-x86_64-20260812-03	0	-	r29-consumer	PASS	同一 consumer spec；仅中央 buildconf 注入
+docs/progress/R29/proposed/pcre/packaging/pcre.spec:19:BuildRequires:  libc++-devel
+docs/progress/R29/proposed/pcre/packaging/pcre.spec:20:BuildRequires:  libc++abi-devel
+docs/progress/R29/proposed/pcre/packaging/pcre.spec:82:Summary:        libc++ build of the PCRE C++ wrapper
+docs/progress/R29/proposed/pcre/packaging/pcre.spec:87:The PCRE C++ wrapper built with LLVM libc++, with an isolated SONAME.
+docs/progress/R29/proposed/pcre/packaging/pcre.spec:90:Summary:        Development files for the libc++ PCRE C++ wrapper
+docs/progress/R29/proposed/pcre/packaging/pcre.spec:93:Requires:       libc++-devel
+docs/progress/R29/proposed/pcre/packaging/pcre.spec:97:Private headers and pkg-config overlay for the libc++ PCRE C++ wrapper.
+docs/progress/R29/proposed/pcre/packaging/pcre.spec:100:Summary:        Static libc++ PCRE C++ wrapper
+docs/progress/R29/proposed/pcre/packaging/pcre.spec:105:Static library for the libc++ PCRE C++ wrapper.
+docs/progress/R29/proposed/pcre/packaging/pcre.spec:153:CXXFLAGS="${CXXFLAGS} -stdlib=libc++" \
+docs/progress/R29/proposed/pcre/packaging/pcre.spec:154:LDFLAGS="${LDFLAGS} -stdlib=libc++ -lc++abi" \
+docs/progress/R29/commands/058_remote_verify_primary.log:1:PWD=/home/toolchain/development/libc++_replacement
+docs/progress/R29/commands/016_pcre_prefix_fix_and_cache_seed.log:1:PWD=/home/toolchain/development/libc++_replacement
+docs/progress/R29/commands/016_pcre_prefix_fix_and_cache_seed.log:8: CXXFLAGS="${CXXFLAGS} -stdlib=libc++" \
+docs/progress/R29/commands/016_pcre_prefix_fix_and_cache_seed.log:9: LDFLAGS="${LDFLAGS} -stdlib=libc++ -lc++abi" \
+docs/progress/R29/commands/016_pcre_prefix_fix_and_cache_seed.log:34:cp: cannot create hard link 'tmp/GBS-ROOT/R29-pcre-x86_64-20260812-04/local/cache/43c38790e1887423a10d27c759bee4c8/libc++-22.1.8-1.x86_64.rpm' to 'tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache/43c38790e1887423a10d27c759bee4c8/libc++-22.1.8-1.x86_64.rpm': Operation not permitted
+docs/progress/R29/commands/016_pcre_prefix_fix_and_cache_seed.log:35:cp: cannot create hard link 'tmp/GBS-ROOT/R29-pcre-x86_64-20260812-04/local/cache/43c38790e1887423a10d27c759bee4c8/libc++-devel-22.1.8-1.x86_64.rpm' to 'tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache/43c38790e1887423a10d27c759bee4c8/libc++-devel-22.1.8-1.x86_64.rpm': Operation not permitted
+docs/progress/R29/commands/016_pcre_prefix_fix_and_cache_seed.log:36:cp: cannot create hard link 'tmp/GBS-ROOT/R29-pcre-x86_64-20260812-04/local/cache/43c38790e1887423a10d27c759bee4c8/libc++abi-22.1.8-1.x86_64.rpm' to 'tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache/43c38790e1887423a10d27c759bee4c8/libc++abi-22.1.8-1.x86_64.rpm': Operation not permitted
+docs/progress/R29/commands/016_pcre_prefix_fix_and_cache_seed.log:37:cp: cannot create hard link 'tmp/GBS-ROOT/R29-pcre-x86_64-20260812-04/local/cache/43c38790e1887423a10d27c759bee4c8/libc++abi-devel-22.1.8-1.x86_64.rpm' to 'tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache/43c38790e1887423a10d27c759bee4c8/libc++abi-devel-22.1.8-1.x86_64.rpm': Operation not permitted
+docs/progress/R29/commands/002_locate_samples.log:1:PWD=/home/toolchain/development/libc++_replacement
+docs/progress/R29/tables/artifact_sha256.tsv:7:9eac0e23968b9bd7dabd463d400f0281d2464815fc2299431052f7b8cfb736a5	artifacts/R29/consumer/default/x86_64/config/buildconf-default.conf	FINAL
+docs/progress/R29/tables/artifact_sha256.tsv:15:c0e39a006f1a4edc9fab3f2e07419306eb4eec6d4f286bcb05febc9dfad5cd8a	artifacts/R29/consumer/libcxx/x86_64/config/buildconf-libcxx.conf	FINAL
+docs/progress/R29/commands/056_git_commit_primary.log:1:PWD=/home/toolchain/development/libc++_replacement
+docs/progress/R29/commands/056_git_commit_primary.log:66: create mode 100644 docs/progress/R29/proposed/central-injection/buildconf-default.conf
+docs/progress/R29/commands/056_git_commit_primary.log:67: create mode 100644 docs/progress/R29/proposed/central-injection/buildconf-libcxx.conf
+docs/progress/R29/commands/056_git_commit_primary.log:157: create mode 100644 progress/R29/proposed/central-injection/buildconf-default.conf
+docs/progress/R29/commands/056_git_commit_primary.log:158: create mode 100644 progress/R29/proposed/central-injection/buildconf-libcxx.conf
+docs/progress/R29/commands/028_archive_success_outputs.log:1:PWD=/home/toolchain/development/libc++_replacement
+docs/progress/R29/commands/054_finalize_and_curate.log:1:PWD=/home/toolchain/development/libc++_replacement
+docs/progress/R29/commands/042_flatbuffers_cmake_overlay_fix.log:1:PWD=/home/toolchain/development/libc++_replacement
+docs/progress/R29/commands/038_consumer_source_archive_fix.log:1:PWD=/home/toolchain/development/libc++_replacement
+docs/progress/R29/commands/029_coinstall_validation.log:1:PWD=/home/toolchain/development/libc++_replacement
+docs/progress/R29/commands/020_flatbuffers_source_isolation_fix.log:1:PWD=/home/toolchain/development/libc++_replacement
+docs/progress/R29/commands/020_flatbuffers_source_isolation_fix.log:25: CXXFLAGS="${CXXFLAGS} -fno-lto -stdlib=libc++" \
+docs/progress/R29/commands/020_flatbuffers_source_isolation_fix.log:26: LDFLAGS="${LDFLAGS} -stdlib=libc++ -lc++abi" \
+docs/progress/R29/commands/015_build_pcre.full.log:1:PWD=/home/toolchain/development/libc++_replacement/tmp
+docs/progress/R29/commands/015_build_pcre.full.log:2:COMMAND=gbs -c /home/toolchain/development/libc++_replacement/tmp/R29/gbs_r29.conf build -A x86_64 -B /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03 -C --debug --style git --include-all --no-patch-export --packaging-dir packaging --spec pcre.spec /home/toolchain/development/libc++_replacement/tmp/R29/work/pcre 
+docs/progress/R29/commands/015_build_pcre.full.log:8:gbs:debug: fetching http://127.0.0.1:18831/repodata/repomd.xml => /var/tmp/toolchain-gbs/gbscachelzs6rikx/repomd.xml
+docs/progress/R29/commands/015_build_pcre.full.log:10:gbs:debug: fetching http://127.0.0.1:18831/repodata/repomd.xml => /var/tmp/toolchain-gbs/gbscachelzs6rikx/repomd.xml
+docs/progress/R29/commands/015_build_pcre.full.log:11:gbs:debug: fetching http://127.0.0.1:18831/repodata/ddd66ddf1787dba053cea47c232424adf5cb200eb057842c8d196a79925c71cb-primary.xml.gz => /var/tmp/toolchain-gbs/gbscachelzs6rikx/ddd66ddf1787dba053cea47c232424adf5cb200eb057842c8d196a79925c71cb-primary.xml.gz
+docs/progress/R29/commands/015_build_pcre.full.log:12:gbs:debug: fetching http://127.0.0.1:18831/builddata/build.xml => /var/tmp/toolchain-gbs/gbscachelzs6rikx/build.xml
+docs/progress/R29/commands/015_build_pcre.full.log:14:gbs:debug: fetching https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/repodata/repomd.xml => /var/tmp/toolchain-gbs/gbscachelzs6rikx/repomd.xml
+docs/progress/R29/commands/015_build_pcre.full.log:16:gbs:debug: fetching https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/repodata/repomd.xml => /var/tmp/toolchain-gbs/gbscachelzs6rikx/repomd.xml
+docs/progress/R29/commands/015_build_pcre.full.log:17:gbs:debug: fetching https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/repodata/e085e0687888ac79563a680859a1ca3f13fa59edc1d976409eeb964db4d3a3e3-build.conf.gz => /var/tmp/toolchain-gbs/gbscachelzs6rikx/e085e0687888ac79563a680859a1ca3f13fa59edc1d976409eeb964db4d3a3e3-build.conf.gz
+docs/progress/R29/commands/015_build_pcre.full.log:18:gbs:debug: fetching https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/repodata/90a9a97f412b92d33f878ff3d0fcdddb8df7f56e1790dbabecda5a85f72fec2f-primary.xml.gz => /var/tmp/toolchain-gbs/gbscachelzs6rikx/90a9a97f412b92d33f878ff3d0fcdddb8df7f56e1790dbabecda5a85f72fec2f-primary.xml.gz
+docs/progress/R29/commands/015_build_pcre.full.log:19:gbs:debug: fetching https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/reference/repos/standard/packages/repodata/repomd.xml => /var/tmp/toolchain-gbs/gbscachelzs6rikx/repomd.xml
+docs/progress/R29/commands/015_build_pcre.full.log:21:gbs:debug: fetching https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/reference/repos/standard/packages/repodata/repomd.xml => /var/tmp/toolchain-gbs/gbscachelzs6rikx/repomd.xml
+docs/progress/R29/commands/015_build_pcre.full.log:22:gbs:debug: fetching https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/reference/repos/standard/packages/repodata/def4c5748b35c6a76566b8d1ceca6f07d5065e50aff97d0ce7d20471c2de001b-build.conf.gz => /var/tmp/toolchain-gbs/gbscachelzs6rikx/def4c5748b35c6a76566b8d1ceca6f07d5065e50aff97d0ce7d20471c2de001b-build.conf.gz
+docs/progress/R29/commands/015_build_pcre.full.log:23:gbs:debug: fetching https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/reference/repos/standard/packages/repodata/ab64060783f01065f5a1603d993e6414184372075595322270290238a8406a03-primary.xml.gz => /var/tmp/toolchain-gbs/gbscachelzs6rikx/ab64060783f01065f5a1603d993e6414184372075595322270290238a8406a03-primary.xml.gz
+docs/progress/R29/commands/015_build_pcre.full.log:24:gbs:debug: running command: depanneur --arch=x86_64 --clean --repository=http://127.0.0.1:18831/ --repository=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/ --repository=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/reference/repos/standard/packages/ --dist='r29' --configdir='/var/tmp/toolchain-gbs' --path='/home/toolchain/development/libc++_replacement/tmp/R29/work/pcre' --debug --style=git --threads=1 --packaging-dir=packaging --include-all --no-patch-export --spec=pcre.spec
+docs/progress/R29/commands/015_build_pcre.full.log:25:info: start building packages from: /home/toolchain/development/libc++_replacement/tmp/R29/work/pcre (git)
+docs/progress/R29/commands/015_build_pcre.full.log:30:debug: working on /home/toolchain/development/libc++_replacement/tmp/R29/work/pcre
+docs/progress/R29/commands/015_build_pcre.full.log:32:info: start export source from: /home/toolchain/development/libc++_replacement/tmp/R29/work/pcre ...
+docs/progress/R29/commands/015_build_pcre.full.log:33:debug: my_system: gbs --debug export '/home/toolchain/development/libc++_replacement/tmp/R29/work/pcre' -o '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/sources/r29/pcre-8.45-1.13' --outdir-directly --spec pcre.spec --include-all --packaging-dir=packaging --no-patch-export
+docs/progress/R29/commands/015_build_pcre.full.log:57:gbp:debug: ['git', 'add', '-A', '/home/toolchain/development/libc++_replacement/tmp/R29/work/pcre']
+docs/progress/R29/commands/015_build_pcre.full.log:69:gbp:debug: ['git', 'add', '-A', '/home/toolchain/development/libc++_replacement/tmp/R29/work/pcre']
+docs/progress/R29/commands/015_build_pcre.full.log:88:     /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/sources/r29/pcre-8.45-1.13
+docs/progress/R29/commands/015_build_pcre.full.log:90:debug: my_system: > '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.local
+docs/progress/R29/commands/015_build_pcre.full.log:91:debug: my_system: /usr/lib/build/createdirdeps '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/repos/r29/x86_64/RPMS' >> '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.local
+docs/progress/R29/commands/015_build_pcre.full.log:92:debug: my_system: echo D: >> '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.local
+docs/progress/R29/commands/015_build_pcre.full.log:93:debug: my_system: > '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.remote
+docs/progress/R29/commands/015_build_pcre.full.log:94:debug: /usr/lib/build/createrepomddeps --cachedir='/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache' 'http://127.0.0.1:18831/' >> '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.remote 
+docs/progress/R29/commands/015_build_pcre.full.log:95:debug: my_system: /usr/lib/build/createrepomddeps --cachedir='/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache' 'http://127.0.0.1:18831/' >> '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.remote 
+docs/progress/R29/commands/015_build_pcre.full.log:96:debug: my_system: echo D: >> '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.remote
+docs/progress/R29/commands/015_build_pcre.full.log:97:debug: /usr/lib/build/createrepomddeps --cachedir='/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache' 'https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/' >> '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.remote 
+docs/progress/R29/commands/015_build_pcre.full.log:98:debug: my_system: /usr/lib/build/createrepomddeps --cachedir='/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache' 'https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/' >> '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.remote 
+docs/progress/R29/commands/015_build_pcre.full.log:99:debug: my_system: echo D: >> '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.remote
+docs/progress/R29/commands/015_build_pcre.full.log:100:debug: /usr/lib/build/createrepomddeps --cachedir='/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache' 'https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/reference/repos/standard/packages/' >> '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.remote 
+docs/progress/R29/commands/015_build_pcre.full.log:101:debug: my_system: /usr/lib/build/createrepomddeps --cachedir='/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache' 'https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/reference/repos/standard/packages/' >> '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.remote 
+docs/progress/R29/commands/015_build_pcre.full.log:102:debug: my_system: echo D: >> '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.remote
+docs/progress/R29/commands/015_build_pcre.full.log:103:debug: my_system: cat '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.local '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache.remote >'/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/order'/.repo.cache
+docs/progress/R29/commands/015_build_pcre.full.log:116:debug: my_system: sudo /usr/bin/build --uid 1000:1000 --target x86_64 --jobs 40 --cachedir '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache' --dist '/var/tmp/toolchain-gbs'/r29.conf --arch 'x86_64:i686:i586:i486:i386:noarch' '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/sources/r29/pcre-8.45-1.13/pcre.spec' --repository '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/repos/r29/x86_64/RPMS' --repository http://127.0.0.1:18831/ --repository https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/ --repository https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/reference/repos/standard/packages/ --clean --debug --root '/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/BUILD-ROOTS/scratch.x86_64.0' 
+docs/progress/R29/commands/015_build_pcre.full.log:117:logging output to /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/BUILD-ROOTS/scratch.x86_64.0/.build.log...
+docs/progress/R29/commands/015_build_pcre.full.log:119:[    0s] Using BUILD_ROOT=/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/BUILD-ROOTS/scratch.x86_64.0
+docs/progress/R29/commands/015_build_pcre.full.log:123:[    0s] toolchain-2026 started "build pcre.spec" at Wed Aug 12 12:45:11 UTC 2026.
+docs/progress/R29/commands/015_build_pcre.full.log:126:[    0s] processing recipe /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/sources/r29/pcre-8.45-1.13/pcre.spec ...
+docs/progress/R29/commands/015_build_pcre.full.log:127:[    0s] init_buildsystem --configdir /usr/lib/build/configs --cachedir /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache --repository /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/repos/r29/x86_64/RPMS --repository http://127.0.0.1:18831/ --repository https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/ --repository https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/reference/repos/standard/packages/ --clean /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/sources/r29/pcre-8.45-1.13/pcre.spec ...
+docs/progress/R29/commands/015_build_pcre.full.log:128:[    0s] initializing /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/BUILD-ROOTS/scratch.x86_64.0/.srcfiles.cache ...
+docs/progress/R29/commands/015_build_pcre.full.log:129:[    0s] /usr/lib/build/createdirdeps --oldfile /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/BUILD-ROOTS/scratch.x86_64.0/.srcfiles.cache /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/repos/r29/x86_64/RPMS
+docs/progress/R29/commands/015_build_pcre.full.log:130:[    0s] /usr/lib/build/createrepomddeps --cachedir=/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache http://127.0.0.1:18831/
+docs/progress/R29/commands/015_build_pcre.full.log:131:[    0s] /usr/lib/build/createrepomddeps --cachedir=/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/
+docs/progress/R29/commands/015_build_pcre.full.log:132:[    1s] /usr/lib/build/createrepomddeps --cachedir=/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R29-pcre-x86_64-20260812-03/local/cache https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/reference/repos/standard/packages/
+docs/progress/R29/commands/015_build_pcre.full.log:138:[    4s] [1/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/app-rootstrap-checker-1.0.0-1.1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:139:[    5s] [2/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/noarch/autoconf-2.71-1.9.noarch.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:140:[    6s] [3/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/noarch/automake-1.16.5-1.8.noarch.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:141:[    8s] [4/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/bash-3.2.57-1.1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:142:[    9s] [5/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/binutils-2.43-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:143:[   11s] [6/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/binutils-libs-2.43-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:144:[   13s] [7/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/noarch/build-20120927-1.1.noarch.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:145:[   14s] [8/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/noarch/build-compare-2023.06.18-1.3.noarch.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:146:[   16s] [9/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/noarch/build-mkbaselibs-20120927-1.1.noarch.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:147:[   17s] [10/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/bzip2-1.0.8-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:148:[   18s] [11/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/clang-22.1.8-2.1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:149:[   22s] [12/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/coreutils-6.9-14.2.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:150:[   24s] [13/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/cpio-2.8-1.1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:151:[   25s] [14/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/cpp-14.2.0-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:152:[   28s] [15/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/diffutils-3.10-1.1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:153:[   30s] [16/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/elfutils-0.189-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:154:[   31s] [17/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/file-5.46-1.8.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:155:[   32s] [18/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/filesystem-3.1-1.1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:156:[   34s] [19/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/findutils-4.3.8-1.8.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:157:[   35s] [20/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/gawk-3.1.5-1.1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:158:[   36s] [21/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/gcc-14.2.0-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:159:[   42s] [22/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/gcc-c++-14.2.0-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:160:[   45s] [23/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/gdbm-1.8.3-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:161:[   46s] [24/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/glibc-2.40-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:162:[   48s] [25/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/glibc-devel-2.40-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:163:[   50s] [26/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/glibc-locale-2.40-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:164:[   52s] [27/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/grep-2.5.2-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:165:[   53s] [28/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/gzip-1.3.12-1.8.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:166:[   54s] [29/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/hal-rootstrap-checker-1.0.0-4.1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:167:[   55s] [30/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/hostname-3.23-1.1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:168:[   56s] [31/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/less-685-1.1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:169:[   58s] [32/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libacl-2.3.2-1.8.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:170:[   59s] [33/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libarchive-3.8.1-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:171:[   60s] [34/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libasm-0.189-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:172:[   61s] [35/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libatomic-14.2.0-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:173:[   62s] [36/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libattr-2.5.1-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:174:[   63s] [37/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libblkid-2.41.2-1.6.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:175:[   65s] [38/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libbz2-1.0.8-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:176:[   66s] [39/109] downloading http://127.0.0.1:18831/libc++-22.1.8-1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:177:[   66s] [40/109] downloading http://127.0.0.1:18831/libc++-devel-22.1.8-1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:178:[   66s] [41/109] downloading http://127.0.0.1:18831/libc++abi-22.1.8-1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:179:[   66s] [42/109] downloading http://127.0.0.1:18831/libc++abi-devel-22.1.8-1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:180:[   66s] [43/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libcap-2.73-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:181:[   67s] [44/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libcc1-14.2.0-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:182:[   69s] [45/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libdw-0.189-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:183:[   70s] [46/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libelf-0.189-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:184:[   71s] [47/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libfdisk-2.41.2-1.6.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:185:[   73s] [48/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libfreebl3-3.109-1.3.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:186:[   74s] [49/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libgcc-14.2.0-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:187:[   76s] [50/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libgfortran-14.2.0-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:188:[   78s] [51/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libgomp-14.2.0-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:189:[   79s] [52/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libitm-14.2.0-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:190:[   80s] [53/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/liblastlog2-2.41.2-1.6.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:191:[   81s] [54/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libllvm-22.1.8-2.1.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:192:[   85s] [55/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libltdl-2.5.4-1.7.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:193:[   86s] [56/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/liblua-5.1.5-1.8.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:194:[   87s] [57/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/liblzma-5.8.1-1.8.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:195:[   89s] [58/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libmagic-5.46-1.8.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:196:[   90s] [59/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libmagic-data-5.46-1.8.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:197:[   91s] [60/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libmount-2.41.2-1.6.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:198:[   93s] [61/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libncurses-6.6-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:199:[   94s] [62/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libncurses6-6.6-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:200:[   95s] [63/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libopenssl3-3.5.5-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:201:[   97s] [64/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libpcre-8.45-1.9.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:202:[   98s] [65/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libpopt-1.16-1.8.x86_64.rpm ... 
+docs/progress/R29/commands/015_build_pcre.full.log:203:[   99s] [66/109] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/libpython3_141_0-3.14.2-1.8.x86_64.rpm ... 
+== likely 45/13 inventory files ==
+docs/progress/R66/INDEX.tsv
+docs/progress/R66/REPORT.md
+docs/progress/R66/SOURCE_COMPAT.md
+docs/progress/R66/code/analyze_source_compat.py
+docs/progress/R66/code/classify_source_candidates.py
+docs/progress/R66/code/scan_source_compat.py
+docs/progress/R66/code/split_source_hits.py
+docs/progress/R66/commands/004_calibration_evidence_inventory.log
+docs/progress/R66/commands/014_fullscan_input_inventory.log
+docs/progress/R66/commands/025_vendor_inventory.log
+docs/progress/R66/commands/034_upstream_source_fetch.log
+docs/progress/R66/commands/037_source_compat_analysis.log
+docs/progress/R66/commands/038_source_candidate_ownership.log
+docs/progress/R66/commands/039_source_candidate_classification.log
+docs/progress/R66/commands/041_curate_source_scan.log
+docs/progress/R66/commands/042_source_precommit.log
+docs/progress/R66/commands/043_source_push.log
+docs/progress/R66/tables/calibration_defensive_candidates.tsv
+docs/progress/R66/tables/calibration_diagnostics.tsv
+docs/progress/R66/tables/calibration_input_sha256.tsv
+docs/progress/R66/tables/calibration_rtti.tsv
+docs/progress/R66/tables/calibration_summary.tsv
+docs/progress/R66/tables/cpp_provider_edges.tsv
+docs/progress/R66/tables/defensive_construct_summary.tsv
+docs/progress/R66/tables/known45_packages.sorted.txt
+docs/progress/R66/tables/known45_packages.txt
+docs/progress/R66/tables/libcxxabi_feature_hits.tsv
+docs/progress/R66/tables/libcxxabi_feature_summary.tsv
+docs/progress/R66/tables/risk_inventory.tsv
+docs/progress/R66/tables/runtime_discovery_methods.tsv
+docs/progress/R66/tables/source_compat_classified_hits.tsv
+docs/progress/R66/tables/source_compat_confirmed_packages.tsv
+docs/progress/R66/tables/source_compat_exact_missing_tokens.tsv
+docs/progress/R66/tables/source_compat_hits_bundled-or-vendor_01.tsv
+docs/progress/R66/tables/source_compat_hits_bundled-toolchain_01.tsv
+docs/progress/R66/tables/source_compat_hits_bundled-toolchain_02.tsv
+docs/progress/R66/tables/source_compat_hits_bundled-toolchain_03.tsv
+docs/progress/R66/tables/source_compat_hits_production-like_01.tsv
+docs/progress/R66/tables/source_compat_hits_test_01.tsv
+docs/progress/R66/tables/source_compat_new_packages.tsv
+docs/progress/R66/tables/source_compat_outside_known45_curated.tsv
+docs/progress/R66/tables/source_compat_production_package_names.txt
+docs/progress/R66/tables/source_compat_production_packages.tsv
+docs/progress/R66/tables/source_compat_summary.tsv
+docs/progress/R66/tables/source_compat_tokens.tsv
+docs/progress/R66/tables/source_compat_union_summary.tsv
+docs/progress/R66/tables/stdlib_feature_hits.tsv
+docs/progress/R66/tables/stdlib_feature_summary.tsv
+docs/progress/R66/tables/upstream_behavior_inventory.tsv
+docs/progress/R66/tables/vendor_rebuildability.tsv
+docs/progress/R66/tables/x86_64_abi_only.tsv
+docs/progress/R66/tables/x86_64_abi_summary.tsv
+docs/progress/R66/tables/x86_64_abi_version_nodes.tsv
+docs/progress/R67/REPORT.md
+docs/progress/R67/code/INDEX.tsv
+docs/progress/R67/code/commands/001_resource_gate.command.txt
+docs/progress/R67/code/commands/001_resource_gate.exit.txt
+docs/progress/R67/code/commands/002_preflight_inventory.command.txt
+docs/progress/R67/code/commands/002_preflight_inventory.exit.txt
+docs/progress/R67/code/commands/004_targeted_inventory.command.txt
+docs/progress/R67/code/commands/004_targeted_inventory.exit.txt
+docs/progress/R67/code/commands/034_local_payload_inventory.command.txt
+docs/progress/R67/code/commands/034_local_payload_inventory.exit.txt
+docs/progress/R67/code/commands/065_source_and_patch_inventory.command.txt
+docs/progress/R67/code/commands/065_source_and_patch_inventory.exit.txt
+docs/progress/R67/code/raw/001_resource_gate.stderr.txt
+docs/progress/R67/code/raw/001_resource_gate.stdout.txt
+docs/progress/R67/code/raw/002_preflight_inventory.stderr.txt
+docs/progress/R67/code/raw/002_preflight_inventory.stdout.txt
+docs/progress/R67/code/raw/004_targeted_inventory.stderr.txt
+docs/progress/R67/code/raw/004_targeted_inventory.stdout.txt
+docs/progress/R67/code/raw/065_source_and_patch_inventory.output.txt
+docs/progress/R67/code/raw/armv7l/040b_board_matrix.tsv
+docs/progress/R67/code/raw/armv7l/061_board_matrix_final.tsv
+docs/progress/R67/code/raw/armv7l/matrix/facility/baseline_packaged_task.log
+docs/progress/R67/code/raw/armv7l/matrix/facility/fixed_packaged_task.log
+docs/progress/R67/code/raw/armv7l/matrix/facility/reference_packaged_task.log
+docs/progress/R67/code/raw/armv7l/matrix/normal/baseline_packaged_exception.log
+docs/progress/R67/code/raw/armv7l/matrix/normal/baseline_packaged_normal.log
+docs/progress/R67/code/raw/armv7l/matrix/normal/fixed_packaged_exception.log
+docs/progress/R67/code/raw/armv7l/matrix/normal/fixed_packaged_normal.log
+docs/progress/R67/code/raw/armv7l/matrix/normal/reference_packaged_exception.log
+docs/progress/R67/code/raw/armv7l/matrix/normal/reference_packaged_normal.log
+docs/progress/R67/code/raw/board/034_local_payload_inventory.output.txt
+docs/progress/R67/code/raw/build-probes-armv7l/async_reference_return_fixed_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/async_reference_return_reference_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/concurrency_fixed_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/concurrency_reference_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/facility_baseline_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/facility_fixed_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/facility_reference_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/m2_lock_fixed_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/m2_lock_reference_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/normal_baseline_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/normal_fixed_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/normal_reference_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/r61_fixed_link.log
+docs/progress/R67/code/raw/build-probes-armv7l/r61_reference_link.log
+docs/progress/R67/code/raw/monitor-armv7l-final/resource_samples.log
+docs/progress/R67/code/raw/monitor-armv7l/resource_samples.log
+docs/progress/R67/code/raw/monitor-x86_64-final/resource_samples.log
+docs/progress/R67/code/raw/monitor-x86_64/resource_samples.log
+docs/progress/R67/code/raw/upstream-build-armv7l/abi_forced_unwind1_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/abi_forced_unwind2_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/abi_forced_unwind3_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/abi_forced_unwind4_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/abi_unwind_01_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/abi_unwind_02_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/abi_unwind_03_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/abi_unwind_04_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/abi_unwind_05_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/abi_unwind_06_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/libcxx_future_async_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/libcxx_future_async_race_38682_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/libcxx_future_async_race_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/libcxx_future_get_future_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/libcxx_future_task_operator_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/libcxx_future_thread_create_failure_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/libcxx_future_wait_on_destruct_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/libcxx_istream_getline_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/libcxx_istream_read_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/libcxx_istream_ws_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/libcxx_string_shrink_to_fit_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/reference_forced_unwind1_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/reference_forced_unwind2_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/reference_forced_unwind3_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/reference_forced_unwind4_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/reference_unwind_01_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/reference_unwind_02_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/reference_unwind_03_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/reference_unwind_04_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/reference_unwind_05_link.log
+docs/progress/R67/code/raw/upstream-build-armv7l/reference_unwind_06_link.log
+docs/progress/R67/code/raw/x86_64/056_x86_matrix_final.tsv
+docs/progress/R67/code/raw/x86_64/057_upstream_x86_final.tsv
+docs/progress/R67/code/raw/x86_64/057b_upstream_x86_final.tsv
+docs/progress/R67/code/raw/x86_64/matrix/facility_baseline_packaged_task.log
+docs/progress/R67/code/raw/x86_64/matrix/facility_fixed_packaged_task.log
+docs/progress/R67/code/raw/x86_64/matrix/facility_reference_packaged_task.log
+docs/progress/R67/code/raw/x86_64/matrix/normal_baseline_packaged_exception.log
+docs/progress/R67/code/raw/x86_64/matrix/normal_baseline_packaged_normal.log
+docs/progress/R67/code/raw/x86_64/matrix/normal_fixed_packaged_exception.log
+docs/progress/R67/code/raw/x86_64/matrix/normal_fixed_packaged_normal.log
+docs/progress/R67/code/raw/x86_64/matrix/normal_reference_packaged_exception.log
+docs/progress/R67/code/raw/x86_64/matrix/normal_reference_packaged_normal.log
+docs/progress/R67/code/tables/all_matrix_cells.tsv
+docs/progress/R67/code/tables/directed_facility_regression.tsv
+docs/progress/R67/code/tables/group_exit_counts.tsv
+docs/progress/R67/code/tables/patch_sha256.tsv
+docs/progress/R67/code/tables/repeated_counts.tsv
+docs/progress/R67/code/tables/upstream_results.tsv
+docs/progress/R67/code/test-sources/custom/async_probe.cpp
+docs/progress/R67/code/test-sources/custom/concurrency_probe.cpp
+docs/progress/R67/code/test-sources/custom/facility_probe.cpp
+docs/progress/R67/code/test-sources/custom/m1_async_reference_compile.cpp
+docs/progress/R67/code/test-sources/custom/m1_concurrency_probe.cpp
+docs/progress/R67/code/test-sources/custom/m2_lock_outside_probe.cpp
+docs/progress/R67/code/test-sources/custom/normal_paths_probe.cpp
+docs/progress/R67/code/test-sources/custom/r61_probe.cpp
+docs/progress/R67/code/test-sources/custom/s1_rethrow_probe.cpp
+docs/progress/R67/code/test-sources/upstream/libcxx/libcxx_test_std_input.output_iostream.format_input.streams_istream.manip_ws.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxx/libcxx_test_std_input.output_iostream.format_input.streams_istream.unformatted_getline_pointer_size.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxx/libcxx_test_std_input.output_iostream.format_input.streams_istream.unformatted_read.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxx/libcxx_test_std_strings_basic.string_string.capacity_shrink_to_fit.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxx/libcxx_test_std_thread_futures_futures.async_async.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxx/libcxx_test_std_thread_futures_futures.async_async_race.38682.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxx/libcxx_test_std_thread_futures_futures.async_async_race.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxx/libcxx_test_std_thread_futures_futures.async_thread_create_failure.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxx/libcxx_test_std_thread_futures_futures.async_wait_on_destruct.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxx/libcxx_test_std_thread_futures_futures.task_futures.task.members_get_future.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxx/libcxx_test_std_thread_futures_futures.task_futures.task.members_operator.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxxabi/forced_unwind1.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxxabi/forced_unwind2.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxxabi/forced_unwind3.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxxabi/forced_unwind4.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxxabi/unwind_01.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxxabi/unwind_02.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxxabi/unwind_03.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxxabi/unwind_04.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxxabi/unwind_05.pass.cpp
+docs/progress/R67/code/test-sources/upstream/libcxxabi/unwind_06.pass.cpp
+docs/progress/R74/INDEX.tsv
+docs/progress/R74/REPORT.md
+docs/progress/R74/code/commands/001_resource_gate.log
+docs/progress/R74/code/commands/008_locate_report.log
+docs/progress/R74/code/commands/015_resource_gate_resume.log
+docs/progress/R74/code/commands/016_latest_report_checks_after_fix.log
+docs/progress/R74/code/commands/086_external_link_fetch.log
+docs/progress/R74/code/commands/089_external_link_fetch_retry.log
+docs/progress/R74/code/commands/092_external_link_fetch_exact.log
+docs/progress/R74/code/extracted/INDEX.tsv
+docs/progress/R74/code/tools/__pycache__/extract_report_code.cpython-310.pyc
+docs/progress/R74/code/tools/extract_report_code.py
+docs/progress/R74/code/tools/fetch_external_links.sh
+docs/progress/R74/commands/001_resource_gate.log
+docs/progress/R74/commands/008_locate_report.log
+docs/progress/R74/commands/015_resource_gate_resume.log
+docs/progress/R74/commands/016_latest_report_checks_after_fix.log
+docs/progress/R74/commands/086_external_link_fetch.log
+docs/progress/R74/commands/089_external_link_fetch_retry.log
+docs/progress/R74/commands/092_external_link_fetch_exact.log
+docs/progress/R74/extracted/INDEX.tsv
+docs/progress/R74/raw/001_resource_gate.stderr
+docs/progress/R74/raw/001_resource_gate.stdout
+docs/progress/R74/raw/004_report_sha256.txt
+docs/progress/R74/raw/009_candidate_report_sha256.txt
+docs/progress/R74/raw/010_candidate_report_size.txt
+docs/progress/R74/raw/011_candidate_report_header.txt
+docs/progress/R74/raw/012_latest_report_checks.txt
+docs/progress/R74/raw/015_resource_gate_resume.stderr
+docs/progress/R74/raw/015_resource_gate_resume.stdout
+docs/progress/R74/raw/016_latest_report_checks_after_fix.txt
+docs/progress/R74/raw/062_report_code_references.txt
+docs/progress/R74/raw/063_source_reference_actual.txt
+docs/progress/R74/raw/064_source_reference_sha256.txt
+docs/progress/R74/raw/065_report_quote_p1.txt
+docs/progress/R74/raw/066_report_quote_p2.txt
+docs/progress/R74/raw/067_report_quote_p3.txt
+docs/progress/R74/raw/068_report_quote_solution.txt
+docs/progress/R74/raw/082_r66_report_excerpt.txt
+docs/progress/R74/raw/083_r66_risk_inventory_count.txt
+docs/progress/R74/raw/085_external_link_contexts.txt
+docs/progress/R74/raw/087_report_full_numbered.txt
+docs/progress/R74/raw/087_report_full_numbered_source.tmp
+docs/progress/R74/raw/089_external_link_fetch_retry.stderr
+docs/progress/R74/raw/089_external_link_fetch_retry.stdout
+docs/progress/R74/raw/090_report_numeric_contexts.txt
+docs/progress/R74/raw/092_external_link_fetch_exact.stderr
+docs/progress/R74/raw/092_external_link_fetch_exact.stdout
+docs/progress/R74/raw/097_file_sizes.tsv
+docs/progress/R74/raw/100_report_sha256_post_delivery.txt
+docs/progress/R74/raw/103_all_scripts_bash_n.tsv
+docs/progress/R74/raw/arm_build/matrix.tsv
+docs/progress/R74/raw/arm_build/problem1.libcxx.link.log
+docs/progress/R74/raw/arm_build/problem1.libstdcxx.link.log
+docs/progress/R74/raw/arm_build/problem2.libcxx.link.log
+docs/progress/R74/raw/arm_build/problem2.libstdcxx.link.log
+docs/progress/R74/raw/arm_build/problem3.libcxx.link.log
+docs/progress/R74/raw/arm_build/problem3.libstdcxx.link.log
+docs/progress/R74/raw/arm_runs/010_symlinks.log
+docs/progress/R74/raw/arm_runs/run_matrix.tsv
+docs/progress/R74/raw/external_links/INDEX.tsv
+docs/progress/R74/raw/external_links/INDEX_RETRY.tsv
+docs/progress/R74/raw/external_links/android_bionic_status.retry.body
+docs/progress/R74/raw/external_links/android_bionic_status.retry.command.txt
+docs/progress/R74/raw/external_links/android_bionic_status.retry.headers
+docs/progress/R74/raw/external_links/android_bionic_status.retry.stderr
+docs/progress/R74/raw/external_links/chromium_thread.retry.body
+docs/progress/R74/raw/external_links/chromium_thread.retry.command.txt
+docs/progress/R74/raw/external_links/chromium_thread.retry.headers
+docs/progress/R74/raw/external_links/chromium_thread.retry.stderr
+docs/progress/R74/raw/external_links/gcc_commit.retry.body
+docs/progress/R74/raw/external_links/gcc_commit.retry.command.txt
+docs/progress/R74/raw/external_links/gcc_commit.retry.headers
+docs/progress/R74/raw/external_links/gcc_commit.retry.stderr
+docs/progress/R74/raw/external_links/gcc_discussion.headers
+docs/progress/R74/raw/external_links/gcc_discussion.retry.body
+docs/progress/R74/raw/external_links/gcc_discussion.retry.command.txt
+docs/progress/R74/raw/external_links/gcc_discussion.retry.headers
+docs/progress/R74/raw/external_links/gcc_discussion.retry.stderr
+docs/progress/R74/raw/external_links/gcc_discussion.stderr
+docs/progress/R74/raw/external_links/libcxx_noexcept.body
+docs/progress/R74/raw/external_links/libcxx_noexcept.headers
+docs/progress/R74/raw/external_links/libcxx_noexcept.retry.body
+docs/progress/R74/raw/external_links/libcxx_noexcept.retry.command.txt
+docs/progress/R74/raw/external_links/libcxx_noexcept.retry.headers
+docs/progress/R74/raw/external_links/libcxx_noexcept.retry.stderr
+docs/progress/R74/raw/external_links/libcxx_noexcept.stderr
+docs/progress/R74/raw/external_links_exact/INDEX_RETRY.tsv
+docs/progress/R74/raw/external_links_exact/android_bionic_status.retry.body
+docs/progress/R74/raw/external_links_exact/android_bionic_status.retry.command.txt
+docs/progress/R74/raw/external_links_exact/android_bionic_status.retry.headers
+docs/progress/R74/raw/external_links_exact/android_bionic_status.retry.stderr
+docs/progress/R74/raw/external_links_exact/chromium_thread.retry.body
+docs/progress/R74/raw/external_links_exact/chromium_thread.retry.command.txt
+docs/progress/R74/raw/external_links_exact/chromium_thread.retry.headers
+docs/progress/R74/raw/external_links_exact/chromium_thread.retry.stderr
+docs/progress/R74/raw/external_links_exact/gcc_commit.retry.body
+docs/progress/R74/raw/external_links_exact/gcc_commit.retry.command.txt
+docs/progress/R74/raw/external_links_exact/gcc_commit.retry.headers
+docs/progress/R74/raw/external_links_exact/gcc_commit.retry.stderr
+docs/progress/R74/raw/external_links_exact/gcc_discussion.retry.body
+docs/progress/R74/raw/external_links_exact/gcc_discussion.retry.command.txt
+docs/progress/R74/raw/external_links_exact/gcc_discussion.retry.headers
+docs/progress/R74/raw/external_links_exact/gcc_discussion.retry.stderr
+docs/progress/R74/raw/external_links_exact/libcxx_noexcept.retry.body
+docs/progress/R74/raw/external_links_exact/libcxx_noexcept.retry.command.txt
+docs/progress/R74/raw/external_links_exact/libcxx_noexcept.retry.headers
+docs/progress/R74/raw/external_links_exact/libcxx_noexcept.retry.stderr
+docs/progress/R74/raw/raw_compile/matrix.tsv
+docs/progress/R74/raw/x86_runs/compile_matrix.tsv
+docs/progress/R74/raw/x86_runs/run_matrix.tsv
+docs/progress/R74/raw/x86_runs_wrong_runtime/compile_matrix.tsv
+docs/progress/R74/raw/x86_runs_wrong_runtime/run_matrix.tsv
+docs/progress/R74/tables/code_block_results.tsv
+docs/progress/R74/tables/external_link_results.tsv
+docs/progress/R74/tables/numeric_results.tsv
+docs/progress/R74/tables/reproduction_results.tsv
+docs/progress/R74/tables/source_quote_results.tsv
+docs/progress/R74/tools/__pycache__/extract_report_code.cpython-310.pyc
+docs/progress/R74/tools/extract_report_code.py
+docs/progress/R74/tools/fetch_external_links.sh
+== references to 45 and 13 ==
+docs/progress/R74/REPORT.md:5:核对时 SHA256：`b51a80c218bf2ad450d9aabab0cb015c3edc8a84ef0eacebc33b1afcd838d87a`
+docs/progress/R74/REPORT.md:47:任务指定数字中只有一项与工作区原始材料不一致：报告写“10 个源码包 / 8 个包名 / 45 处独立站点”，R32 的实际结果是 **10 / 8 / 50**，并明确说明“不重算 R1 的 45”。其余指定数字均能由既有材料支撑。逐项结果和来源见 `tables/numeric_results.tsv`。
+docs/progress/R74/REPORT.md:59:5. **较高：影响面站点数把 R1 的 45 与 R32 的 50 混用。** 10 包/8 包名这一口径对应 R32 时应写 50。
+docs/progress/R67/REPORT.md:99:| 2 | `0002-Layer-B-add-GNU-forced-unwind-marker.patch` | `b718648618b7e7617421dc95d70cc6cc9b03bd72a419d907b63fd16d465c4509` |
+docs/progress/R67/REPORT.md:101:| 4 | `0004-Layer-C-library-batch-30-sites.patch` | `9b6832724559f5ce20660803b83a93aab2c0fcf890fb15e2a88214ae667d3db7` |
+docs/progress/R67/REPORT.md:120:| armv7l | `7c62ffed71d33f80ee03dd37c14e2c8e057412e2f14bc0a60dadb9f160fc6824` | `1f58fafb1598945ed0f5966178af64f5905e7ee1c5b6dba8a2c93b27fa098666` | 成功 |
+docs/progress/R67/REPORT.md:122:最终构建日志有 x86_64 36 行、armv7l 72 行既有驱动选项 warning（`--rtlib=libgcc`，ARM 另含 `--ld-path`）；无 error，无指向 9 个被改源码文件的 warning。四个运行库中没有 `R40/R41/R42/R45` 诊断字符串。
+docs/progress/R66/REPORT.md:14:排除，也未被现有 45 包源码分类完全覆盖。逐项素材见
+docs/progress/R66/REPORT.md:58:完整结果见 [SOURCE_COMPAT.md](SOURCE_COMPAT.md)。全量扫描产生 53,452
+docs/progress/R66/REPORT.md:59:条命中；生产形态家族并集为 89/371 个包身份，其中 39 个属于既有 45、
+docs/progress/R66/REPORT.md:60:50 个在其外。所有权和条件分支复核后，既有 45 外保留 **13 个源码 RPM
+docs/progress/R66/REPORT.md:61:身份的硬编码 `-lstdc++` 构建引用**；没有把其余 feature probe、兼容分派、
+docs/progress/R66/REPORT.md:62:`cxxabi.h` 可用 API 或路径前缀碰撞写成缺陷。13 个包是否在当前生产配置
+docs/progress/R66/REPORT.md:63:走到该引用均为 `NOT_OBSERVED`，所以它是新增构建配置引用面，不是 13 个
+docs/progress/R66/REPORT.md:67:`BUNDLED_TOOLCHAIN`。既有 45 中 39 个进入生产 scope，两个 GCC 身份在
+docs/progress/R66/REPORT.md:93:gtest 的 153/1450 是 R23 BuildRequires 源码实例口径，125 是 R22 真正
+docs/progress/R74/tables/numeric_results.tsv:2:10 个源码包 / 8 个包名 / 45 处	R32 为 10 / 8 / 50；R32 明示“不重算 R1 的 45”	MISMATCH:站点数应为 50，不是 45
+docs/progress/R74/tables/code_block_results.tsv:2:01	问题一	说明性片段	41-45	FAIL	FAIL	NONE	NOT_RUN	非完整翻译单元，不能独立编译；不是复现用例
+docs/progress/R74/code/extracted/blocks.json:8:    "report_end_line": 45,
+docs/progress/R74/code/extracted/blocks.json:21:    "bytes": 445,
+docs/progress/R74/code/extracted/blocks.json:44:    "sha256": "c54201190874945fab9717f857f11082b91ca6aa4f2fc0447db573ce9f43f4fc"
+docs/progress/R74/code/extracted/blocks.json:55:    "sha256": "e3ec0096996806961f696cd5ce53890c5211445961b4e267acb7e209e46cb6c3"
+docs/progress/R74/code/extracted/blocks.json:66:    "sha256": "08238e2666ea5b645d06cda6a1e7cf6953fc48ef0b2308944f51713beea33631"
+docs/progress/R74/code/extracted/INDEX.tsv:2:1	问题一	问题是什么	41	45	progress/R74/extracted/01_unlabelled_unlabelled.cpp	115	095de9b7c58f7a20ac919f68a16ea0c48f77b7f491de2787a817e1d02061fb6f
+docs/progress/R74/code/extracted/INDEX.tsv:3:2	问题一	两套标准库为何不同	71	84	progress/R74/extracted/02_unlabelled_unlabelled.cpp	445	9004d8497be9a5a24a47c9599e263c448ec50135134b7fb8c8113ed6da1d776e
+docs/progress/R74/code/extracted/INDEX.tsv:5:4	问题一	复现步骤	108	153	progress/R74/extracted/04_unlabelled_unlabelled.cpp	1367	c54201190874945fab9717f857f11082b91ca6aa4f2fc0447db573ce9f43f4fc
+docs/progress/R74/code/extracted/INDEX.tsv:6:5	问题二	问题是什么	228	234	progress/R74/extracted/05_unlabelled_unlabelled.cpp	162	e3ec0096996806961f696cd5ce53890c5211445961b4e267acb7e209e46cb6c3
+docs/progress/R74/code/extracted/INDEX.tsv:7:6	问题二	复现步骤	246	261	progress/R74/extracted/06_unlabelled_unlabelled.cpp	437	08238e2666ea5b645d06cda6a1e7cf6953fc48ef0b2308944f51713beea33631
+docs/progress/R66/SOURCE_COMPAT.md:6:RPM 身份。`code/scan_source_compat.py` 一次扫描完整语料，输出 53,452 条
+docs/progress/R66/SOURCE_COMPAT.md:7:命中（加表头 53,453 行），wrapper 退出码 0，完整原始表 SHA256 为
+docs/progress/R66/SOURCE_COMPAT.md:21:| 家族 | 包身份数 | 位置数 | 既有 45 外包身份数 |
+docs/progress/R66/SOURCE_COMPAT.md:27:| `_GLIBCXX_*` 配置宏 | 45 | 705 | 24 |
+docs/progress/R66/SOURCE_COMPAT.md:31:各家族去重后的并集为 89/371 个包身份，其中 39 个属于既有 45、50 个在
+docs/progress/R66/SOURCE_COMPAT.md:48:- GNU namespace、ABI namespace、保留 `std` 成员和硬编码
+docs/progress/R66/SOURCE_COMPAT.md:51:复核发现已知 45 外有 **13 个源码 RPM 身份**包含可确认的硬编码
+docs/progress/R66/SOURCE_COMPAT.md:53:`tables/source_compat_outside_known45_curated.tsv`。它们是“源码树中存在
+docs/progress/R66/SOURCE_COMPAT.md:55:是否已被上层 flags 覆盖均为 `NOT_OBSERVED`，因此不把 13 写成 13 个构建
+docs/progress/R66/SOURCE_COMPAT.md:66:其余既有 45 外候选主要是兼容性分派、编译器 feature probe、由 libc++abi
+docs/progress/R66/SOURCE_COMPAT.md:70:## 与既有 45 的对照
+docs/progress/R66/SOURCE_COMPAT.md:72:生产形态并集命中既有 45 中 39 个。未进该 scope 的六个身份是：
+docs/progress/R66/SOURCE_COMPAT.md:80:因此本轮方法不是既有 45 的替代分类器。T1 的范围还包括补丁、压缩 payload
+docs/progress/R66/SOURCE_COMPAT.md:82:“需改源码”口径与“任何实现相关构建引用”口径并不相同。
+docs/progress/R66/SOURCE_COMPAT.md:91:- 没有构建 13 个新增引用包，实际失败结果 `NOT_OBSERVED`；
+docs/progress/R66/SOURCE_COMPAT.md:100:`commands/024` 的退出码 0、终态 SHA256 和 `commands/041` 的 53,452 行
+docs/progress/R67/code/raw/002_preflight_inventory.stdout.txt:11:      1 root      20   0   23912  11876   7324 S   0.0   0.0   0:45.53 systemd
+docs/progress/R67/code/raw/002_preflight_inventory.stdout.txt:67:docs/progress/R52/commands/045_selected_upstream_tests_summary.log
+docs/progress/R67/code/raw/002_preflight_inventory.stdout.txt:579:docs/progress/R51/commands/002_baseline_r42_r45_diffs.log
+docs/progress/R67/code/raw/002_preflight_inventory.stdout.txt:1145:progress/R52/commands/045_selected_upstream_tests_summary.log
+docs/progress/R67/code/raw/002_preflight_inventory.stdout.txt:2043:progress/R51/commands/002_baseline_r42_r45_diffs.log
+docs/progress/R66/code/analyze_source_compat.py:38:            item = packages.setdefault(package, {"known": row["known45"], "hits": 0, "families": set(), "missing": set()})
+docs/progress/R66/code/analyze_source_compat.py:60:        ("source_rpm", "known45", "hit_count", "family_count", "families", "exact_missing_token_count", "exact_missing_tokens"),
+docs/progress/R66/code/analyze_source_compat.py:90:        ("denominator", "production_candidate_packages", "known45_candidate_packages", "outside_known45_candidate_packages", "exact_missing_tokens"),
+docs/progress/R74/raw/090_report_numeric_contexts.txt:9:187:| 已写有识别子句的包 | **10 个源码包**（去重后 8 个包名） | 45 处独立站点 |
+docs/progress/R74/raw/090_report_numeric_contexts.txt:16:194:原因有两点。一是这属于那些包自身的写法问题，与用哪套标准库无关；如果我们单方面为它们兜底，同一份代码在两套标准库下的行为就不一样了，反而给这些包的开发者制造困惑。二是真要处理，只能逐包修改源码，而我们逐处检查过 45 处已有识别子句的站点，**没有一处能确认改动之后还能保持原来的行为**——第二类的 3,364 处只会更难。
+docs/progress/R74/raw/090_report_numeric_contexts.txt:48:454----
+docs/progress/R74/raw/090_report_numeric_contexts.txt:49:455-
+docs/progress/R74/raw/090_report_numeric_contexts.txt:50:456:## 问题四：libstdc++ 有防护但 libc++ 没有对应位置的 8 处
+docs/progress/R74/raw/090_report_numeric_contexts.txt:51:457-
+docs/progress/R74/raw/090_report_numeric_contexts.txt:52:458:在比对两套库的防护位置时，有 8 处在 libc++ 中找不到对应的地方。逐处说明如下：
+docs/progress/R74/raw/090_report_numeric_contexts.txt:53:459-
+docs/progress/R74/raw/090_report_numeric_contexts.txt:94:649:| D-25 | 源码树中硬编码了链接 libstdc++ 的选项 —— 已确认在既有的 45 个需改源码的包之外，**另有 13 个源码 RPM 存在此情况**（其在生产构建中是否会被触发，尚未确认） |
+docs/progress/R74/raw/056_arm_driver_ps.txt:39:     45       2  321960 S    [cpuhp/5]
+docs/progress/R74/raw/056_arm_driver_ps.txt:123:    145       2  321960 I<   [kworker/R-writeback]
+docs/progress/R74/raw/056_arm_driver_ps.txt:171:    345       2  321959 I<   [kworker/16:1H-kblockd]
+docs/progress/R74/raw/056_arm_driver_ps.txt:237:   2279       1  321945 Ss   /usr/lib/systemd/systemd --user
+docs/progress/R74/raw/056_arm_driver_ps.txt:238:   2283    2279  321945 S    (sd-pam)
+docs/progress/R74/raw/056_arm_driver_ps.txt:250:   2457    2418  321933 Sl+  /usr/libexec/gnome-session-binary --session=ubuntu
+docs/progress/R74/raw/056_arm_driver_ps.txt:281:   2845    2567  321921 Sl   /usr/libexec/evolution-data-server/evolution-alarm-notify
+docs/progress/R74/raw/056_arm_driver_ps.txt:319:   3784    3672  321895 Sl   /opt/google/chrome/chrome --type=renderer --top-chrome-webui --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=65505776 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,17468955177850569099,400348648471677720,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190708990997080739
+docs/progress/R74/raw/056_arm_driver_ps.txt:323:   4227    2279  321886 Sl   /snap/code/258/usr/share/code/chrome_crashpad_handler --monitor-self-annotation=ptype=crashpad-handler --no-rate-limit --database=/home/toolchain/.config/Code/Crashpad --url=appcenter://code?aid=fba07a4d-84bd-4fc8-a125-9640fc8ce171&uid=bad08b81-ae7f-458f-a04e-deaeaa3cb706&iid=bad08b81-ae7f-458f-a04e-deaeaa3cb706&sid=bad08b81-ae7f-458f-a04e-deaeaa3cb706 --annotation=_companyName=Microsoft --annotation=_productName=VSCode --annotation=_version=1.134.0 --annotation=lsb-release=Ubuntu 24.04.4 LTS --annotation=plat=Linux --annotation=prod=Electron --annotation=ver=42.8.1 --initial-client-fd=49 --shared-client-connection
+docs/progress/R74/raw/056_arm_driver_ps.txt:324:   4361    4126  321883 Sl   /snap/code/258/usr/share/code/code --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190708989122997041
+docs/progress/R74/raw/056_arm_driver_ps.txt:325:   4426    4126  321883 Sl   /snap/code/258/usr/share/code/code --type=gpu-process --disable-gpu-sandbox --no-sandbox --ozone-platform=x11 --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --gpu-preferences=UAAAAAAAAAAgAQAEAAAAAAAAAAAAAGAAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAYAAAAAAAAABgAAAAAAAAAAQAAAAAAAAAIAAAAAAAAAAgAAAAAAAAA --use-gl=disabled --shared-files --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190708990060038890
+docs/progress/R74/raw/056_arm_driver_ps.txt:326:   4513    4129  321880 Sl   /snap/code/258/usr/share/code/code --type=renderer --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --app-path=/snap/code/258/usr/share/code/resources/app --enable-sandbox --enable-blink-features=HighlightAPI --no-sandbox --max-active-webgl-contexts=32 --ozone-platform=x11 --disable-gpu-compositing --disable-blink-features=FontMatchingCTMigration,StandardizedBrowserZoom, --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --time-ticks-at-unix-epoch=-1787559545955646 --launch-time-ticks=79790461 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190708990997080739 --vscode-window-config=vscode:76acfc5d-e9a1-46e7-b52d-fffd6137d26b
+docs/progress/R74/raw/056_arm_driver_ps.txt:327:   4521    4129  321880 Sl   /snap/code/258/usr/share/code/code --type=renderer --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --app-path=/snap/code/258/usr/share/code/resources/app --enable-sandbox --enable-blink-features=HighlightAPI --no-sandbox --max-active-webgl-contexts=32 --ozone-platform=x11 --disable-gpu-compositing --disable-blink-features=FontMatchingCTMigration,StandardizedBrowserZoom, --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=6 --time-ticks-at-unix-epoch=-1787559545955646 --launch-time-ticks=79817690 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190708991934122588 --vscode-window-config=vscode:7bbb43e5-2fc7-478e-8f6c-7bb74dd0a8e6
+docs/progress/R74/raw/056_arm_driver_ps.txt:328:   4529    4129  321880 Sl   /snap/code/258/usr/share/code/code --type=renderer --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --app-path=/snap/code/258/usr/share/code/resources/app --enable-sandbox --enable-blink-features=HighlightAPI --no-sandbox --max-active-webgl-contexts=32 --ozone-platform=x11 --disable-gpu-compositing --disable-blink-features=FontMatchingCTMigration,StandardizedBrowserZoom, --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=7 --time-ticks-at-unix-epoch=-1787559545955646 --launch-time-ticks=79845742 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190708992871164437 --vscode-window-config=vscode:5d8d1ccb-6867-441d-8055-9d1a1d520625
+docs/progress/R74/raw/056_arm_driver_ps.txt:329:   4537    4129  321880 Sl   /snap/code/258/usr/share/code/code --type=renderer --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --app-path=/snap/code/258/usr/share/code/resources/app --enable-sandbox --enable-blink-features=HighlightAPI --no-sandbox --max-active-webgl-contexts=32 --ozone-platform=x11 --disable-gpu-compositing --disable-blink-features=FontMatchingCTMigration,StandardizedBrowserZoom, --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=8 --time-ticks-at-unix-epoch=-1787559545955646 --launch-time-ticks=79870474 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190708993808206286 --vscode-window-config=vscode:a544b17d-29cc-4824-a51a-a5ac3c1083d7
+docs/progress/R74/raw/056_arm_driver_ps.txt:331:   4792    3672  321875 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=11 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=85439991 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,8779848660404947141,16996778411647479320,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190708996619331833
+docs/progress/R74/raw/056_arm_driver_ps.txt:332:   4910    4126  321872 Sl   /snap/code/258/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US --service-sandbox-type=none --no-sandbox --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190708994745248135
+docs/progress/R74/raw/056_arm_driver_ps.txt:333:   4911    4126  321872 Sl   /snap/code/258/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US --service-sandbox-type=none --no-sandbox --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190708995682289984
+docs/progress/R74/raw/056_arm_driver_ps.txt:334:   4913    4126  321872 Sl   /snap/code/258/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US --service-sandbox-type=none --no-sandbox --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190708997556373682
+docs/progress/R74/raw/056_arm_driver_ps.txt:335:   5013    4126  321872 Sl   /snap/code/258/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US --service-sandbox-type=none --no-sandbox --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190708999430457380
+docs/progress/R74/raw/056_arm_driver_ps.txt:337:   5263    4126  321871 Sl   /snap/code/258/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US --service-sandbox-type=none --no-sandbox --dns-result-order=ipv4first --experimental-network-inspection --inspect-port=0 --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190709002241582927
+docs/progress/R74/raw/056_arm_driver_ps.txt:338:   5325    4126  321870 Sl   /snap/code/258/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US --service-sandbox-type=none --no-sandbox --dns-result-order=ipv4first --experimental-network-inspection --inspect-port=0 --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190709003178624776
+docs/progress/R74/raw/056_arm_driver_ps.txt:339:   5457    4129  321867 Sl   /snap/code/258/usr/share/code/code --type=renderer --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --app-path=/snap/code/258/usr/share/code/resources/app --enable-sandbox --enable-blink-features=HighlightAPI --no-sandbox --max-active-webgl-contexts=32 --ozone-platform=x11 --disable-gpu-compositing --disable-blink-features=FontMatchingCTMigration,StandardizedBrowserZoom, --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=19 --time-ticks-at-unix-epoch=-1787559545955646 --launch-time-ticks=92806715 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190709004115666625 --vscode-window-config=vscode:a544b17d-29cc-4824-a51a-a5ac3c1083d7
+docs/progress/R74/raw/056_arm_driver_ps.txt:345:   5726    4129  321861 Sl   /snap/code/258/usr/share/code/code --type=renderer --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --app-path=/snap/code/258/usr/share/code/resources/app --enable-sandbox --enable-blink-features=HighlightAPI --no-sandbox --max-active-webgl-contexts=32 --ozone-platform=x11 --disable-gpu-compositing --disable-blink-features=FontMatchingCTMigration,StandardizedBrowserZoom, --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=20 --time-ticks-at-unix-epoch=-1787559545955646 --launch-time-ticks=99193805 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190709005052708474 --vscode-window-config=vscode:7bbb43e5-2fc7-478e-8f6c-7bb74dd0a8e6
+docs/progress/R74/raw/056_arm_driver_ps.txt:347:   6180    4126  321851 Sl   /snap/code/258/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US --service-sandbox-type=none --no-sandbox --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190709005989750323
+docs/progress/R74/raw/056_arm_driver_ps.txt:349:   6600    3672  321846 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=21 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=114424545 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,1470180707178529322,7054884942858572691,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190709005989750323
+docs/progress/R74/raw/056_arm_driver_ps.txt:350:   6611    3672  321846 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=22 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=114481663 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,16149512083958370204,5159868925781099277,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190709006926792172
+docs/progress/R74/raw/056_arm_driver_ps.txt:351:   6741    3672  321842 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=23 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=117629797 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,13254948145849433226,18245867058090267324,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190709007863834021
+docs/progress/R74/raw/056_arm_driver_ps.txt:352:   7234    3623  321827 Sl   /opt/google/chrome/chrome --type=utility --utility-sub-type=audio.mojom.AudioService --lang=en-US --service-sandbox-type=none --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,6660834940454703438,12119484083749216977,524288 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190709008800875870
+docs/progress/R74/raw/056_arm_driver_ps.txt:357:   7995    3672  321815 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=27 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=144708310 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,7092280222942269225,9334175570133306740,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190709011612001417
+docs/progress/R74/raw/056_arm_driver_ps.txt:361:  12845   12831  320674 Ss+  bash
+docs/progress/R74/raw/056_arm_driver_ps.txt:362:  25883       2  318452 I<   [kworker/R-tls-strp]
+docs/progress/R74/raw/056_arm_driver_ps.txt:365:  64457    2305  314633 S    /usr/bin/ssh-agent -D -a /run/user/1000/keyring/.ssh
+docs/progress/R74/raw/056_arm_driver_ps.txt:368: 262491    4126  252869 Sl   /snap/code/258/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US --service-sandbox-type=none --no-sandbox --dns-result-order=ipv4first --experimental-network-inspection --inspect-port=0 --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190709012549043266
+docs/progress/R74/raw/056_arm_driver_ps.txt:369: 262512    4129  252868 Sl   /snap/code/258/usr/share/code/code --type=renderer --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --app-path=/snap/code/258/usr/share/code/resources/app --enable-sandbox --enable-blink-features=HighlightAPI --no-sandbox --max-active-webgl-contexts=32 --ozone-platform=x11 --disable-gpu-compositing --disable-blink-features=FontMatchingCTMigration,StandardizedBrowserZoom, --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=29 --time-ticks-at-unix-epoch=-1787559545955646 --launch-time-ticks=69091723221 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190709013486085115 --vscode-window-config=vscode:76acfc5d-e9a1-46e7-b52d-fffd6137d26b
+docs/progress/R74/raw/056_arm_driver_ps.txt:370: 262521    4126  252868 Sl   /snap/code/258/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US --service-sandbox-type=none --no-sandbox --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190709014423126964
+docs/progress/R74/raw/056_arm_driver_ps.txt:371: 262545  262491  252868 Sl   /home/toolchain/.vscode/extensions/openai.chatgpt-26.818.61809-linux-x64/bin/linux-x86_64/codex -c features.code_mode_host=true app-server --analytics-default-enabled
+docs/progress/R74/raw/056_arm_driver_ps.txt:372: 264303  262545  252075 Sl   /home/toolchain/.vscode/extensions/openai.chatgpt-26.818.61809-linux-x64/bin/linux-x86_64/codex-code-mode-host
+docs/progress/R74/raw/056_arm_driver_ps.txt:374: 395741    4129  237050 Sl   /snap/code/258/usr/share/code/code --type=renderer --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --app-path=/snap/code/258/usr/share/code/resources/app --enable-sandbox --enable-blink-features=HighlightAPI --no-sandbox --max-active-webgl-contexts=32 --ozone-platform=x11 --disable-gpu-compositing --disable-blink-features=FontMatchingCTMigration,StandardizedBrowserZoom, --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=31 --time-ticks-at-unix-epoch=-1787559545955646 --launch-time-ticks=84910345956 --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190709015360168813 --vscode-window-config=vscode:76acfc5d-e9a1-46e7-b52d-fffd6137d26b
+docs/progress/R74/raw/056_arm_driver_ps.txt:377: 396449    3672  236971 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=476 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=84989134869 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,15976302740908300581,18328289716491344672,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190709432343791618
+docs/progress/R74/raw/056_arm_driver_ps.txt:378: 412069    3672  232660 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=505 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=89300482383 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,7217539571325160766,8364042864220588005,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190709459518005239
+docs/progress/R74/raw/056_arm_driver_ps.txt:379: 412094    3672  232653 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=507 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=89307538801 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,7622306946064883334,4241385702603486149,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190709461392088937
+docs/progress/R74/raw/056_arm_driver_ps.txt:383: 423905  262545  219984 Sl   /home/toolchain/development/Codes_Anlyzer/CodeGraph/.venv/bin/python -m codegraph.mcp_server --config /home/toolchain/development/Codes_Anlyzer/mcp-config.wavea-llvm.json
+docs/progress/R74/raw/056_arm_driver_ps.txt:384: 423906  262545  219984 Sl   /home/toolchain/development/Codes_Anlyzer/CodeGraph/.venv/bin/python -m codegraph.mcp_server --config /home/toolchain/development/Codes_Anlyzer/CodeGraph/mcp-config.json
+docs/progress/R74/raw/056_arm_driver_ps.txt:389: 556583    3672  151436 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=958 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=170523975288 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,14337972335248280153,429113139897675034,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190709883997962836
+docs/progress/R74/raw/056_arm_driver_ps.txt:390: 556660    3672  151428 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=961 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=170532297629 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,6567437162682309283,4100866710675455752,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190709886809088383
+docs/progress/R74/raw/056_arm_driver_ps.txt:393: 679494    4126   81071 Sl   /snap/code/258/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US --service-sandbox-type=none --no-sandbox --dns-result-order=ipv4first --experimental-network-inspection --inspect-port=0 --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190709031289880246
+docs/progress/R74/raw/056_arm_driver_ps.txt:394: 679517    4126   81070 Sl   /snap/code/258/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US --service-sandbox-type=none --no-sandbox --crashpad-handler-pid=4227 --enable-crash-reporter=a028c346-2aaa-4b6e-afbf-40885885dac6,no_channel --user-data-dir=/home/toolchain/.config/Code --standard-schemes=vscode-webview,vscode-file --secure-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --cors-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --fetch-schemes=vscode-webview,vscode-file,vscode-remote-resource,vscode-managed-remote-resource --service-worker-schemes=vscode-webview --code-cache-schemes=vscode-webview,vscode-file --shared-files=v8_context_snapshot_data:100 --field-trial-handle=3,i,13054348687853463007,10797255488110377623,262144 --enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports,EarlyEstablishGpuChannel,EstablishGpuChannelAsync,GlobalShortcutsPortal,PdfUseShowSaveFilePicker --disable-features=CalculateNativeWinOcclusion,DropInputEventsWhilePaintHolding,LocalNetworkAccessChecks,ScreenAIOCREnabled,SpareRendererForSitePerProcess,TraceSiteInstanceGetProcessCreation --variations-seed-version --pseudonymization-salt-handle=7,i,11177669787504614852,8933384589780839463,4 --trace-process-track-uuid=3190709032226922095
+docs/progress/R74/raw/056_arm_driver_ps.txt:398: 695571    3672   68983 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=1860 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=252977034057 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,18172256368455160205,17057105817711653630,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190710729209710634
+docs/progress/R74/raw/056_arm_driver_ps.txt:399: 695602    3672   68978 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=1864 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=252981685501 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,5102047185771133022,2432027492249887049,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190710732957878030
+docs/progress/R74/raw/056_arm_driver_ps.txt:400: 695938    3672   68659 Sl   /opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=3632 --enable-crash-reporter=, --change-stack-guard-on-fork=enable --ozone-platform=x11 --lang=en-US --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=1872 --time-ticks-at-unix-epoch=-1787559545955645 --launch-time-ticks=253301356949 --shared-files=v8_context_snapshot_data:100 --metrics-shmem-handle=4,i,6635467169625327507,10220456505161235803,2097152 --field-trial-handle=3,i,14412347678713395040,6978087061533800572,262144 --variations-seed-version=20260823-030042.303000-production --pseudonymization-salt-handle=7,i,8333556884966855582,9737433988826822773,4 --trace-process-track-uuid=3190710740454212822
+docs/progress/R74/raw/056_arm_driver_ps.txt:403:3009645       2   59098 I    [kworker/14:0-mm_percpu_wq]
+docs/progress/R74/raw/056_arm_driver_ps.txt:409:3054826       2   45903 I    [kworker/0:1-events]
+docs/progress/R74/raw/056_arm_driver_ps.txt:433:3078208       2    4502 I    [kworker/18:1-cgroup_free]
+docs/progress/R74/raw/056_arm_driver_ps.txt:440:3079745       2    1506 I    [kworker/17:2-events]
+docs/progress/R74/raw/056_arm_driver_ps.txt:448:3083408  262545       0 Ss   /bin/bash -c ps -eo pid,ppid,etimes,stat,args > progress/R74/raw/056_arm_driver_ps.txt python3 - <<'PY' from pathlib import Path hits=[x for x in Path('progress/R74/raw/056_arm_driver_ps.txt').read_text(errors='replace').splitlines() if 'run_arm_reproductions.sh' in x and 'python3 - <<' not in x] print('\n'.join(hits) if hits else 'NO_ARM_DRIVER_PROCESS') p=Path('progress/R74/raw/arm_runs/run_matrix.tsv') print('MATRIX_EXISTS',p.exists()) if p.exists():  print(p.read_text(errors='replace')) PY
+docs/progress/R74/extracted/blocks.json:8:    "report_end_line": 45,
+docs/progress/R74/extracted/blocks.json:21:    "bytes": 445,
+docs/progress/R74/extracted/blocks.json:44:    "sha256": "c54201190874945fab9717f857f11082b91ca6aa4f2fc0447db573ce9f43f4fc"
+docs/progress/R74/extracted/blocks.json:55:    "sha256": "e3ec0096996806961f696cd5ce53890c5211445961b4e267acb7e209e46cb6c3"
+docs/progress/R74/extracted/blocks.json:66:    "sha256": "08238e2666ea5b645d06cda6a1e7cf6953fc48ef0b2308944f51713beea33631"
+docs/progress/R74/raw/077_other_numeric_direct_checks.txt:34:| W2 armv7l libc++.so.1 | `22d9ee51df953c470587d10c785567635b3a719b1456529db9cba99da61e6fc9` |
+docs/progress/R74/extracted/INDEX.tsv:2:1	问题一	问题是什么	41	45	progress/R74/extracted/01_unlabelled_unlabelled.cpp	115	095de9b7c58f7a20ac919f68a16ea0c48f77b7f491de2787a817e1d02061fb6f
+docs/progress/R74/extracted/INDEX.tsv:3:2	问题一	两套标准库为何不同	71	84	progress/R74/extracted/02_unlabelled_unlabelled.cpp	445	9004d8497be9a5a24a47c9599e263c448ec50135134b7fb8c8113ed6da1d776e
+docs/progress/R74/extracted/INDEX.tsv:5:4	问题一	复现步骤	108	153	progress/R74/extracted/04_unlabelled_unlabelled.cpp	1367	c54201190874945fab9717f857f11082b91ca6aa4f2fc0447db573ce9f43f4fc
+docs/progress/R74/extracted/INDEX.tsv:6:5	问题二	问题是什么	228	234	progress/R74/extracted/05_unlabelled_unlabelled.cpp	162	e3ec0096996806961f696cd5ce53890c5211445961b4e267acb7e209e46cb6c3
+docs/progress/R74/extracted/INDEX.tsv:7:6	问题二	复现步骤	246	261	progress/R74/extracted/06_unlabelled_unlabelled.cpp	437	08238e2666ea5b645d06cda6a1e7cf6953fc48ef0b2308944f51713beea33631
+docs/progress/R74/raw/arm_build/sha256.txt:4:8694cf3e0b974af4f1418f526b60884beb652c5a459da9fdb1a9340b77cc41f8  /home/toolchain/development/libc++_replacement/progress/R74/bin/armv7l/problem1.libcxx
+docs/progress/R74/raw/arm_build/sha256.txt:5:444e7bc4a74a2cde3bf7d56a8a6b90ac92d8f4bacde53e8ba91e50a899450b42  /home/toolchain/development/libc++_replacement/progress/R74/bin/armv7l/problem2.libcxx
+docs/progress/R74/raw/012_latest_report_checks.txt:8:456:## 问题四：libstdc++ 有防护但 libc++ 没有对应位置的 8 处
+docs/progress/R74/raw/012_latest_report_checks.txt:30:647:| D-25 | 源码树中硬编码了链接 libstdc++ 的选项 —— 已确认在既有的 45 个需改源码的包之外，**另有 13 个源码 RPM 存在此情况**（其在生产构建中是否会被触发，尚未确认） |
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:46:45
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:146:145
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:246:245
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:346:345
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:446:445
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:451:450
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:452:451
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:453:452
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:454:453
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:455:454
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:456:455
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:457:456
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:458:457
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:459:458
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:460:459
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:546:545
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:646:645
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:746:745
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:846:845
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:946:945
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1046:1045
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1146:1145
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1246:1245
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1346:1345
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1446:1445
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1451:1450
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1452:1451
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1453:1452
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1454:1453
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1455:1454
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1456:1455
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1457:1456
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1458:1457
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1459:1458
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1460:1459
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1546:1545
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1646:1645
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1746:1745
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1846:1845
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:1946:1945
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2046:2045
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2146:2145
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2246:2245
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2346:2345
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2446:2445
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2451:2450
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2452:2451
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2453:2452
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2454:2453
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2455:2454
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2456:2455
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2457:2456
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2458:2457
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2459:2458
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2460:2459
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2546:2545
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2646:2645
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2746:2745
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2846:2845
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:2946:2945
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3046:3045
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3146:3145
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3246:3245
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3346:3345
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3446:3445
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3451:3450
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3452:3451
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3453:3452
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3454:3453
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3455:3454
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3456:3455
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3457:3456
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3458:3457
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3459:3458
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3460:3459
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3546:3545
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3646:3645
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3746:3745
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3846:3845
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run1.stdout:3946:3945
+docs/progress/R74/raw/raw_compile/09_unlabelled_unlabelled.libstdcxx.stderr:22:/home/toolchain/development/libc++_replacement/progress/R74/extracted/09_unlabelled_unlabelled.cpp:10:45: error: ‘some_work’ was not declared in this scope
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:46:45
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:146:145
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:246:245
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:346:345
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:446:445
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:451:450
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:452:451
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:453:452
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:454:453
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:455:454
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:456:455
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:457:456
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:458:457
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:459:458
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:460:459
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:546:545
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:646:645
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:746:745
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:846:845
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:946:945
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1046:1045
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1146:1145
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1246:1245
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1346:1345
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1446:1445
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1451:1450
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1452:1451
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1453:1452
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1454:1453
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1455:1454
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1456:1455
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1457:1456
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1458:1457
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1459:1458
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1460:1459
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1546:1545
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1646:1645
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1746:1745
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1846:1845
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:1946:1945
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2046:2045
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2146:2145
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2246:2245
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2346:2345
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2446:2445
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2451:2450
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2452:2451
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2453:2452
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2454:2453
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2455:2454
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2456:2455
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2457:2456
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2458:2457
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2459:2458
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2460:2459
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2546:2545
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2646:2645
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2746:2745
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2846:2845
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:2946:2945
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3046:3045
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3146:3145
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3246:3245
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3346:3345
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3446:3445
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3451:3450
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3452:3451
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3453:3452
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3454:3453
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3455:3454
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3456:3455
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3457:3456
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3458:3457
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3459:3458
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3460:3459
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3546:3545
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3646:3645
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3746:3745
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3846:3845
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:3946:3945
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4046:4045
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4146:4145
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4246:4245
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4346:4345
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4446:4445
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4451:4450
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4452:4451
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4453:4452
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4454:4453
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4455:4454
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4456:4455
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4457:4456
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4458:4457
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4459:4458
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4460:4459
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4501:4500
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4502:4501
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4503:4502
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4504:4503
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4505:4504
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4506:4505
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4507:4506
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4508:4507
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4509:4508
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4510:4509
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4511:4510
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4512:4511
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4513:4512
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4514:4513
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4515:4514
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4516:4515
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4517:4516
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4518:4517
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4519:4518
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4520:4519
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4521:4520
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4522:4521
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4523:4522
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4524:4523
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4525:4524
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4526:4525
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4527:4526
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4528:4527
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4529:4528
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4530:4529
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4531:4530
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4532:4531
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4533:4532
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4534:4533
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4535:4534
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4536:4535
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4537:4536
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4538:4537
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4539:4538
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4540:4539
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4541:4540
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4542:4541
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4543:4542
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4544:4543
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4545:4544
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4546:4545
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4547:4546
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4548:4547
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4549:4548
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4550:4549
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4551:4550
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4552:4551
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4553:4552
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4554:4553
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4555:4554
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4556:4555
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4557:4556
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4558:4557
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4559:4558
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4560:4559
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4561:4560
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4562:4561
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4563:4562
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4564:4563
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4565:4564
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4566:4565
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4567:4566
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4568:4567
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4569:4568
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4570:4569
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4571:4570
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4572:4571
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4573:4572
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4574:4573
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4575:4574
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4576:4575
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4577:4576
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4578:4577
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4579:4578
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4580:4579
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4581:4580
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4582:4581
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4583:4582
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4584:4583
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4585:4584
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4586:4585
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4587:4586
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4588:4587
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4589:4588
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4590:4589
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4591:4590
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4592:4591
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4593:4592
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4594:4593
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4595:4594
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4596:4595
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4597:4596
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4598:4597
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4599:4598
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4600:4599
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4646:4645
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4746:4745
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4846:4845
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:4946:4945
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5046:5045
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5146:5145
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5246:5245
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5346:5345
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5446:5445
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5451:5450
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5452:5451
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5453:5452
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5454:5453
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5455:5454
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5456:5455
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5457:5456
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5458:5457
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5459:5458
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5460:5459
+docs/progress/R74/raw/arm_runs/problem2.libcxx.run4.stdout:5546:5545
+docs/progress/R74/raw/raw_compile/09_unlabelled_unlabelled.libcxx.stderr:13:/home/toolchain/development/libc++_replacement/progress/R74/extracted/09_unlabelled_unlabelled.cpp:10:45: error: use of undeclared identifier 'some_work'
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:46:45
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:146:145
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:246:245
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:346:345
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:446:445
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:451:450
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:452:451
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:453:452
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:454:453
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:455:454
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:456:455
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:457:456
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:458:457
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:459:458
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:460:459
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:546:545
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:646:645
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:746:745
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:846:845
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:946:945
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1046:1045
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1146:1145
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1246:1245
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1346:1345
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1446:1445
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1451:1450
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1452:1451
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1453:1452
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1454:1453
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1455:1454
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1456:1455
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1457:1456
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1458:1457
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1459:1458
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1460:1459
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1546:1545
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1646:1645
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1746:1745
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1846:1845
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:1946:1945
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2046:2045
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2146:2145
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2246:2245
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2346:2345
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2446:2445
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2451:2450
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2452:2451
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2453:2452
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2454:2453
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2455:2454
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2456:2455
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2457:2456
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2458:2457
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2459:2458
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2460:2459
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2546:2545
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2646:2645
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2746:2745
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2846:2845
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:2946:2945
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:3046:3045
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:3146:3145
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:3246:3245
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:3346:3345
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:3446:3445
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:3451:3450
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:3452:3451
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:3453:3452
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:3454:3453
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:3455:3454
+docs/progress/R74/raw/arm_runs/problem2.libstdcxx.run1.stdout:3456:3455
