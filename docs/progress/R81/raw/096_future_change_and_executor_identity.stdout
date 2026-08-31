@@ -1,0 +1,335 @@
+future.cpp diff:
+--- tmp/R68/source-baseline/libcxx/src/future.cpp	2026-08-27 09:28:58.444475515 +0800
++++ tmp/R69/replay/libcxx/src/future.cpp	2026-08-26 15:42:36.662768591 +0800
+@@ -111,14 +111,16 @@
+ }
+ 
+ void __assoc_sub_state::__sub_wait(unique_lock<mutex>& __lk) {
+-  if (!__is_ready()) {
++  while (!__is_ready()) {
+     if (__state_ & static_cast<unsigned>(deferred)) {
+       __state_ &= ~static_cast<unsigned>(deferred);
+       __lk.unlock();
+       __execute();
+-    } else
+-      while (!__is_ready())
+-        __cv_.wait(__lk);
++      if (!__lk.owns_lock())
++        __lk.lock();
++    } else {
++      __cv_.wait(__lk);
++    }
+   }
+ }
+ 
+include/future diff:
+--- tmp/R68/source-baseline/libcxx/include/future	2026-08-27 09:28:58.430741234 +0800
++++ tmp/R69/replay/libcxx/include/future	2026-08-26 15:42:36.662768591 +0800
+@@ -367,6 +367,7 @@
+ 
+ #  if _LIBCPP_HAS_THREADS
+ 
++#    include <cxxabi.h>
+ #    include <__assert>
+ #    include <__chrono/duration.h>
+ #    include <__chrono/steady_clock.h>
+@@ -522,6 +523,8 @@
+ 
+ class _LIBCPP_EXPORTED_FROM_ABI __assoc_sub_state : public __shared_count {
+ protected:
++  enum class __forced_unwind_action { __restore_deferred, __complete_with_error };
++
+   exception_ptr __exception_;
+   mutable mutex __mut_;
+   mutable condition_variable __cv_;
+@@ -530,6 +533,26 @@
+   void __on_zero_shared() _NOEXCEPT override;
+   void __sub_wait(unique_lock<mutex>& __lk);
+ 
++  _LIBCPP_HIDE_FROM_ABI void
++  __handle_forced_unwind(__forced_unwind_action __action, exception_ptr __error = exception_ptr()) _NOEXCEPT {
++#    if _LIBCPP_HAS_EXCEPTIONS
++    try {
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++      unique_lock<mutex> __lk(__mut_);
++      if (__action == __forced_unwind_action::__restore_deferred) {
++        if (!(__state_ & ready) && !__has_value())
++          __state_ |= deferred;
++      } else if (!(__state_ & ready) && !__has_value()) {
++        __exception_ = std::move(__error);
++        __state_ |= ready;
++      }
++      __cv_.notify_all();
++#    if _LIBCPP_HAS_EXCEPTIONS
++    } catch (...) {
++    }
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++  }
++
+ public:
+   enum { __constructed = 1, __future_attached = 2, ready = 4, deferred = 8 };
+ 
+@@ -591,6 +614,11 @@
+ 
+   _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __on_zero_shared() _NOEXCEPT override;
+ 
++  template <class _Arg>
++  _LIBCPP_HIDE_FROM_ABI void __construct_value_unready(_Arg&& __arg);
++
++  _LIBCPP_HIDE_FROM_ABI void __complete_forced_unwind(exception_ptr __error) _NOEXCEPT;
++
+ public:
+   template <class _Arg>
+   _LIBCPP_HIDE_FROM_ABI void set_value(_Arg&& __arg);
+@@ -622,6 +650,51 @@
+ 
+ template <class _Rp>
+ template <class _Arg>
++void __assoc_state<_Rp>::__construct_value_unready(_Arg&& __arg) {
++  unique_lock<mutex> __lk(this->__mut_);
++  if (this->__has_value())
++    std::__throw_future_error(future_errc::promise_already_satisfied);
++  ::new ((void*)std::addressof(__value_)) _Rp(std::forward<_Arg>(__arg));
++  this->__state_ |= base::__constructed;
++}
++
++template <class _Rp>
++void __assoc_state<_Rp>::__complete_forced_unwind(exception_ptr __error) _NOEXCEPT {
++  bool __destroy_value = false;
++#    if _LIBCPP_HAS_EXCEPTIONS
++  try {
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++    {
++      unique_lock<mutex> __lk(this->__mut_);
++      if (!(this->__state_ & base::ready)) {
++        __destroy_value = (this->__state_ & base::__constructed) != 0;
++        this->__state_ &= ~base::__constructed;
++        this->__exception_ = std::move(__error);
++      }
++    }
++    if (__destroy_value) {
++#    if _LIBCPP_HAS_EXCEPTIONS
++      try {
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++        reinterpret_cast<_Rp*>(std::addressof(__value_))->~_Rp();
++#    if _LIBCPP_HAS_EXCEPTIONS
++      } catch (...) {
++      }
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++    }
++    unique_lock<mutex> __lk(this->__mut_);
++    if (!(this->__state_ & base::ready) && this->__exception_ != nullptr) {
++      this->__state_ |= base::ready;
++      this->__cv_.notify_all();
++    }
++#    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (...) {
++  }
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++}
++
++template <class _Rp>
++template <class _Arg>
+ void __assoc_state<_Rp>::set_value_at_thread_exit(_Arg&& __arg) {
+   unique_lock<mutex> __lk(this->__mut_);
+   if (this->__has_value())
+@@ -659,6 +732,10 @@
+ 
+   _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __on_zero_shared() _NOEXCEPT override;
+ 
++  _LIBCPP_HIDE_FROM_ABI void __construct_value_unready(_Rp& __arg);
++
++  _LIBCPP_HIDE_FROM_ABI void __complete_forced_unwind(exception_ptr __error) _NOEXCEPT;
++
+ public:
+   _LIBCPP_HIDE_FROM_ABI void set_value(_Rp& __arg);
+   _LIBCPP_HIDE_FROM_ABI void set_value_at_thread_exit(_Rp& __arg);
+@@ -682,6 +759,34 @@
+ }
+ 
+ template <class _Rp>
++void __assoc_state<_Rp&>::__construct_value_unready(_Rp& __arg) {
++  unique_lock<mutex> __lk(this->__mut_);
++  if (this->__has_value())
++    std::__throw_future_error(future_errc::promise_already_satisfied);
++  __value_ = std::addressof(__arg);
++  this->__state_ |= base::__constructed;
++}
++
++template <class _Rp>
++void __assoc_state<_Rp&>::__complete_forced_unwind(exception_ptr __error) _NOEXCEPT {
++#    if _LIBCPP_HAS_EXCEPTIONS
++  try {
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++    unique_lock<mutex> __lk(this->__mut_);
++    if (!(this->__state_ & base::ready)) {
++      this->__state_ &= ~base::__constructed;
++      __value_ = nullptr;
++      this->__exception_ = std::move(__error);
++      this->__state_ |= base::ready;
++      this->__cv_.notify_all();
++    }
++#    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (...) {
++  }
++#    endif // _LIBCPP_HAS_EXCEPTIONS
++}
++
++template <class _Rp>
+ void __assoc_state<_Rp&>::set_value_at_thread_exit(_Rp& __arg) {
+   unique_lock<mutex> __lk(this->__mut_);
+   if (this->__has_value())
+@@ -789,6 +894,9 @@
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+     this->set_value(__func_());
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    this->__handle_forced_unwind(base::__forced_unwind_action::__restore_deferred);
++    throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+   }
+@@ -820,6 +928,9 @@
+     __func_();
+     this->set_value();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    this->__handle_forced_unwind(base::__forced_unwind_action::__restore_deferred);
++    throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+   }
+@@ -848,8 +959,18 @@
+ #    if _LIBCPP_HAS_EXCEPTIONS
+   try {
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+-    this->set_value(__func_());
++    this->__construct_value_unready(__func_());
++    this->__make_ready();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    exception_ptr __error;
++    try {
++      std::__throw_future_error(future_errc::broken_promise);
++    } catch (...) {
++      __error = current_exception();
++    }
++    this->__complete_forced_unwind(std::move(__error));
++    throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+   }
+@@ -887,6 +1008,15 @@
+     __func_();
+     this->set_value();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    exception_ptr __error;
++    try {
++      std::__throw_future_error(future_errc::broken_promise);
++    } catch (...) {
++      __error = current_exception();
++    }
++    this->__handle_forced_unwind(base::__forced_unwind_action::__complete_with_error, std::move(__error));
++    throw;
+   } catch (...) {
+     this->set_exception(current_exception());
+   }
+@@ -1661,6 +1791,8 @@
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+     __p_.set_value(__f_(std::forward<_ArgTypes>(__args)...));
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     __p_.set_exception(current_exception());
+   }
+@@ -1678,6 +1810,8 @@
+ #    endif // _LIBCPP_HAS_EXCEPTIONS
+     __p_.set_value_at_thread_exit(__f_(std::forward<_ArgTypes>(__args)...));
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     __p_.set_exception_at_thread_exit(current_exception());
+   }
+@@ -1761,6 +1895,8 @@
+     __f_(std::forward<_ArgTypes>(__args)...);
+     __p_.set_value();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     __p_.set_exception(current_exception());
+   }
+@@ -1779,6 +1915,8 @@
+     __f_(std::forward<_ArgTypes>(__args)...);
+     __p_.set_value_at_thread_exit();
+ #    if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     __p_.set_exception_at_thread_exit(current_exception());
+   }
+@@ -1862,6 +2000,8 @@
+     if (__does_policy_contain(__policy, launch::async))
+       return std::__make_async_assoc_state<_Rp>(_BF(std::forward<_Fp>(__f), std::forward<_Args>(__args)...));
+ #      if _LIBCPP_HAS_EXCEPTIONS
++  } catch (const __cxxabiv1::__forced_unwind&) {
++    throw;
+   } catch (...) {
+     if (__policy == launch::async)
+       throw;
+R77 executor identity mechanics:
+10:import subprocess
+18:REMOTE_ROOT = "/opt/usr/home/owner/share/tmp/r77_lit_20260829"
+19:SHARED_ROOT = "/opt/usr/home/owner/share/tmp"
+27:    return subprocess.run(command, check=check, **kwargs)
+63:        stdin=subprocess.DEVNULL,
+64:        stdout=subprocess.PIPE,
+65:        stderr=subprocess.STDOUT,
+126:        with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as temporary:
+129:            archive_root = os.path.basename(local_dir)
+130:            archive.add(local_dir, arcname=archive_root)
+131:            stdin_info = tarfile.TarInfo(name=f"{archive_root}/.stdin")
+139:            stdin=subprocess.DEVNULL,
+140:            stdout=subprocess.PIPE,
+141:            stderr=subprocess.STDOUT,
+157:            stdin=subprocess.DEVNULL,
+158:            stdout=subprocess.PIPE,
+159:            stderr=subprocess.STDOUT,
+176:            + f"setsid sh -c {shlex.quote(remote_test_script)}"
+184:                stdin=subprocess.DEVNULL,
+185:                stdout=subprocess.PIPE,
+186:                stderr=subprocess.PIPE,
+191:        except subprocess.TimeoutExpired as timeout_error:
+192:            stop_result = stop_remote_test(remote_pid_file)
+199:            if stop_result.stdout:
+200:                sys.stderr.write(stop_result.stdout)
+207:                stdin=subprocess.DEVNULL,
+208:                stdout=subprocess.PIPE,
+209:                stderr=subprocess.STDOUT,
+247:            stdin=subprocess.DEVNULL,
+248:            stdout=subprocess.PIPE,
+249:            stderr=subprocess.STDOUT,
+patched candidate concise output:
+Exit Code: 134
+
+Command Output (stdout):
+--
+# COMPILED WITH
+/home/toolchain/development/libc++_replacement/progress/R68/tools/armv7l_lit_host_clangxx.sh /home/toolchain/development/libc++_replacement/tmp/R69/replay/libcxx/test/std/thread/futures/futures.async/thread_create_failure.pass.cpp -pthread --target=armv7l-tizen-linux-gnueabi -nostdinc++ -I /home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test-suite-install/include/c++/v1 -I /home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test-suite-install/include/c++/v1 -I /home/toolchain/development/libc++_replacement/tmp/R69/replay/libcxx/test/support -std=c++26 -Werror -Wall -Wctad-maybe-unsupported -Wextra -Wshadow -Wundef -Wunused-template -Wno-unused-command-line-argument -Wno-attributes -Wno-pessimizing-move -Wno-noexcept-type -Wno-atomic-alignment -Wno-reserved-module-identifier -Wdeprecated-copy -Wdeprecated-copy-dtor -Wshift-negative-value -Wno-user-defined-literals -Wno-tautological-compare -Wsign-compare -Wunused-variable -Wunused-parameter -Wunreachable-code -Wno-unused-local-typedef -Wno-local-type-template-args -Wno-c++11-extensions -Wno-unknown-pragmas -Wno-pass-failed -Wno-mismatched-new-delete -Wno-redundant-move -Wno-self-move -Wno-nullability-completeness -flax-vector-conversions=none -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER -D_LIBCPP_ENABLE_EXPERIMENTAL -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_NONE -Wuser-defined-warnings  -lc++experimental -nostdlib++ -L /home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test-suite-install/lib -Wl,-rpath,/home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test-suite-install/lib -lc++ -latomic -o /home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test/std/thread/futures/futures.async/Output/thread_create_failure.pass.cpp.dir/t.tmp.exe
+# executed command: /home/toolchain/development/libc++_replacement/progress/R68/tools/armv7l_lit_host_clangxx.sh /home/toolchain/development/libc++_replacement/tmp/R69/replay/libcxx/test/std/thread/futures/futures.async/thread_create_failure.pass.cpp -pthread --target=armv7l-tizen-linux-gnueabi -nostdinc++ -I /home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test-suite-install/include/c++/v1 -I /home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test-suite-install/include/c++/v1 -I /home/toolchain/development/libc++_replacement/tmp/R69/replay/libcxx/test/support -std=c++26 -Werror -Wall -Wctad-maybe-unsupported -Wextra -Wshadow -Wundef -Wunused-template -Wno-unused-command-line-argument -Wno-attributes -Wno-pessimizing-move -Wno-noexcept-type -Wno-atomic-alignment -Wno-reserved-module-identifier -Wdeprecated-copy -Wdeprecated-copy-dtor -Wshift-negative-value -Wno-user-defined-literals -Wno-tautological-compare -Wsign-compare -Wunused-variable -Wunused-parameter -Wunreachable-code -Wno-unused-local-typedef -Wno-local-type-template-args -Wno-c++11-extensions -Wno-unknown-pragmas -Wno-pass-failed -Wno-mismatched-new-delete -Wno-redundant-move -Wno-self-move -Wno-nullability-completeness -flax-vector-conversions=none -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER -D_LIBCPP_ENABLE_EXPERIMENTAL -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_NONE -Wuser-defined-warnings -lc++experimental -nostdlib++ -L /home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test-suite-install/lib -Wl,-rpath,/home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test-suite-install/lib -lc++ -latomic -o /home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test/std/thread/futures/futures.async/Output/thread_create_failure.pass.cpp.dir/t.tmp.exe
+# .---command stderr------------
+# | /bin/bash: /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R32-candidates-libcxx-x86_64-20260813-02/local/BUILD-ROOTS/scratch.x86_64.0/usr/lib64/libtinfo.so.6: no version information available (required by /bin/bash)
+# `-----------------------------
+# EXECUTED AS
+/home/toolchain/development/libc++_replacement/progress/R77/code/sdb_executor.py --execdir /home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test/std/thread/futures/futures.async/Output/thread_create_failure.pass.cpp.dir --  /home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test/std/thread/futures/futures.async/Output/thread_create_failure.pass.cpp.dir/t.tmp.exe
+# executed command: /home/toolchain/development/libc++_replacement/progress/R77/code/sdb_executor.py --execdir /home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test/std/thread/futures/futures.async/Output/thread_create_failure.pass.cpp.dir -- /home/toolchain/development/libc++_replacement/tmp/R68/build-patched-armv7l/libcxx/test/std/thread/futures/futures.async/Output/thread_create_failure.pass.cpp.dir/t.tmp.exe
+# .---command stdout------------
+# | t.tmp.exe: /home/toolchain/development/libc++_replacement/tmp/R69/replay/libcxx/test/std/thread/futures/futures.async/thread_create_failure.pass.cpp:53: int main(int, char **): Assertion `false' failed.
+# | /bin/sh: line 2: 28195 Aborted                 (core dumped) setsid sh -c 'printf '"'"'%d\n'"'"' "$$" > /opt/usr/home/owner/share/tmp/r77_lit_20260829/runs/run-afb922de47d74761-3213849/.test_pgid; exec /opt/usr/home/owner/share/tmp/r77_lit_20260829/runs/run-afb922de47d74761-3213849/t.tmp.exe < /opt/usr/home/owner/share/tmp/r77_lit_20260829/runs/run-afb922de47d74761-3213849/.stdin'
+# `-----------------------------
+# error: command failed with exit status: 134
+
+--

@@ -1,133 +1,191 @@
-# R81 第一阶段：armv7l 测试夹具隔离
+# R81：armv7l 基线补跑与测试夹具隔离
 
-状态：`PHASE1_COMPLETE_AWAITING_CONFIRMATION`（按任务书“第一步完成后停”执行；R81 总体仍为 `PARTIAL`）
+状态：`FAILURES_FOUND`（全量执行完成；213 项为基线与补丁共同失败，方案引入 0 项）
 
-## 结论先行
+## 结论
 
-第一阶段已完成，第二阶段基线补跑未启动。
+R81 两阶段均已完成。armv7l libc++ 的 owner 标准化对照覆盖
+11,321/11,321 项，libc++abi 覆盖 81/81 项。标准化后两侧状态逐项完全一致：
 
-R77 的 28 项“基线失败、补丁通过”并非一组同环境对照：28 项补丁结果全部来自 R68，R68 板端执行身份为 `uid=5001(owner)`；R77 基线和本轮初始 SDB 连接身份为 `uid=0(root)`。其中 27 项 filesystem 测试都在验证无权限路径；root 会绕过测试制造的权限限制，因此不会得到预期的 `permission_denied`。这足以解释 27 项 filesystem 差异，不需要把差异归因于补丁或夹具污染。
+| 组合 | PASS | FAIL | UNSUPPORTED | XFAIL | 总数 |
+|---|---:|---:|---:|---:|---:|
+| armv7l 基线 libc++（owner） | 10,018 | 213 | 1,061 | 29 | 11,321 |
+| armv7l 补丁 libc++（owner 标准化） | 10,018 | 213 | 1,061 | 29 | 11,321 |
+| armv7l 基线 libc++abi | 60 | 0 | 21 | 0 | 81 |
+| armv7l 补丁 libc++abi | 60 | 0 | 21 | 0 | 81 |
 
-新隔离方案同时固定执行身份和夹具路径。对 4 个代表测试进行成对验证：
+213 项 libc++ 失败全部是两侧共同失败，沿用任务口径分类为
+`UPSTREAM_EXISTING`；这里表示“未打补丁基线也失败”，不表示已经逐项证明根因
+一定在 LLVM 上游。`SCHEME_INTRODUCED=0`、`INDETERMINATE=0`。
 
-| 身份 | 基线 | 补丁 | 逐项一致性 |
-|---|---:|---:|---|
-| `root(0)` 对照 | 4 FAIL（均 134） | 4 FAIL（均 134） | 4/4 状态、退出码和断言相同 |
-| `owner(5001)` 正式方案 | 4 PASS | 4 PASS | 4/4 相同 |
+结合此前已经完成的 x86_64 全量对照，两架构的选定测试配置均未发现补丁引入
+的回归。结论限定在本文“未覆盖范围”内。
 
-因此隔离方案可行；正式补跑必须固定为与 R68 补丁结果相同的 `owner(5001)`，不能继续使用当前 SDB 默认的 root 身份。
+机器可读汇总见 `tables/final_summary.json`，213 项逐项分类见
+`tables/full_failure_classification.tsv`。
 
-28 项中的 fstream `offset_range.pass.cpp` 是另一种情况：它在独立工作目录创建相对路径临时文件并顺序写入约 4 GiB 数据；R77 基线是 110 秒超时，而非权限断言。本阶段没有重跑该大文件测试，记 `NOT_OBSERVED`，不能把它与另外 27 项合并定性。
+## 执行身份和夹具隔离
 
-## 范围与纪律
+统一使用 `owner(5001)`。理由是产品应用通常不是以特权 root 运行，owner 更接近
+实际产品身份；同时它与既有补丁侧预期身份一致，并且不会绕过权限和
+`RLIMIT_NPROC` 测试夹具。
 
-- 资源门禁：`tools/resource_gate.sh --level medium`，退出 0；初始可用内存 22,141,796 KiB，最终 22,217,100 KiB，未触及 1 GiB 停止线。
-- 运行并行度：lit `-j 2`；命令使用 `nice -n 15 ionice -c 3`。
-- 本阶段耗时远低于 7 小时；短抽样未跨越 5 分钟采样周期，开始和结束均记录资源。
-- 未修改 libc++、libc++abi、平台源码或四个定稿补丁；仅新增 R81 执行包装器、分析脚本和证据。
-- 未向 Gerrit、LLVM 上游或其他源码仓推送。
-- 第二阶段的 `7000/11321` 后续、基线 libc++abi、79 项重新分类、5 个 `noexcept` 边界和 25 类差异对照均为 `NOT_STARTED`。
+判断身份敏感测试的方法分两层：
 
-## 28 项夹具依赖
+1. 对测试源码机械扫描权限变更、权限错误断言、UID/EUID、`setrlimit`、
+   `RLIMIT_NPROC` 等身份相关机制；
+2. 对候选项在同一补丁运行库上做 root/owner 动态对照，并对原差异项做两侧
+   owner 成对复验。不能只靠目录名或历史状态推断。
 
-完整逐项表见 `tables/fixture_dependencies.tsv`，R77 失败原文摘要见 `tables/r77_baseline_failure_reasons.tsv`。
+最终确认 28 项身份敏感测试：27 项 filesystem 权限夹具，以及
+`thread_create_failure.pass.cpp`。完整清单和机械依据见
+`tables/identity_sensitive_tests_final.tsv`。
 
-### 27 项 filesystem
+filesystem 测试通过 `scoped_test_env`/`static_test_env` 在每个测试进程内创建
+目录、普通文件、软/硬链接、FIFO、socket 和无权限路径。异常中止会跳过 C++
+析构，留下专属临时根；正常运行则由析构和执行器清理。隔离方案为两侧使用
+互不相干、运行前重建的 `/opt/usr/r81_phase2/owner_baseline/tmp` 与
+`owner_patched/tmp`，固定 `TMPDIR/TMP/TEMP`，每项仍使用独立远端工作目录。
 
-这些测试包含以下夹具：
+27 项 filesystem 在 owner 下两侧均 PASS。第 28 项
+`thread_create_failure.pass.cpp` 通过 `setrlimit(RLIMIT_NPROC, 1)` 强制线程创建
+失败；root 可绕过该限制。R77 原补丁结果由未执行 `su owner` 的旧执行器得到，
+退出 134 且断言 `assert(false)`，本轮同一补丁二进制在 owner 下退出 0；基线
+owner 也退出 0。因此它是执行身份造成的环境差异，不是 future 补丁回归。
 
-- `scoped_test_env`：每个测试进程在 `std::filesystem::temp_directory_path()` 下创建自己的根目录；创建普通文件、目录、软链接、硬链接、FIFO 和 Unix socket 等。
-- `static_test_env`：名称虽含 “static”，但不是板上的共享静态目录；它在每个测试进程中由 `scoped_test_env` 动态创建固定形状的目录树、文件和链接。
-- 权限夹具：27 项全部包含 `permissions(..., perms::none)` 或等价权限操作，随后期待路径解析返回 `permission_denied`。R77 的 27 个失败全部落在此类断言。
-- 特殊对象：部分测试创建 FIFO、socket、硬链接和坏软链接；`status`/`symlink_status` 还只读探测 `/dev/drive0`、`/dev/loop0`、`/dev/sda` 候选设备。辅助夹具的字符设备路径为 `/dev/null`。这些系统节点不是测试创建的共享可写夹具。
-- `temp_directory_path.pass.cpp` 会在测试进程内改变 `TMPDIR`、`TMP`、`TEMP` 并创建多种有效/无效目录；环境修改仅存在于该进程。
+第一阶段的详细夹具结构、四项 root/owner 双向抽样及残留分析仍保留在本目录
+原始材料中。
 
-基线树与补丁树中的 28 个测试源码、`filesystem_test_helper.h` 和 `platform_support.h` 已逐字节比较，全部一致，SHA256 逐项保存在 `raw/011_isolation_wrappers_and_source_identity.stdout`。
+## `offset_range.pass.cpp`
 
-### 1 项 fstream
+运行前板上 `/opt/usr` 可用约 92.4 GB；测试写入量为 4,294,967,362 字节，
+高于所需空间并另保留 8 GiB 安全余量，因此允许成对复验。
 
-`offset_range.pass.cpp` 通过 `get_temp_file_name()` 调用 `mkstemp("libcxx.XXXXXX")`，文件名是相对路径，因此文件位于执行器给该测试创建的独立工作目录。测试实际顺序写入 `0x100000042` 字节后验证大于 32 位的 seek/tell，正常结束时删除文件。它不使用 filesystem 的权限夹具，也不依赖共享静态测试环境。
+lit 的单项运行受 120 秒执行器上限影响，故最终直接执行 lit 已构建的同一测试
+二进制，并继续使用同一 owner SDB 执行器、独立目录和目标运行库：
 
-## 哪些状态可能残留
+- 基线：退出 0，约 117.94 秒；
+- 补丁：退出 0，约 119.59 秒。
 
-正常返回时，filesystem 辅助对象析构会先恢复权限再递归删除夹具；执行器的 `finally` 还会删除每项独立远端工作目录和传输 tar。
+R77 的基线 TIMEOUT 与补丁 PASS 是 120 秒边界附近的时间环境差异；owner 成对
+结果相同。没有把超时推断成库行为差异。
 
-以下异常可留下状态：
+## 基线补跑
 
-1. 断言触发 `abort`（退出 134）时，C++ 栈不展开，`scoped_test_env` 析构不执行。此次 root 对照真实观察到每侧各残留 4 个夹具根目录，包括无权限目录、文件和链接。
-2. fstream 超时或被终止时，测试本身的 `std::remove` 不执行；只要 SDB 仍连通，执行器 `finally` 会删除整个远端工作目录。若恰逢连接中断，独立目录和大文件可能保留到下一次任务前清理。
-3. 执行器自身在远端测试完成后异常，也可能让夹具析构前已产生的状态保留；本轮相对遥测路径错误演示了为何运行前必须重建专属根。
-4. `TMPDIR/TMP/TEMP` 的测试内修改不会越过进程边界；`/dev/*` 只读探测不由测试创建，也没有观察到其被修改。
+从 R77 已完成的 7,000 项断点继续，批次 015--022 按原纪律以 `-j2`、
+`nice -n 15`、`ionice -c 3` 执行；批次 023 和 libc++abi 在系统异常后降为
+`-j1`。完整 result JSON、lit stdout/stderr、遥测和每批 COMPLETE 标记均在
+`raw/phase2/results/`。
 
-所有观察到的残留都位于各自专属根中，没有跨到另一侧。收尾已删除精确的 `/opt/usr/r81_fixture` 和 R77 runtime 根，并核验两者及任务进程均为 `ABSENT`。
+- libc++：原 7,000 项 + 本轮 4,321 项 = 11,321/11,321；23 个批次标记齐全；
+- libc++abi：81/81，lit 退出 0；
+- 基线运行库板端 SHA256：libc++
+  `d293b1a3bed8a4114b5a7c30d3732a4299a52221fd7cc7d5aada9a369899a737`，
+  libc++abi
+  `58b8bcc8ffe95b78bb1a3d5951efe9507ddf44400fe3e6ad8debeed09a93b374`。
 
-## 隔离方案
+设备连接在本轮发生两次中断，均立即停止当前运行、保存已完成批次并检查板端
+进程、夹具、运行库 SHA256 和空间；总连接恢复次数为 2/3。未观察到系统崩溃
+的可证明根因，记 `NOT_OBSERVED`，不归因于某个命令或补丁。
 
-第二阶段应沿用以下门禁：
+第二次恢复后，为响应“控制 CPU 和内存消耗”的明确要求，采取以下保护：
 
-1. 板端固定以 `owner(5001)` 运行测试；每次开始显式记录 `id`，不是 owner 即停止。
-2. 基线和补丁使用不同的、运行前重建的根：
-   - `/opt/usr/r81_fixture/owner_baseline/tmp`
-   - `/opt/usr/r81_fixture/owner_patched/tmp`
-3. 根目录归 `owner:users`、模式 0700；分别强制 `TMPDIR`、`TMP`、`TEMP` 指向对应根。
-4. 每个测试仍由执行器获得独立远端工作目录；包装器用 `su owner -c 'exec "$0" "$@"'` 固定身份并保留命令参数。
-5. 每个组合开始前确认本侧根为空；组合结束后记录残留、清理并确认为空。连接中断立即停，禁止让另一侧继续使用未核验的板端状态。
+- 只运行剩余单批和 libc++abi，`-j1`；
+- 每 60 秒记录负载和可用内存；
+- 可用内存低于 8 GiB 或 load1 高于 20 即主动停止，比原 1 GiB 门槛保守；
+- 一次 batch-023 重试在 load1=23.33 时主动终止，保存为
+  `interrupted_attempt_2_high_load`；等待连续两个低负载样本后重跑成功。
 
-这既隔离 filesystem 临时树，也隔离测试进程环境；fstream 的相对临时文件由每项独立工作目录隔离。
+最终成功的 batch-023 期间 MemAvailable 约 18.7--19.6 GiB、load1
+9.93--11.97；libc++abi 期间约 17.5--18.4 GiB、load1 10.93--11.81。
+第二阶段从 15:27:37 开始，在 22:27:37 的七小时截止点前完成。
 
-## 抽样验证
+## 79 项和原 28 项的重新分类
 
-选择以下 4 项，覆盖目录项/特殊类型、普通权限错误、递归删除和临时目录环境变量：
+原 79 项 `INDETERMINATE` 已全部定性，见
+`tables/r77_79_indeterminate_resolved.tsv`：
 
-- `directory_entry.obs/file_type_obs.pass.cpp`
-- `fs.op.exists/exists.pass.cpp`
-- `fs.op.remove_all/remove_all.pass.cpp`
-- `fs.op.temp_dir_path/temp_directory_path.pass.cpp`
+- 78 项：基线与补丁均 FAIL，`UPSTREAM_EXISTING`；
+- 1 项 `thread_create_failure.pass.cpp`：owner 下两侧均 PASS，
+  `ENVIRONMENT_CAUSED`；
+- 方案引入 0，无法判断 0。
 
-机器可读成对结果在 `tables/isolation_validation.tsv`，完整 lit stdout/stderr、JSON 和执行器遥测在 `raw/validation/`。
+R77 原 28 项“基线失败、补丁通过”在隔离后均无差异，见
+`tables/r77_28_resolved.tsv`：27 项由 root/owner 身份漂移造成，1 项
+`offset_range` 由超时边界造成，全部归为 `ENVIRONMENT_CAUSED`。
 
-先以 root 做控制实验：两套库均为 4 FAIL，逐项退出 134 且断言表达式一致。随后在互不相干的 owner 专属根中运行：两套库均为 4 PASS，lit 均退出 0；两侧专属临时根在正常结束后均为空。这说明补丁/基线没有产生行为差异，root 控制失败由身份与权限语义导致。
+## 五处 `noexcept` 边界和 25 类差异
 
-## 对 R77 28 项的当前定性
+五处边界逐项记录在 `tables/noexcept_boundary_coverage.tsv`。官方套件没有
+`pthread_cancel` 用例，因此 D01--D05 五个精确取消触发均未直接命中；只能确认
+condition_variable、future、stream 等普通路径被运行。不得把普通路径通过写成
+取消边界已验证。
 
-- 27 项 filesystem：`ENVIRONMENT_IDENTITY_MISMATCH`。R68 补丁侧是 owner，R77 基线侧是 root；本轮在相同 root 下复现相同失败、在相同 owner 下复现相同通过。
-- 1 项 fstream `offset_range.pass.cpp`：`NOT_OBSERVED`。R77 基线超时、R68 补丁通过；本阶段只完成夹具源码分析，没有重新执行约 4 GiB 写入测试。
-- “夹具跨两侧残留导致 R77 28 项差异”：未得到证据。异常残留风险真实存在且本轮已观测，但 R77 的 filesystem 差异有更直接、已验证的身份漂移解释。
+25 类差异逐项记录在 `tables/known_25_coverage.tsv`。主要结果：
 
-## 技术性错误及修正
+- D01：libc++abi `forced_unwind1/2/3` 两侧 PASS，`forced_unwind4` 在 armv7l
+  UNSUPPORTED；精确 noexcept 取消边界未命中；
+- D02：`noexception1..4` 两侧均 UNSUPPORTED；
+- D03、D05、D10、D20、D21、D22：只获得表中所列的部分覆盖；
+- D24：选定 x86_64/armv7l 配置的全量对照缺口已关闭；
+- D04、D06--D09、D11--D19、D23、D25：本轮未直接验证。
 
-- 002：命令成功、原始输出已落盘，但记录包装块内误用 `exit`，摘要文件当时未生成；已补记，后续统一使用子 shell。
-- 009：猜错补丁构建目录为 `tmp/R69/build-replay-armv7l`；R77 脚本证明正确目录为 `tmp/R68/build-patched-armv7l`，010 更正并校验四个运行库 SHA256。
-- 013：执行器遥测使用相对主机路径，lit 改变工作目录后触发 `FileNotFoundError`，遮蔽 4 个测试结果；完整失败保留，精确重建 baseline 夹具后以绝对路径重跑。
-- 014：一次只读 jq 摘要表达式语法错误，未改变测试结果；015 使用正确表达式。
-- 022：只读检索同时传入一个不存在的重复路径，rg 返回 2；023 用精确存在路径重跑。
-- 031：分析脚本把“可选符号无匹配”的 rg 退出 1 当成整体失败；只修正四处可选匹配的退出处理，032 重跑得到 29 行完整表。
-- 037：对整个归档运行 `git diff --check` 时，完整保留的 SDB CRLF 输出和命令原文末尾空格被报告为 whitespace；没有改写原始输出，后续只对人工编写的报告、脚本和表格执行 whitespace 检查。
+## 清理
 
-这些均为命令/任务工具错误，没有改动判定对象。
+收尾前确认无 `t.tmp.exe` 或 R77 run 进程，记录目录清单后删除两个精确测试根：
 
-## 自行判断与尚存疑问
+- `/opt/usr/home/owner/share/tmp/r77_lit_20260829`
+- `/opt/usr/r81_phase2`
+
+最终核验为 `R77_ABSENT`、`R81_ABSENT`、测试进程 ABSENT，`/opt/usr` 可用
+90,200,176 KiB。删除的是可由归档脚本和本地构建产物重建的板端临时夹具，板上
+原目录本身不可恢复。未安装软件、未改系统配置、未重启。
+
+## 技术性错误与自行判断
+
+技术性错误均保留原始失败记录，未改判定对象：
+
+- 批次包装首次将 `batch-023` 写成 `batch-23`，修正路径格式后重跑；
+- 一次 SDB 输出带 CRLF，严格字符串核验误报，去除 CR 后复核；
+- 候选证据初次使用过宽检索，产生较大输出；后续改为 JSON 定点提取；
+- 最终分析脚本首次只读入 R77 新增 11 个批次而漏掉复用的 R68 前缀，命中
+  test-set mismatch 并停止；改为读取 R77 的 11,321 项聚合文件后通过；
+- 一次记录包装参数少传标签导致脚本权限错误；一次板端只读进程检查的 grep
+  引号错误；均落盘并使用明确命令复核；
+- 一次 runtime 部署脚本因任务根已存在拒绝部署，按既有清理脚本清理精确 R77
+  根后正常部署，没有绕过门禁。
 
 自行判断：
 
-- 抽样选 4 项而非 28 项全跑，因为任务书要求“若干项”；所选项覆盖主要夹具种类与环境变量路径。
-- 将 R68 的 `owner(5001)` 作为正式执行身份，因为待比较的补丁侧 28 项全部来自该身份；root 仅作为控制实验。
-- 未运行 fstream 约 4 GiB 写入测试，避免把第一阶段扩展成大负载补跑；明确记为 `NOT_OBSERVED`。
-- 严格遵守“第一步完成后停”，没有启动 7000 后续或 libc++abi。
+1. 将 owner 选为统一身份，理由见上文；
+2. 身份机械扫描采用保守候选集，再用动态对照确认；没有因静态扫描漏掉
+   `RLIMIT_NPROC` 就扩大为全套重跑，只补做该单项；
+3. `offset_range` 在空间足够时使用已由 lit 构建的精确二进制成对执行，以避免
+   discovery 时间计入 120 秒测试上限；
+4. 系统两次异常后把剩余并行度从任务书的 2 降为 1，并采用更严格资源停止线；
+5. 两侧共同 FAIL 按任务口径记 `UPSTREAM_EXISTING`，不声称已查明每项根因。
 
-待人工确认的问题：
+尚存疑问：无阻塞性疑问。系统两次崩溃的根因未观测到；精确五处取消边界、
+aarch64、其他编译配置、两套标准库共存期和产品包级 ABI/部署场景仍是未覆盖
+范围。
 
-1. 第二阶段是否按任务书只续跑基线，复用 R68/R77 已完成的补丁结果；还是为了完全同构的 `TMPDIR` 隔离，再重跑补丁侧 filesystem 子集或全套？后者超出当前“基线补跑”文字范围。
-2. `offset_range.pass.cpp` 是否应在第二阶段开始前单独做 owner 身份的基线/补丁成对复验？它会实际写约 4 GiB，且 R77 基线曾触发 110 秒上限。
+## 纪律与未覆盖范围
 
-## 材料索引
+- 未修改平台源码、libc++/libc++abi 源码或任何定稿补丁；
+- 未向 Gerrit、LLVM 上游或任何外部源码仓推送；本次只提交本项目证据仓；
+- 原始命令、stdout/stderr、退出码、批次 JSON 和遥测完整保存在本目录；
+- 未覆盖：aarch64、LLVM 套件其他标准/编译器/异常配置、共存期、产品包级构建
+  与 ABI、异步取消精确落入五处 noexcept 边界。
 
-- `tables/r77_28_tests.tsv`：R77 的 28 项原列表。
-- `tables/fixture_dependencies.tsv`：28 项逐项夹具符号和外部路径。
-- `tables/r77_baseline_failure_reasons.tsv`：R77 基线失败退出码和断言原文。
-- `tables/isolation_validation.tsv`：root 控制与 owner 正式抽样的成对结果。
-- `code/`：隔离执行包装器和夹具分析脚本。
-- `commands/`：命令原文、退出码及原始输出路径。
-- `raw/`：完整原始输出、lit JSON 和遥测。
+## 材料导航
 
-本阶段结论：`PARTIAL`，覆盖“夹具依赖查明、隔离设计、代表项验证”；第二阶段全部为 `NOT_STARTED`，等待人工确认后继续。
+- `tables/final_summary.json`：最终计数；
+- `tables/full_failure_classification.tsv`：213 项共同失败逐项分类；
+- `tables/r77_79_indeterminate_resolved.tsv`：原 79 项逐项结论；
+- `tables/r77_28_resolved.tsv`：原 28 项逐项结论；
+- `tables/identity_sensitive_tests_final.tsv`：28 项身份敏感清单和依据；
+- `tables/libcxxabi_owner_comparison.tsv`：81 项 libc++abi 对照；
+- `tables/noexcept_boundary_coverage.tsv`、`known_25_coverage.tsv`：已知发现对照；
+- `raw/phase2/results/`：完整补跑结果；`raw/*.command.txt`、`*.stdout`、
+  `*.stderr`、`*.exitcode`：命令原文和退出码；
+- `code/`：执行包装、资源保护和离线分析脚本。
