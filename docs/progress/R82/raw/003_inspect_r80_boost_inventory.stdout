@@ -1,0 +1,414 @@
+# R80：D-09 同名符号与 D-11 头文件对象布局确认
+
+## 结论
+
+状态：`COMPLETED`。
+
+- D-09：x86_64 口径的 17 个精确同名符号全部具有同一标准层含义，没有发现
+  “同名异义”。在各自正确配对的 runtime 中，分组行为探针输出逐字一致。
+  但它们不是任意混用兼容承诺：异常消息的引用计数存储、`exception_ptr`、
+  未捕获异常计数和 RTTI 均由各自 runtime 所有；双 runtime、无版本引用、
+  `dlsym`、静态 runtime 或错误加载顺序仍需运行时绑定证据。
+- D-11：对象布局差异确定存在。33 个代表对象中 10 个的 x86_64
+  `sizeof/alignof` 不同；最小跨库用例在链接和装载均成功后，把生产方长度 4
+  读成 `106884723786536`，证明该类差异确实可以绕过链接器、到运行时才显现。
+- 平台迁移存在真实的触发边界，但当前发布物尚未形成“新旧两侧各编一半”的
+  实测故障：R22 ELF 图中 Boost 共享库有 13 个 consumer source RPM、75 个
+  架构化 consumer ELF、90 条真实 C++ 符号相交边；其中
+  `boost::filesystem::path` 的公开头内含 `std::string`。若 provider 与 consumer
+  分批换库，这就是对象模型穿越 DSO 的可达路径。现有发布物两侧仍同为
+  libstdc++，所以平台现状故障记 `NOT_OBSERVED`。
+
+## 口径与输入
+
+- D-09 清单严格重放 R66 的两个输入与解析器：
+  `codes/gcc/libstdc++-v3/config/abi/post/x86_64-linux-gnu/baseline_symbols.txt`
+  （6,057 exports）和 T4 平台 x86_64 `libc++.so.1.0` 实测导出
+  （1,969 exports）；交集仍为 17。
+- 两边符号版本并不相同：libstdc++ 为 `GLIBCXX_*`/`CXXABI_*`，libc++ 为
+  `LLVM_22`。因此常规已版本化引用通常先在链接或 loader 暴露；本报告所述
+  静默运行时风险针对无版本绑定、返回类型/成员布局未进入符号名、双 runtime
+  或静态复制等边界。
+- D-11 布局探针用系统 GCC 13.3 编译 libstdc++ 侧；libc++ 侧用工作区既有
+  GBS 缓存中的 Clang/LLVM 21.1.1 RPM（仅解包到 `progress/R80/build`，未安装）
+  编译，并链接 T4 x86_64 平台 libc++/libc++abi。源码与完整命令均存档。
+
+## D-09：17 项逐项判断
+
+完整逐行表见 [tables/d09_common17.tsv](tables/d09_common17.tsv)。17 项为：
+
+1. `logic_error` 的 char-pointer 完整/基对象构造（2 项）、复制完整/基对象构造
+   （2 项）及复制赋值（1 项）；
+2. `runtime_error` 的同一五项；
+3. `nested_exception` 的 deleting/complete/base 三个析构入口；
+4. `std::__throw_bad_alloc()`；
+5. `std::current_exception()`；
+6. `std::uncaught_exception()` 与 `std::uncaught_exceptions()`。
+
+### 静态可判定部分
+
+- 两套库的 `logic_error`/`runtime_error` 都是 `std::exception` 基类加一个指针
+  大小的引用计数字符串；本机探针两者均为 16 字节、8 字节对齐。libc++ 的
+  `__libcpp_refstring` 明确采用与旧 GCC COW string 相同的
+  `length/capacity/refcount/data` 形态以维持异常 ABI。两边构造、复制、赋值的
+  标准目的一致。
+- `nested_exception` 两边均为虚类加一个单指针 `exception_ptr`，均为
+  16 字节；三个符号只是 Itanium ABI 的析构变体，含义一致。
+- `current_exception` 两边都读取当前 caught chain、拒绝无法引用计数的 foreign
+  exception 并保留 native primary exception；含义一致。
+- 两种 uncaught API 都读取本 runtime 的线程局部计数；bool API 判断计数是否
+  非零，int API返回计数；含义一致。
+- `__throw_bad_alloc` 两边在启用异常时均抛 `std::bad_alloc`；禁用异常时均不
+  返回而终止，诊断形式不同但不是相反语义。
+
+### 运行确认与剩余条件
+
+分组探针对构造/复制/赋值、当前异常、展开期计数、空 nested exception 与
+bad_alloc 逐项运行。libstdc++ 和 libc++ 两份输出逐字相同，均退出 0，见
+`raw/d09_*_run.txt` 与命令 042。
+
+下列不是已观察故障，而是源码证明无法由 matched-pair 探针排除的条件：
+
+- Linux 上 libc++ 的 refstring 不启用 Apple 专用的 GCC empty-string singleton
+  检查；若 GCC 创建的空消息异常被 libc++ 的复制/赋值/析构路径处理，需单独
+  运行确认引用计数与释放行为。
+- `exception_ptr` 和 `nested_exception` 的外层大小虽相同，其指针指向的异常头
+  与引用计数属于具体 runtime；错误 provider 会操作另一 runtime 的对象。
+- 双 runtime 时两个 uncaught counter/caught chain 是不同状态；函数绑定到未
+  执行当前展开的 runtime 时，可能得到 0/null。
+
+因此：单 runtime、正确 libc++/libc++abi 或 libstdc++/libsupc++ 配对下不需要
+额外语义确认；若平台承诺双 runtime 间异常对象穿越或无版本符号可互换，仍缺
+加载顺序/绑定轨迹、foreign/native exception 与空消息跨 provider 运行数据。
+
+## D-11：分布、数量与布局
+
+这类对象不能给出有限“实例总数”：容器、词汇类型、智能指针、atomic、
+iterator、range view 和闭包大多是头文件模板，元素、allocator、traits、extent
+和闭包组合令实例数无上限。按家族的分布见
+[tables/d11_header_object_families.tsv](tables/d11_header_object_families.tsv)。
+
+为给出可复核的粗略规模，单行词法代理统计得到：libstdc++ 854 个 include
+文件中 81 个文件命中 393 个 class/struct definition 行；libc++ 排除复制的
+`__cxx03` 树后，1,104 个文件中 657 个命中 2,478 行。它们包含内部类型、
+遗漏跨行声明，也不是唯一 public type 数，只能说明实现规模为数百至数千个
+定义点，不能冒充 ABI 对象总数。
+
+33 个代表对象的完整结果见
+[tables/d11_layout_comparison.tsv](tables/d11_layout_comparison.tsv)：
+
+- 明确不同 10 个：`any`、`function<void()>`、`deque<int>`、`map<int,int>`、
+  `set<int>`、`unordered_map<int,int>`、`unordered_set<int>`、`string`、
+  `future<int>`、`promise<int>`；
+- 其余 23 个仅 `sizeof/alignof` 相同，不能据此推断成员偏移、节点、控制块、
+  iterator 或操作语义兼容。
+
+### 最小可运行用例
+
+`layout_provider.cpp` 由 libstdc++ 构建共享库，返回
+`std::deque<int>*`；`layout_consumer.cpp` 由 libc++ 构建。Itanium ABI 不把
+普通函数返回类型编码进 `make_payload()` 的符号名，故 consumer 的 UND 与
+provider 的 DEF 精确匹配。ELF 核对显示进程同时需要 provider、libc++、
+libc++abi，而 provider 需要 libstdc++；链接、装载均成功。
+
+运行输出：
+
+```text
+provider_sizeof=80
+consumer_sizeof=48
+provider_view=4
+consumer_view=106884723786536
+RUN_EXIT=42
+```
+
+退出 42 是用例主动标记“两侧视图不一致”，不是崩溃。对象由原 provider
+销毁，避免把本用例扩大成跨 allocator 释放测试。
+
+### 平台迁移触发路径
+
+- R22 发布 ELF 图总体已有 82 个真实 C++ ABI provider source identity 和
+  383 个 consumer identity；这证明跨 DSO C++ 调用边存在，不证明每条都传
+  对象。
+- 对 Boost 的收窄复核确认 13 个 consumer source RPM、75 个架构化 ELF、
+  90 条 true symbol-intersection 边，覆盖 aarch64/armv7l/x86_64。生产路径
+  包括 `security-manager` 对 boost-filesystem/program-options/iostreams、
+  `dotnet-launcher` 对 boost-filesystem、`libzypp` 对 boost-thread；另有测试
+  路径。
+- 冻结 Boost 头的 `boost/filesystem/path.hpp` 定义 `path::string_type` 为
+  `std::basic_string`，对象成员 `m_pathname` 即该类型；R22 consumer 符号中有
+  参数为 `boost::filesystem::path const&` 的接口。这种函数名只编码 Boost
+  类型，不编码其内部 std::string 布局，符合最小用例所证实的静默边界。
+- 当前边两侧都是既有 libstdc++ 构建，坏行为没有发生；触发条件是 provider
+  与 consumer 非原子迁移、预制旧 DSO 与新 consumer 共存，或插件/静态
+  runtime 形成两套对象模型。全量同一工具链重建并保持边两侧一致时，没有
+  该“跨实现解释同一对象”的条件。
+
+事实判断是：平台迁移存在需要逐边确认的布局边界，不能用“链接成功”关闭；
+但本轮没有把 82 个 provider 的全部公开 API、插件加载顺序和运行调用全部
+执行，因此平台故障数量仍为 `NOT_OBSERVED`，不能从 90 条 Boost 边推成 90
+个故障。
+
+## 未覆盖范围
+
+- ARM/aarch64 的逐类型布局和最小用例未运行；33 项结果只代表 x86_64。
+- ABI 配置宏、debug iterator、sanitizer、不同 allocator/traits、`-fno-exceptions`
+  和静态链接组合未展开。
+- 没有获得所有平台 DSO 的 DWARF，也未验证成员偏移/控制块/节点布局全量。
+- 未做 82 provider × 383 consumer 的 API 语义审计和产品场景运行。
+- D-09 混合 runtime 的 empty-message、foreign exception、symbol preemption 与
+  `dlsym` 场景未运行，记 `NOT_OBSERVED`。
+
+## 过程异常
+
+- 命令 007 首次调用错 R66 parser API，退出 1；命令 008 按脚本实际函数名
+  重跑，恢复 17 项。
+- 命令 020/021 证实 GCC 13 无法编译 LLVM 22 头；没有修改头文件，而是解包
+  既有缓存 Clang 工具。解包后依次缺 `libLLVM.so.21.1`、`libxml2.so.16`，
+  命令 029~032 从同一缓存补齐，未安装系统包。
+- 命令 028 的内层显式 `exit 2` 绕过日志 footer，其退出码未由 wrapper 捕获，
+  记 `NOT_OBSERVED`；现象与后续修复均完整保留。
+- 首个跨布局用例用 `std::string` 返回值；libstdc++ 的 `abi:cxx11` tag 进入符号
+  名，consumer 链接退出 1，说明该变体会提前暴露。命令 036 改用无该 tag 的
+  `deque` 后验证静默运行时差异。两版源码演进与错误原文均存档。
+
+## 材料
+
+- 命令原文与退出码：`commands/`
+- 完整 stdout/stderr：`raw/`
+- 用例源码：`code/`
+- 逐项与布局表：`tables/`
+- `build/` 仅含可重建 ELF 与 311 MiB 临时工具解包，不纳入项目仓提交。
+
+本任务未使用开发板，未修改 `codes/`，未向 Gerrit、正式分支或 LLVM 上游
+提交。
+
+--- files ---
+docs/progress/R80/INDEX.tsv
+docs/progress/R80/REPORT.md
+docs/progress/R80/code/d09_behavior_probe.cpp
+docs/progress/R80/code/layout_boundary.h
+docs/progress/R80/code/layout_consumer.cpp
+docs/progress/R80/code/layout_probe.cpp
+docs/progress/R80/code/layout_provider.cpp
+docs/progress/R80/commands/000_initialize_r80.log
+docs/progress/R80/commands/001_resource_gate.log
+docs/progress/R80/commands/002_locate_d09_d11_prior_evidence.log
+docs/progress/R80/commands/003_inspect_prior_evidence.log
+docs/progress/R80/commands/004_read_d09_d11_records.log
+docs/progress/R80/commands/005_extract_common17_and_inputs.log
+docs/progress/R80/commands/006_show_abi_outputs_and_common17.log
+docs/progress/R80/commands/007_reconstruct_common17.log
+docs/progress/R80/commands/008_inspect_and_reconstruct_common17.log
+docs/progress/R80/commands/009_locate_common17_source_definitions.log
+docs/progress/R80/commands/010_capture_source_implementations.log
+docs/progress/R80/commands/011_targeted_source_and_elf_identity.log
+docs/progress/R80/commands/012_capture_libcxx_runtime_implementations.log
+docs/progress/R80/commands/013_key_libcxx_runtime_excerpts.log
+docs/progress/R80/commands/014_compare_refcount_string_abi.log
+docs/progress/R80/commands/015_compare_exception_runtime_semantics.log
+docs/progress/R80/commands/016_read_r80_task_and_d11_prior.log
+docs/progress/R80/commands/017_check_compilers_and_platform_edges.log
+docs/progress/R80/commands/018_locate_compiler_and_source_corpus.log
+docs/progress/R80/commands/019_precise_compiler_and_corpus_check.log
+docs/progress/R80/commands/020_build_run_layout_probe.log
+docs/progress/R80/commands/021_find_config_site_and_retry_layout.log
+docs/progress/R80/commands/022_precise_clang_lookup.log
+docs/progress/R80/commands/023_locate_tizen_clang_precisely.log
+docs/progress/R80/commands/024_find_existing_clang_in_buildroots.log
+docs/progress/R80/commands/025_check_llvm_bins_and_corpus.log
+docs/progress/R80/commands/026_find_clang_rpm_artifact.log
+docs/progress/R80/commands/027_extract_cached_clang_tool.log
+docs/progress/R80/commands/028_fix_cached_clang_library_path.log
+docs/progress/R80/commands/029_locate_llvm_runtime_rpm.log
+docs/progress/R80/commands/030_extract_libllvm_and_verify_clang.log
+docs/progress/R80/commands/031_cached_clang_missing_libraries.log
+docs/progress/R80/commands/032_extract_libxml_and_verify_clang.log
+docs/progress/R80/commands/033_build_run_libcxx_layout_probe.log
+docs/progress/R80/commands/034_compare_layout_outputs.log
+docs/progress/R80/commands/035_build_run_cross_layout_case.log
+docs/progress/R80/commands/036_retry_cross_layout_case_with_deque.log
+docs/progress/R80/commands/037_header_definition_scale.log
+docs/progress/R80/commands/038_platform_layout_trigger_evidence.log
+docs/progress/R80/commands/039_extract_boost_provider_consumers.log
+docs/progress/R80/commands/040_summarize_boost_trigger_edges.log
+docs/progress/R80/commands/041_rebuild_extended_layout_probe.log
+docs/progress/R80/commands/042_build_run_d09_behavior_probe.log
+docs/progress/R80/commands/043_pre_report_state.log
+docs/progress/R80/commands/044_audit_command_logs.log
+docs/progress/R80/commands/045_validate_and_stage_docs.log
+docs/progress/R80/commands/046_index_and_git_preflight.log
+docs/progress/R80/commands/047_stage_r80_materials.log
+docs/progress/R80/commands/048_final_precommit_audit.log
+docs/progress/R80/commands/049_precommit_audit_preserve_raw.log
+docs/progress/R80/raw/000_initialize_r80.stderr
+docs/progress/R80/raw/000_initialize_r80.stdout
+docs/progress/R80/raw/001_resource_gate.stderr
+docs/progress/R80/raw/001_resource_gate.stdout
+docs/progress/R80/raw/002_locate_d09_d11_prior_evidence.stderr
+docs/progress/R80/raw/002_locate_d09_d11_prior_evidence.stdout
+docs/progress/R80/raw/003_inspect_prior_evidence.stderr
+docs/progress/R80/raw/003_inspect_prior_evidence.stdout
+docs/progress/R80/raw/004_read_d09_d11_records.stderr
+docs/progress/R80/raw/004_read_d09_d11_records.stdout
+docs/progress/R80/raw/005_extract_common17_and_inputs.stderr
+docs/progress/R80/raw/005_extract_common17_and_inputs.stdout
+docs/progress/R80/raw/006_show_abi_outputs_and_common17.stderr
+docs/progress/R80/raw/006_show_abi_outputs_and_common17.stdout
+docs/progress/R80/raw/007_reconstruct_common17.stderr
+docs/progress/R80/raw/007_reconstruct_common17.stdout
+docs/progress/R80/raw/008_inspect_and_reconstruct_common17.stderr
+docs/progress/R80/raw/008_inspect_and_reconstruct_common17.stdout
+docs/progress/R80/raw/009_locate_common17_source_definitions.stderr
+docs/progress/R80/raw/009_locate_common17_source_definitions.stdout
+docs/progress/R80/raw/010_capture_source_implementations.stderr
+docs/progress/R80/raw/010_capture_source_implementations.stdout
+docs/progress/R80/raw/011_targeted_source_and_elf_identity.stderr
+docs/progress/R80/raw/011_targeted_source_and_elf_identity.stdout
+docs/progress/R80/raw/012_capture_libcxx_runtime_implementations.stderr
+docs/progress/R80/raw/012_capture_libcxx_runtime_implementations.stdout
+docs/progress/R80/raw/013_key_libcxx_runtime_excerpts.stderr
+docs/progress/R80/raw/013_key_libcxx_runtime_excerpts.stdout
+docs/progress/R80/raw/014_compare_refcount_string_abi.stderr
+docs/progress/R80/raw/014_compare_refcount_string_abi.stdout
+docs/progress/R80/raw/015_compare_exception_runtime_semantics.stderr
+docs/progress/R80/raw/015_compare_exception_runtime_semantics.stdout
+docs/progress/R80/raw/016_read_r80_task_and_d11_prior.stderr
+docs/progress/R80/raw/016_read_r80_task_and_d11_prior.stdout
+docs/progress/R80/raw/017_check_compilers_and_platform_edges.stderr
+docs/progress/R80/raw/017_check_compilers_and_platform_edges.stdout
+docs/progress/R80/raw/018_locate_compiler_and_source_corpus.stderr
+docs/progress/R80/raw/018_locate_compiler_and_source_corpus.stdout
+docs/progress/R80/raw/019_precise_compiler_and_corpus_check.stderr
+docs/progress/R80/raw/019_precise_compiler_and_corpus_check.stdout
+docs/progress/R80/raw/020_build_run_layout_probe.stderr
+docs/progress/R80/raw/020_build_run_layout_probe.stdout
+docs/progress/R80/raw/021_find_config_site_and_retry_layout.stderr
+docs/progress/R80/raw/021_find_config_site_and_retry_layout.stdout
+docs/progress/R80/raw/022_precise_clang_lookup.stderr
+docs/progress/R80/raw/022_precise_clang_lookup.stdout
+docs/progress/R80/raw/023_locate_tizen_clang_precisely.stderr
+docs/progress/R80/raw/023_locate_tizen_clang_precisely.stdout
+docs/progress/R80/raw/024_find_existing_clang_in_buildroots.stderr
+docs/progress/R80/raw/024_find_existing_clang_in_buildroots.stdout
+docs/progress/R80/raw/025_check_llvm_bins_and_corpus.stderr
+docs/progress/R80/raw/025_check_llvm_bins_and_corpus.stdout
+docs/progress/R80/raw/026_find_clang_rpm_artifact.stderr
+docs/progress/R80/raw/026_find_clang_rpm_artifact.stdout
+docs/progress/R80/raw/027_extract_cached_clang_tool.stderr
+docs/progress/R80/raw/027_extract_cached_clang_tool.stdout
+docs/progress/R80/raw/028_fix_cached_clang_library_path.stderr
+docs/progress/R80/raw/028_fix_cached_clang_library_path.stdout
+docs/progress/R80/raw/029_locate_llvm_runtime_rpm.stderr
+docs/progress/R80/raw/029_locate_llvm_runtime_rpm.stdout
+docs/progress/R80/raw/030_extract_libllvm_and_verify_clang.stderr
+docs/progress/R80/raw/030_extract_libllvm_and_verify_clang.stdout
+docs/progress/R80/raw/031_cached_clang_missing_libraries.stderr
+docs/progress/R80/raw/031_cached_clang_missing_libraries.stdout
+docs/progress/R80/raw/032_extract_libxml_and_verify_clang.stderr
+docs/progress/R80/raw/032_extract_libxml_and_verify_clang.stdout
+docs/progress/R80/raw/033_build_run_libcxx_layout_probe.stderr
+docs/progress/R80/raw/033_build_run_libcxx_layout_probe.stdout
+docs/progress/R80/raw/034_compare_layout_outputs.stderr
+docs/progress/R80/raw/034_compare_layout_outputs.stdout
+docs/progress/R80/raw/035_build_run_cross_layout_case.stderr
+docs/progress/R80/raw/035_build_run_cross_layout_case.stdout
+docs/progress/R80/raw/036_retry_cross_layout_case_with_deque.stderr
+docs/progress/R80/raw/036_retry_cross_layout_case_with_deque.stdout
+docs/progress/R80/raw/037_header_definition_scale.stderr
+docs/progress/R80/raw/037_header_definition_scale.stdout
+docs/progress/R80/raw/038_platform_layout_trigger_evidence.stderr
+docs/progress/R80/raw/038_platform_layout_trigger_evidence.stdout
+docs/progress/R80/raw/039_extract_boost_provider_consumers.stderr
+docs/progress/R80/raw/039_extract_boost_provider_consumers.stdout
+docs/progress/R80/raw/040_summarize_boost_trigger_edges.stderr
+docs/progress/R80/raw/040_summarize_boost_trigger_edges.stdout
+docs/progress/R80/raw/041_rebuild_extended_layout_probe.stderr
+docs/progress/R80/raw/041_rebuild_extended_layout_probe.stdout
+docs/progress/R80/raw/042_build_run_d09_behavior_probe.stderr
+docs/progress/R80/raw/042_build_run_d09_behavior_probe.stdout
+docs/progress/R80/raw/043_pre_report_state.stderr
+docs/progress/R80/raw/043_pre_report_state.stdout
+docs/progress/R80/raw/044_audit_command_logs.stderr
+docs/progress/R80/raw/044_audit_command_logs.stdout
+docs/progress/R80/raw/045_validate_and_stage_docs.stderr
+docs/progress/R80/raw/045_validate_and_stage_docs.stdout
+docs/progress/R80/raw/046_index_and_git_preflight.stderr
+docs/progress/R80/raw/046_index_and_git_preflight.stdout
+docs/progress/R80/raw/047_stage_r80_materials.stderr
+docs/progress/R80/raw/047_stage_r80_materials.stdout
+docs/progress/R80/raw/048_final_precommit_audit.stderr
+docs/progress/R80/raw/048_final_precommit_audit.stdout
+docs/progress/R80/raw/049_precommit_audit_preserve_raw.stderr
+docs/progress/R80/raw/049_precommit_audit_preserve_raw.stdout
+docs/progress/R80/raw/d09_libcxx_run.txt
+docs/progress/R80/raw/d09_libstdcxx_run.txt
+docs/progress/R80/raw/layout_libcxx.tsv
+docs/progress/R80/raw/layout_libstdcxx.tsv
+docs/progress/R80/tables/d09_common17.tsv
+docs/progress/R80/tables/d11_header_object_families.tsv
+docs/progress/R80/tables/d11_layout_comparison.tsv
+
+--- boost references ---
+docs/progress/R80/REPORT.md:16:  实测故障：R22 ELF 图中 Boost 共享库有 13 个 consumer source RPM、75 个
+docs/progress/R80/REPORT.md:17:  架构化 consumer ELF、90 条真实 C++ 符号相交边；其中
+docs/progress/R80/REPORT.md:18:  `boost::filesystem::path` 的公开头内含 `std::string`。若 provider 与 consumer
+docs/progress/R80/REPORT.md:109:`std::deque<int>*`；`layout_consumer.cpp` 由 libc++ 构建。Itanium ABI 不把
+docs/progress/R80/REPORT.md:110:普通函数返回类型编码进 `make_payload()` 的符号名，故 consumer 的 UND 与
+docs/progress/R80/REPORT.md:118:consumer_sizeof=48
+docs/progress/R80/REPORT.md:120:consumer_view=106884723786536
+docs/progress/R80/REPORT.md:130:  383 个 consumer identity；这证明跨 DSO C++ 调用边存在，不证明每条都传
+docs/progress/R80/REPORT.md:132:- 对 Boost 的收窄复核确认 13 个 consumer source RPM、75 个架构化 ELF、
+docs/progress/R80/REPORT.md:133:  90 条 true symbol-intersection 边，覆盖 aarch64/armv7l/x86_64。生产路径
+docs/progress/R80/REPORT.md:134:  包括 `security-manager` 对 boost-filesystem/program-options/iostreams、
+docs/progress/R80/REPORT.md:135:  `dotnet-launcher` 对 boost-filesystem、`libzypp` 对 boost-thread；另有测试
+docs/progress/R80/REPORT.md:137:- 冻结 Boost 头的 `boost/filesystem/path.hpp` 定义 `path::string_type` 为
+docs/progress/R80/REPORT.md:138:  `std::basic_string`，对象成员 `m_pathname` 即该类型；R22 consumer 符号中有
+docs/progress/R80/REPORT.md:139:  参数为 `boost::filesystem::path const&` 的接口。这种函数名只编码 Boost
+docs/progress/R80/REPORT.md:142:  与 consumer 非原子迁移、预制旧 DSO 与新 consumer 共存，或插件/静态
+docs/progress/R80/REPORT.md:148:执行，因此平台故障数量仍为 `NOT_OBSERVED`，不能从 90 条 Boost 边推成 90
+docs/progress/R80/REPORT.md:157:- 未做 82 provider × 383 consumer 的 API 语义审计和产品场景运行。
+docs/progress/R80/REPORT.md:171:  名，consumer 链接退出 1，说明该变体会提前暴露。命令 036 改用无该 tag 的
+docs/progress/R80/INDEX.tsv:4:c57a675270f1f52a8a7e11aacca74ea5390d290e786c9d0127a5afeee54f8e09  ./code/layout_consumer.cpp
+docs/progress/R80/INDEX.tsv:5:1931b2b4067bf6941886c14035aba7c91586e673f65ec178776fa903510d4512  ./code/layout_probe.cpp
+docs/progress/R80/INDEX.tsv:6:17c8048380f376a8dc96f46f4e7b6f28042f7d518079907bb692bbbf98cd81d8  ./code/layout_provider.cpp
+docs/progress/R80/INDEX.tsv:7:a2850906e04156937326e37c9b727354cb10c82a24f8630f6ea059d428519437  ./commands/000_initialize_r80.log
+docs/progress/R80/INDEX.tsv:8:bc3fbf0c0dcc29b6803e83fea8bc7a8c9020a75fbc1ceb6aafdfef807d46e706  ./commands/001_resource_gate.log
+docs/progress/R80/INDEX.tsv:12:1a162e1ab4c81daf9ef7bbed31b43d483fdf9020094ca262d2bb0989135c513e  ./commands/005_extract_common17_and_inputs.log
+docs/progress/R80/INDEX.tsv:15:fc41877e3e889d9f1e733ff7fad946c92f65f7c890174269a881a019e9ca436e  ./commands/008_inspect_and_reconstruct_common17.log
+docs/progress/R80/INDEX.tsv:20:2276c1f24dd5f6aed7c55ba746d75e27813d15f75f55007f8f095888fc5907af  ./commands/013_key_libcxx_runtime_excerpts.log
+docs/progress/R80/INDEX.tsv:24:c7478005deb6219a7f8a0d0ca7213d5affe395b46541f5ffd3435669889043b5  ./commands/017_check_compilers_and_platform_edges.log
+docs/progress/R80/INDEX.tsv:30:453efd2bb47bf1ebec8860abdc707b8f389228106885b90baee015bd12c757e7  ./commands/023_locate_tizen_clang_precisely.log
+docs/progress/R80/INDEX.tsv:31:0b8773b15cbd65c9083342d4195a896a0dc1bc163cf59b170f728b28d27640d3  ./commands/024_find_existing_clang_in_buildroots.log
+docs/progress/R80/INDEX.tsv:34:f2c9bbbc12a9b9f5c8fa496de7ac0d855a622ae8618bded0ed490fe371ba9cf6  ./commands/027_extract_cached_clang_tool.log
+docs/progress/R80/INDEX.tsv:37:90cd1cbe00f961b1b65516125e875ca799ea747a2d93a0320a3cddd37437db71  ./commands/030_extract_libllvm_and_verify_clang.log
+docs/progress/R80/INDEX.tsv:39:e95b1ccb03ad32f01e484f3823b32fd0dd26923214388fe12a0dae16353a9091  ./commands/032_extract_libxml_and_verify_clang.log
+docs/progress/R80/INDEX.tsv:44:d84ed311543533b32c1c39485c59b0c4dfd9062f6814fd63d66670c8bdfec564  ./commands/037_header_definition_scale.log
+docs/progress/R80/INDEX.tsv:46:a0cbbf9d61723bb8f60e48f4cbcd6c75daaf054eda7703c260a3bf8ce8a22db2  ./commands/039_extract_boost_provider_consumers.log
+docs/progress/R80/INDEX.tsv:47:3260f862cb788c596507fe8aebf8f1a07c660ddd363d64a693cb2866d4c84d79  ./commands/040_summarize_boost_trigger_edges.log
+docs/progress/R80/INDEX.tsv:49:220270dab1cd5a1fb46de915e64d1811a560131690835bd76f3a393c6aac8efd  ./commands/042_build_run_d09_behavior_probe.log
+docs/progress/R80/INDEX.tsv:51:276565c0a438575c11d97d901715aeea09d5b2cb51d5f69e114d098807361a05  ./commands/044_audit_command_logs.log
+docs/progress/R80/INDEX.tsv:56:dd29089d1ab92882f7ac4855a9ece62a620f05187257b4188e0d1832b63f7d9a  ./commands/049_precommit_audit_preserve_raw.log
+docs/progress/R80/INDEX.tsv:60:3771a938d71c2b78a347395915029d9fdc063a965c6ce083734d0b86e68b90c7  ./raw/001_resource_gate.stdout
+docs/progress/R80/INDEX.tsv:64:a7e3a7630839bf9623419afd527813ffab147be0e5d300cbff2d93f5f590d89a  ./raw/003_inspect_prior_evidence.stdout
+docs/progress/R80/INDEX.tsv:68:9f15707432217f2da3cc38fcd73b90ac53a7150e10fa581c239870951f786224  ./raw/005_extract_common17_and_inputs.stdout
+docs/progress/R80/INDEX.tsv:70:6b0e4505b5b1214c5b5fe259a8507eb9aacb99d9f166a902b947de0105f7e257  ./raw/006_show_abi_outputs_and_common17.stdout
+docs/progress/R80/INDEX.tsv:84:dc1d7816123faaf0708390b3346d0f5c3051b64fa44a2af5ecc3c2374d3ff591  ./raw/013_key_libcxx_runtime_excerpts.stdout
+docs/progress/R80/INDEX.tsv:98:1fd2e29256f7874be72170890613a5943e4ef13b79413829d3760ca19c181c88  ./raw/020_build_run_layout_probe.stdout
+docs/progress/R80/INDEX.tsv:99:76901bf68f6f5c9bf1c724c24f8c27dd2894d3451bfc536e6aefb2cc908397bd  ./raw/021_find_config_site_and_retry_layout.stderr
+docs/progress/R80/INDEX.tsv:100:591b2c6a7fbb72b202d37483fa7670868f9b3690100be908771c59cae277d0c2  ./raw/021_find_config_site_and_retry_layout.stdout
+docs/progress/R80/INDEX.tsv:104:0d9a2bb9f3f42901275c0f9e922810382711b13087f93a8685cea05d71fb671e  ./raw/023_locate_tizen_clang_precisely.stdout
+docs/progress/R80/INDEX.tsv:108:5702b82035904dca99bcc41c898b9f832c61076a8c9ebce2eb3e05b46e445bf6  ./raw/025_check_llvm_bins_and_corpus.stdout
+docs/progress/R80/INDEX.tsv:110:b43aeb470e1b791e0613845728132e15404908947c4d1bf3add6c82305e16bb8  ./raw/026_find_clang_rpm_artifact.stdout
+docs/progress/R80/INDEX.tsv:120:c43fe4d6476f7e40325eb209b2a88815b48a0c090900b03c9d616f75a0939f18  ./raw/031_cached_clang_missing_libraries.stdout
+docs/progress/R80/INDEX.tsv:127:3e4ebe958ba6b32c091a02f452a693df2df024111c90e43068aaf67b80e47ff7  ./raw/035_build_run_cross_layout_case.stderr
+docs/progress/R80/INDEX.tsv:130:6ec548ae6e179193b8ebfefd77fa904596b506ff0df88c2f9efde5492766c74d  ./raw/036_retry_cross_layout_case_with_deque.stdout
+docs/progress/R80/INDEX.tsv:134:ee60d2e6d1c67b649fa909bd5c48cd74e66342dab5e7f1e1e25696980c0f7780  ./raw/038_platform_layout_trigger_evidence.stdout
+docs/progress/R80/INDEX.tsv:135:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./raw/039_extract_boost_provider_consumers.stderr
+docs/progress/R80/INDEX.tsv:136:e5533e2ed61dc5f3523bd8b74392a621dffaf71caaaacc69985f1c6c3fcea673  ./raw/039_extract_boost_provider_consumers.stdout
+docs/progress/R80/INDEX.tsv:137:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./raw/040_summarize_boost_trigger_edges.stderr
+docs/progress/R80/INDEX.tsv:138:a8ab877f49b913657dc6cee7463ca5549e7f1addd8660774b57b57986c7a2d78  ./raw/040_summarize_boost_trigger_edges.stdout
+docs/progress/R80/INDEX.tsv:140:e3cea685a90f373348b81cbe63a693ef96c8a9daa655a6f464f6481050a28667  ./raw/041_rebuild_extended_layout_probe.stdout
+docs/progress/R80/INDEX.tsv:144:c2f492fad7b8f37e989068fcd288b09f6f45e07c39e6e47b053aee891eee305a  ./raw/043_pre_report_state.stdout
+docs/progress/R80/INDEX.tsv:156:e8c60a3c73e106dd088f60abf30cd8275ac3d16ac590fea65226da374b00dbbf  ./raw/049_precommit_audit_preserve_raw.stdout
+docs/progress/R80/INDEX.tsv:157:693f9b0dc2f9959d1a31a55c5a200acd5a2f481b0ceede4de9f9087de11b5b5e  ./raw/d09_libcxx_run.txt
+docs/progress/R80/INDEX.tsv:158:693f9b0dc2f9959d1a31a55c5a200acd5a2f481b0ceede4de9f9087de11b5b5e  ./raw/d09_libstdcxx_run.txt
