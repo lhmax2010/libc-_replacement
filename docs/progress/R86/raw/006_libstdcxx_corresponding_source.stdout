@@ -1,0 +1,764 @@
+===== codes/gcc/libstdc++-v3/include/std/condition_variable =====
+    75	    using __clock_t = steady_clock;
+    76	#else
+    77	    using __clock_t = system_clock;
+    78	#endif
+    79	
+    80	    __condvar _M_cond;
+    81	
+    82	  public:
+    83	    typedef __gthread_cond_t* 		native_handle_type;
+    84	
+    85	    condition_variable() noexcept;
+    86	    ~condition_variable() noexcept;
+    87	
+    88	    condition_variable(const condition_variable&) = delete;
+    89	    condition_variable& operator=(const condition_variable&) = delete;
+    90	
+    91	    void
+    92	    notify_one() noexcept;
+    93	
+    94	    void
+    95	    notify_all() noexcept;
+    96	
+    97	    void
+    98	    wait(unique_lock<mutex>& __lock);
+    99	
+   100	    template<typename _Predicate>
+   101	      void
+   102	      wait(unique_lock<mutex>& __lock, _Predicate __p)
+   103	      {
+   104		while (!__p())
+   105		  wait(__lock);
+   106	      }
+   107	
+   108	#ifdef _GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT
+   109	    template<typename _Duration>
+   110	      cv_status
+   111	      wait_until(unique_lock<mutex>& __lock,
+   112			 const chrono::time_point<steady_clock, _Duration>& __atime)
+   113	      { return __wait_until_impl(__lock, __atime); }
+   114	#endif
+   115	
+   116	    template<typename _Duration>
+   117	      cv_status
+   118	      wait_until(unique_lock<mutex>& __lock,
+   119			 const chrono::time_point<system_clock, _Duration>& __atime)
+   120	      { return __wait_until_impl(__lock, __atime); }
+   121	
+   122	    template<typename _Clock, typename _Duration>
+   123	      cv_status
+   124	      wait_until(unique_lock<mutex>& __lock,
+   125			 const chrono::time_point<_Clock, _Duration>& __atime)
+   126	      {
+   127	#if __cplusplus > 201703L
+   128		static_assert(chrono::is_clock_v<_Clock>);
+   129	#endif
+   130		using __s_dur = typename __clock_t::duration;
+   131		const typename _Clock::time_point __c_entry = _Clock::now();
+   132		const __clock_t::time_point __s_entry = __clock_t::now();
+   133		const auto __delta = __atime - __c_entry;
+   134		const auto __s_atime = __s_entry +
+   135		  chrono::__detail::ceil<__s_dur>(__delta);
+   136	
+   137		if (__wait_until_impl(__lock, __s_atime) == cv_status::no_timeout)
+   138		  return cv_status::no_timeout;
+   139		// We got a timeout when measured against __clock_t but
+   140		// we need to check against the caller-supplied clock
+   141		// to tell whether we should return a timeout.
+   142		if (_Clock::now() < __atime)
+   143		  return cv_status::no_timeout;
+   144		return cv_status::timeout;
+   145	      }
+   146	
+   147	    template<typename _Clock, typename _Duration, typename _Predicate>
+   148	      bool
+   149	      wait_until(unique_lock<mutex>& __lock,
+   150			 const chrono::time_point<_Clock, _Duration>& __atime,
+   151			 _Predicate __p)
+   152	      {
+   153		while (!__p())
+   154		  if (wait_until(__lock, __atime) == cv_status::timeout)
+   155		    return __p();
+   156		return true;
+   157	      }
+   158	
+   159	    template<typename _Rep, typename _Period>
+   160	      cv_status
+   161	      wait_for(unique_lock<mutex>& __lock,
+   162		       const chrono::duration<_Rep, _Period>& __rtime)
+   163	      {
+   164		using __dur = typename steady_clock::duration;
+   165		return wait_until(__lock,
+   166				  steady_clock::now() +
+   167				  chrono::__detail::ceil<__dur>(__rtime));
+   168	      }
+   169	
+   170	    template<typename _Rep, typename _Period, typename _Predicate>
+   171	      bool
+   172	      wait_for(unique_lock<mutex>& __lock,
+   173		       const chrono::duration<_Rep, _Period>& __rtime,
+   174		       _Predicate __p)
+   175	      {
+   176		using __dur = typename steady_clock::duration;
+   177		return wait_until(__lock,
+   178				  steady_clock::now() +
+   179				  chrono::__detail::ceil<__dur>(__rtime),
+   180				  std::move(__p));
+   181	      }
+   182	
+   183	    native_handle_type
+   184	    native_handle()
+   185	    { return _M_cond.native_handle(); }
+   186	
+   187	  private:
+   188	#ifdef _GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT
+   189	    template<typename _Dur>
+   190	      cv_status
+   191	      __wait_until_impl(unique_lock<mutex>& __lock,
+   192				const chrono::time_point<steady_clock, _Dur>& __atime)
+   193	      {
+   194		auto __s = chrono::time_point_cast<chrono::seconds>(__atime);
+   195		auto __ns = chrono::duration_cast<chrono::nanoseconds>(__atime - __s);
+   196	
+   197		__gthread_time_t __ts =
+   198		  {
+   199		    static_cast<std::time_t>(__s.time_since_epoch().count()),
+   200		    static_cast<long>(__ns.count())
+   201		  };
+   202	
+   203		_M_cond.wait_until(*__lock.mutex(), CLOCK_MONOTONIC, __ts);
+   204	
+   205		return (steady_clock::now() < __atime
+   206			? cv_status::no_timeout : cv_status::timeout);
+   207	      }
+   208	#endif
+   209	
+   210	    template<typename _Dur>
+   211	      cv_status
+   212	      __wait_until_impl(unique_lock<mutex>& __lock,
+   213				const chrono::time_point<system_clock, _Dur>& __atime)
+   214	      {
+   215		auto __s = chrono::time_point_cast<chrono::seconds>(__atime);
+   216		auto __ns = chrono::duration_cast<chrono::nanoseconds>(__atime - __s);
+   217	
+   218		__gthread_time_t __ts =
+   219		  {
+   220		    static_cast<std::time_t>(__s.time_since_epoch().count()),
+   221		    static_cast<long>(__ns.count())
+   222		  };
+   223	
+   224		_M_cond.wait_until(*__lock.mutex(), __ts);
+   225	
+   226		return (system_clock::now() < __atime
+   227			? cv_status::no_timeout : cv_status::timeout);
+   228	      }
+   229	  };
+   230	
+   231	  void
+   232	  notify_all_at_thread_exit(condition_variable&, unique_lock<mutex>);
+   233	
+   234	  struct __at_thread_exit_elt
+   235	  {
+   236	    __at_thread_exit_elt* _M_next;
+   237	    void (*_M_cb)(void*);
+   238	  };
+   239	
+   240	_GLIBCXX_BEGIN_INLINE_ABI_NAMESPACE(_V2)
+   241	
+   242	  /// condition_variable_any
+   243	  // Like above, but mutex is not required to have try_lock.
+   244	  class condition_variable_any
+   245	  {
+===== codes/gcc/libstdc++-v3/src/c++11/condition_variable.cc =====
+     1	// condition_variable -*- C++ -*-
+     2	
+     3	// Copyright (C) 2008-2024 Free Software Foundation, Inc.
+     4	//
+     5	// This file is part of the GNU ISO C++ Library.  This library is free
+     6	// software; you can redistribute it and/or modify it under the
+     7	// terms of the GNU General Public License as published by the
+     8	// Free Software Foundation; either version 3, or (at your option)
+     9	// any later version.
+    10	
+    11	// This library is distributed in the hope that it will be useful,
+    12	// but WITHOUT ANY WARRANTY; without even the implied warranty of
+    13	// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    14	// GNU General Public License for more details.
+    15	
+    16	// Under Section 7 of GPL version 3, you are granted additional
+    17	// permissions described in the GCC Runtime Library Exception, version
+    18	// 3.1, as published by the Free Software Foundation.
+    19	
+    20	// You should have received a copy of the GNU General Public License and
+    21	// a copy of the GCC Runtime Library Exception along with this program;
+    22	// see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
+    23	// <http://www.gnu.org/licenses/>.
+    24	
+    25	#include <condition_variable>
+    26	#include <cstdlib>
+    27	
+    28	#ifdef _GLIBCXX_HAS_GTHREADS
+    29	
+    30	namespace std _GLIBCXX_VISIBILITY(default)
+    31	{
+    32	_GLIBCXX_BEGIN_NAMESPACE_VERSION
+    33	
+    34	  condition_variable::condition_variable() noexcept = default;
+    35	
+    36	  condition_variable::~condition_variable() noexcept = default;
+    37	
+    38	  void
+    39	  condition_variable::wait(unique_lock<mutex>& __lock)
+    40	  {
+    41	    _M_cond.wait(*__lock.mutex());
+    42	  }
+    43	
+    44	  void
+    45	  condition_variable::notify_one() noexcept
+    46	  {
+    47	    _M_cond.notify_one();
+    48	  }
+    49	
+    50	  void
+    51	  condition_variable::notify_all() noexcept
+    52	  {
+    53	    _M_cond.notify_all();
+    54	  }
+    55	
+    56	  extern void
+    57	  __at_thread_exit(__at_thread_exit_elt*);
+    58	
+    59	  namespace
+    60	  {
+    61	    __gthread_key_t key;
+    62	
+    63	    void run(void* p)
+    64	    {
+    65	      auto elt = (__at_thread_exit_elt*)p;
+    66	      while (elt)
+    67		{
+    68		  auto next = elt->_M_next;
+    69		  elt->_M_cb(elt);
+    70		  elt = next;
+    71		}
+    72	    }
+    73	
+    74	    void run()
+    75	    {
+    76	      auto elt = (__at_thread_exit_elt*)__gthread_getspecific(key);
+    77	      __gthread_setspecific(key, nullptr);
+    78	      run(elt);
+    79	    }
+    80	
+    81	    struct notifier final : __at_thread_exit_elt
+    82	    {
+    83	      notifier(condition_variable& cv, unique_lock<mutex>& l)
+    84	      : cv(&cv), mx(l.release())
+    85	      {
+    86		_M_cb = &notifier::run;
+    87		__at_thread_exit(this);
+    88	      }
+    89	
+    90	      ~notifier()
+    91	      {
+    92		mx->unlock();
+    93		cv->notify_all();
+    94	      }
+    95	
+    96	      condition_variable* cv;
+    97	      mutex* mx;
+    98	
+    99	      static void run(void* p) { delete static_cast<notifier*>(p); }
+   100	    };
+===== codes/gcc/libstdc++-v3/src/c++11/compatibility-condvar.cc =====
+     1	// Compatibility symbols for previous versions, C++0x bits -*- C++ -*-
+     2	
+     3	// Copyright (C) 2013-2024 Free Software Foundation, Inc.
+     4	//
+     5	// This file is part of the GNU ISO C++ Library.  This library is free
+     6	// software; you can redistribute it and/or modify it under the
+     7	// terms of the GNU General Public License as published by the
+     8	// Free Software Foundation; either version 3, or (at your option)
+     9	// any later version.
+    10	
+    11	// This library is distributed in the hope that it will be useful,
+    12	// but WITHOUT ANY WARRANTY; without even the implied warranty of
+    13	// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    14	// GNU General Public License for more details.
+    15	
+    16	// Under Section 7 of GPL version 3, you are granted additional
+    17	// permissions described in the GCC Runtime Library Exception, version
+    18	// 3.1, as published by the Free Software Foundation.
+    19	
+    20	// You should have received a copy of the GNU General Public License and
+    21	// a copy of the GCC Runtime Library Exception along with this program;
+    22	// see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
+    23	// <http://www.gnu.org/licenses/>.
+    24	
+    25	#include <bits/c++config.h>
+    26	
+    27	#if __cplusplus < 201103L
+    28	# error "compatibility-condvar-c++0x.cc must be compiled with -std=gnu++11"
+    29	#endif
+    30	
+    31	#if _GLIBCXX_INLINE_VERSION
+    32	# error "compatibility-thread-c++0x.cc is not needed for gnu-versioned-namespace"
+    33	#endif
+    34	
+    35	#if defined(_GLIBCXX_HAS_GTHREADS) && defined(_GLIBCXX_USE_C99_STDINT_TR1)
+    36	
+    37	#define condition_variable_any condition_variable_anyXX
+    38	#include <condition_variable>
+    39	#undef condition_variable_any
+    40	
+    41	// XXX GLIBCXX_ABI Deprecated
+    42	// gcc-4.9.0
+    43	// std::condition_variable_any replaced with std::_V2::condition_variable_any
+    44	namespace std _GLIBCXX_VISIBILITY(default)
+    45	{
+    46	_GLIBCXX_BEGIN_NAMESPACE_VERSION
+    47	  class condition_variable_any
+    48	  {
+    49	    condition_variable			_M_cond;
+    50	    mutex				_M_mutex;
+    51	
+    52	  public:
+    53	    condition_variable_any() noexcept;
+    54	    ~condition_variable_any() noexcept;
+    55	  };
+    56	  condition_variable_any::condition_variable_any() noexcept = default;
+    57	  condition_variable_any::~condition_variable_any() noexcept = default;
+    58	_GLIBCXX_END_NAMESPACE_VERSION
+    59	} // namespace std
+    60	
+    61	#if ! _GLIBCXX_INLINE_VERSION
+    62	// XXX GLIBCXX_ABI Deprecated
+    63	// gcc-12.1
+    64	// std::condition_variable::wait changed to noexcept(false)
+    65	#if defined(_GLIBCXX_SYMVER_GNU) && defined(_GLIBCXX_SHARED) \
+    66	    && defined(_GLIBCXX_HAVE_AS_SYMVER_DIRECTIVE) \
+    67	    && defined(_GLIBCXX_HAVE_SYMVER_SYMBOL_RENAMING_RUNTIME_SUPPORT)
+    68	namespace __gnu_cxx _GLIBCXX_VISIBILITY(default)
+    69	{
+    70	namespace
+    71	{
+    72	  // Pointer-to-member for private std::condition_variable::_M_cond member.
+    73	  std::__condvar std::condition_variable::* __base_member;
+    74	
+    75	  template<std::__condvar std::condition_variable::*X>
+    76	    struct cracker
+    77	    { static std::__condvar std::condition_variable::* value; };
+    78	
+    79	  // Initializer for this static member also initializes __base_member.
+    80	  template<std::__condvar std::condition_variable::*X>
+    81	    std::__condvar std::condition_variable::*
+    82	      cracker<X>::value = __base_member = X;
+    83	
+    84	  // Explicit instantiation is allowed to access the private member.
+    85	  template class cracker<&std::condition_variable::_M_cond>;
+    86	}
+    87	
+    88	struct __nothrow_wait_cv : std::condition_variable
+    89	{
+    90	  void wait(std::unique_lock<std::mutex>&) noexcept;
+    91	};
+    92	
+    93	__attribute__((used))
+    94	void
+    95	__nothrow_wait_cv::wait(std::unique_lock<std::mutex>& lock) noexcept
+    96	{
+    97	  // In theory this could be simply this->std::condition_variable::wait(lock)
+    98	  // but with uclibc that binds to the @GLIBCXX_3.4.11 symbol, see PR 105730.
+    99	  (this->*__base_member).wait(*lock.mutex());
+   100	}
+   101	} // namespace __gnu_cxx
+   102	
+   103	// Export a noexcept wrapper around std::condition_variable::wait
+   104	// with the original @GLIBCXX_3.4.11 symbol version.
+   105	asm(
+   106	  ".symver _ZN9__gnu_cxx17__nothrow_wait_cv4waitERSt11unique_lockISt5mutexE,"
+   107	  "_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE@GLIBCXX_3.4.11"
+   108	);
+   109	#endif
+   110	#endif
+   111	
+   112	#endif // _GLIBCXX_HAS_GTHREADS && _GLIBCXX_USE_C99_STDINT_TR1
+===== codes/gcc/libstdc++-v3/include/bits/locale_conv.h =====
+   395	      __detail::_Scoped_ptr<_Codecvt>	_M_cvt;
+   396	      byte_string		_M_byte_err_string;
+   397	      wide_string		_M_wide_err_string;
+   398	      state_type		_M_state = state_type();
+   399	      size_t			_M_count = 0;
+   400	      bool			_M_with_cvtstate = false;
+   401	      bool			_M_with_strings = false;
+   402	    };
+   403	
+   404	_GLIBCXX_END_NAMESPACE_CXX11
+   405	
+   406	  /// Buffer conversions
+   407	  template<typename _Codecvt, typename _Elem = wchar_t,
+   408		   typename _Tr = char_traits<_Elem>>
+   409	    class wbuffer_convert : public basic_streambuf<_Elem, _Tr>
+   410	    {
+   411	      typedef basic_streambuf<_Elem, _Tr> _Wide_streambuf;
+   412	
+   413	    public:
+   414	      typedef typename _Codecvt::state_type state_type;
+   415	
+   416	      /// Default constructor.
+   417	      wbuffer_convert() : wbuffer_convert(nullptr) { }
+   418	
+   419	      /** Constructor.
+   420	       *
+   421	       * @param  __bytebuf The underlying byte stream buffer.
+   422	       * @param  __pcvt    The facet to use for conversions.
+   423	       * @param  __state   Initial conversion state.
+   424	       *
+   425	       * Takes ownership of @p __pcvt and will delete it in the destructor.
+   426	       */
+   427	      explicit
+   428	      wbuffer_convert(streambuf* __bytebuf, _Codecvt* __pcvt = new _Codecvt,
+   429			      state_type __state = state_type())
+   430	      : _M_buf(__bytebuf), _M_cvt(__pcvt, "wbuffer_convert"),
+   431		_M_state(__state), _M_always_noconv(_M_cvt->always_noconv())
+   432	      {
+   433		if (_M_buf)
+   434		  {
+   435		    this->setp(_M_put_area, _M_put_area + _S_buffer_length);
+   436		    this->setg(_M_get_area + _S_putback_length,
+   437			       _M_get_area + _S_putback_length,
+   438			       _M_get_area + _S_putback_length);
+   439		  }
+   440	      }
+   441	
+   442	      ~wbuffer_convert() = default;
+   443	
+   444	      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+   445	      // 2176. Special members for wstring_convert and wbuffer_convert
+   446	      wbuffer_convert(const wbuffer_convert&) = delete;
+   447	      wbuffer_convert& operator=(const wbuffer_convert&) = delete;
+   448	
+   449	      streambuf* rdbuf() const noexcept { return _M_buf; }
+   450	
+   451	      streambuf*
+   452	      rdbuf(streambuf *__bytebuf) noexcept
+   453	      {
+   454		auto __prev = _M_buf;
+   455		_M_buf = __bytebuf;
+   456		return __prev;
+   457	      }
+   458	
+   459	      /// The conversion state following the last conversion.
+   460	      state_type state() const noexcept { return _M_state; }
+   461	
+   462	    protected:
+   463	      int
+   464	      sync()
+   465	      { return _M_buf && _M_conv_put() && !_M_buf->pubsync() ? 0 : -1; }
+   466	
+   467	      typename _Wide_streambuf::int_type
+   468	      overflow(typename _Wide_streambuf::int_type __out)
+   469	      {
+   470		if (!_M_buf || !_M_conv_put())
+===== codes/gcc/libstdc++-v3/include/std/future =====
+58-
+59-  /**
+60-   * @defgroup futures Futures
+61-   * @ingroup concurrency
+62-   *
+63-   * Futures and promises provide support for retrieving the result from
+64:   * an asynchronous function, e.g. one that is running in another thread.
+65:   * A `std::future` represents an asynchronous result that will become
+66-   * ready at some later time. A consumer can wait on a future until the
+67-   * result is ready to be accessed.
+68-   *
+69-   * @since C++11
+70-   * @{
+71-   */
+--
+145-  template<typename _Res>
+146-    class promise;
+147-
+148-  /// Launch code for futures
+149-  enum class launch
+150-  {
+151:    async = 1,
+152-    deferred = 2
+153-  };
+154-
+155-  [[__nodiscard__]]
+156-  constexpr launch operator&(launch __x, launch __y) noexcept
+157-  {
+--
+198-  };
+199-
+200-  /// @cond undocumented
+201-  // _GLIBCXX_RESOLVE_LIB_DEFECTS
+202-  // 2021. Further incorrect usages of result_of
+203-  template<typename _Fn, typename... _Args>
+204:    using __async_result_of = typename __invoke_result<
+205-      typename decay<_Fn>::type, typename decay<_Args>::type...>::type;
+206-  /// @endcond
+207-
+208-  template<typename _Fn, typename... _Args>
+209:    future<__async_result_of<_Fn, _Args...>>
+210:    async(launch __policy, _Fn&& __fn, _Args&&... __args);
+211-
+212-  template<typename _Fn, typename... _Args>
+213:    future<__async_result_of<_Fn, _Args...>>
+214:    async(_Fn&& __fn, _Args&&... __args);
+215-
+216-#if defined(_GLIBCXX_HAS_GTHREADS)
+217-
+218-  /// @cond undocumented
+219-
+220-  /// Base class and enclosing scope.
+--
+324-      _S_allocate_result(const std::allocator<_Tp>&)
+325-      {
+326-	return _Ptr<_Result<_Res>>(new _Result<_Res>);
+327-      }
+328-
+329-    // Base class for various types of shared state created by an
+330:    // asynchronous provider (such as a std::promise) and shared with one
+331-    // or more associated futures.
+332-    class _State_baseV2
+333-    {
+334-      typedef _Ptr<_Result_base> _Ptr_type;
+335-
+336-      enum _Status : unsigned {
+--
+350-      _State_baseV2& operator=(const _State_baseV2&) = delete;
+351-      virtual ~_State_baseV2() = default;
+352-
+353-      _Result_base&
+354-      wait()
+355-      {
+356:	// Run any deferred function or join any asynchronous thread:
+357:	_M_complete_async();
+358-	// Acquire MO makes sure this synchronizes with the thread that made
+359-	// the future ready.
+360-	_M_status._M_load_when_equal(_Status::__ready, memory_order_acquire);
+361-	return *_M_result;
+362-      }
+363-
+--
+378-	      && _M_status._M_load_when_equal_for(_Status::__ready,
+379-						  memory_order_acquire,
+380-						  __rel))
+381-	    {
+382-	      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+383-	      // 2100.  timed waiting functions must also join
+384:	      // This call is a no-op by default except on an async future,
+385:	      // in which case the async thread is joined.  It's also not a
+386-	      // no-op for a deferred future, but such a future will never
+387-	      // reach this point because it returns future_status::deferred
+388-	      // instead of waiting for the future to become ready (see
+389-	      // above).  Async futures synchronize in this call, so we need
+390-	      // no further synchronization here.
+391:	      _M_complete_async();
+392-
+393-	      return future_status::ready;
+394-	    }
+395-	  return future_status::timeout;
+396-	}
+397-
+--
+414-						 memory_order_acquire,
+415-						 __abs))
+416-	    {
+417-	      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+418-	      // 2100.  timed waiting functions must also join
+419-	      // See wait_for(...) above.
+420:	      _M_complete_async();
+421-
+422-	      return future_status::ready;
+423-	    }
+424-	  return future_status::timeout;
+425-	}
+426-
+--
+467-      _M_break_promise(_Ptr_type __res)
+468-      {
+469-	if (static_cast<bool>(__res))
+470-	  {
+471-	    __res->_M_error =
+472-	      make_exception_ptr(future_error(future_errc::broken_promise));
+473:	    // This function is only called when the last asynchronous result
+474-	    // provider is abandoning this shared state, so noone can be
+475-	    // trying to make the shared state ready at the same time, and
+476-	    // we can access _M_result directly instead of through call_once.
+477-	    _M_result.swap(__res);
+478-	    // Use release MO to synchronize with observers of the ready state.
+479-	    _M_status._M_store_notify_all(_Status::__ready,
+--
+598-        // exception, the caller will be aware that it did set (e.g., see
+599-        // _M_set_result).
+600-	*__did_set = true;
+601-        _M_result.swap(__res); // nothrow
+602-      }
+603-
+604:      // Wait for completion of async function.
+605:      virtual void _M_complete_async() { }
+606-
+607-      // Return true if state corresponds to a deferred function.
+608-      virtual bool _M_is_deferred_future() const { return false; }
+609-
+610-      struct _Make_ready final : __at_thread_exit_elt
+611-      {
+--
+714-      __basic_future& operator=(const __basic_future&) = delete;
+715-
+716-      bool
+717-      valid() const noexcept { return static_cast<bool>(_M_state); }
+718-
+719-      void
+720:      wait() const
+721-      {
+722-        _State_base::_S_check(_M_state);
+723-        _M_state->wait();
+724-      }
+725-
+726-      template<typename _Rep, typename _Period>
+--
+798-      static_assert(is_destructible<_Res>{},
+799-		    "result type must be destructible");
+800-
+801-      friend class promise<_Res>;
+802-      template<typename> friend class packaged_task;
+803-      template<typename _Fn, typename... _Args>
+804:        friend future<__async_result_of<_Fn, _Args...>>
+805:        async(launch, _Fn&&, _Args&&...);
+806-
+807-      typedef __basic_future<_Res> _Base_type;
+808-      typedef typename _Base_type::__state_type __state_type;
+809-
+810-      explicit
+811-      future(const __state_type& __state) : _Base_type(__state) { }
+--
+841-  template<typename _Res>
+842-    class future<_Res&> : public __basic_future<_Res&>
+843-    {
+844-      friend class promise<_Res&>;
+845-      template<typename> friend class packaged_task;
+846-      template<typename _Fn, typename... _Args>
+847:        friend future<__async_result_of<_Fn, _Args...>>
+848:        async(launch, _Fn&&, _Args&&...);
+849-
+850-      typedef __basic_future<_Res&> _Base_type;
+851-      typedef typename _Base_type::__state_type __state_type;
+852-
+853-      explicit
+854-      future(const __state_type& __state) : _Base_type(__state) { }
+--
+884-  template<>
+885-    class future<void> : public __basic_future<void>
+886-    {
+887-      friend class promise<void>;
+888-      template<typename> friend class packaged_task;
+889-      template<typename _Fn, typename... _Args>
+890:        friend future<__async_result_of<_Fn, _Args...>>
+891:        async(launch, _Fn&&, _Args&&...);
+892-
+893-      typedef __basic_future<void> _Base_type;
+894-      typedef typename _Base_type::__state_type __state_type;
+895-
+896-      explicit
+897-      future(const __state_type& __state) : _Base_type(__state) { }
+--
+1677-    struct uses_allocator<packaged_task<_Res>, _Alloc>
+1678-    : public true_type { };
+1679-#endif
+1680-
+1681-  /// @cond undocumented
+1682-
+1683:  // Shared state created by std::async().
+1684-  // Holds a deferred function and storage for its result.
+1685-  template<typename _BoundFn, typename _Res>
+1686-    class __future_base::_Deferred_state final
+1687-    : public __future_base::_State_base
+1688-    {
+1689-    public:
+--
+1698-      typedef __future_base::_Ptr<_Result<_Res>> _Ptr_type;
+1699-      _Ptr_type _M_result;
+1700-      _BoundFn _M_fn;
+1701-
+1702-      // Run the deferred function.
+1703-      virtual void
+1704:      _M_complete_async()
+1705-      {
+1706-	// Multiple threads can call a waiting function on the future and
+1707-	// reach this point at the same time. The call_once in _M_set_result
+1708-	// ensures only the first one run the deferred function, stores the
+1709-	// result in _M_result, swaps that with the base _M_result and makes
+1710-	// the state ready. Tell _M_set_result to ignore failure so all later
+--
+1726-
+1727-    // Make waiting functions block until the thread completes, as if joined.
+1728-    //
+1729-    // This function is used by wait() to satisfy the first requirement below
+1730-    // and by wait_for() / wait_until() to satisfy the second.
+1731-    //
+1732:    // [futures.async]:
+1733-    //
+1734:    // - a call to a waiting function on an asynchronous return object that
+1735:    // shares the shared state created by this async call shall block until
+1736-    // the associated thread has completed, as if joined, or else time out.
+1737-    //
+1738-    // - the associated thread completion synchronizes with the return from
+1739-    // the first function that successfully detects the ready status of the
+1740-    // shared state or with the return from the last function that releases
+1741-    // the shared state, whichever happens first.
+1742:    virtual void _M_complete_async() { _M_join(); }
+1743-
+1744:    void _M_join() { std::call_once(_M_once, &thread::join, &_M_thread); }
+1745-
+1746-    thread _M_thread;
+1747-    once_flag _M_once;
+1748-  };
+1749-
+1750:  // Shared state created by std::async().
+1751-  // Starts a new thread that runs a function and makes the shared state ready.
+1752-  template<typename _BoundFn, typename _Res>
+1753-    class __future_base::_Async_state_impl final
+1754-    : public __future_base::_Async_state_commonV2
+1755-    {
+1756-    public:
+--
+1761-	  _M_fn(std::forward<_Args>(__args)...)
+1762-	{
+1763-	  _M_thread = std::thread{&_Async_state_impl::_M_run, this};
+1764-	}
+1765-
+1766-      // Must not destroy _M_result and _M_fn until the thread finishes.
+1767:      // Call join() directly rather than through _M_join() because no other
+1768-      // thread can be referring to this state if it is being destroyed.
+1769-      ~_Async_state_impl()
+1770-      {
+1771-	if (_M_thread.joinable())
+1772-	  _M_thread.join();
+1773-      }
+--
+1792-      typedef __future_base::_Ptr<_Result<_Res>> _Ptr_type;
+1793-      _Ptr_type _M_result;
+1794-      _BoundFn _M_fn;
+1795-    };
+1796-  /// @endcond
+1797-
+1798:  /// async
+1799-  template<typename _Fn, typename... _Args>
+1800:    _GLIBCXX_NODISCARD future<__async_result_of<_Fn, _Args...>>
+1801:    async(launch __policy, _Fn&& __fn, _Args&&... __args)
+1802-    {
+1803-      using _Wr = std::thread::_Call_wrapper<_Fn, _Args...>;
+1804-      using _As = __future_base::_Async_state_impl<_Wr>;
+1805-      using _Ds = __future_base::_Deferred_state<_Wr>;
+1806-
+1807-      std::shared_ptr<__future_base::_State_base> __state;
+1808:      if ((__policy & launch::async) == launch::async)
+1809-	{
+1810-	  __try
+1811-	    {
+1812-	      __state = std::make_shared<_As>(std::forward<_Fn>(__fn),

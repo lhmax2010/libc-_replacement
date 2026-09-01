@@ -1,0 +1,326 @@
+===== REV=9e18a25331fa25c3907249fede65a02c6817b06e^ condition_variable public/generic =====
+    88	    void
+    89	    notify_one() noexcept;
+    90	
+    91	    void
+    92	    notify_all() noexcept;
+    93	
+    94	    void
+    95	    wait(unique_lock<mutex>& __lock) noexcept;
+    96	
+    97	    template<typename _Predicate>
+    98	      void
+    99	      wait(unique_lock<mutex>& __lock, _Predicate __p)
+   100	      {
+   101		while (!__p())
+   102		  wait(__lock);
+   103	      }
+   104	
+   105	#ifdef _GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT
+   106	    template<typename _Duration>
+   107	      cv_status
+   108	      wait_until(unique_lock<mutex>& __lock,
+   109			 const chrono::time_point<steady_clock, _Duration>& __atime)
+   110	      { return __wait_until_impl(__lock, __atime); }
+   111	#endif
+   112	
+   113	    template<typename _Duration>
+   114	      cv_status
+   115	      wait_until(unique_lock<mutex>& __lock,
+   116			 const chrono::time_point<system_clock, _Duration>& __atime)
+   117	      { return __wait_until_impl(__lock, __atime); }
+   118	
+   119	    template<typename _Clock, typename _Duration>
+   120	      cv_status
+   121	      wait_until(unique_lock<mutex>& __lock,
+   122			 const chrono::time_point<_Clock, _Duration>& __atime)
+   123	      {
+   124	#if __cplusplus > 201703L
+   125		static_assert(chrono::is_clock_v<_Clock>);
+   126	#endif
+   127		using __s_dur = typename __clock_t::duration;
+   128		const typename _Clock::time_point __c_entry = _Clock::now();
+   129		const __clock_t::time_point __s_entry = __clock_t::now();
+   130		const auto __delta = __atime - __c_entry;
+   131		const auto __s_atime = __s_entry +
+   132		  chrono::__detail::ceil<__s_dur>(__delta);
+   133	
+   134		if (__wait_until_impl(__lock, __s_atime) == cv_status::no_timeout)
+   135		  return cv_status::no_timeout;
+   136		// We got a timeout when measured against __clock_t but
+   137		// we need to check against the caller-supplied clock
+   138		// to tell whether we should return a timeout.
+   139		if (_Clock::now() < __atime)
+   140		  return cv_status::no_timeout;
+   141		return cv_status::timeout;
+   142	      }
+   143	
+   144	    template<typename _Clock, typename _Duration, typename _Predicate>
+   145	      bool
+   146	      wait_until(unique_lock<mutex>& __lock,
+   147			 const chrono::time_point<_Clock, _Duration>& __atime,
+   148			 _Predicate __p)
+   149	      {
+   150		while (!__p())
+   151		  if (wait_until(__lock, __atime) == cv_status::timeout)
+   152		    return __p();
+   153		return true;
+   154	      }
+   155	
+   156	    template<typename _Rep, typename _Period>
+   157	      cv_status
+   158	      wait_for(unique_lock<mutex>& __lock,
+   159		       const chrono::duration<_Rep, _Period>& __rtime)
+   160	      {
+   161		using __dur = typename steady_clock::duration;
+   162		return wait_until(__lock,
+   163				  steady_clock::now() +
+   164				  chrono::__detail::ceil<__dur>(__rtime));
+   165	      }
+   166	
+   167	    template<typename _Rep, typename _Period, typename _Predicate>
+   168	      bool
+   169	      wait_for(unique_lock<mutex>& __lock,
+   170		       const chrono::duration<_Rep, _Period>& __rtime,
+   185	#ifdef _GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT
+   186	    template<typename _Dur>
+   187	      cv_status
+   188	      __wait_until_impl(unique_lock<mutex>& __lock,
+   189				const chrono::time_point<steady_clock, _Dur>& __atime)
+   190	      {
+   191		auto __s = chrono::time_point_cast<chrono::seconds>(__atime);
+   192		auto __ns = chrono::duration_cast<chrono::nanoseconds>(__atime - __s);
+   193	
+   194		__gthread_time_t __ts =
+   195		  {
+   196		    static_cast<std::time_t>(__s.time_since_epoch().count()),
+   197		    static_cast<long>(__ns.count())
+   198		  };
+   199	
+   200		_M_cond.wait_until(*__lock.mutex(), CLOCK_MONOTONIC, __ts);
+   201	
+   202		return (steady_clock::now() < __atime
+   203			? cv_status::no_timeout : cv_status::timeout);
+   204	      }
+   205	#endif
+   206	
+   207	    template<typename _Dur>
+   208	      cv_status
+   209	      __wait_until_impl(unique_lock<mutex>& __lock,
+   210				const chrono::time_point<system_clock, _Dur>& __atime)
+   211	      {
+   212		auto __s = chrono::time_point_cast<chrono::seconds>(__atime);
+   213		auto __ns = chrono::duration_cast<chrono::nanoseconds>(__atime - __s);
+   214	
+   215		__gthread_time_t __ts =
+   216		  {
+   217		    static_cast<std::time_t>(__s.time_since_epoch().count()),
+   218		    static_cast<long>(__ns.count())
+   219		  };
+   220	
+   221		_M_cond.wait_until(*__lock.mutex(), __ts);
+   222	
+   223		return (system_clock::now() < __atime
+   224			? cv_status::no_timeout : cv_status::timeout);
+   225	      }
+   226	  };
+   227	
+   228	  void
+   229	  notify_all_at_thread_exit(condition_variable&, unique_lock<mutex>);
+   230	
+===== REV=9e18a25331fa25c3907249fede65a02c6817b06e^ internal condvar =====
+   160	    wait_until(mutex& __m, timespec& __abs_time) noexcept
+   161	    {
+   162	      __gthread_cond_timedwait(&_M_cond, __m.native_handle(), &__abs_time);
+   163	    }
+   164	
+   165	#ifdef _GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT
+   166	    void
+   167	    wait_until(mutex& __m, clockid_t __clock, timespec& __abs_time) noexcept
+   168	    {
+   169	      pthread_cond_clockwait(&_M_cond, __m.native_handle(), __clock,
+   170				     &__abs_time);
+   171	    }
+   172	#endif
+   173	
+   174	    void
+   175	    notify_one() noexcept
+   176	    {
+   177	      int __e __attribute__((__unused__)) = __gthread_cond_signal(&_M_cond);
+   178	      __glibcxx_assert(__e == 0);
+   179	    }
+   180	
+   181	    void
+   182	    notify_all() noexcept
+   183	    {
+   184	      int __e __attribute__((__unused__)) = __gthread_cond_broadcast(&_M_cond);
+   185	      __glibcxx_assert(__e == 0);
+   186	    }
+   187	
+   188	  protected:
+   189	#ifdef __GTHREAD_COND_INIT
+   190	    __gthread_cond_t _M_cond = __GTHREAD_COND_INIT;
+===== REV=9e18a25331fa25c3907249fede65a02c6817b06e condition_variable public/generic =====
+    88	    void
+    89	    notify_one() noexcept;
+    90	
+    91	    void
+    92	    notify_all() noexcept;
+    93	
+    94	    void
+    95	    wait(unique_lock<mutex>& __lock);
+    96	
+    97	    template<typename _Predicate>
+    98	      void
+    99	      wait(unique_lock<mutex>& __lock, _Predicate __p)
+   100	      {
+   101		while (!__p())
+   102		  wait(__lock);
+   103	      }
+   104	
+   105	#ifdef _GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT
+   106	    template<typename _Duration>
+   107	      cv_status
+   108	      wait_until(unique_lock<mutex>& __lock,
+   109			 const chrono::time_point<steady_clock, _Duration>& __atime)
+   110	      { return __wait_until_impl(__lock, __atime); }
+   111	#endif
+   112	
+   113	    template<typename _Duration>
+   114	      cv_status
+   115	      wait_until(unique_lock<mutex>& __lock,
+   116			 const chrono::time_point<system_clock, _Duration>& __atime)
+   117	      { return __wait_until_impl(__lock, __atime); }
+   118	
+   119	    template<typename _Clock, typename _Duration>
+   120	      cv_status
+   121	      wait_until(unique_lock<mutex>& __lock,
+   122			 const chrono::time_point<_Clock, _Duration>& __atime)
+   123	      {
+   124	#if __cplusplus > 201703L
+   125		static_assert(chrono::is_clock_v<_Clock>);
+   126	#endif
+   127		using __s_dur = typename __clock_t::duration;
+   128		const typename _Clock::time_point __c_entry = _Clock::now();
+   129		const __clock_t::time_point __s_entry = __clock_t::now();
+   130		const auto __delta = __atime - __c_entry;
+   131		const auto __s_atime = __s_entry +
+   132		  chrono::__detail::ceil<__s_dur>(__delta);
+   133	
+   134		if (__wait_until_impl(__lock, __s_atime) == cv_status::no_timeout)
+   135		  return cv_status::no_timeout;
+   136		// We got a timeout when measured against __clock_t but
+   137		// we need to check against the caller-supplied clock
+   138		// to tell whether we should return a timeout.
+   139		if (_Clock::now() < __atime)
+   140		  return cv_status::no_timeout;
+   141		return cv_status::timeout;
+   142	      }
+   143	
+   144	    template<typename _Clock, typename _Duration, typename _Predicate>
+   145	      bool
+   146	      wait_until(unique_lock<mutex>& __lock,
+   147			 const chrono::time_point<_Clock, _Duration>& __atime,
+   148			 _Predicate __p)
+   149	      {
+   150		while (!__p())
+   151		  if (wait_until(__lock, __atime) == cv_status::timeout)
+   152		    return __p();
+   153		return true;
+   154	      }
+   155	
+   156	    template<typename _Rep, typename _Period>
+   157	      cv_status
+   158	      wait_for(unique_lock<mutex>& __lock,
+   159		       const chrono::duration<_Rep, _Period>& __rtime)
+   160	      {
+   161		using __dur = typename steady_clock::duration;
+   162		return wait_until(__lock,
+   163				  steady_clock::now() +
+   164				  chrono::__detail::ceil<__dur>(__rtime));
+   165	      }
+   166	
+   167	    template<typename _Rep, typename _Period, typename _Predicate>
+   168	      bool
+   169	      wait_for(unique_lock<mutex>& __lock,
+   170		       const chrono::duration<_Rep, _Period>& __rtime,
+   185	#ifdef _GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT
+   186	    template<typename _Dur>
+   187	      cv_status
+   188	      __wait_until_impl(unique_lock<mutex>& __lock,
+   189				const chrono::time_point<steady_clock, _Dur>& __atime)
+   190	      {
+   191		auto __s = chrono::time_point_cast<chrono::seconds>(__atime);
+   192		auto __ns = chrono::duration_cast<chrono::nanoseconds>(__atime - __s);
+   193	
+   194		__gthread_time_t __ts =
+   195		  {
+   196		    static_cast<std::time_t>(__s.time_since_epoch().count()),
+   197		    static_cast<long>(__ns.count())
+   198		  };
+   199	
+   200		_M_cond.wait_until(*__lock.mutex(), CLOCK_MONOTONIC, __ts);
+   201	
+   202		return (steady_clock::now() < __atime
+   203			? cv_status::no_timeout : cv_status::timeout);
+   204	      }
+   205	#endif
+   206	
+   207	    template<typename _Dur>
+   208	      cv_status
+   209	      __wait_until_impl(unique_lock<mutex>& __lock,
+   210				const chrono::time_point<system_clock, _Dur>& __atime)
+   211	      {
+   212		auto __s = chrono::time_point_cast<chrono::seconds>(__atime);
+   213		auto __ns = chrono::duration_cast<chrono::nanoseconds>(__atime - __s);
+   214	
+   215		__gthread_time_t __ts =
+   216		  {
+   217		    static_cast<std::time_t>(__s.time_since_epoch().count()),
+   218		    static_cast<long>(__ns.count())
+   219		  };
+   220	
+   221		_M_cond.wait_until(*__lock.mutex(), __ts);
+   222	
+   223		return (system_clock::now() < __atime
+   224			? cv_status::no_timeout : cv_status::timeout);
+   225	      }
+   226	  };
+   227	
+   228	  void
+   229	  notify_all_at_thread_exit(condition_variable&, unique_lock<mutex>);
+   230	
+===== REV=9e18a25331fa25c3907249fede65a02c6817b06e internal condvar =====
+   160	    wait_until(mutex& __m, timespec& __abs_time)
+   161	    {
+   162	      __gthread_cond_timedwait(&_M_cond, __m.native_handle(), &__abs_time);
+   163	    }
+   164	
+   165	#ifdef _GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT
+   166	    void
+   167	    wait_until(mutex& __m, clockid_t __clock, timespec& __abs_time)
+   168	    {
+   169	      pthread_cond_clockwait(&_M_cond, __m.native_handle(), __clock,
+   170				     &__abs_time);
+   171	    }
+   172	#endif
+   173	
+   174	    void
+   175	    notify_one() noexcept
+   176	    {
+   177	      int __e __attribute__((__unused__)) = __gthread_cond_signal(&_M_cond);
+   178	      __glibcxx_assert(__e == 0);
+   179	    }
+   180	
+   181	    void
+   182	    notify_all() noexcept
+   183	    {
+   184	      int __e __attribute__((__unused__)) = __gthread_cond_broadcast(&_M_cond);
+   185	      __glibcxx_assert(__e == 0);
+   186	    }
+   187	
+   188	  protected:
+   189	#ifdef __GTHREAD_COND_INIT
+   190	    __gthread_cond_t _M_cond = __GTHREAD_COND_INIT;
+===== generic noexcept history search =====
+===== libstdc++ wbuffer destructor history search =====

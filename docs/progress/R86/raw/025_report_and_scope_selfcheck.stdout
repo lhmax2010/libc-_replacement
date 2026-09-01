@@ -1,0 +1,81 @@
+===== report files =====
+  110 progress/R86/REPORT.md
+  113 progress/R86/FACTS.md
+  117 progress/R86/ROUTES.md
+   84 progress/R86/VALIDATION.md
+   13 progress/R86/tables/route_matrix.tsv
+    6 progress/R86/tables/site_facts.tsv
+  443 total
+===== recorded exit codes =====
+001_resource_gate.exitcode	0
+002_source_and_prior_evidence_inventory.exitcode	0
+003_five_site_libcxx_source.exitcode	0
+004_wbuffer_and_exception_contracts.exitcode	2
+005_wbuffer_throwing_operations_corrected.exitcode	0
+006_libstdcxx_corresponding_source.exitcode	0
+007_libstdcxx_history_and_internal_waits.exitcode	0
+008_gcc_pr103382_commit_details.exitcode	0
+009_libcxx_abi_and_symbol_version_mechanisms.exitcode	0
+010_toolchain_and_abi_probe.exitcode	127
+011_compiler_inventory.exitcode	143
+012_gcc_abi_probe.exitcode	0
+013_destructor_override_constraint.exitcode	0
+014_standard_synopsis_and_libcxx_history.exitcode	0
+015_libcxx_noexcept_policy_and_lwg_history.exitcode	0
+016_gcc_regression_test_and_symbol_map_current.exitcode	0
+017_current_libcxx_symbols_and_versions.exitcode	0
+018_symver_mechanism_probe.exitcode	0
+019_symver_tizen_map_shape_probe.exitcode	0
+020_header_only_symbol_absence.exitcode	0
+021_libstdcxx_before_after_site_matrix.exitcode	0
+022_future_implementation_comparison.exitcode	0
+023_cxx03_mirror_scope.exitcode	0
+024_cxx03_wbuffer_and_prior_dynamic_evidence.exitcode	0
+===== known nonzero records =====
+004_wbuffer_and_exception_contracts.exitcode	2
+010_toolchain_and_abi_probe.exitcode	127
+011_compiler_inventory.exitcode	143
+===== source repos unchanged status =====
+codes/llvm:
+codes/gcc:
+===== required markers =====
+5:本任务只形成裁决素材，**不推荐、不排序、不选择方案**，也没有实施任何改动。
+7:1. “五处原本不会抛，删除标注只解除取消终止”这一前提不成立。D01-D03 明确生成 `system_error`，D04 可遇到自定义 Clock 异常并委托到 D02/D03；D05 的开放虚调用可抛普通异常或进入取消点。
+8:2. D01-D04 的成功等待/通知/正常超时路径可以在简单解除异常规格时保持算法意图；错误/取消路径必然从终止改为传播，调用点异常清理代码也会变化。
+9:3. D05 没有显式标注可删。它是覆盖 non-throwing 虚基类析构的隐式 non-throwing 析构，不能单独改为 `noexcept(false)`；必须改变析构同步结构、引入显式收尾协议，或扩大整个 streambuf 基类契约。
+10:4. 顶层 `noexcept` 不进入这五个函数自身的 Itanium 符号名，但进入函数类型，并影响 caller 是否生成展开/清理元数据。因此 D01/D02 “同符号可链接”不等于旧程序 unwind-compatible。
+11:5. D01/D02 是真实 `@@LLVM_22` 动态符号，GNU old/new symbol version 技术上可用；D03/D04/D05 是 hidden header 实现，不能靠共享库双符号替换旧对象。
+13:7. 改 future 结构只能移除一个间接使用路径，不能修复 D01-D05 本身；D01-D04 还有多种直接/间接消费者，D05 独立。
+23:| D01 | 非持锁调用和 pthread wait 错误生成 `system_error`；wait 是取消点。 |
+24:| D02 | 非持锁调用和非 timeout 的 timedwait 错误生成 `system_error`；timed wait 是取消点。 |
+25:| D03 | 非持锁调用和非 timeout 的 clockwait 错误生成 `system_error`；clockwait 是取消点。 |
+26:| D04 | 自定义 `Clock::now()`/时钟运算可抛，随后进入 D02/D03。 |
+27:| D05 | 析构同步调用用户 codecvt 与 wrapped streambuf 虚函数，可抛普通异常或进入输出取消点。 |
+29:结论：只能确认“不发生错误/取消的成功路径意图可保持”，不能确认“去掉标注对所有正常路径无影响”。特别是 D05 根本不能单独作这种修改。
+33:- 五处函数自身的顶层异常规格不改变 Itanium 函数名；最小探针和三架构真实 D01/D02 符号支持这一点。
+36:- D01/D02 可由库端版本化承载旧、新行为。D03/D04/D05 已嵌入消费者，只能通过新头文件重编影响新产物；旧产物保留原行为。
+42:- D01 可直接类比 GCC；D02 也有动态符号，机制可行但私有成员 wrapper 仍需工程设计；D03-D05 没有库符号可作双版本。
+43:- 头文件三处若随平台全量重编，D03/D04 的新产物不需要库端兼容 wrapper；未重编对象仍有缺口。D05 还需先解决异常规格/结构约束。
+53:- **A1**：解除 D01-D04，D05 另案。覆盖 4/5；源码改动面集中，但 ABI、旧 caller、全量重编验证面大。
+54:- **A2**：D01/D02 双版本 + D03/D04 新头文件重编。覆盖 4/5；旧 D01/D02 可保留原契约，旧 D03/D04 仍嵌有边界。
+56:- **B2**：condition_variable 改底层非取消等待。不能可靠覆盖 async cancellation，且改变 native_handle/唤醒/时钟等；D05 不覆盖。
+57:- **C**：A2 + D03/D04 重编 + 一个 D05 子方案。理论覆盖 5/5，但不是单一已定设计，验证量是各子项并集。
+61:- **G**：D05 析构不 sync。只解决 D05，但正常输出收尾改变且可能丢数据。
+62:- **H**：D05 显式 close/sync 协议。只解决遵守新协议的 D05 使用者，需要调用点迁移。
+63:- **I**：放宽 basic_streambuf 基类析构。可让 D05 合法放宽，但影响整个 streambuf 派生层次、ABI/源码/标准契约，验证面远超单站点。
+73:2. D05 派生虚析构约束探针：预期编译拒绝得到确认；外层验证退出 0。
+76:没有临时删除真实 libc++ 的异常规格，也没有构建完整候选方案。R72 已有 D01/D03/D04 动态结果，本轮不重复。D02/D05 动态行为仍为 `NOT_OBSERVED`。
+80:1. **真实 D01/D02 libc++ compatibility wrapper 的最终代码形态**：未实施。需先由人工裁决版本策略，再在目标源码构造候选并用三架构链接器验证。
+83:4. **D02/D05 的目标板动态取消结果**：`NOT_OBSERVED`。查清需两架构最小运行用例；D05 还需定义具体 wrapped streambuf/codecvt 场景。
+84:5. **D05 哪种普通输出语义允许改变**：无产品要求，不能自行决定。需要人工明确是否允许取消析构 sync、要求显式 close，或考虑基类层次变更。
+85:6. **预编译/闭源对象的实际存量与可重编比例**：`NOT_AVAILABLE`。需要平台发布清单和二进制来源信息，才能量化 D03-D05 混合版本风险。
+88:## 自行判断与尚存疑问
+90:### 本任务自行判断
+93:2. 把 D05 从路线 A 的“一律删标注”中拆出，因为语言探针证明它没有可独立放宽的显式规格。
+95:4. 复用 R72 动态结果，不重复消耗资源；D02/D05 严格保留 `NOT_OBSERVED`。
+98:### 尚存疑问
+100:- 人工若选择解除 D01/D02，要求是允许新程序观察并捕获原有 `system_error`，还是只要求 forced unwind 穿越、普通错误仍终止？两者会产生不同 wrapper/错误策略。
+101:- D05 的产品目标是仅允许线程取消，还是同时允许 codecvt/streambuf 的普通异常传播？当前没有足以自行选择的要求。
+102:- 平台是否承诺所有包含 D03-D05 的包全量重编并淘汰旧对象？若不承诺，需要定义混合版本支持边界。
+106:- 平台源码、四个补丁：**无修改**。
+107:- 完整方案：**未实施**。

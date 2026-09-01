@@ -1,0 +1,558 @@
+===== codes/llvm/libcxx/include/__condition_variable/condition_variable.h =====
+    90	  __libcpp_condvar_t __cv_ = _LIBCPP_CONDVAR_INITIALIZER;
+    91	
+    92	public:
+    93	  _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR condition_variable() _NOEXCEPT = default;
+    94	
+    95	#  if _LIBCPP_HAS_TRIVIAL_CONDVAR_DESTRUCTION
+    96	  ~condition_variable() = default;
+    97	#  else
+    98	  ~condition_variable();
+    99	#  endif
+   100	
+   101	  condition_variable(const condition_variable&)            = delete;
+   102	  condition_variable& operator=(const condition_variable&) = delete;
+   103	
+   104	  void notify_one() _NOEXCEPT;
+   105	  void notify_all() _NOEXCEPT;
+   106	
+   107	  void wait(unique_lock<mutex>& __lk) _NOEXCEPT;
+   108	
+   109	  template <class _Predicate>
+   110	  _LIBCPP_HIDE_FROM_ABI void wait(unique_lock<mutex>& __lk, _Predicate __pred) {
+   111	    while (!__pred())
+   112	      wait(__lk);
+   113	  }
+   114	
+   115	  template <class _Clock, class _Duration>
+   116	  _LIBCPP_HIDE_FROM_ABI cv_status
+   117	  wait_until(unique_lock<mutex>& __lk, const chrono::time_point<_Clock, _Duration>& __t) {
+   118	    using namespace chrono;
+   119	    using __clock_tp_ns = time_point<_Clock, nanoseconds>;
+   120	
+   121	    typename _Clock::time_point __now = _Clock::now();
+   122	    if (__t <= __now)
+   123	      return cv_status::timeout;
+   124	
+   125	    __clock_tp_ns __t_ns = __clock_tp_ns(std::__safe_nanosecond_cast(__t.time_since_epoch()));
+   126	
+   127	    __do_timed_wait(__lk, __t_ns);
+   128	    return _Clock::now() < __t ? cv_status::no_timeout : cv_status::timeout;
+   129	  }
+   130	
+   131	  template <class _Clock, class _Duration, class _Predicate>
+   132	  _LIBCPP_HIDE_FROM_ABI bool
+   133	  wait_until(unique_lock<mutex>& __lk, const chrono::time_point<_Clock, _Duration>& __t, _Predicate __pred) {
+   134	    while (!__pred()) {
+   135	      if (wait_until(__lk, __t) == cv_status::timeout)
+   136	        return __pred();
+   137	    }
+   138	    return true;
+   139	  }
+   140	
+   141	  template <class _Rep, class _Period>
+   142	  _LIBCPP_HIDE_FROM_ABI cv_status wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d) {
+   143	    using namespace chrono;
+   144	    if (__d <= __d.zero())
+   145	      return cv_status::timeout;
+   146	    using __ns_rep                   = nanoseconds::rep;
+   147	    steady_clock::time_point __c_now = steady_clock::now();
+   148	
+   149	#  if _LIBCPP_HAS_COND_CLOCKWAIT
+   150	    using __clock_tp_ns     = time_point<steady_clock, nanoseconds>;
+   151	    __ns_rep __now_count_ns = std::__safe_nanosecond_cast(__c_now.time_since_epoch()).count();
+   152	#  else
+   153	    using __clock_tp_ns     = time_point<system_clock, nanoseconds>;
+   154	    __ns_rep __now_count_ns = std::__safe_nanosecond_cast(system_clock::now().time_since_epoch()).count();
+   155	#  endif
+   156	
+   157	    __ns_rep __d_ns_count = std::__safe_nanosecond_cast(__d).count();
+   158	
+   159	    if (__now_count_ns > numeric_limits<__ns_rep>::max() - __d_ns_count) {
+   160	      __do_timed_wait(__lk, __clock_tp_ns::max());
+   161	    } else {
+   162	      __do_timed_wait(__lk, __clock_tp_ns(nanoseconds(__now_count_ns + __d_ns_count)));
+   163	    }
+   164	
+   165	    return steady_clock::now() - __c_now < __d ? cv_status::no_timeout : cv_status::timeout;
+   166	  }
+   167	
+   168	  template <class _Rep, class _Period, class _Predicate>
+   169	  bool _LIBCPP_HIDE_FROM_ABI
+   170	  wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d, _Predicate __pred);
+   171	
+   172	  typedef __libcpp_condvar_t* native_handle_type;
+   173	  [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI native_handle_type native_handle() { return &__cv_; }
+   174	
+   175	private:
+   176	  void
+   177	  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>) _NOEXCEPT;
+   178	#  if _LIBCPP_HAS_COND_CLOCKWAIT
+   179	  _LIBCPP_HIDE_FROM_ABI void
+   180	  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>) _NOEXCEPT;
+   181	#  endif
+   182	  template <class _Clock>
+   183	  _LIBCPP_HIDE_FROM_ABI void
+   184	  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>) _NOEXCEPT;
+   185	};
+   186	#endif // _LIBCPP_HAS_THREADS
+   187	
+   188	#if _LIBCPP_HAS_THREADS
+   189	
+   190	template <class _Rep, class _Period, class _Predicate>
+   191	inline bool
+   192	condition_variable::wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d, _Predicate __pred) {
+   193	  return wait_until(__lk, chrono::steady_clock::now() + __d, std::move(__pred));
+   194	}
+   195	
+   196	#  if _LIBCPP_HAS_COND_CLOCKWAIT
+   197	inline void condition_variable::__do_timed_wait(
+   198	    unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds> __tp) _NOEXCEPT {
+   199	  using namespace chrono;
+   200	  if (!__lk.owns_lock())
+   201	    std::__throw_system_error(EPERM, "condition_variable::timed wait: mutex not locked");
+   202	  nanoseconds __d = __tp.time_since_epoch();
+   203	  timespec __ts;
+   204	  seconds __s                 = duration_cast<seconds>(__d);
+   205	  using __ts_sec              = decltype(__ts.tv_sec);
+   206	  const __ts_sec __ts_sec_max = numeric_limits<__ts_sec>::max();
+   207	  if (__s.count() < __ts_sec_max) {
+   208	    __ts.tv_sec  = static_cast<__ts_sec>(__s.count());
+   209	    __ts.tv_nsec = (__d - __s).count();
+   210	  } else {
+   211	    __ts.tv_sec  = __ts_sec_max;
+   212	    __ts.tv_nsec = giga::num - 1;
+   213	  }
+   214	  int __ec = pthread_cond_clockwait(&__cv_, __lk.mutex()->native_handle(), CLOCK_MONOTONIC, &__ts);
+   215	  if (__ec != 0 && __ec != ETIMEDOUT)
+   216	    std::__throw_system_error(__ec, "condition_variable timed_wait failed");
+   217	}
+   218	#  endif // _LIBCPP_HAS_COND_CLOCKWAIT
+   219	
+   220	template <class _Clock>
+   221	inline void condition_variable::__do_timed_wait(unique_lock<mutex>& __lk,
+   222	                                                chrono::time_point<_Clock, chrono::nanoseconds> __tp) _NOEXCEPT {
+   223	  wait_for(__lk, __tp - _Clock::now());
+   224	}
+   225	
+   226	#endif // _LIBCPP_HAS_THREADS
+   227	
+   228	_LIBCPP_END_NAMESPACE_STD
+   229	
+   230	_LIBCPP_POP_MACROS
+   231	
+   232	#endif // _LIBCPP___CONDITION_VARIABLE_CONDITION_VARIABLE_H
+===== codes/llvm/libcxx/src/condition_variable.cpp =====
+    20	#endif
+    21	
+    22	_LIBCPP_PUSH_MACROS
+    23	#include <__undef_macros>
+    24	
+    25	_LIBCPP_BEGIN_NAMESPACE_STD
+    26	
+    27	// ~condition_variable is defined elsewhere.
+    28	
+    29	void condition_variable::notify_one() noexcept { __libcpp_condvar_signal(&__cv_); }
+    30	
+    31	void condition_variable::notify_all() noexcept { __libcpp_condvar_broadcast(&__cv_); }
+    32	
+    33	void condition_variable::wait(unique_lock<mutex>& lk) noexcept {
+    34	  if (!lk.owns_lock())
+    35	    std::__throw_system_error(EPERM, "condition_variable::wait: mutex not locked");
+    36	  int ec = __libcpp_condvar_wait(&__cv_, lk.mutex()->native_handle());
+    37	  if (ec)
+    38	    std::__throw_system_error(ec, "condition_variable wait failed");
+    39	}
+    40	
+    41	void condition_variable::__do_timed_wait(unique_lock<mutex>& lk,
+    42	                                         chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) noexcept {
+    43	  using namespace chrono;
+    44	  if (!lk.owns_lock())
+    45	    std::__throw_system_error(EPERM, "condition_variable::timed wait: mutex not locked");
+    46	  nanoseconds d = tp.time_since_epoch();
+    47	  if (d > nanoseconds(0x59682F000000E941))
+    48	    d = nanoseconds(0x59682F000000E941);
+    49	  __libcpp_timespec_t ts;
+    50	  seconds s = duration_cast<seconds>(d);
+    51	  typedef decltype(ts.tv_sec) ts_sec;
+    52	  constexpr ts_sec ts_sec_max = numeric_limits<ts_sec>::max();
+    53	  if (s.count() < ts_sec_max) {
+    54	    ts.tv_sec  = static_cast<ts_sec>(s.count());
+    55	    ts.tv_nsec = static_cast<decltype(ts.tv_nsec)>((d - s).count());
+    56	  } else {
+    57	    ts.tv_sec  = ts_sec_max;
+    58	    ts.tv_nsec = giga::num - 1;
+    59	  }
+    60	  int ec = __libcpp_condvar_timedwait(&__cv_, lk.mutex()->native_handle(), &ts);
+    61	  if (ec != 0 && ec != ETIMEDOUT)
+    62	    std::__throw_system_error(ec, "condition_variable timed_wait failed");
+    63	}
+    64	
+    65	void notify_all_at_thread_exit(condition_variable& cond, unique_lock<mutex> lk) {
+    66	  auto& tl_ptr = __thread_local_data();
+    67	  // If this thread was not created using std::thread then it will not have
+    68	  // previously allocated.
+    69	  if (tl_ptr.get() == nullptr) {
+    70	    tl_ptr.set_pointer(new __thread_struct);
+    71	  }
+    72	  __thread_local_data()->notify_all_at_thread_exit(&cond, lk.release());
+    73	}
+    74	
+    75	_LIBCPP_END_NAMESPACE_STD
+    76	
+    77	_LIBCPP_POP_MACROS
+===== codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h =====
+   100	template <class _Codecvt, class _Elem, class _Tr>
+   101	wbuffer_convert<_Codecvt, _Elem, _Tr>::wbuffer_convert(streambuf* __bytebuf, _Codecvt* __pcvt, state_type __state)
+   102	    : __extbuf_(nullptr),
+   103	      __extbufnext_(nullptr),
+   104	      __extbufend_(nullptr),
+   105	      __ebs_(0),
+   106	      __intbuf_(0),
+   107	      __ibs_(0),
+   108	      __bufptr_(__bytebuf),
+   109	      __cv_(__pcvt),
+   110	      __st_(__state),
+   111	      __cm_(0),
+   112	      __owns_eb_(false),
+   113	      __owns_ib_(false),
+   114	      __always_noconv_(__cv_ ? __cv_->always_noconv() : false) {
+   115	  setbuf(0, 4096);
+   116	}
+   117	
+   118	template <class _Codecvt, class _Elem, class _Tr>
+   119	wbuffer_convert<_Codecvt, _Elem, _Tr>::~wbuffer_convert() {
+   120	  __close();
+   121	  delete __cv_;
+   122	  if (__owns_eb_)
+   123	    delete[] __extbuf_;
+   124	  if (__owns_ib_)
+   125	    delete[] __intbuf_;
+   126	}
+   127	
+   128	template <class _Codecvt, class _Elem, class _Tr>
+   129	typename wbuffer_convert<_Codecvt, _Elem, _Tr>::int_type wbuffer_convert<_Codecvt, _Elem, _Tr>::underflow() {
+   130	  _LIBCPP_SUPPRESS_DEPRECATED_POP
+   131	  if (__cv_ == 0 || __bufptr_ == nullptr)
+   132	    return traits_type::eof();
+   133	  bool __initial = __read_mode();
+   134	  char_type __1buf;
+   135	  if (this->gptr() == 0)
+   136	    this->setg(std::addressof(__1buf), std::addressof(__1buf) + 1, std::addressof(__1buf) + 1);
+   137	  const size_t __unget_sz = __initial ? 0 : std::min<size_t>((this->egptr() - this->eback()) / 2, 4);
+   138	  int_type __c            = traits_type::eof();
+   139	  if (this->gptr() == this->egptr()) {
+   140	    std::memmove(this->eback(), this->egptr() - __unget_sz, __unget_sz * sizeof(char_type));
+   141	    if (__always_noconv_) {
+   142	      streamsize __nmemb = static_cast<streamsize>(this->egptr() - this->eback() - __unget_sz);
+   143	      __nmemb            = __bufptr_->sgetn((char*)this->eback() + __unget_sz, __nmemb);
+   144	      if (__nmemb != 0) {
+   145	        this->setg(this->eback(), this->eback() + __unget_sz, this->eback() + __unget_sz + __nmemb);
+   380	template <class _Codecvt, class _Elem, class _Tr>
+   381	bool wbuffer_convert<_Codecvt, _Elem, _Tr>::__read_mode() {
+   382	  if (!(__cm_ & ios_base::in)) {
+   383	    this->setp(0, 0);
+   384	    if (__always_noconv_)
+   385	      this->setg((char_type*)__extbuf_, (char_type*)__extbuf_ + __ebs_, (char_type*)__extbuf_ + __ebs_);
+   386	    else
+   387	      this->setg(__intbuf_, __intbuf_ + __ibs_, __intbuf_ + __ibs_);
+   388	    __cm_ = ios_base::in;
+   389	    return true;
+   390	  }
+   391	  return false;
+   392	}
+   393	
+   394	template <class _Codecvt, class _Elem, class _Tr>
+   395	void wbuffer_convert<_Codecvt, _Elem, _Tr>::__write_mode() {
+   396	  if (!(__cm_ & ios_base::out)) {
+   397	    this->setg(0, 0, 0);
+   398	    if (__ebs_ > sizeof(__extbuf_min_)) {
+   399	      if (__always_noconv_)
+   400	        this->setp((char_type*)__extbuf_, (char_type*)__extbuf_ + (__ebs_ - 1));
+   401	      else
+   402	        this->setp(__intbuf_, __intbuf_ + (__ibs_ - 1));
+   403	    } else
+   404	      this->setp(0, 0);
+   405	    __cm_ = ios_base::out;
+   406	  }
+   407	}
+   408	
+   409	template <class _Codecvt, class _Elem, class _Tr>
+   410	wbuffer_convert<_Codecvt, _Elem, _Tr>* wbuffer_convert<_Codecvt, _Elem, _Tr>::__close() {
+   411	  wbuffer_convert* __rt = nullptr;
+   412	  if (__cv_ != nullptr && __bufptr_ != nullptr) {
+   413	    __rt = this;
+   414	    if ((__cm_ & ios_base::out) && sync())
+   415	      __rt = nullptr;
+   416	  }
+   417	  return __rt;
+   418	}
+   419	
+   420	_LIBCPP_SUPPRESS_DEPRECATED_POP
+   421	
+   422	_LIBCPP_END_NAMESPACE_STD
+   423	
+   424	_LIBCPP_POP_MACROS
+   425	
+   426	#  endif // _LIBCPP_STD_VER < 26 || defined(_LIBCPP_ENABLE_CXX26_REMOVED_WSTRING_CONVERT)
+   427	
+   428	#endif // _LIBCPP_HAS_LOCALIZATION
+   429	
+   430	#endif // _LIBCPP___LOCALE_DIR_WBUFFER_CONVERT_H
+===== codes/llvm/libcxx/include/future =====
+   490	}
+   491	
+   492	[[__noreturn__]] inline _LIBCPP_HIDE_FROM_ABI void __throw_future_error(future_errc __ev);
+   493	
+   494	class _LIBCPP_EXPORTED_FROM_ABI future_error : public logic_error {
+   495	  error_code __ec_;
+   496	
+   497	  future_error(error_code);
+   498	  friend void __throw_future_error(future_errc);
+   499	  template <class>
+   500	  friend class promise;
+   501	
+   502	public:
+   503	#    if _LIBCPP_STD_VER >= 17
+   504	  _LIBCPP_HIDE_FROM_ABI explicit future_error(future_errc __ec) : future_error(std::make_error_code(__ec)) {}
+   505	#    endif
+   506	
+   507	  [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI const error_code& code() const _NOEXCEPT { return __ec_; }
+   508	
+   509	  _LIBCPP_HIDE_FROM_ABI future_error(const future_error&) _NOEXCEPT = default;
+   510	  ~future_error() _NOEXCEPT override;
+   511	};
+   512	
+   513	// Declared above std::future_error
+   514	void __throw_future_error(future_errc __ev) {
+   515	#    if _LIBCPP_HAS_EXCEPTIONS
+   516	  throw future_error(make_error_code(__ev));
+   517	#    else
+   518	  (void)__ev;
+   519	  _LIBCPP_VERBOSE_ABORT("future_error was thrown in -fno-exceptions mode");
+   520	#    endif
+   521	}
+   522	
+   523	class _LIBCPP_EXPORTED_FROM_ABI __assoc_sub_state : public __shared_count {
+   524	protected:
+   525	  exception_ptr __exception_;
+   526	  mutable mutex __mut_;
+   527	  mutable condition_variable __cv_;
+   528	  unsigned __state_;
+   529	
+   530	  void __on_zero_shared() _NOEXCEPT override;
+   531	  void __sub_wait(unique_lock<mutex>& __lk);
+   532	
+   533	public:
+   534	  enum { __constructed = 1, __future_attached = 2, ready = 4, deferred = 8 };
+   535	
+   536	  _LIBCPP_HIDE_FROM_ABI __assoc_sub_state() : __state_(0) {}
+   537	
+   538	  _LIBCPP_HIDE_FROM_ABI bool __has_value() const { return (__state_ & __constructed) || (__exception_ != nullptr); }
+   539	
+   540	  _LIBCPP_HIDE_FROM_ABI void __attach_future() {
+   541	    lock_guard<mutex> __lk(__mut_);
+   542	    bool __has_future_attached = (__state_ & __future_attached) != 0;
+   543	    if (__has_future_attached)
+   544	      std::__throw_future_error(future_errc::future_already_retrieved);
+   545	    this->__add_shared();
+   546	    __state_ |= __future_attached;
+   547	  }
+   548	
+   549	  _LIBCPP_HIDE_FROM_ABI void __set_deferred() { __state_ |= deferred; }
+   550	
+   830	class __async_assoc_state : public __assoc_state<_Rp> {
+   831	  typedef __assoc_state<_Rp> base;
+   832	
+   833	  _Fp __func_;
+   834	
+   835	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL virtual void __on_zero_shared() _NOEXCEPT;
+   836	
+   837	public:
+   838	  _LIBCPP_HIDE_FROM_ABI explicit __async_assoc_state(_Fp&& __f);
+   839	
+   840	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL virtual void __execute();
+   841	};
+   842	
+   843	template <class _Rp, class _Fp>
+   844	inline __async_assoc_state<_Rp, _Fp>::__async_assoc_state(_Fp&& __f) : __func_(std::forward<_Fp>(__f)) {}
+   845	
+   846	template <class _Rp, class _Fp>
+   847	void __async_assoc_state<_Rp, _Fp>::__execute() {
+   848	#    if _LIBCPP_HAS_EXCEPTIONS
+   849	  try {
+   850	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   851	    this->set_value(__func_());
+   852	#    if _LIBCPP_HAS_EXCEPTIONS
+   853	  } catch (...) {
+   854	    this->set_exception(current_exception());
+   855	  }
+   856	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   857	}
+   858	
+   859	template <class _Rp, class _Fp>
+   860	void __async_assoc_state<_Rp, _Fp>::__on_zero_shared() _NOEXCEPT {
+   861	  this->wait();
+   862	  base::__on_zero_shared();
+   863	}
+   864	
+   865	template <class _Fp>
+   866	class __async_assoc_state<void, _Fp> : public __assoc_sub_state {
+   867	  typedef __assoc_sub_state base;
+   868	
+   869	  _Fp __func_;
+   870	
+   871	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __on_zero_shared() _NOEXCEPT override;
+   872	
+   873	public:
+   874	  _LIBCPP_HIDE_FROM_ABI explicit __async_assoc_state(_Fp&& __f);
+   875	
+   876	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __execute() override;
+   877	};
+   878	
+   879	template <class _Fp>
+   880	inline __async_assoc_state<void, _Fp>::__async_assoc_state(_Fp&& __f) : __func_(std::forward<_Fp>(__f)) {}
+   881	
+   882	template <class _Fp>
+   883	void __async_assoc_state<void, _Fp>::__execute() {
+   884	#    if _LIBCPP_HAS_EXCEPTIONS
+   885	  try {
+   886	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   887	    __func_();
+   888	    this->set_value();
+   889	#    if _LIBCPP_HAS_EXCEPTIONS
+   890	  } catch (...) {
+   891	    this->set_exception(current_exception());
+   892	  }
+   893	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   894	}
+   895	
+   896	template <class _Fp>
+   897	void __async_assoc_state<void, _Fp>::__on_zero_shared() _NOEXCEPT {
+   898	  this->wait();
+   899	  base::__on_zero_shared();
+   900	}
+   901	
+   902	template <class _Rp>
+   903	class promise;
+   904	template <class _Rp>
+   905	class shared_future;
+   906	
+   907	// future
+   908	
+   909	template <class _Rp>
+   910	class future;
+   911	
+   912	template <class _Rp, class _Fp>
+   913	_LIBCPP_HIDE_FROM_ABI future<_Rp> __make_deferred_assoc_state(_Fp&& __f);
+   914	
+   915	template <class _Rp, class _Fp>
+   916	_LIBCPP_HIDE_FROM_ABI future<_Rp> __make_async_assoc_state(_Fp&& __f);
+   917	
+   918	template <class _Rp>
+   919	class future {
+   920	  __assoc_state<_Rp>* __state_;
+   921	
+   922	  explicit _LIBCPP_HIDE_FROM_ABI future(__assoc_state<_Rp>* __state);
+   923	
+   924	  template <class>
+   925	  friend class promise;
+   926	  template <class>
+   927	  friend class shared_future;
+   928	
+   929	  template <class _R1, class _Fp>
+   930	  friend future<_R1> __make_deferred_assoc_state(_Fp&& __f);
+===== codes/llvm/libcxx/src/future.cpp =====
+    80	  if (__has_value())
+    81	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    82	  __exception_ = __p;
+    83	  __state_ |= ready;
+    84	  __cv_.notify_all();
+    85	}
+    86	
+    87	void __assoc_sub_state::set_exception_at_thread_exit(exception_ptr __p) {
+    88	  unique_lock<mutex> __lk(__mut_);
+    89	  if (__has_value())
+    90	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    91	  __exception_ = __p;
+    92	  __thread_local_data()->__make_ready_at_thread_exit(this);
+    93	}
+    94	
+    95	void __assoc_sub_state::__make_ready() {
+    96	  unique_lock<mutex> __lk(__mut_);
+    97	  __state_ |= ready;
+    98	  __cv_.notify_all();
+    99	}
+   100	
+   101	void __assoc_sub_state::copy() {
+   102	  unique_lock<mutex> __lk(__mut_);
+   103	  __sub_wait(__lk);
+   104	  if (__exception_ != nullptr)
+   105	    rethrow_exception(__exception_);
+   106	}
+   107	
+   108	void __assoc_sub_state::wait() {
+   109	  unique_lock<mutex> __lk(__mut_);
+   110	  __sub_wait(__lk);
+   111	}
+   112	
+   113	void __assoc_sub_state::__sub_wait(unique_lock<mutex>& __lk) {
+   114	  if (!__is_ready()) {
+   115	    if (__state_ & static_cast<unsigned>(deferred)) {
+   116	      __state_ &= ~static_cast<unsigned>(deferred);
+   117	      __lk.unlock();
+   118	      __execute();
+   119	    } else
+   120	      while (!__is_ready())
+   121	        __cv_.wait(__lk);
+   122	  }
+   123	}
+   124	
+   125	void __assoc_sub_state::__execute() { std::__throw_future_error(future_errc::no_state); }
+   126	
+   127	future<void>::future(__assoc_sub_state* __state) : __state_(__state) { __state_->__attach_future(); }
+   128	
+   129	future<void>::~future() {
+   130	  if (__state_)
+   131	    __state_->__release_shared();
+   132	}
+   133	
+   134	void future<void>::get() {
+   135	  unique_ptr<__shared_count, __release_shared_count> __(__state_);
+   136	  __assoc_sub_state* __s = __state_;
+   137	  __state_               = nullptr;
+   138	  __s->copy();
+   139	}
+   140	
+   141	promise<void>::promise() : __state_(new __assoc_sub_state) {}
+   142	
+   143	promise<void>::~promise() {
+   144	  if (__state_) {
+   145	#if _LIBCPP_HAS_EXCEPTIONS
+===== codes/llvm/libcxx/include/__thread/support/pthread.h =====
+   110	//
+   111	typedef pthread_cond_t __libcpp_condvar_t;
+   112	#define _LIBCPP_CONDVAR_INITIALIZER PTHREAD_COND_INITIALIZER
+   113	
+   114	inline _LIBCPP_HIDE_FROM_ABI int __libcpp_condvar_signal(__libcpp_condvar_t* __cv) { return pthread_cond_signal(__cv); }
+   115	
+   116	inline _LIBCPP_HIDE_FROM_ABI int __libcpp_condvar_broadcast(__libcpp_condvar_t* __cv) {
+   117	  return pthread_cond_broadcast(__cv);
+   118	}
+   119	
+   120	_LIBCPP_NO_THREAD_SAFETY_ANALYSIS inline _LIBCPP_HIDE_FROM_ABI int
+   121	__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m) {
+   122	  return pthread_cond_wait(__cv, __m);
+   123	}
+   124	
+   125	_LIBCPP_NO_THREAD_SAFETY_ANALYSIS inline _LIBCPP_HIDE_FROM_ABI int
+   126	__libcpp_condvar_timedwait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m, __libcpp_timespec_t* __ts) {
+   127	  return pthread_cond_timedwait(__cv, __m, __ts);
+   128	}
+   129	
+   130	inline _LIBCPP_HIDE_FROM_ABI int __libcpp_condvar_destroy(__libcpp_condvar_t* __cv) {
+   131	  return pthread_cond_destroy(__cv);
+   132	}
+   133	
+   134	//
+   135	// Execute once

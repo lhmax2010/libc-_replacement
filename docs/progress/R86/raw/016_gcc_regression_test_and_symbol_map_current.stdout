@@ -1,0 +1,136 @@
+===== GCC PR103382 test =====
+     1	// { dg-options "-pthread" }
+     2	// { dg-do run { target { *-*-linux* *-*-gnu* } } }
+     3	// { dg-require-effective-target c++11 }
+     4	// { dg-require-effective-target pthread }
+     5	// { dg-require-gthreads "" }
+     6	
+     7	#include <condition_variable>
+     8	#include <chrono>
+     9	#include <mutex>
+    10	#include <thread>
+    11	
+    12	// PR libstdc++/103382
+    13	
+    14	template<typename F>
+    15	void
+    16	test_cancel(F wait)
+    17	{
+    18	  std::mutex m;
+    19	  std::condition_variable cv;
+    20	  bool waiting = false;
+    21	
+    22	  std::thread t([&] {
+    23	    std::unique_lock<std::mutex> lock(m);
+    24	    waiting = true;
+    25	    wait(cv, lock); // __forced_unwind exception should not terminate process.
+    26	  });
+    27	
+    28	  // Ensure the condition variable is waiting before we cancel.
+    29	  // This shouldn't be necessary because pthread_mutex_lock is not
+    30	  // a cancellation point, but no harm in making sure we test what
+    31	  // we intend to test: that cancel during a wait doesn't abort.
+    32	  while (true)
+    33	  {
+    34	    std::unique_lock<std::mutex> lock(m);
+    35	    if (waiting)
+    36	      break;
+    37	  }
+    38	
+    39	  pthread_cancel(t.native_handle());
+    40	  t.join();
+    41	}
+    42	
+    43	int main()
+    44	{
+    45	  test_cancel(
+    46	      [](std::condition_variable& cv, std::unique_lock<std::mutex>& l) {
+    47		cv.wait(l);
+    48	      });
+    49	
+    50	  test_cancel(
+    51	      [](std::condition_variable& cv, std::unique_lock<std::mutex>& l) {
+    52		cv.wait(l, []{ return false; });
+    53	      });
+    54	
+    55	  using mins = std::chrono::minutes;
+    56	
+    57	  test_cancel(
+    58	      [](std::condition_variable& cv, std::unique_lock<std::mutex>& l) {
+    59		cv.wait_for(l, mins(1));
+    60	      });
+    61	
+    62	  test_cancel(
+    63	      [](std::condition_variable& cv, std::unique_lock<std::mutex>& l) {
+    64		cv.wait_until(l, std::chrono::system_clock::now() + mins(1));
+    65	      });
+    66	}
+===== current symbol map relevant nodes =====
+1330-    _ZNSt22condition_variable_anyC1Ev;
+1331-    _ZNSt22condition_variable_anyC2Ev;
+1332-    _ZNSt22condition_variable_anyD1Ev;
+1333-    _ZNSt22condition_variable_anyD2Ev;
+1334-
+1335-#ifndef HAVE_SYMVER_SYMBOL_RENAMING_RUNTIME_SUPPORT
+1336-    # The original definition of this symbol gets versioned as @GLIBCXX_3.4.11
+1337-    # if ".symver" is supported, or as @@GLIBCXX_3.4.11 otherwise.
+1338:    _ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE;
+1339-#endif
+1340-
+1341-    # thread
+1342-    _ZNSt6thread4joinEv;
+1343-    _ZNSt6thread6detachEv;
+1344-    _ZNSt6thread15_M_start_threadESt10shared_ptrINS_10_Impl_baseEE;
+1345-
+1346-    # system_error
+--
+2441-    _ZSt8to_charsPcS_[def];
+2442-    # std::to_chars(char*, char*, [float|double|long double], chars_format)
+2443-    _ZSt8to_charsPcS_[def]St12chars_format;
+2444-    # std::to_chars(char*, char*, [float|double|long double], chars_format, int)
+2445-    _ZSt8to_charsPcS_[def]St12chars_formati;
+2446-
+2447-} GLIBCXX_3.4.28;
+2448-
+2449:GLIBCXX_3.4.30 {
+2450-
+2451-#ifndef HAVE_USELOCALE
+2452-    # std::from_chars
+2453-    _ZSt10from_charsPKcS0_R[def]St12chars_format;
+2454-#endif
+2455-
+2456-    _ZSt21__glibcxx_assert_fail*;
+2457-
+2458-#ifdef HAVE_SYMVER_SYMBOL_RENAMING_RUNTIME_SUPPORT
+2459:    # The new definition of this symbol gets versioned as @@GLIBCXX_3.4.30
+2460:    _ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE;
+2461-#endif
+2462-
+2463-    # std::__timepunct<char>::_M_am_pm_format(const char**)
+2464-    _ZNKSt11__timepunctI[cw]E15_M_am_pm_formatEPPK[cw];
+2465-
+2466-    # Only defined #if ! __GXX_TYPEINFO_EQUALITY_INLINE
+2467-    _ZNKSt9type_info7__equalERKS_;
+2468-
+--
+2509-
+2510-    # __shared_ptr<directory_iterator::_Dir>::operator bool()
+2511-    _ZNKSt12__shared_ptrINSt10filesystem4_DirELN9__gnu_cxx12_Lock_policyE[012]EEcvbEv;
+2512-    _ZNKSt12__shared_ptrINSt10filesystem7__cxx114_DirELN9__gnu_cxx12_Lock_policyE[012]EEcvbEv;
+2513-    # __shared_ptr<recursive_directory_iterator::_Dir_stack>::operator bool()
+2514-    _ZNKSt12__shared_ptrINSt10filesystem28recursive_directory_iterator10_Dir_stackELN9__gnu_cxx12_Lock_policyE[012]EEcvbEv;
+2515-    _ZNKSt12__shared_ptrINSt10filesystem7__cxx1128recursive_directory_iterator10_Dir_stackELN9__gnu_cxx12_Lock_policyE[012]EEcvbEv;
+2516-
+2517:} GLIBCXX_3.4.30;
+2518-
+2519-# GCC 13.2.0
+2520-GLIBCXX_3.4.32 {
+2521-    _ZSt21ios_base_library_initv;
+2522-    _ZNSt7__cxx1112basic_stringI[cw]St11char_traitsI[cw]ESaI[cw]EE11_S_allocateERS3_[jmy];
+2523-} GLIBCXX_3.4.31;
+2524-
+2525-# GCC 14.1.0
+===== current binary symbol versions if installed =====
+/usr/lib/gcc/x86_64-linux-gnu/13/libstdc++.so
+  1357: 00000000000e29f0    12 FUNC    GLOBAL DEFAULT   16 std::condition_variable::wait(std::unique_lock<std::mutex>&)@@GLIBCXX_3.4.30
+  1360: 00000000000b9030    25 FUNC    GLOBAL DEFAULT   16 std::condition_variable::wait(std::unique_lock<std::mutex>&)@GLIBCXX_3.4.11
