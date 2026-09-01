@@ -1,0 +1,342 @@
+/usr/bin/rpm2cpio
+/usr/bin/cpio
+
+SOURCE_RPMS
+tmp/R11/srpms/base_source/llvm-22.1.8-19.1.src.rpm
+tmp/R11/srpms/base_source/tensorflow2-2.18.0-1.2.src.rpm
+tmp/R11/srpms/base_source/tensorflow2-2.18.0-1.3.src.rpm
+tmp/R11/srpms/unified_source/tensorflow2-2.18.0-1.src.rpm
+### tmp/R11/srpms/base_source/llvm-22.1.8-19.1.src.rpm
+     1	%define keepstatic 1
+     2	
+     3	# MLGO AOT support for LLVM MLGO (Ahead-of-Time compilation)
+     4	# TODO: switch back to a project_config-controlled macro after MLGO is enabled
+     5	# for all required arches.
+     6	# %%bcond_with mlgo
+     7	%ifarch armv7l aarch64 x86_64
+     8	%bcond_without mlgo
+     9	%endif
+    10	
+    11	%if %{defined _toolchain}
+    12	%define _toolchain_override clang
+    13	%define llvm_release_build 0
+    14	%else
+    15	%define llvm_release_build 1
+    16	%endif
+    17	
+    18	%define llvm_version 22
+    19	
+    20	%define sdk_install_prefix /home/owner/share/tmp/sdk_tools/lldb
+    21	%define sdk_bin_dir %{sdk_install_prefix}/bin
+    22	%define sdk_lib_dir %{sdk_install_prefix}/%{_lib}
+    23	
+    24	%if 0%{llvm_release_build}
+    25	# Disable debug packages building
+   190	%patch2 -p1
+   191	# 0004-clang-add-support-for-LLVM-gold-plugin-in-case-of-ac.patch
+   192	%patch3 -p1
+   193	# 0005-Merge-MLGO-AOT-compilation-support-and-optimization-.patch
+   194	%patch4 -p1
+   195	%if %{with mlgo}
+   196	mkdir -p mlgo_verify_assets
+   197	%ifarch armv7l
+   198	tar -C mlgo_verify_assets -xzf %{SOURCE1002}
+   199	%endif
+   200	%ifarch aarch64
+   201	tar -C mlgo_verify_assets -xzf %{SOURCE1003}
+   202	%endif
+   203	%ifarch x86_64
+   204	tar -C mlgo_verify_assets -xzf %{SOURCE1004}
+   205	%endif
+   206	%endif
+   207	
+   208	%build
+   209	%if 0%{llvm_release_build}
+   210	# Not to build debug info
+   211	RELCFLAGS=$(echo $CFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\|dwarf-[[:digit:]]\)\?* *g')
+   212	export CFLAGS=${RELCFLAGS}
+   213	RELCXXFLAGS=$(echo $CXXFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\|dwarf-[[:digit:]]\)\?* *g')
+   214	export CXXFLAGS=${RELCXXFLAGS}
+   215	RELFFLAGS=$(echo $FFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\)|dwarf-[[:digit:]]\\?* *g')
+   230	MLGO_BUILD_DIR="$PWD/build"
+   231	MLGO_RUNTIME_OBJECTS="${MLGO_AOT_DIR}/xla_runtime_objects/xla_compiled_cpu_function.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/cpu_function_runtime.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/custom_call_status.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/executable_run_options.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/runtime_single_threaded_matmul_f32.cc.o"
+   232	MLGO_REQUIRED_RUNTIME_OBJECTS="xla_compiled_cpu_function.cc.o cpu_function_runtime.cc.o custom_call_status.cc.o executable_run_options.cc.o runtime_single_threaded_matmul_f32.cc.o"
+   233	%endif
+   234	
+   235	mkdir -p build
+   236	cd build
+   237	cmake \
+   238	    -G Ninja \
+   239	    -DTIZEN=1 \
+   240	    -DCMAKE_C_COMPILER=%__cc \
+   241	    -DCMAKE_CXX_COMPILER=%__cxx \
+   242	    -DLLVM_HOST_TRIPLE=%{_host} \
+   243	    -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+   244	    -DLLVM_TARGET_TRIPLE_ENV=%{_host} \
+   245	    -DCMAKE_ASM_FLAGS="$CFLAGS" \
+   246	    -DCMAKE_C_FLAGS="$CFLAGS" \
+   247	    -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
+   248	%if %{defined _toolchain}
+   249	    -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections" \
+   250	    -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections" \
+   415	
+   416	ninja -j %{mlgo_build_jobs}
+   417	
+   418	%install
+   419	cd build
+   420	cmake -DCMAKE_INSTALL_PREFIX=%{buildroot}/usr -P cmake_install.cmake
+   421	ln -sf %{_prefix}/bin/clang++ %{buildroot}%{_prefix}/bin/clang++-%{llvm_version}
+   422	
+   423	ln -sf clang %{buildroot}%{_prefix}/bin/%{_host}-clang
+   424	ln -sf clang++ %{buildroot}%{_prefix}/bin/%{_host}-clang++
+   425	# Use host triple and resource dir by default via <lang>.cfg
+   426	cat >> %{buildroot}/%{_prefix}/bin/clang.cfg << EOF
+   427	-target %{_host}
+   428	-resource-dir %{_prefix}/%{_lib}/clang/%{llvm_version}
+   429	EOF
+   430	ln -sf clang.cfg %{buildroot}/%{_prefix}/bin/clang++.cfg
+   431	
+   432	# copy lldb for sdk
+   433	mkdir -p %{buildroot}%{sdk_bin_dir}
+   434	mkdir -p %{buildroot}%{sdk_lib_dir}
+   435	
+   620	
+   621	%files -n libllvm
+   622	%manifest %{name}.manifest
+   623	%defattr(-,root,root,-)
+   624	%{_libdir}/libLLVM*.so*
+   625	
+   626	%files -n clang
+   627	%manifest %{name}.manifest
+   628	%defattr(-,root,root,-)
+   629	%{_prefix}/bin/clang
+   630	%{_prefix}/bin/clang++
+   631	%{_prefix}/bin/%{_host}-clang
+   632	%{_prefix}/bin/%{_host}-clang++
+   633	%{_prefix}/bin/clang-%{llvm_version}
+   634	%{_prefix}/bin/clang++-%{llvm_version}
+   635	%{_prefix}/bin/clang-apply-replacements
+   636	%{_prefix}/bin/clang-change-namespace
+   637	%{_prefix}/bin/clang-check
+   638	%{_prefix}/bin/clang-cl
+   639	%{_prefix}/bin/clang-cpp
+   640	%{_prefix}/bin/clang-doc
+### tmp/R11/srpms/base_source/tensorflow2-2.18.0-1.2.src.rpm
+     1	Name:           tensorflow2
+     2	VCS:            platform/upstream/tensorflow2#1cdba73549f741720f11dd53da1bb516b03763a2
+     3	Summary:        TensorFlow 2.x with Lite and XLA AOT support
+     4	Version:        2.18.0
+     5	Release:        1.2
+     6	License:        Apache-2.0
+     7	Source0:        %{name}-%{version}.tar.gz
+     8	Source1001:     tensorflow2.manifest
+     9	Source1002:     tensorflow2-lite.pc.in
+    10	Source1003:     tensorflow2-aot.pc.in
+    11	
+    12	Source2000:     abseil-cpp.tar.gz
+    13	Source2001:     cpuinfo.tar.gz
+    14	Source2002:     egl_headers.tar.gz
+    15	Source2003:     eigen.tar.gz
+    16	Source2004:     farmhash.tar.gz
+    17	Source2005:     fft2d.tar.gz
+    18	Source2006:     flatbuffers.tar.gz
+    19	Source2007:     fp16.tar.gz
+    20	Source2008:     gemmlowp.tar.gz
+    21	Source2009:     ml_dtypes.tar.gz
+    22	Source2010:     neon2sse.tar.gz
+    23	Source2011:     opencl_headers.tar.gz
+    24	Source2012:     opengl_headers.tar.gz
+    25	Source2013:     protobuf.tar.gz
+   190	# VD/TV: Disable a link-time optimization (requested on 2020-06-09)
+   191	%if "%{?profile}" == "tv"
+   192	  EXTRA_CFLAGS="${EXTRA_CFLAGS} -fno-lto"
+   193	  EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -fno-lto"
+   194	  %ifarch armv7l
+   195	    EXTRA_CFLAGS="${EXTRA_CFLAGS} -march=armv7-a -mtune=cortex-a8"
+   196	    EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -march=armv7-a -mtune=cortex-a8"
+   197	    EXTRA_CFLAGS=${EXTRA_CFLAGS/-mcpu=cortex-a53/}
+   198	    EXTRA_CXXFLAGS=${EXTRA_CXXFLAGS/-mcpu=cortex-a53/}
+   199	  %endif
+   200	%endif
+   201	%endif # USE_CLANG
+   202	
+   203	%if %{USE_CLANG} == "ON"
+   204	export CC=clang
+   205	export CXX=clang++
+   206	CC=clang CXX=clang++ \
+   207	cmake \
+   208	  -DCMAKE_C_COMPILER=clang \
+   209	  -DCMAKE_CXX_COMPILER=clang++ \
+   210	  -DCMAKE_VERBOSE_MAKEFILE=ON \
+   211	  -GNinja \
+   212	  -DTFLITE_BUILD_SHARED_LIB="%{SHARED_LIB}" \
+   213	  -DTFLITE_ENABLE_XNNPACK="%{USE_XNNPACK}" \
+   214	  -DTFLITE_ENABLE_GPU="%{USE_OPENCL}" \
+   215	  ../tensorflow/lite
+   230	cmake --build . %{?_smp_mflags}
+   231	
+   232	cmake --build . %{?_smp_mflags} -t benchmark_model
+   233	
+   234	popd
+   235	
+   236	# Build AOT runtime library (xla_aot_runtime_src)
+   237	# Use the same cross-compilation setup as TFLite build
+   238	mkdir -p build-aot
+   239	pushd build-aot
+   240	
+   241	%if %{USE_CLANG} == "ON"
+   242	cmake \
+   243	  -DCMAKE_C_COMPILER=clang \
+   244	  -DCMAKE_CXX_COMPILER=clang++ \
+   245	  -DCMAKE_C_FLAGS="${CFLAGS}" \
+   246	  -DCMAKE_CXX_FLAGS="${CXXFLAGS}" \
+   247	  -DCMAKE_VERBOSE_MAKEFILE=ON \
+   248	  -GNinja \
+   249	  %{_builddir}/%{name}-%{version}/aot/xla_aot_runtime_src
+   250	%else
+### tmp/R11/srpms/base_source/tensorflow2-2.18.0-1.3.src.rpm
+     1	Name:           tensorflow2
+     2	VCS:            platform/upstream/tensorflow2#1cdba73549f741720f11dd53da1bb516b03763a2
+     3	Summary:        TensorFlow 2.x with Lite and XLA AOT support
+     4	Version:        2.18.0
+     5	Release:        1.3
+     6	License:        Apache-2.0
+     7	Source0:        %{name}-%{version}.tar.gz
+     8	Source1001:     tensorflow2.manifest
+     9	Source1002:     tensorflow2-lite.pc.in
+    10	Source1003:     tensorflow2-aot.pc.in
+    11	
+    12	Source2000:     abseil-cpp.tar.gz
+    13	Source2001:     cpuinfo.tar.gz
+    14	Source2002:     egl_headers.tar.gz
+    15	Source2003:     eigen.tar.gz
+    16	Source2004:     farmhash.tar.gz
+    17	Source2005:     fft2d.tar.gz
+    18	Source2006:     flatbuffers.tar.gz
+    19	Source2007:     fp16.tar.gz
+    20	Source2008:     gemmlowp.tar.gz
+    21	Source2009:     ml_dtypes.tar.gz
+    22	Source2010:     neon2sse.tar.gz
+    23	Source2011:     opencl_headers.tar.gz
+    24	Source2012:     opengl_headers.tar.gz
+    25	Source2013:     protobuf.tar.gz
+   190	# VD/TV: Disable a link-time optimization (requested on 2020-06-09)
+   191	%if "%{?profile}" == "tv"
+   192	  EXTRA_CFLAGS="${EXTRA_CFLAGS} -fno-lto"
+   193	  EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -fno-lto"
+   194	  %ifarch armv7l
+   195	    EXTRA_CFLAGS="${EXTRA_CFLAGS} -march=armv7-a -mtune=cortex-a8"
+   196	    EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -march=armv7-a -mtune=cortex-a8"
+   197	    EXTRA_CFLAGS=${EXTRA_CFLAGS/-mcpu=cortex-a53/}
+   198	    EXTRA_CXXFLAGS=${EXTRA_CXXFLAGS/-mcpu=cortex-a53/}
+   199	  %endif
+   200	%endif
+   201	%endif # USE_CLANG
+   202	
+   203	%if %{USE_CLANG} == "ON"
+   204	export CC=clang
+   205	export CXX=clang++
+   206	CC=clang CXX=clang++ \
+   207	cmake \
+   208	  -DCMAKE_C_COMPILER=clang \
+   209	  -DCMAKE_CXX_COMPILER=clang++ \
+   210	  -DCMAKE_VERBOSE_MAKEFILE=ON \
+   211	  -GNinja \
+   212	  -DTFLITE_BUILD_SHARED_LIB="%{SHARED_LIB}" \
+   213	  -DTFLITE_ENABLE_XNNPACK="%{USE_XNNPACK}" \
+   214	  -DTFLITE_ENABLE_GPU="%{USE_OPENCL}" \
+   215	  ../tensorflow/lite
+   230	cmake --build . %{?_smp_mflags}
+   231	
+   232	cmake --build . %{?_smp_mflags} -t benchmark_model
+   233	
+   234	popd
+   235	
+   236	# Build AOT runtime library (xla_aot_runtime_src)
+   237	# Use the same cross-compilation setup as TFLite build
+   238	mkdir -p build-aot
+   239	pushd build-aot
+   240	
+   241	%if %{USE_CLANG} == "ON"
+   242	cmake \
+   243	  -DCMAKE_C_COMPILER=clang \
+   244	  -DCMAKE_CXX_COMPILER=clang++ \
+   245	  -DCMAKE_C_FLAGS="${CFLAGS}" \
+   246	  -DCMAKE_CXX_FLAGS="${CXXFLAGS}" \
+   247	  -DCMAKE_VERBOSE_MAKEFILE=ON \
+   248	  -GNinja \
+   249	  %{_builddir}/%{name}-%{version}/aot/xla_aot_runtime_src
+   250	%else
+### tmp/R11/srpms/unified_source/tensorflow2-2.18.0-1.src.rpm
+     1	Name:           tensorflow2
+     2	VCS:            platform/upstream/tensorflow2#ea3f134d35fc64667c2eebd72992bbb3c8e0069d
+     3	Summary:        TensorFlow Lite 2.x
+     4	Version:        2.18.0
+     5	Release:        1
+     6	License:        Apache-2.0
+     7	Source0:        %{name}-%{version}.tar.gz
+     8	Source1001:     tensorflow2.manifest
+     9	Source1002:     tensorflow2-lite.pc.in
+    10	
+    11	Source2000:     abseil-cpp.tar.gz
+    12	Source2001:     cpuinfo.tar.gz
+    13	Source2002:     egl_headers.tar.gz
+    14	Source2003:     eigen.tar.gz
+    15	Source2004:     farmhash.tar.gz
+    16	Source2005:     fft2d.tar.gz
+    17	Source2006:     flatbuffers.tar.gz
+    18	Source2007:     fp16.tar.gz
+    19	Source2008:     gemmlowp.tar.gz
+    20	Source2009:     ml_dtypes.tar.gz
+    21	Source2010:     neon2sse.tar.gz
+    22	Source2011:     opencl_headers.tar.gz
+    23	Source2012:     opengl_headers.tar.gz
+    24	Source2013:     protobuf.tar.gz
+    25	Source2014:     ruy.tar.gz
+   190	  -DCMAKE_C_FLAGS="${EXTRA_CFLAGS}" \
+   191	  -DCMAKE_CXX_FLAGS="${EXTRA_CXXFLAGS}" \
+   192	  -DTFLITE_BUILD_SHARED_LIB="%{SHARED_LIB}" \
+   193	  -DTFLITE_ENABLE_XNNPACK="%{USE_XNNPACK}" \
+   194	  -DXNNPACK_ENABLE_ARM_BF16=OFF \
+   195	  -DXNNPACK_ENABLE_ARM_I8MM=OFF \
+   196	  -DTFLITE_ENABLE_GPU="%{USE_OPENCL}" \
+   197	  ../tensorflow/lite
+   198	%endif # USE_CLANG
+   199	
+   200	cmake --build . %{?_smp_mflags}
+   201	
+   202	cmake --build . %{?_smp_mflags} -t benchmark_model
+   203	
+   204	popd
+   205	
+   206	%install
+   207	mkdir -p %{buildroot}%{_libdir}
+   208	mkdir -p %{buildroot}%{_libdir}/pkgconfig
+   209	mkdir -p %{buildroot}%{_includedir}/tensorflow2/lite
+   210	mkdir -p %{buildroot}%{_includedir}/tensorflow2/compiler/mlir
+   211	mkdir -p %{buildroot}%{_bindir}
+   212	mkdir -p %{buildroot}%{_datadir}/tensorflow2/lite/schema
+   213	pushd %{buildroot}%{_includedir}/tensorflow2
+   214	ln -sf . %{buildroot}%{_includedir}/tensorflow2/tensorflow
+   215	# TF2Lite users do: #include <tensorflow/FILENAME.h>
+   230	install -m 0655 ./build/tools/benchmark/benchmark_model %{buildroot}%{_bindir}/tflite_benchmark_model
+   231	
+   232	## install headers
+   233	pushd tensorflow/lite
+   234	find . -name "*.h" -type f -exec cp --parents {} %{buildroot}%{_includedir}/tensorflow2/lite \;
+   235	popd
+   236	
+   237	pushd tensorflow/compiler/mlir
+   238	find . -name "*.h" -type f -exec cp --parents {} %{buildroot}%{_includedir}/tensorflow2/compiler/mlir \;
+   239	popd
+   240	
+   241	### rename tensorflow -> tensorflow2
+   242	pushd %{buildroot}%{_includedir}/tensorflow2/
+   243	for HEADER in `find -name '*.h'`; do
+   244	  sed -i 's|#\W*include\W*<tensorflow/|#include <tensorflow2/|' ${HEADER}
+   245	  sed -i 's|#\W*include\W*"tensorflow/|#include "tensorflow2/|' ${HEADER}
+   246	done
+   247	popd
+   248	
+   249	## install flatbuffers header for tensorflow lite
+   250	mkdir -p %{buildroot}%{_includedir}/tensorflow2/flatbuffers

@@ -1,0 +1,391 @@
+===== Base compiler macro block =====
+    88	
+    89	############################# build config #####################################
+    90	
+    91	########## compilers and utils ##########
+    92	
+    93	%ifarch armv7l aarch64
+    94	Macros:
+    95	%_with_mlgo 1
+    96	%mlgo_build_jobs 6
+    97	%mlgo_verify_configure_only 0
+    98	:Macros
+    99	%endif
+   100	
+   101	%ifarch armv7l armv7hl
+   102	Macros:
+   103	%___optflags_toolchain_gcc --param=ssp-buffer-size=4
+   104	:Macros
+   105	%endif
+   106	%ifarch aarch64 riscv64
+   107	Macros:
+   108	%___optflags_toolchain_gcc -feliminate-unused-debug-types
+   109	:Macros
+   110	%endif
+   111	%ifarch i686 x86_64
+   112	Macros:
+   113	%___optflags_toolchain_gcc --param=ssp-buffer-size=4 -feliminate-unused-debug-types
+   114	%___optflags_toolchain_clang -momit-leaf-frame-pointer %{?_with_mlgo:-mllvm=-regalloc-enable-advisor=release -mllvm=-enable-ml-inliner=release}
+   115	:Macros
+   116	%endif
+   117	
+   118	Macros:
+   119	# clang utils
+   120	%__ar_clang llvm-ar
+   121	%__ranlib_clang llvm-ranlib
+   122	%__cc_clang %{_host}-clang
+   123	%__cxx_clang %{_host}-clang++
+   124	%__optflags_toolchain_clang -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument %{?___optflags_toolchain_clang:%{___optflags_toolchain_clang}}
+   125	
+   126	# gcc utils
+   127	%__ar_gcc gcc-ar
+   128	%__ranlib_gcc gcc-ranlib
+   129	%__cc_gcc %{_host}-gcc
+   130	%__cxx_gcc %{_host}-g++
+   131	%__optflags_toolchain_gcc -O2 -fno-inline-functions -fstack-protector-strong %{?___optflags_toolchain_gcc:%{___optflags_toolchain_gcc}}
+   132	
+   133	%_toolchain %{?_toolchain_override}%{!?_toolchain_override:clang}
+   134	%toolchain_is() %((echo "%_toolchain" | %{__grep} -qE "%{1}") && echo 1 || echo 0)
+   135	
+   136	%__ar %{expand:%%{__ar_%{_toolchain}}}
+   137	%__ranlib %{expand:%%{__ranlib_%{_toolchain}}}
+   138	%__cc %{expand:%%{__cc_%{_toolchain}}}
+   139	%__cxx %{expand:%%{__cxx_%{_toolchain}}}
+   140	%__optflags_toolchain %{expand:%%{__optflags_toolchain_%{_toolchain}}}
+   141	
+   142	%prep %%prep\
+   143	export AR=%{__ar} RANLIB=%{__ranlib};\
+   144	%{nil}
+   145	
+   146	%build %%build\
+   147	export AR=%{__ar} RANLIB=%{__ranlib};\
+   148	export CC=%{__cc} CXX=%{__cxx};\
+   149	%{nil}
+   150	
+   151	%install %{?_enable_debug_packages:%{?buildsubdir:%{debug_package}}}\
+   152	%%install\
+   153	export AR=%{__ar} RANLIB=%{__ranlib};\
+   154	export CC=%{__cc} CXX=%{__cxx};\
+   155	%{nil}
+   156	:Macros
+   157	
+   158	########## targets ##########
+===== Base architecture/host blocks =====
+   158	########## targets ##########
+   159	
+   160	%ifarch i586
+   161	Target: i686-tizen-linux
+   162	%endif
+   163	
+   164	%ifarch armv7hl
+   165	Target: armv7hl-tizen-linux
+   166	%endif
+   167	
+   168	%ifarch armv7l
+   169	Target: armv7l-tizen-linux
+   170	%endif
+   171	
+   172	%ifarch aarch64
+   173	Target: aarch64-tizen-linux
+   174	%endif
+   175	
+   176	%ifarch riscv64
+   177	Target: riscv64-tizen-linux
+   178	%endif
+   179	
+   180	########## cross build ##########
+   181	
+   182	%define build_hostarch x86_64
+   183	Macros:
+   184	%build_hostarch x86_64
+   185	:Macros
+   186	
+   187	%ifarch riscv64 %arm armv7l armv7hl aarch64
+   188	Hostarch: x86_64
+   189	# cross build support for the build hosts
+   190	Preinstall: qemu-linux-user-%{build_hostarch}-cross
+   191	Runscripts: qemu-linux-user-%{build_hostarch}-cross
+   192	Keep: qemu-linux-user-%{build_hostarch}-cross
+   193	Macros:
+   194	%qemu_user_space_build 1
+   195	:Macros
+   196	%endif
+   197	
+   198	%ifarch armv7l
+   199	Preinstall: qemu-accel-%{build_hostarch}-armv7l
+   200	Runscripts: qemu-accel-%{build_hostarch}-armv7l
+   201	Preinstall: clang-accel-%{build_hostarch}-armv7l
+   202	Runscripts: clang-accel-%{build_hostarch}-armv7l
+   203	Preinstall: libmount libblkid libuuid
+   204	%endif
+   205	
+   206	%ifarch armv7hl
+   207	Preinstall: qemu-accel-%{build_hostarch}-armv7hl
+   208	Runscripts: qemu-accel-%{build_hostarch}-armv7hl
+   209	Preinstall: clang-accel-%{build_hostarch}-armv7hl
+   210	Runscripts: clang-accel-%{build_hostarch}-armv7hl
+   211	Preinstall: libmount libblkid libuuid
+   212	%endif
+   213	
+   214	%ifarch aarch64
+   215	Preinstall: qemu-accel-%{build_hostarch}-aarch64
+   216	Runscripts: qemu-accel-%{build_hostarch}-aarch64
+   217	Preinstall: clang-accel-%{build_hostarch}-aarch64
+   218	Runscripts: clang-accel-%{build_hostarch}-aarch64
+   219	Preinstall: libmount libblkid libuuid
+   220	%endif # aarch64
+   221	
+   222	%ifarch riscv64
+   223	Preinstall: qemu-accel-%{build_hostarch}-riscv64
+   224	Runscripts: qemu-accel-%{build_hostarch}-riscv64
+   225	Preinstall: clang-accel-%{build_hostarch}-riscv64
+   226	Runscripts: clang-accel-%{build_hostarch}-riscv64
+   227	Preinstall: libmount libblkid libuuid
+   228	%endif # riscv64
+   229	
+   230	Substitute: python-accel-armv7l-cross-arm python-accel-%{build_hostarch}-armv7l
+   231	Substitute: python-accel-armv7hl-cross-arm python-accel-%{build_hostarch}-armv7hl
+   232	Substitute: python-accel-aarch64-cross-aarch64 python-accel-%{build_hostarch}-aarch64
+   233	Substitute: python-accel-riscv64-cross-riscv64 python-accel-%{build_hostarch}-riscv64
+   234	
+   235	Substitute: clang-accel-armv7l-cross-arm clang-accel-%{build_hostarch}-armv7l
+   236	Substitute: clang-accel-armv7hl-cross-arm clang-accel-%{build_hostarch}-armv7hl
+   237	Substitute: clang-accel-aarch64-cross-aarch64 clang-accel-%{build_hostarch}-aarch64
+   238	Substitute: clang-accel-riscv64-cross-riscv64 clang-accel-%{build_hostarch}-riscv64
+   239	
+   240	########## exports for different architectures ##########
+===== Unified full config =====
+     1	################################################################################
+     2	# OBS Project config for Tizen:Unified-Toolchain
+     3	#
+     4	# vim: set syntax=spec:
+     5	################################################################################
+     6	
+     7	############################# conflicts resolution #############################
+     8	
+     9	FileProvides: /usr/sbin/groupadd shadow-utils
+    10	Prefer: bluetooth-tools-no-firmware
+    11	
+    12	############################# profile definition ###############################
+    13	
+    14	%define _with_tizen 1
+    15	
+    16	# For classifying debug/release mode
+    17	Macros:
+    18	%tizen_build_devel_mode 1
+    19	:Macros
+    20	
+    21	# %release_name and %tizen_full_version are used in platform/upstream/tizen-release
+    22	
+    23	Macros:
+    24	%release_name Tizen11.0/Unified
+    25	
+    26	%tizen_version_major 11
+    27	%tizen_version_minor 0
+    28	%tizen_version_patch 0
+    29	
+    30	%tizen_version %{tizen_version_major}.%{tizen_version_minor}
+    31	%tizen_full_version %{tizen_version}.%{tizen_version_patch}
+    32	%tizen %tizen_version
+    33	%vendor tizen
+    34	%_vendor tizen
+    35	%_with_tizen 1
+    36	
+    37	#### %__spec_check_pre exit 0
+    38	#### %run_check_section 0
+    39	%opensuse_bs 1
+    40	%_default_patch_fuzz   2
+    41	:Macros
+    42	
+    43	########## mesa activation / coregl ##########
+    44	
+    45	%define _with_mesa 1
+    46	Macros:
+    47	%_with_mesa 1
+    48	:Macros
+    49	
+    50	Substitute: mesa-devel pkgconfig(glesv2)
+    51	Substitute: pkgconfig(gles20)  pkgconfig(egl) pkgconfig(glesv2)
+    52	Substitute: pkgconfig(gles11)  pkgconfig(egl) pkgconfig(glesv1) pkgconfig(gl)
+    53	
+    54	Prefer: coregl coregl-devel
+    55	Prefer: libwayland-egl libwayland-egl-devel
+    56	Prefer: vulkan-loader vulkan-loader-devel
+    57	#libelementary.so (upstream, tizen-only ) so add below Prefer. Requested by EFL team.
+    58	Prefer: elementary
+    59	
+    60	########## WAYLAND #########
+    61	
+    62	%define _with_wayland 1
+    63	Macros:
+    64	%_with_wayland 1
+    65	:Macros
+    66	
+    67	########## RDP flag ##########
+    68	
+    69	# enable/disable RDP (remote desktop protocol) for wayland
+    70	# flag: _with_rdp, used in repositories
+    71	# Affects: weston, freerdp
+    72	# Owner: Manuel <manuel.bachmann@open.eurogiciel.org>
+    73	
+    74	############################# target repositories #############################
+    75	
+    76	%if "%_repository" == "standard"
+    77	
+    78	Prefer: mesa libgbm
+    79	Substitute: mesa-libGLESv2 coregl
+    80	Substitute: mesa-libEGL coregl
+    81	
+    82	%define _with_rdp 1
+    83	Macros:
+    84	%_with_rdp 1
+    85	:Macros
+    86	
+    87	%endif
+    88	
+    89	############################# emulator repositories ############################
+    90	
+    91	%if "%_repository" == "emulator"
+    92	
+    93	Prefer: libgbm
+    94	Prefer: emulator-yagl emulator-yagl-devel
+    95	
+    96	%define _with_emulator 1
+    97	Macros:
+    98	%_with_emulator 1
+    99	:Macros
+   100	
+   101	%endif
+   102	
+   103	############################# misc config flags ################################
+   104	########## USAGE ##########
+   105	#
+   106	# IMPORTANT: please follow the following rules when playing with flags
+   107	# ********************************************************************
+   108	#
+   109	# In spec file, call %bcond_with macro at the beginning and test with %with:
+   110	# -------------------------
+   111	# | %bcond_with myfeature
+   112	# | [...]
+   113	# | %if %{with myfeature}
+   114	# | [...]
+   115	# | %endif
+   116	# | [...]
+   117	# -------------------------
+   118	#
+   119	# To activate an option, use:
+   120	# -------------------------
+   121	# | %define _with_myfeature 1
+   122	# | Macros:
+   123	# | %_with_myfeature 1
+   124	# | :Macros
+   125	# -------------------------
+   126	#
+   127	# To disable an option, DON'T set the values to 0, as the option would still be defined
+   128	# but simply comment the lines: this will undefine the option.
+   129	# -------------------------
+   130	# | #%define _with_myfeature 1
+   131	# | #Macros:
+   132	# | #%_with_myfeature 1
+   133	# | #:Macros
+   134	# -------------------------
+   135	#
+   136	# More information here:
+   137	# https://en.opensuse.org/openSUSE:Build_Service_prjconf#.25bcond
+   138	#
+   139	
+   140	########## flags ##########
+   141	
+   142	# Activate introspection
+   143	# This is needed on GuPNP to build Rygel correctly in IVI
+   144	# Impacts potentially packages that use gobject-introspection
+   145	# Owner: Mikko <mikko.ylinen@intel.com>
+   146	
+   147	Macros:
+   148	%_with_introspection 1
+   149	:Macros
+   150	
+   151	Macros:
+   152	%build %%build\
+   153	export AR=%{__ar} RANLIB=%{__ranlib};\
+   154	export CC=%{__cc} CXX=%{__cxx};\
+   155	export MAKEFLAGS+=" -k";\
+   156	%{nil}
+   157	:Macros
+   158	
+   159	############################# other config #####################################
+   160	# derived from Tizen:Base
+   161	################################################################################
+===== R85 buildlogs =====
+docs/progress/R85/raw/011_buildlogs_index.command.txt
+docs/progress/R85/raw/011_buildlogs_index.exitcode
+docs/progress/R85/raw/011_buildlogs_index.stderr
+docs/progress/R85/raw/011_buildlogs_index.stdout
+docs/progress/R85/raw/012_buildlogs_standard_index.command.txt
+docs/progress/R85/raw/012_buildlogs_standard_index.exitcode
+docs/progress/R85/raw/012_buildlogs_standard_index.stderr
+docs/progress/R85/raw/012_buildlogs_standard_index.stdout
+docs/progress/R85/raw/013_libcxx_buildlog_inventory.command.txt
+docs/progress/R85/raw/013_libcxx_buildlog_inventory.exitcode
+docs/progress/R85/raw/013_libcxx_buildlog_inventory.stderr
+docs/progress/R85/raw/013_libcxx_buildlog_inventory.stdout
+docs/progress/R85/raw/014_buildlogs_arch_sample.command.txt
+docs/progress/R85/raw/014_buildlogs_arch_sample.exitcode
+docs/progress/R85/raw/014_buildlogs_arch_sample.stderr
+docs/progress/R85/raw/014_buildlogs_arch_sample.stdout
+docs/progress/R85/raw/015_libcxx_buildlog_succeeded_inventory.command.txt
+docs/progress/R85/raw/015_libcxx_buildlog_succeeded_inventory.exitcode
+docs/progress/R85/raw/015_libcxx_buildlog_succeeded_inventory.stderr
+docs/progress/R85/raw/015_libcxx_buildlog_succeeded_inventory.stdout
+docs/progress/R85/raw/030_buildlog_patch_and_source_evidence.command.txt
+docs/progress/R85/raw/030_buildlog_patch_and_source_evidence.exitcode
+docs/progress/R85/raw/030_buildlog_patch_and_source_evidence.stderr
+docs/progress/R85/raw/030_buildlog_patch_and_source_evidence.stdout
+docs/progress/R85/raw/033_compact_buildlog_patch_evidence.command.txt
+docs/progress/R85/raw/033_compact_buildlog_patch_evidence.exitcode
+docs/progress/R85/raw/033_compact_buildlog_patch_evidence.stderr
+docs/progress/R85/raw/033_compact_buildlog_patch_evidence.stdout
+progress/R85/downloads/aarch64/libcxx-runtimes.buildlog.txt
+progress/R85/downloads/armv7l/libcxx-runtimes.buildlog.txt
+progress/R85/downloads/x86_64/libcxx-runtimes.buildlog.txt
+progress/R85/raw/011_buildlogs_index.command.txt
+progress/R85/raw/011_buildlogs_index.exitcode
+progress/R85/raw/011_buildlogs_index.stderr
+progress/R85/raw/011_buildlogs_index.stdout
+progress/R85/raw/012_buildlogs_standard_index.command.txt
+progress/R85/raw/012_buildlogs_standard_index.exitcode
+progress/R85/raw/012_buildlogs_standard_index.stderr
+progress/R85/raw/012_buildlogs_standard_index.stdout
+progress/R85/raw/013_libcxx_buildlog_inventory.command.txt
+progress/R85/raw/013_libcxx_buildlog_inventory.exitcode
+progress/R85/raw/013_libcxx_buildlog_inventory.stderr
+progress/R85/raw/013_libcxx_buildlog_inventory.stdout
+progress/R85/raw/014_buildlogs_arch_sample.command.txt
+progress/R85/raw/014_buildlogs_arch_sample.exitcode
+progress/R85/raw/014_buildlogs_arch_sample.stderr
+progress/R85/raw/014_buildlogs_arch_sample.stdout
+progress/R85/raw/015_libcxx_buildlog_succeeded_inventory.command.txt
+progress/R85/raw/015_libcxx_buildlog_succeeded_inventory.exitcode
+progress/R85/raw/015_libcxx_buildlog_succeeded_inventory.stderr
+progress/R85/raw/015_libcxx_buildlog_succeeded_inventory.stdout
+progress/R85/raw/030_buildlog_patch_and_source_evidence.command.txt
+progress/R85/raw/030_buildlog_patch_and_source_evidence.exitcode
+progress/R85/raw/030_buildlog_patch_and_source_evidence.stderr
+progress/R85/raw/030_buildlog_patch_and_source_evidence.stdout
+progress/R85/raw/033_compact_buildlog_patch_evidence.command.txt
+progress/R85/raw/033_compact_buildlog_patch_evidence.exitcode
+progress/R85/raw/033_compact_buildlog_patch_evidence.stderr
+progress/R85/raw/033_compact_buildlog_patch_evidence.stdout
+===== compiler identity/config command evidence =====
+--- progress/R85/downloads/aarch64/libcxx-runtimes.buildlog.txt ---
+423:[  529s] + cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=aarch64-tizen-linux-gnu-clang -DCMAKE_CXX_COMPILER=aarch64-tizen-linux-gnu-clang++ -DCMAKE_ASM_COMPILER=aarch64-tizen-linux-gnu-clang -DCMAKE_C_COMPILER_TARGET=aarch64-tizen-linux-gnu -DCMAKE_CXX_COMPILER_TARGET=aarch64-tizen-linux-gnu -DCMAKE_ASM_COMPILER_TARGET=aarch64-tizen-linux-gnu '-DCMAKE_C_FLAGS=-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv8-a+fp+simd+crc+crypto -mtune=cortex-a53 -g --rtlib=libgcc' '-DCMAKE_CXX_FLAGS=-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv8-a+fp+simd+crc+crypto -mtune=cortex-a53 -g --rtlib=libgcc' '-DCMAKE_ASM_FLAGS=-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv8-a+fp+simd+crc+crypto -mtune=cortex-a53 -g' '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--version-script=/home/abuild/rpmbuild/SOURCES/libcxx-llvm22.map -Wl,-z,now --rtlib=libgcc' -DCMAKE_EXE_LINKER_FLAGS=--rtlib=libgcc -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib64 -DLIBCXX_INSTALL_LIBRARY_DIR=lib64 -DLIBCXXABI_INSTALL_LIBRARY_DIR=lib64 '-DLLVM_ENABLE_RUNTIMES=libcxxabi;libcxx' -DLLVM_DEFAULT_TARGET_TRIPLE=aarch64-tizen-linux-gnu -DLLVM_INCLUDE_TESTS=OFF -DLIBCXX_ENABLE_SHARED=ON -DLIBCXX_ENABLE_STATIC=OFF -DLIBCXX_INSTALL_SHARED_LIBRARY=ON -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF -DLIBCXX_CXX_ABI=libcxxabi -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=ON -DLIBCXX_USE_COMPILER_RT=OFF -DLIBCXXABI_ENABLE_SHARED=ON -DLIBCXXABI_ENABLE_STATIC=OFF -DLIBCXXABI_INSTALL_SHARED_LIBRARY=ON -DLIBCXXABI_INSTALL_STATIC_LIBRARY=OFF -DLIBCXXABI_USE_COMPILER_RT=OFF -DLIBCXXABI_USE_LLVM_UNWINDER=OFF -DLIBCXXABI_ENABLE_STATIC_UNWINDER=OFF -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=OFF -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=OFF -DLIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS=ON -DLIBCXX_INCLUDE_TESTS=OFF -DLIBCXXABI_INCLUDE_TESTS=OFF -DLIBCXX_INCLUDE_BENCHMARKS=OFF ../runtimes
+425:[  529s] -- The C compiler identification is Clang 22.1.8
+426:[  530s] -- The CXX compiler identification is Clang 22.1.8
+--- progress/R85/downloads/armv7l/libcxx-runtimes.buildlog.txt ---
+423:[  174s] + cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=armv7l-tizen-linux-gnueabi-clang -DCMAKE_CXX_COMPILER=armv7l-tizen-linux-gnueabi-clang++ -DCMAKE_ASM_COMPILER=armv7l-tizen-linux-gnueabi-clang -DCMAKE_C_COMPILER_TARGET=armv7l-tizen-linux-gnueabi -DCMAKE_CXX_COMPILER_TARGET=armv7l-tizen-linux-gnueabi -DCMAKE_ASM_COMPILER_TARGET=armv7l-tizen-linux-gnueabi '-DCMAKE_C_FLAGS=-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g --rtlib=libgcc' '-DCMAKE_CXX_FLAGS=-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g --rtlib=libgcc' '-DCMAKE_ASM_FLAGS=-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g' '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--version-script=/home/abuild/rpmbuild/SOURCES/libcxx-llvm22.map -Wl,-z,now --rtlib=libgcc' -DCMAKE_EXE_LINKER_FLAGS=--rtlib=libgcc -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib -DLIBCXX_INSTALL_LIBRARY_DIR=lib -DLIBCXXABI_INSTALL_LIBRARY_DIR=lib '-DLLVM_ENABLE_RUNTIMES=libcxxabi;libcxx' -DLLVM_DEFAULT_TARGET_TRIPLE=armv7l-tizen-linux-gnueabi -DLLVM_INCLUDE_TESTS=OFF -DLIBCXX_ENABLE_SHARED=ON -DLIBCXX_ENABLE_STATIC=OFF -DLIBCXX_INSTALL_SHARED_LIBRARY=ON -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF -DLIBCXX_CXX_ABI=libcxxabi -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=ON -DLIBCXX_USE_COMPILER_RT=OFF -DLIBCXXABI_ENABLE_SHARED=ON -DLIBCXXABI_ENABLE_STATIC=OFF -DLIBCXXABI_INSTALL_SHARED_LIBRARY=ON -DLIBCXXABI_INSTALL_STATIC_LIBRARY=OFF -DLIBCXXABI_USE_COMPILER_RT=OFF -DLIBCXXABI_USE_LLVM_UNWINDER=OFF -DLIBCXXABI_ENABLE_STATIC_UNWINDER=OFF -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=OFF -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=OFF -DLIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS=ON -DLIBCXX_INCLUDE_TESTS=OFF -DLIBCXXABI_INCLUDE_TESTS=OFF -DLIBCXX_INCLUDE_BENCHMARKS=OFF ../runtimes
+425:[  175s] -- The C compiler identification is Clang 22.1.8
+426:[  175s] -- The CXX compiler identification is Clang 22.1.8
+--- progress/R85/downloads/x86_64/libcxx-runtimes.buildlog.txt ---
+404:[  302s] + cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=x86_64-tizen-linux-gnu-clang -DCMAKE_CXX_COMPILER=x86_64-tizen-linux-gnu-clang++ -DCMAKE_ASM_COMPILER=x86_64-tizen-linux-gnu-clang -DCMAKE_C_COMPILER_TARGET=x86_64-tizen-linux-gnu -DCMAKE_CXX_COMPILER_TARGET=x86_64-tizen-linux-gnu -DCMAKE_ASM_COMPILER_TARGET=x86_64-tizen-linux-gnu '-DCMAKE_C_FLAGS=-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument -momit-leaf-frame-pointer  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -fdiagnostics-color=never -m64 -march=nehalem -msse4.2 -mfpmath=sse -fasynchronous-unwind-tables -fno-omit-frame-pointer -g --rtlib=libgcc' '-DCMAKE_CXX_FLAGS=-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument -momit-leaf-frame-pointer  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -fdiagnostics-color=never -m64 -march=nehalem -msse4.2 -mfpmath=sse -fasynchronous-unwind-tables -fno-omit-frame-pointer -g --rtlib=libgcc' '-DCMAKE_ASM_FLAGS=-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument -momit-leaf-frame-pointer  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -fdiagnostics-color=never -m64 -march=nehalem -msse4.2 -mfpmath=sse -fasynchronous-unwind-tables -fno-omit-frame-pointer -g' '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--version-script=/home/abuild/rpmbuild/SOURCES/libcxx-llvm22.map -Wl,-z,now --rtlib=libgcc' -DCMAKE_EXE_LINKER_FLAGS=--rtlib=libgcc -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib64 -DLIBCXX_INSTALL_LIBRARY_DIR=lib64 -DLIBCXXABI_INSTALL_LIBRARY_DIR=lib64 '-DLLVM_ENABLE_RUNTIMES=libcxxabi;libcxx' -DLLVM_DEFAULT_TARGET_TRIPLE=x86_64-tizen-linux-gnu -DLLVM_INCLUDE_TESTS=OFF -DLIBCXX_ENABLE_SHARED=ON -DLIBCXX_ENABLE_STATIC=OFF -DLIBCXX_INSTALL_SHARED_LIBRARY=ON -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF -DLIBCXX_CXX_ABI=libcxxabi -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=ON -DLIBCXX_USE_COMPILER_RT=OFF -DLIBCXXABI_ENABLE_SHARED=ON -DLIBCXXABI_ENABLE_STATIC=OFF -DLIBCXXABI_INSTALL_SHARED_LIBRARY=ON -DLIBCXXABI_INSTALL_STATIC_LIBRARY=OFF -DLIBCXXABI_USE_COMPILER_RT=OFF -DLIBCXXABI_USE_LLVM_UNWINDER=OFF -DLIBCXXABI_ENABLE_STATIC_UNWINDER=OFF -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=OFF -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=OFF -DLIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS=ON -DLIBCXX_INCLUDE_TESTS=OFF -DLIBCXXABI_INCLUDE_TESTS=OFF -DLIBCXX_INCLUDE_BENCHMARKS=OFF ../runtimes
+406:[  302s] -- The C compiler identification is Clang 22.1.8
+407:[  303s] -- The CXX compiler identification is Clang 22.1.8
