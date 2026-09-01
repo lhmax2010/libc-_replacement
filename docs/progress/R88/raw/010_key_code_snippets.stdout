@@ -1,0 +1,434 @@
+===== libcxxabi/src/cxa_exception.cpp:640,662 =====
+   640	        //  __cxa_end_catch will remove this exception from the caughtExceptions stack if necessary
+   641	    }
+   642	    else  // this is a foreign exception
+   643	    {
+   644	        // The only way to communicate to __cxa_end_catch that we've rethrown
+   645	        //   a foreign exception, so don't delete us, is to pop the stack here
+   646	        //   which must be empty afterwards.  Then __cxa_end_catch will do
+   647	        //   nothing
+   648	        globals->caughtExceptions = 0;
+   649	    }
+   650	#ifdef __USING_SJLJ_EXCEPTIONS__
+   651	    _Unwind_SjLj_RaiseException(&exception_header->unwindHeader);
+   652	#else
+   653	    if (native_exception)
+   654	        _Unwind_RaiseException(&exception_header->unwindHeader);
+   655	    else
+   656	        _Unwind_Resume_or_Rethrow(&exception_header->unwindHeader);
+   657	#endif
+   658	
+   659	    //  If we get here, some kind of unwinding error has occurred.
+   660	    //  There is some weird code generation bug happening with
+   661	    //     Apple clang version 4.0 (tags/Apple/clang-418.0.2) (based on LLVM 3.1svn)
+   662	    //     If we call failed_throw here.  Turns up with -O2 or higher, and -Os.
+===== libcxxabi/src/cxa_personality.cpp:814,838 =====
+   814	                        results.actionRecord = actionRecord;
+   815	                        results.adjustedPtr =
+   816	                            get_thrown_object_ptr(unwind_exception);
+   817	                        results.reason = _URC_HANDLER_FOUND;
+   818	                        return;
+   819	                    }
+   820	                    // Else this is a catch (T) clause and will never
+   821	                    //    catch a foreign exception
+   822	                    else if (!native_exception &&
+   823	                             (actions & _UA_FORCE_UNWIND))
+   824	                    {
+   825	                        void* adjustedPtr =
+   826	                            get_thrown_object_ptr(unwind_exception);
+   827	                        const __shim_type_info* forcedType =
+   828	                            static_cast<const __shim_type_info*>(
+   829	                                &typeid(__cxxabiv1::__forced_unwind));
+   830	                        if (catchType->can_catch(forcedType, adjustedPtr))
+   831	                        {
+   832	                            results.ttypeIndex = ttypeIndex;
+   833	                            results.actionRecord = actionRecord;
+   834	                            results.adjustedPtr = adjustedPtr;
+   835	                            results.reason = _URC_HANDLER_FOUND;
+   836	                            return;
+   837	                        }
+   838	                    }
+===== libcxxabi/src/cxa_personality.cpp:1264,1288 =====
+  1264	        if (is_force_unwinding)
+  1265	          scan_eh_tab(
+  1266	              results,
+  1267	              static_cast<_Unwind_Action>(_UA_CLEANUP_PHASE | _UA_FORCE_UNWIND),
+  1268	              native_exception, unwind_exception, context);
+  1269	        else
+  1270	          scan_eh_tab(results, _UA_CLEANUP_PHASE, native_exception,
+  1271	                      unwind_exception, context);
+  1272	        if (results.reason == _URC_HANDLER_FOUND)
+  1273	        {
+  1274	            // A non-zero ttypeIndex identifies a catching handler. ARM EHABI
+  1275	            // requires __cxa_begin_cleanup only for a true cleanup entry
+  1276	            // (ttypeIndex == 0), matching libstdc++'s found_cleanup gate.
+  1277	            if (is_force_unwinding && !native_exception &&
+  1278	                results.ttypeIndex != 0)
+  1279	            {
+  1280	                save_results_to_barrier_cache(unwind_exception, results);
+  1281	                set_registers(unwind_exception, context, results);
+  1282	                return _URC_INSTALL_CONTEXT;
+  1283	            }
+  1284	
+  1285	            // Found a non-catching handler
+  1286	
+  1287	            // ARM EHABI 8.4.2: Before we can jump to the cleanup handler, we have to setup some
+  1288	            // internal data structures, so that __cxa_end_cleanup() can get unwind_exception from
+===== libcxxabi/include/cxxabi.h:32,50 =====
+    32	class type_info; // forward declaration
+    33	#endif
+    34	}
+    35	
+    36	
+    37	// runtime routines use C calling conventions, but are in __cxxabiv1 namespace
+    38	namespace __cxxabiv1 {
+    39	
+    40	// An out-of-line key function makes the runtime library own the unique
+    41	// exported typeinfo definition. Keep the libstdc++ abstract class shape so
+    42	// this marker can only be caught by reference.
+    43	class _LIBCXXABI_TYPE_VIS __forced_unwind {
+    44	  virtual ~__forced_unwind();
+    45	  virtual void __pure_dummy() = 0;
+    46	};
+    47	
+    48	struct __cxa_exception;
+    49	
+    50	extern "C"  {
+===== libcxx/src/ios.cpp:352,390 =====
+   352	  std::swap(__index_, rhs.__index_);
+   353	  std::swap(__event_size_, rhs.__event_size_);
+   354	  std::swap(__event_cap_, rhs.__event_cap_);
+   355	  std::swap(__iarray_, rhs.__iarray_);
+   356	  std::swap(__iarray_size_, rhs.__iarray_size_);
+   357	  std::swap(__iarray_cap_, rhs.__iarray_cap_);
+   358	  std::swap(__parray_, rhs.__parray_);
+   359	  std::swap(__parray_size_, rhs.__parray_size_);
+   360	  std::swap(__parray_cap_, rhs.__parray_cap_);
+   361	}
+   362	
+   363	void ios_base::__set_badbit_and_consider_rethrow() {
+   364	  __rdstate_ |= badbit;
+   365	#if _LIBCPP_HAS_EXCEPTIONS
+   366	  try {
+   367	    throw;
+   368	  } catch (const __cxxabiv1::__forced_unwind&) {
+   369	    throw;
+   370	  } catch (...) {
+   371	    if (__exceptions_ & badbit)
+   372	      throw;
+   373	  }
+   374	#endif // _LIBCPP_HAS_EXCEPTIONS
+   375	}
+   376	
+   377	void ios_base::__set_failbit_and_consider_rethrow() {
+   378	  __rdstate_ |= failbit;
+   379	#if _LIBCPP_HAS_EXCEPTIONS
+   380	  try {
+   381	    throw;
+   382	  } catch (const __cxxabiv1::__forced_unwind&) {
+   383	    throw;
+   384	  } catch (...) {
+   385	    if (__exceptions_ & failbit)
+   386	      throw;
+   387	  }
+   388	#endif // _LIBCPP_HAS_EXCEPTIONS
+   389	}
+   390	
+===== libcxx/include/istream:644,678 =====
+   644	#    if _LIBCPP_HAS_EXCEPTIONS
+   645	      try {
+   646	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   647	        while (true) {
+   648	          typename traits_type::int_type __i = this->rdbuf()->sgetc();
+   649	          if (traits_type::eq_int_type(__i, _Traits::eof())) {
+   650	            __state |= ios_base::eofbit;
+   651	            break;
+   652	          }
+   653	          if (traits_type::eq_int_type(__sb->sputc(traits_type::to_char_type(__i)), traits_type::eof()))
+   654	            break;
+   655	          __inc_gcount();
+   656	          this->rdbuf()->sbumpc();
+   657	        }
+   658	        if (__gc_ == 0)
+   659	          __state |= ios_base::failbit;
+   660	#    if _LIBCPP_HAS_EXCEPTIONS
+   661	      } catch (const __cxxabiv1::__forced_unwind&) {
+   662	        __state |= ios_base::badbit;
+   663	        if (__gc_ == 0)
+   664	          __state |= ios_base::failbit;
+   665	        this->__setstate_nothrow(__state);
+   666	        throw;
+   667	      } catch (...) {
+   668	        __state |= ios_base::badbit;
+   669	        if (__gc_ == 0)
+   670	          __state |= ios_base::failbit;
+   671	
+   672	        this->__setstate_nothrow(__state);
+   673	        if (this->exceptions() & ios_base::failbit || this->exceptions() & ios_base::badbit) {
+   674	          throw;
+   675	        }
+   676	      }
+   677	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   678	    } else {
+===== libcxx/include/__ostream/basic_ostream.h:200,230 =====
+   200	template <class _CharT, class _Traits>
+   201	basic_ostream<_CharT, _Traits>::sentry::sentry(basic_ostream<_CharT, _Traits>& __os) : __ok_(false), __os_(__os) {
+   202	  if (__os.good()) {
+   203	    if (__os.tie())
+   204	      __os.tie()->flush();
+   205	    __ok_ = true;
+   206	  }
+   207	}
+   208	
+   209	template <class _CharT, class _Traits>
+   210	basic_ostream<_CharT, _Traits>::sentry::~sentry() {
+   211	  if (__os_.rdbuf() && __os_.good() && (__os_.flags() & ios_base::unitbuf) && uncaught_exceptions() == 0) {
+   212	#  if _LIBCPP_HAS_EXCEPTIONS
+   213	    try {
+   214	#  endif // _LIBCPP_HAS_EXCEPTIONS
+   215	      if (__os_.rdbuf()->pubsync() == -1)
+   216	        __os_.setstate(ios_base::badbit);
+   217	#  if _LIBCPP_HAS_EXCEPTIONS
+   218	    } catch (const __cxxabiv1::__forced_unwind&) {
+   219	      throw;
+   220	    } catch (...) {
+   221	    }
+   222	#  endif // _LIBCPP_HAS_EXCEPTIONS
+   223	  }
+   224	}
+   225	
+   226	template <class _CharT, class _Traits>
+   227	basic_ostream<_CharT, _Traits>::basic_ostream(basic_ostream&& __rhs) {
+   228	  this->move(__rhs);
+   229	}
+   230	
+===== libcxx/include/future:886,906 =====
+   886	inline __deferred_assoc_state<_Rp, _Fp>::__deferred_assoc_state(_Fp&& __f) : __func_(std::forward<_Fp>(__f)) {
+   887	  this->__set_deferred();
+   888	}
+   889	
+   890	template <class _Rp, class _Fp>
+   891	void __deferred_assoc_state<_Rp, _Fp>::__execute() {
+   892	#    if _LIBCPP_HAS_EXCEPTIONS
+   893	  try {
+   894	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   895	    this->set_value(__func_());
+   896	#    if _LIBCPP_HAS_EXCEPTIONS
+   897	  } catch (const __cxxabiv1::__forced_unwind&) {
+   898	    this->__handle_forced_unwind(base::__forced_unwind_action::__restore_deferred);
+   899	    throw;
+   900	  } catch (...) {
+   901	    this->set_exception(current_exception());
+   902	  }
+   903	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   904	}
+   905	
+   906	template <class _Fp>
+===== libcxx/include/future:652,700 =====
+   652	template <class _Arg>
+   653	void __assoc_state<_Rp>::__construct_value_unready(_Arg&& __arg) {
+   654	  unique_lock<mutex> __lk(this->__mut_);
+   655	  if (this->__has_value())
+   656	    std::__throw_future_error(future_errc::promise_already_satisfied);
+   657	  ::new ((void*)std::addressof(__value_)) _Rp(std::forward<_Arg>(__arg));
+   658	  this->__state_ |= base::__constructed;
+   659	}
+   660	
+   661	template <class _Rp>
+   662	void __assoc_state<_Rp>::__complete_forced_unwind(exception_ptr __error) _NOEXCEPT {
+   663	  bool __destroy_value = false;
+   664	#    if _LIBCPP_HAS_EXCEPTIONS
+   665	  try {
+   666	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   667	    {
+   668	      unique_lock<mutex> __lk(this->__mut_);
+   669	      if (!(this->__state_ & base::ready)) {
+   670	        __destroy_value = (this->__state_ & base::__constructed) != 0;
+   671	        this->__state_ &= ~base::__constructed;
+   672	        this->__exception_ = std::move(__error);
+   673	      }
+   674	    }
+   675	    if (__destroy_value) {
+   676	#    if _LIBCPP_HAS_EXCEPTIONS
+   677	      try {
+   678	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   679	        reinterpret_cast<_Rp*>(std::addressof(__value_))->~_Rp();
+   680	#    if _LIBCPP_HAS_EXCEPTIONS
+   681	      } catch (...) {
+   682	      }
+   683	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   684	    }
+   685	    unique_lock<mutex> __lk(this->__mut_);
+   686	    if (!(this->__state_ & base::ready) && this->__exception_ != nullptr) {
+   687	      this->__state_ |= base::ready;
+   688	      this->__cv_.notify_all();
+   689	    }
+   690	#    if _LIBCPP_HAS_EXCEPTIONS
+   691	  } catch (...) {
+   692	  }
+   693	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   694	}
+   695	
+   696	template <class _Rp>
+   697	template <class _Arg>
+   698	void __assoc_state<_Rp>::set_value_at_thread_exit(_Arg&& __arg) {
+   699	  unique_lock<mutex> __lk(this->__mut_);
+   700	  if (this->__has_value())
+===== libcxx/include/future:728,806 =====
+   728	  typedef _Rp* _Up;
+   729	
+   730	protected:
+   731	  _Up __value_;
+   732	
+   733	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __on_zero_shared() _NOEXCEPT override;
+   734	
+   735	  _LIBCPP_HIDE_FROM_ABI void __construct_value_unready(_Rp& __arg);
+   736	
+   737	  _LIBCPP_HIDE_FROM_ABI void __complete_forced_unwind(exception_ptr __error) _NOEXCEPT;
+   738	
+   739	public:
+   740	  _LIBCPP_HIDE_FROM_ABI void set_value(_Rp& __arg);
+   741	  _LIBCPP_HIDE_FROM_ABI void set_value_at_thread_exit(_Rp& __arg);
+   742	
+   743	  _LIBCPP_HIDE_FROM_ABI _Rp& copy();
+   744	};
+   745	
+   746	template <class _Rp>
+   747	void __assoc_state<_Rp&>::__on_zero_shared() _NOEXCEPT {
+   748	  delete this;
+   749	}
+   750	
+   751	template <class _Rp>
+   752	void __assoc_state<_Rp&>::set_value(_Rp& __arg) {
+   753	  unique_lock<mutex> __lk(this->__mut_);
+   754	  if (this->__has_value())
+   755	    std::__throw_future_error(future_errc::promise_already_satisfied);
+   756	  __value_ = std::addressof(__arg);
+   757	  this->__state_ |= base::__constructed | base::ready;
+   758	  __cv_.notify_all();
+   759	}
+   760	
+   761	template <class _Rp>
+   762	void __assoc_state<_Rp&>::__construct_value_unready(_Rp& __arg) {
+   763	  unique_lock<mutex> __lk(this->__mut_);
+   764	  if (this->__has_value())
+   765	    std::__throw_future_error(future_errc::promise_already_satisfied);
+   766	  __value_ = std::addressof(__arg);
+   767	  this->__state_ |= base::__constructed;
+   768	}
+   769	
+   770	template <class _Rp>
+   771	void __assoc_state<_Rp&>::__complete_forced_unwind(exception_ptr __error) _NOEXCEPT {
+   772	#    if _LIBCPP_HAS_EXCEPTIONS
+   773	  try {
+   774	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   775	    unique_lock<mutex> __lk(this->__mut_);
+   776	    if (!(this->__state_ & base::ready)) {
+   777	      this->__state_ &= ~base::__constructed;
+   778	      __value_ = nullptr;
+   779	      this->__exception_ = std::move(__error);
+   780	      this->__state_ |= base::ready;
+   781	      this->__cv_.notify_all();
+   782	    }
+   783	#    if _LIBCPP_HAS_EXCEPTIONS
+   784	  } catch (...) {
+   785	  }
+   786	#    endif // _LIBCPP_HAS_EXCEPTIONS
+   787	}
+   788	
+   789	template <class _Rp>
+   790	void __assoc_state<_Rp&>::set_value_at_thread_exit(_Rp& __arg) {
+   791	  unique_lock<mutex> __lk(this->__mut_);
+   792	  if (this->__has_value())
+   793	    std::__throw_future_error(future_errc::promise_already_satisfied);
+   794	  __value_ = std::addressof(__arg);
+   795	  this->__state_ |= base::__constructed;
+   796	  __thread_local_data()->__make_ready_at_thread_exit(this);
+   797	}
+   798	
+   799	template <class _Rp>
+   800	_Rp& __assoc_state<_Rp&>::copy() {
+   801	  unique_lock<mutex> __lk(this->__mut_);
+   802	  this->__sub_wait(__lk);
+   803	  if (this->__exception_ != nullptr)
+   804	    std::rethrow_exception(this->__exception_);
+   805	  return *__value_;
+   806	}
+===== libcxx/src/future.cpp:102,122 =====
+   102	  unique_lock<mutex> __lk(__mut_);
+   103	  __sub_wait(__lk);
+   104	  if (__exception_ != nullptr)
+   105	    rethrow_exception(__exception_);
+   106	}
+   107	
+   108	void __assoc_sub_state::wait() {
+   109	  unique_lock<mutex> __lk(__mut_);
+   110	  __sub_wait(__lk);
+   111	}
+   112	
+   113	void __assoc_sub_state::__sub_wait(unique_lock<mutex>& __lk) {
+   114	  while (!__is_ready()) {
+   115	    if (__state_ & static_cast<unsigned>(deferred)) {
+   116	      __state_ &= ~static_cast<unsigned>(deferred);
+   117	      __lk.unlock();
+   118	      __execute();
+   119	      if (!__lk.owns_lock())
+   120	        __lk.lock();
+   121	    } else {
+   122	      __cv_.wait(__lk);
+===== libcxx/include/__ostream/basic_ostream.h:13,24 =====
+    13	
+    14	#if _LIBCPP_HAS_LOCALIZATION
+    15	
+    16	#  include <cxxabi.h>
+    17	#  include <__exception/operations.h>
+    18	#  include <__fwd/memory.h>
+    19	#  include <__iterator/ostreambuf_iterator.h>
+    20	#  include <__locale_dir/num.h>
+    21	#  include <__locale_dir/pad_and_output.h>
+    22	#  include <__memory/addressof.h>
+    23	#  include <__memory/unique_ptr.h>
+    24	#  include <__new/exceptions.h>
+===== libcxx/include/future:365,376 =====
+   365	#else
+   366	#  include <__config>
+   367	
+   368	#  if _LIBCPP_HAS_THREADS
+   369	
+   370	#    include <cxxabi.h>
+   371	#    include <__assert>
+   372	#    include <__chrono/duration.h>
+   373	#    include <__chrono/steady_clock.h>
+   374	#    include <__chrono/time_point.h>
+   375	#    include <__condition_variable/condition_variable.h>
+   376	#    include <__cstddef/nullptr_t.h>
+===== libcxx/include/istream:12,24 =====
+    12	
+    13	/*
+    14	    istream synopsis
+    15	
+    16	template <class charT, class traits = char_traits<charT> >
+    17	class basic_istream
+    18	    : virtual public basic_ios<charT,traits>
+    19	{
+    20	public:
+    21	    // types (inherited from basic_ios (27.5.4)):
+    22	    typedef charT                          char_type;
+    23	    typedef traits                         traits_type;
+    24	    typedef typename traits_type::int_type int_type;
+===== libcxx/include/string:526,540 =====
+   526	
+   527	typedef basic_string<char>    string;
+   528	typedef basic_string<wchar_t> wstring;
+   529	typedef basic_string<char8_t> u8string; // C++20
+   530	typedef basic_string<char16_t> u16string;
+   531	typedef basic_string<char32_t> u32string;
+   532	
+   533	int                stoi  (const string& str, size_t* idx = nullptr, int base = 10);
+   534	long               stol  (const string& str, size_t* idx = nullptr, int base = 10);
+   535	unsigned long      stoul (const string& str, size_t* idx = nullptr, int base = 10);
+   536	long long          stoll (const string& str, size_t* idx = nullptr, int base = 10);
+   537	unsigned long long stoull(const string& str, size_t* idx = nullptr, int base = 10);
+   538	
+   539	float       stof (const string& str, size_t* idx = nullptr);
+   540	double      stod (const string& str, size_t* idx = nullptr);
