@@ -1,0 +1,163 @@
+   500	    my @pren = grep {/^-/ && !$vmx{$_}} @{$config->{'preinstall'} || []};
+   501	    @vm = expand($config, @pre, @pren, @{$config->{'vminstall'} || []});
+   502	    return "vminstalls: $vm[0]" unless shift @vm;
+   503	    @vm = sort(grep {!$pre{$_}} @vm);
+   504	  }
+   505	  $config->{'preinstall'} = \@pre;
+   506	  $config->{'vminstall'} = \@vm;
+   507	  #print STDERR "pre: @pre\n";
+   508	  #print STDERR "vm: @vm\n";
+   509	  $config->{'preinstallisexpanded'} = 1;
+   510	  return '';
+   511	}
+   512	
+   513	# Delivers all packages which get used for building
+   514	sub get_build {
+   515	  my ($config, $subpacks, @deps) = @_;
+   516	
+   517	  if ($config->{'expandflags:preinstallexpand'} && !$config->{'preinstallisexpanded'}) {
+   518	    my $err = expandpreinstalls($config);
+   519	    return (undef, $err) if $err;
+   520	  }
+   521	  if ($config->{'type'} eq 'livebuild') {
+   522	    push @deps, @{$config->{'substitute'}->{'build-packages:livebuild'}
+   523			  || $subst_defaults{'build-packages:livebuild'} || []};
+   524	  }
+   525	  my @ndeps = grep {/^-/} @deps;
+   526	  my %ndeps = map {$_ => 1} @ndeps;
+   527	  my @directdepsend;
+   528	  if ($ndeps{'--directdepsend--'}) {
+   529	    @directdepsend = @deps;
+   530	    for (splice @deps) {
+   531	      last if $_ eq '--directdepsend--';
+   532	      push @deps, $_;
+   533	    }
+   534	    @directdepsend = grep {!/^-/} splice(@directdepsend, @deps + 1);
+   535	  }
+   536	  my @extra = (@{$config->{'required'}}, @{$config->{'support'}});
+   537	  if (@{$config->{'keep'} || []}) {
+   538	    my %keep = map {$_ => 1} (@deps, @{$config->{'keep'} || []}, @{$config->{'preinstall'}});
+   539	    for (@{$subpacks || []}) {
+   540	      next if $keep{$_};
+   541	      push @ndeps, "-$_";
+   542	      $ndeps{"-$_"} = 1;
+   543	    }
+   544	  } else {
+   545	    # new "empty keep" mode, filter subpacks from required/support
+   546	    my %subpacks = map {$_ => 1} @{$subpacks || []};
+   547	    @extra = grep {!$subpacks{$_}} @extra;
+   548	  }
+   549	  @deps = grep {!$ndeps{$_}} @deps;
+   550	  push @deps, @{$config->{'preinstall'}};
+   551	  push @deps, @extra;
+   552	  @deps = grep {!$ndeps{"-$_"}} @deps;
+   553	  @deps = do_subst($config, @deps);
+   554	  @deps = grep {!$ndeps{"-$_"}} @deps;
+   555	  if (@directdepsend) {
+   556	    @directdepsend = do_subst($config, @directdepsend);
+   557	    @directdepsend = grep {!$ndeps{"-$_"}} @directdepsend;
+   558	    unshift @directdepsend, '--directdepsend--' if @directdepsend;
+   559	  }
+   560	  @deps = expand($config, @deps, @ndeps, @directdepsend);
+   561	  return @deps;
+   562	}
+   563	
+   564	# return the package needed for setting up the build environment.
+   565	# an empty result means that the packages from get_build should
+   566	# be used instead.
+   567	sub get_sysbuild {
+   568	  my ($config, $buildtype, $extradeps) = @_;
+   569	  my $engine = $config->{'buildengine'} || '';
+   570	  $buildtype ||= $config->{'type'} || '';
+   571	  my @sysdeps;
+   572	  if ($engine eq 'mock' && $buildtype eq 'spec') {
+   573	    @sysdeps = @{$config->{'substitute'}->{'system-packages:mock'} || []};
+   574	    @sysdeps = @{$subst_defaults{'system-packages:mock'} || []} unless @sysdeps;
+   575	  } elsif ($engine eq 'debootstrap' && $buildtype eq 'dsc') {
+   576	    @sysdeps = @{$config->{'substitute'}->{'system-packages:debootstrap'} || []};
+   577	    @sysdeps = @{$subst_defaults{'system-packages:debootstrap'} || []} unless @sysdeps;
+   578	  } elsif ($buildtype eq 'livebuild') {
+   579	    # packages used for build environment setup (build-recipe-livebuild deps)
+   580	    @sysdeps = @{$config->{'substitute'}->{'system-packages:livebuild'} || []};
+   581	    @sysdeps = @{$subst_defaults{'system-packages:livebuild'} || []} unless @sysdeps;
+   582	  } elsif ($buildtype eq 'kiwi-image') {
+   583	    @sysdeps = @{$config->{'substitute'}->{'system-packages:kiwi-image'} || []};
+   584	    @sysdeps = @{$config->{'substitute'}->{'kiwi-setup:image'} || []} unless @sysdeps;
+   585	    @sysdeps = @{$subst_defaults{'system-packages:kiwi-image'} || []} unless @sysdeps;
+   586	    push @sysdeps, @$extradeps if $extradeps;
+   587	  } elsif ($buildtype eq 'kiwi-product') {
+   588	    @sysdeps = @{$config->{'substitute'}->{'system-packages:kiwi-product'} || []};
+   589	    @sysdeps = @{$config->{'substitute'}->{'kiwi-setup:product'} || []} unless @sysdeps;
+   590	    @sysdeps = @{$subst_defaults{'system-packages:kiwi-product'} || []} unless @sysdeps;
+   591	    push @sysdeps, @$extradeps if $extradeps;
+   592	  } elsif ($buildtype eq 'deltarpm') {
+   593	    @sysdeps = @{$config->{'substitute'}->{'system-packages:deltarpm'} || []};
+   594	    @sysdeps = @{$subst_defaults{'system-packages:deltarpm'} || []} unless @sysdeps;
+   595	  }
+   596	  return () unless @sysdeps;
+   597	  if ($config->{'expandflags:preinstallexpand'} && !$config->{'preinstallisexpanded'}) {
+   598	    my $err = expandpreinstalls($config);
+   599	    return (undef, $err) if $err;
+   600	  }
+   601	  my @ndeps = grep {/^-/} @sysdeps;
+   602	  my %ndeps = map {$_ => 1} @ndeps;
+   603	  @sysdeps = grep {!$ndeps{$_}} @sysdeps;
+   604	  push @sysdeps, @{$config->{'preinstall'}}, @{$config->{'required'}};
+   605	  push @sysdeps, @{$config->{'support'}} if $buildtype eq 'kiwi-image' || $buildtype eq 'kiwi-product';	# compat to old versions
+   606	  @sysdeps = do_subst($config, @sysdeps);
+   607	  @sysdeps = grep {!$ndeps{$_}} @sysdeps;
+   608	  my $configtmp = $config;
+   609	  @sysdeps = expand($configtmp, @sysdeps, @ndeps);
+   610	  return @sysdeps unless $sysdeps[0];
+   611	  shift @sysdeps;
+   612	  @sysdeps = unify(@sysdeps, get_preinstalls($config));
+   613	  return (1, @sysdeps);
+   614	}
+   615	
+   616	# Delivers all packages which shall have an influence to other package builds (get_build reduced by support packages)
+   617	sub get_deps {
+   618	  my ($config, $subpacks, @deps) = @_;
+   619	  if ($config->{'expandflags:preinstallexpand'} && !$config->{'preinstallisexpanded'}) {
+   620	    my $err = expandpreinstalls($config);
+   621	    return (undef, $err) if $err;
+   622	  }
+   623	  my @ndeps = grep {/^-/} @deps;
+   624	  my @extra = @{$config->{'required'}};
+   625	  if (@{$config->{'keep'} || []}) {
+   626	    my %keep = map {$_ => 1} (@deps, @{$config->{'keep'} || []}, @{$config->{'preinstall'}});
+   627	    for (@{$subpacks || []}) {
+   628	      push @ndeps, "-$_" unless $keep{$_};
+   629	    }
+   630	  } else {
+   631	    # new "empty keep" mode, filter subpacks from required
+   632	    my %subpacks = map {$_ => 1} @{$subpacks || []};
+   633	    @extra = grep {!$subpacks{$_}} @extra;
+   634	  }
+   635	  my %ndeps = map {$_ => 1} @ndeps;
+   636	  @deps = grep {!$ndeps{$_}} @deps;
+   637	  push @deps, @extra;
+   638	  @deps = grep {!$ndeps{"-$_"}} @deps;
+   639	  @deps = do_subst($config, @deps);
+   640	  @deps = grep {!$ndeps{"-$_"}} @deps;
+   641	  my %bdeps = map {$_ => 1} (@{$config->{'preinstall'}}, @{$config->{'support'}});
+   642	  delete $bdeps{$_} for @deps;
+   643	  @deps = expand($config, @deps, @ndeps);
+   644	  if (@deps && $deps[0]) {
+   645	    my $r = shift @deps;
+   646	    @deps = grep {!$bdeps{$_}} @deps;
+   647	    unshift @deps, $r;
+   648	  }
+   649	  return @deps;
+   650	}
+   651	
+   652	sub get_preinstalls {
+   653	  my ($config) = @_;
+   654	  if ($config->{'expandflags:preinstallexpand'} && !$config->{'preinstallisexpanded'}) {
+   655	    my $err = expandpreinstalls($config);
+   656	    return ('expandpreinstalls_error') if $err;
+   657	  }
+   658	  return @{$config->{'preinstall'}};
+   659	}
+   660	
+file /usr/lib/build/Build.pm is not owned by any package
+package file /usr/lib/build/Build.pm is not owned by any package is not installed

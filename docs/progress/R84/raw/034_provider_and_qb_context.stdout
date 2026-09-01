@@ -1,0 +1,320 @@
+[provider spec outputs]
+4:Name:           libcxx-runtimes
+5:Version:        22.1.8
+17:BuildRequires:  clang = %{version}
+18:BuildRequires:  cmake
+19:BuildRequires:  ninja
+20:BuildRequires:  python3
+21:BuildRequires:  glibc-devel
+22:BuildRequires:  libgcc
+29:%package -n libc++
+31:Requires:       libc++abi = %{version}-%{release}
+36:%package -n libc++-devel
+38:Requires:       libc++ = %{version}-%{release}
+39:Requires:       libc++abi-devel = %{version}-%{release}
+45:%package -n libc++abi
+51:%package -n libc++abi-devel
+53:Requires:       libc++abi = %{version}-%{release}
+[packaging spec inventory]
+libcxx-runtimes.spec
+llvm.spec
+[project metadata]
+<project name="Tizen-Base-Toolchain">
+  <debuginfo>
+    <enable/>
+  </debuginfo>
+  <repository name="standard">
+    <path project="DOD:Tizen-Base-Toolchain" repository="standard" />
+    <arch name="armv7l"/>
+    <arch name="aarch64"/>
+    <arch name="x86_64"/>
+  </repository>
+    <branch_candidate name="tizen_base">
+    <default/>
+    <org name="">
+      <branch name="tizen_base"/>
+      <branch name="tizen_binary"/>
+    </org>
+  </branch_candidate>
+  <use_img_addrm>
+    <disable/>
+  </use_img_addrm>
+  <maintainers>
+    <project_leader></project_leader>
+  </maintainers>
+</project>
+<project name="Tizen-Unified-Toolchain">
+  <debuginfo>
+    <enable/>
+  </debuginfo>
+  <repository name="standard">
+    <arch name="armv7l"/>
+    <arch name="aarch64"/>
+    <arch name="x86_64"/>
+    <image name="tizen-boot-aarch64-rpi.ks"/>
+    <image name="tizen-boot-armv7l-rpi.ks"/>
+    <image name="tizen-headed-aarch64.ks"/>
+    <image name="tizen-headed-armv7l.ks"/>
+    <image name="tizen-headless-aarch64.ks"/>
+    <image name="tizen-headless-armv7l.ks"/>
+  </repository>
+  <branch_candidate name="tizen">
+    <default/>
+    <org name="">
+      <branch name="tizen"/>
+      <branch name="tizen_mobile_tpk"/>
+      <branch name="tizen_wearable_tpk"/>
+      <branch name="tizen_tizeniot_tpk"/>
+    </org>
+  </branch_candidate>
+
+  <use_img_addrm>
+    <disable/>
+  </use_img_addrm>
+  <maintainers>
+    <project_leader></project_leader>
+  </maintainers>
+</project>
+
+[R83 ordering statement]
+# 依赖、容量与结果判读
+
+## 执行依赖
+
+- 源码：Gerrit `platform/upstream/llvm` sandbox ref，固定 HEAD
+  `08a64b6eb95ed74339f1d862a6c22a2f93fa78f9`；不得退回 tizen_base。
+- 配置：任务给定两份 project_config，必须先核对本报告记录的 SHA256。
+- 工具：GBS 2.0.8（本机实测版本）、Git、RPM/rpmbuild/rpm2cpio、cpio、
+  createrepo、patch、coreutils、findutils、ripgrep；sudo/chroot 能力。
+- 网络：Gerrit SSH 与两个 Tizen snapshot HTTPS 仓；全量源码服务/内部镜像
+  是另一台服务器特有前置，本机材料中 `NOT_AVAILABLE`。
+- 构建顺序：sandbox LLVM/Clang → sandbox libc++/libc++abi provider → 把
+  provider 放入优先本地仓 → 其余全部包。不能先编消费者再补头文件。
+
+容量没有在本机执行全量构建，精确峰值 `NOT_OBSERVED`。给人工服务器的保守
+容量预算是：每个架构至少预留 500 GiB；若三架构根和日志同时保留，预留
+1.5 TiB。内存建议 32 GiB，最低 16 GiB；手册将包级并行和包内并行都限制
+为 2。该容量是执行预算，不是实测需求；执行方应在每架构开始前记录
+`df -h`/`free -h`，低于预算时停下。
+
+## 结果组织
+
+每架构独立目录；每条命令拆成 `.command.txt/.stdout/.stderr/.exitcode`；
+GBS success/fail log 原样保留。还需保存：
+
+- sandbox SHA、upstream tag、配置 SHA256；
+- provider RPM 文件名、NEVRA、SHA256、`rpm -qpl/-qpR/-qp --provides`；
+- GBS index、成功/失败包清单、完整失败日志；
+- 全局 diagnostics 索引，但不能用索引代替原日志；
+- 与同 snapshot 既有平台构建状态的逐包对照。
+
+## 失败判读优先级
+
+1. 先验证失败 buildroot 实际装的是 `22.1.8-83.1` sandbox clang、libc++、
+   libc++abi 与 devel 包。若不是，归为配置/仓优先级问题，不判补丁失败。
+2. 失败点在层 A/B/C 修改行、`__forced_unwind` 类型、cxxabi 头、libc++ 头
+   实例化或 libc++/libc++abi 链接时，列为本方案相关候选，保留预处理输出
+   和完整 link command。
+3. 网络、源码下载、磁盘、chroot、签名/仓元数据问题归环境失败。
+4. 与相同 snapshot 既有构建同样失败的归既有问题；没有 matched baseline
+   时只能 `INDETERMINATE`，不能猜测。
+
+## 已知 45 个源码 RPM 身份
+
+完整名单在 `tables/known45_source_rpms.txt`。它们此前已被登记为需源码适配
+的集合，可能表现为：缺失 libstdc++ 内部头、GNU extension namespace/
+类型不可用、`std::__cxx11`/ABI namespace 假设、保留 `std` 内部成员、
+`cxxabi` API 差异、configure/feature probe 选错，最终在编译或链接阶段
+报错。名单含同包不同 Release/架构工具链身份；应按 source RPM 身份匹配，
+不要把 45 误称为 45 个唯一 package name。
+
+这些预期并不自动等于“允许忽略”：逐项确认诊断与既有登记位置一致；若失败
+落在新位置或指向四补丁，仍需升级为新问题。
+
+## 既有 13 个硬编码 `-lstdc++` 身份
+
+完整位置在 `tables/hardcoded_lstdcxx_13.tsv`。R66 只证明源码树存在引用，
+生产构建可达性为 `NOT_OBSERVED`。全量构建中可能出现三种形态：
+
+- 路径未启用或上层参数覆盖，构建通过；
+- 链接命令同时含 libc++ 与 `-lstdc++`，可能构建通过但产物出现双运行时
+  `DT_NEEDED`，这是必须报告的迁移污染；
+- ABI namespace/符号不兼容、链接顺序或 `--as-needed` 导致 undefined
+  reference / cannot find library，构建失败。
+
+因此不能预先写成“13 个必失败包”。对构建通过者仍要用 `readelf -d` 检查
+是否同时依赖 `libc++.so.1` 和 `libstdc++.so.6`。
+
+## 需要我们处理的结果
+
+- provider 自身编译/打包失败；
+- 任何包因新头文件、`__forced_unwind`、libc++abi symbol/version、链接脚本
+  或 sandbox package selection 失败；
+- 相对 matched baseline 新增的编译/链接失败或告警；
+- 产物意外同时依赖两套 C++ runtime；
+- 消费者实际使用旧 `/usr/include/c++/v1` 或旧 NEVRA。
+
+纯网络/空间/权限失败不是源码缺陷，但仍须完整保留；已知 45/13 只用于快速
+分流，不得替代逐包证据。
+[known QB multi-spec boundary]
+docs/progress/R83/REPORT.md-3-## 结论摘要
+docs/progress/R83/REPORT.md-4-
+docs/progress/R83/REPORT.md-5-**构建路径结论：可以直接从 sandbox 分支构建 libc++ 与 libc++abi 包。**
+docs/progress/R83/REPORT.md:6:`libcxx-runtimes.spec` 的构建选项、BuildRequires、四个主子包和安装清单完整；
+docs/progress/R83/REPORT.md-7-GBS standard export 实测把 sandbox HEAD 上四个补丁生成为 `Patch6`–`Patch9`
+docs/progress/R83/REPORT.md-8-并在 `%prep` 依次应用。层 C 修改的四个消费者头均由 CMake 安装到
+docs/progress/R83/REPORT.md-9-`/usr/include/c++/v1`，整个目录归 `libc++-devel`，所以后续软件包编译会
+--
+docs/progress/R83/REPORT.md-47-7. `08a64b6e...`：层 C 库内批。
+docs/progress/R83/REPORT.md-48-
+docs/progress/R83/REPORT.md-49-打包提交新增四文件：`SOURCE_PROVENANCE`、`libcxx-llvm22.map`、
+docs/progress/R83/REPORT.md:50:`libcxx-runtimes.manifest`、`libcxx-runtimes.spec`，无其他改动。完整现状见
+docs/progress/R83/REPORT.md-51-`tables/packaging_files.tsv` 和 `PACKAGING_INVENTORY.md`。
+docs/progress/R83/REPORT.md-52-
+docs/progress/R83/REPORT.md-53-spec 生成四个主包：
+--
+docs/progress/R83/REPORT.md-67-对 sandbox HEAD 执行：
+docs/progress/R83/REPORT.md-68-
+docs/progress/R83/REPORT.md-69-```text
+docs/progress/R83/REPORT.md:70:nice -n 15 ionice -c 3 gbs export --spec libcxx-runtimes.spec \
+docs/progress/R83/REPORT.md-71-  --packaging-dir packaging -o /home/toolchain/development/libc++_replacement/tmp/R83/export .
+docs/progress/R83/REPORT.md-72-```
+docs/progress/R83/REPORT.md-73-
+--
+docs/progress/R83/REPORT.md-156-2. 核验并复制两份 project_config；
+docs/progress/R83/REPORT.md-157-3. 生成未注入的 bootstrap buildconf 与 libc++ consumer buildconf；
+docs/progress/R83/REPORT.md-158-4. 每架构先用 sandbox 的 `llvm.spec` 构建 LLVM/Clang；
+docs/progress/R83/REPORT.md:159:5. 将其放进优先本地仓，再构建同 HEAD 的 `libcxx-runtimes.spec`；
+docs/progress/R83/REPORT.md-160-6. 将四个 provider 包放进优先本地仓；
+docs/progress/R83/REPORT.md-161-7. 用修改副本的 buildconf 执行 `gbs --full-build`；
+docs/progress/R83/REPORT.md-162-8. 收集每条命令、退出码、完整日志、RPM SHA256 与 diagnostics。
+--
+docs/progress/R83/GBS_RUNBOOK.md-2-
+docs/progress/R83/GBS_RUNBOOK.md-3-本手册不在 R83 本机执行。它固定使用 Gerrit sandbox HEAD
+docs/progress/R83/GBS_RUNBOOK.md-4-`08a64b6eb95ed74339f1d862a6c22a2f93fa78f9`，先构建同一提交的 LLVM/Clang，
+docs/progress/R83/GBS_RUNBOOK.md:5:再构建 `libcxx-runtimes`，最后把两者作为优先本地仓依赖执行全量构建。
+docs/progress/R83/GBS_RUNBOOK.md-6-
+docs/progress/R83/GBS_RUNBOOK.md-7-## 0. 人工只需确认的路径与权限
+docs/progress/R83/GBS_RUNBOOK.md-8-
+--
+docs/progress/R83/GBS_RUNBOOK.md-88-
+docs/progress/R83/GBS_RUNBOOK.md-89-## 4. 每架构先构建 sandbox LLVM，再构建新 libc++/libc++abi
+docs/progress/R83/GBS_RUNBOOK.md-90-
+docs/progress/R83/GBS_RUNBOOK.md:91:任务未指定最终架构矩阵。此手册按 `libcxx-runtimes.spec` 的全部
+docs/progress/R83/GBS_RUNBOOK.md-92-`ExclusiveArch` 执行：`x86_64 armv7l aarch64`。若人工只批准其中一部分，
+docs/progress/R83/GBS_RUNBOOK.md-93-必须在结果报告中明确缩小后的范围。
+docs/progress/R83/GBS_RUNBOOK.md-94-
+--
+docs/progress/R83/GBS_RUNBOOK.md-140-url=$UNIFIED_URL
+docs/progress/R83/GBS_RUNBOOK.md-141-EOF
+docs/progress/R83/GBS_RUNBOOK.md-142-
+docs/progress/R83/GBS_RUNBOOK.md:143:  run_logged "libcxx-runtimes-${arch}" nice -n 15 ionice -c 3 gbs -c "$R83_ROOT/config/provider-${arch}.gbs.conf" build \
+docs/progress/R83/GBS_RUNBOOK.md-144-    -A "$arch" -B "$R83_ROOT/gbs-root/provider-$arch" -C --fail-fast --threads 1 \
+docs/progress/R83/GBS_RUNBOOK.md-145-    --define '_smp_mflags -j2' --use-higher-deps --release 83.1 --style git \
+docs/progress/R83/GBS_RUNBOOK.md:146:    --packaging-dir packaging --spec libcxx-runtimes.spec "$LLVM_SRC"
+docs/progress/R83/GBS_RUNBOOK.md-147-
+docs/progress/R83/GBS_RUNBOOK.md-148-  find "$R83_ROOT/gbs-root/provider-$arch/local/repos" -type f -path "*/$arch/RPMS/*.rpm" \
+docs/progress/R83/GBS_RUNBOOK.md-149-    -exec cp -a '{}' "$R83_ROOT/repo/$arch/" ';'
+--
+docs/progress/R83/PACKAGING_INVENTORY.md-11-
+docs/progress/R83/PACKAGING_INVENTORY.md-12-| 文件 | 用途 |
+docs/progress/R83/PACKAGING_INVENTORY.md-13-|---|---|
+docs/progress/R83/PACKAGING_INVENTORY.md:14:| `packaging/libcxx-runtimes.spec` | 构建 libc++/libc++abi shared runtimes、头文件与开发链接文件 |
+docs/progress/R83/PACKAGING_INVENTORY.md-15-| `packaging/libcxx-llvm22.map` | 将导出符号置于默认 `LLVM_22` version node |
+docs/progress/R83/PACKAGING_INVENTORY.md:16:| `packaging/libcxx-runtimes.manifest` | 四个二进制子包共用的安全 manifest |
+docs/progress/R83/PACKAGING_INVENTORY.md-17-| `packaging/SOURCE_PROVENANCE` | 源码/导出补丁来源记录；当前内容存在过期问题 |
+docs/progress/R83/PACKAGING_INVENTORY.md-18-
+docs/progress/R83/PACKAGING_INVENTORY.md-19-仓内还保留原 LLVM 打包文件 `llvm.spec`、`llvm.manifest` 和三个 MLGO 模型包。
+docs/progress/R83/PACKAGING_INVENTORY.md-20-
+docs/progress/R83/PACKAGING_INVENTORY.md-21-## spec 形态
+docs/progress/R83/PACKAGING_INVENTORY.md-22-
+docs/progress/R83/PACKAGING_INVENTORY.md:23:`libcxx-runtimes.spec`：版本 `22.1.8-1`，支持 `armv7l aarch64 x86_64`，
+docs/progress/R83/PACKAGING_INVENTORY.md-24-BuildRequires 为 `clang = 22.1.8`、cmake、ninja、python3、glibc-devel、
+docs/progress/R83/PACKAGING_INVENTORY.md-25-libgcc。配置选择 `libcxxabi;libcxx`，只构建 shared library，使用
+docs/progress/R83/PACKAGING_INVENTORY.md-26-libc++abi + libgcc_s，不使用 compiler-rt 或 LLVM libunwind，关闭测试和
+--
+docs/progress/R83/PACKAGING_INVENTORY.md-79-2. **发布审计元数据不完整：** `SOURCE_PROVENANCE` 仍写
+docs/progress/R83/PACKAGING_INVENTORY.md-80-   `export_patch_count=6`、旧 HEAD `3d3e3da4...` 和 “plus six patches”，
+docs/progress/R83/PACKAGING_INVENTORY.md-81-   而实际导出为 10 个补丁、HEAD `08a64b6e...`。它不阻止编译，却会把
+docs/progress/R83/PACKAGING_INVENTORY.md:82:   错误 provenance 安装进 `/usr/share/doc/libcxx-runtimes/`。发布前必须由
+docs/progress/R83/PACKAGING_INVENTORY.md-83-   人工决定是否另提打包修正；本任务未修改。
+docs/progress/R83/PACKAGING_INVENTORY.md-84-
+docs/progress/R83/PACKAGING_INVENTORY.md-85-另一个执行风险是 spec 仍为 `22.1.8-1`。若远端仓已有同 NEVRA 的旧包，
+--
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md:1:# llvm/libcxx 与 gcc 多 spec 场景差异
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-2-
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-3-## 内容关系
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-4-
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md:5:gcc 的五份 spec 内容同源：四份派生 spec 等于两行架构宏前缀、一个空行与完整 `gcc.spec` 的拼接。llvm 场景的 `llvm.spec` 与 `libcxx-runtimes.spec` 是两份独立的完整打包描述，子包、BuildRequires、构建目标、安装清单和 changelog 均不同，不能由给 `llvm.spec` 增加宏前缀机械生成。
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-6-
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-7-由此产生的事实影响：
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-8-
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-9-1. 两份 spec 必须分别维护和解析，不能用 gcc 的前缀生成算法保证正文同步。
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-10-2. 唯一必须同步的版本约束由本任务单独断言，而不是由拼接天然继承。
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md:11:3. 两个目标必须各自携带关联输入；libcxx 目标需要 `libcxx-llvm22.map`、`libcxx-runtimes.manifest` 和 `SOURCE_PROVENANCE`。
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-12-4. `llvm.spec` 的既有 MLGO 模型、`llvm.manifest` 和其他内容保持原样；libcxx 文件只做同目录并存。
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-13-5. QuickBuild 是否实际接受此类“独立内容的两个 spec”仍待既有 sandbox 分支验证，本地 `rpmspec` 不能替代该项平台验证。
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-14-
+--
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-25-| spec | Name | Version | 版本宏 |
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-26-|---|---|---|---|
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-27-| `llvm.spec` | `llvm` | `22.1.8` | `%define llvm_version 22`（主版本宏） |
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md:28:| `libcxx-runtimes.spec` | `libcxx-runtimes` | `22.1.8` | `%define llvm_major 22`；`%define llvm_version 22.1.8` |
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-29-
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md:30:两份 Name 不同、Version 相同。`libcxx-runtimes.spec` 的 Version 行为硬编码 `22.1.8`，同时定义同值 `%llvm_version` 供 Source0 和 `%setup` 使用。
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-31-
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-32-## SOURCE_PROVENANCE 字段边界
+docs/progress/R18/proposed/DIFFERENCE_ANALYSIS.md-33-
+--
+docs/progress/R18/proposed/GCC_MULTI_SPEC_MECHANISM.md:1:# gcc 多 spec 机制要点
+docs/progress/R18/proposed/GCC_MULTI_SPEC_MECHANISM.md-2-
+docs/progress/R18/proposed/GCC_MULTI_SPEC_MECHANISM.md-3-## 取证身份
+docs/progress/R18/proposed/GCC_MULTI_SPEC_MECHANISM.md-4-
+--
+docs/progress/R18/proposed/IMPLEMENTATION_NOTES.md-13-
+docs/progress/R18/proposed/IMPLEMENTATION_NOTES.md-14-| 新增文件 | SHA256 | 作用 | gcc 对应事实 |
+docs/progress/R18/proposed/IMPLEMENTATION_NOTES.md-15-|---|---|---|---|
+docs/progress/R18/proposed/IMPLEMENTATION_NOTES.md:16:| `packaging/libcxx-runtimes.spec` | `a8437cca668ee785906ba5349efcd5b4b91a049ffd4b53e5234a6c2c6066af74` | 独立的 libc++/libc++abi 源码包打包描述 | 与 gcc 的多个完整 spec 并存形态对应，但不是宏前缀派生 |
+docs/progress/R18/proposed/IMPLEMENTATION_NOTES.md-17-| `packaging/libcxx-llvm22.map` | `e806ab237e86bbe1e1d25c9bedbb129016ed67e9e72acb9259154b4b51a1304d` | LLVM_22 导出符号版本脚本 | 对应 gcc 将包专属源码输入与 spec 同置 packaging 的组织事实 |
+docs/progress/R18/proposed/IMPLEMENTATION_NOTES.md:18:| `packaging/libcxx-runtimes.manifest` | `db262cd0f01ca668a019b79bf1bb1a9731a100205ff4d4b256d071b3d5304dc3` | libcxx-runtimes 安全 manifest | 对应 `gcc.manifest` 的同目录组织方式 |
+docs/progress/R18/proposed/IMPLEMENTATION_NOTES.md-19-| `packaging/SOURCE_PROVENANCE` | `1cd5a45ea027d8f22b8dc5812eebbcf56f6c52e42446ad531729ce80289e7a37` | R9-C 三架构构建输入身份及六个导出 patch 锚 | gcc 没有同名输入；仅复用其辅助输入同目录组织方式 |
+docs/progress/R18/proposed/IMPLEMENTATION_NOTES.md-20-
+docs/progress/R18/proposed/IMPLEMENTATION_NOTES.md-21-四个 SHA256 均与 R9-C seg2 已验证输入逐字一致，证据见 `commands/07_r9c_input_identity.txt` 与 `commands/09_llvm_implementation_identity.txt`。
+--
+docs/progress/R18/proposed/REPORT.md:1:# R18：参照 gcc 实现 llvm 多 spec（人工审阅前段）
+docs/progress/R18/proposed/REPORT.md-2-
+docs/progress/R18/proposed/REPORT.md-3-## 状态
+docs/progress/R18/proposed/REPORT.md-4-
+--
+docs/progress/R18/proposed/REPORT.md-17-
+docs/progress/R18/proposed/REPORT.md-18-## 差异裁决
+docs/progress/R18/proposed/REPORT.md-19-
+docs/progress/R18/proposed/REPORT.md:20:`llvm.spec` 与 `libcxx-runtimes.spec` 是两份独立完整内容，不具备 gcc 的“宏前缀 + 公共正文”生成关系。因此本次不新增生成脚本，只让两个完整 spec 并存，并为 libcxx 增加三个专属输入。Name 分别为 `llvm` 与 `libcxx-runtimes`，Version 均为 `22.1.8`。详见 `DIFFERENCE_ANALYSIS.md`。
+docs/progress/R18/proposed/REPORT.md-21-
+docs/progress/R18/proposed/REPORT.md-22-## 本地实现
+docs/progress/R18/proposed/REPORT.md-23-
+docs/progress/R18/proposed/REPORT.md-24-`codes/llvm` 的 `tizen_base` 从 `3d3e3da…` 前进到本地提交 `5ed6c77278dfa7a470667cf1a137723d3c96fe60`，只新增：
+docs/progress/R18/proposed/REPORT.md-25-
+docs/progress/R18/proposed/REPORT.md:26:- `packaging/libcxx-runtimes.spec`
+docs/progress/R18/proposed/REPORT.md-27-- `packaging/libcxx-llvm22.map`
+docs/progress/R18/proposed/REPORT.md:28:- `packaging/libcxx-runtimes.manifest`
+docs/progress/R18/proposed/REPORT.md-29-- `packaging/SOURCE_PROVENANCE`
+docs/progress/R18/proposed/REPORT.md-30-
+docs/progress/R18/proposed/REPORT.md-31-四个文件 SHA256 与 R9-C seg2 构建输入一致。`llvm.spec` 没有任何字节变化。详见 `IMPLEMENTATION_NOTES.md`。
+--
+docs/progress/R18/proposed/REPORT.md-33-## 自检
+docs/progress/R18/proposed/REPORT.md-34-
+docs/progress/R18/proposed/REPORT.md-35-- `rpmspec -P llvm.spec`：退出 0。
+docs/progress/R18/proposed/REPORT.md:36:- `rpmspec -P libcxx-runtimes.spec`：退出 0。
+docs/progress/R18/proposed/REPORT.md-37-- Name 不同、Version 相同：PASS。
+docs/progress/R18/proposed/REPORT.md-38-- `llvm.spec` 提交前后 diff：退出 0。
+docs/progress/R18/proposed/REPORT.md-39-- LLVM 工作树提交后干净：PASS。
+--
+docs/progress/R18/proposed/SELFCHECK_SUMMARY.md-5-| R9-C 四个输入 SHA256 | PASS，四项逐字一致 | `commands/07_r9c_input_identity.txt`、`commands/09_llvm_implementation_identity.txt` |
+docs/progress/R18/proposed/SELFCHECK_SUMMARY.md-6-| `llvm.spec` 未改 | PASS，SHA256 `7962d176…`，提交前后 diff 退出 0 | `commands/08_llvm_preimplementation_freeze.txt`、`commands/16_llvm_postcommit_audit.txt` |
+docs/progress/R18/proposed/SELFCHECK_SUMMARY.md-7-| `rpmspec -P llvm.spec` | PASS，退出 0 | `commands/11_rpmspec_llvm_full.txt` |
+docs/progress/R18/proposed/SELFCHECK_SUMMARY.md:8:| `rpmspec -P libcxx-runtimes.spec` | PASS，退出 0 | `commands/12_rpmspec_libcxx_full.txt` |
+docs/progress/R18/proposed/SELFCHECK_SUMMARY.md:9:| Name 不同 | PASS：`llvm` / `libcxx-runtimes` | `commands/13_local_selfcheck_summary.txt` |
+docs/progress/R18/proposed/SELFCHECK_SUMMARY.md-10-| Version 相同 | PASS：`22.1.8` / `22.1.8` | `commands/13_local_selfcheck_summary.txt` |
+docs/progress/R18/proposed/SELFCHECK_SUMMARY.md-11-| LLVM 本地提交只含申报文件 | PASS，四个新增文件 | `commands/16_llvm_postcommit_audit.txt` |
+docs/progress/R18/proposed/SELFCHECK_SUMMARY.md-12-| 既有 sandbox 未被推送 | PASS，远端仍为 `3d3e3da…` | `commands/14_existing_sandbox_remote.txt`、`commands/16_llvm_postcommit_audit.txt` |
