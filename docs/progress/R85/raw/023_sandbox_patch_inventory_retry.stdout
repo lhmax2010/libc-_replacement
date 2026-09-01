@@ -1,0 +1,164 @@
+===== COMMIT=77e0f73ba61e =====
+commit 77e0f73ba61ef3e865f65eaf089bd1eafd9bfdea
+Author:     R51 Evidence <r51@example.invalid>
+AuthorDate: Thu Aug 20 20:20:15 2026 +0800
+Commit:     hao.lin <hao.lin@samsung.com>
+CommitDate: Fri Aug 28 18:00:10 2026 +0800
+
+    libc++abi: preserve foreign forced-unwind state
+    
+    A foreign exception rethrown through __cxa_rethrow currently starts a new
+    unwind with _Unwind_RaiseException. For pthread cancellation this loses the
+    forced-unwind continuation. Use _Unwind_Resume_or_Rethrow for foreign
+    exceptions while retaining the existing native and SJLJ paths.
+    
+    On ARM EHABI, the resumed forced unwind may reach a catching handler during
+    the cleanup phase. Treat a non-zero ttypeIndex as a catching handler and do
+    not register it through __cxa_begin_cleanup, matching libstdc++'s
+    found_cleanup gate.
+    
+    The two changes form one series: applying only the rethrow change exposes the
+    EHABI cleanup-registration defect on ARM. Validation covers x86_64 native and
+    armv7l hardware with libgcc_s. It does not cover aarch64, LLVM libunwind,
+    concurrent cancellation, or mixed-runtime frame traversal.
+    
+    中文说明：修复外来强制展开重抛状态丢失，并修复 ARM EHABI 将捕获
+    handler 误登记为 cleanup 的问题。两处必须作为同一系列应用。
+    
+    Series dependency:
+    These four commits form one validation series and must be applied in this
+    order: Layer A, Layer B, Layer C header batch, then Layer C library batch.
+    Do not apply or validate only a subset. Both Layer C batches require Layer B
+    and, on ARM, Layer A. Applying Layer A without the remaining series is not a
+    supported deployment and can introduce a regression.
+    
+    系列依赖说明：
+    四个提交构成一套验证系列，必须按层 A、层 B、层 C 头文件批、层 C
+    库内批的顺序应用。不得只应用或验证其中一部分。两个层 C 批次均依赖
+    层 B，并在 ARM 上依赖层 A；只应用层 A 而不带其余系列不属于支持的
+    部署形态，可能引入回归。
+    
+    Change-Id: I7432efca9c400b75e054c53d890f3714c1f4733c
+
+ libcxxabi/src/cxa_exception.cpp   |  5 ++++-
+ libcxxabi/src/cxa_personality.cpp | 11 +++++++++++
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+libcxxabi/src/cxa_exception.cpp
+libcxxabi/src/cxa_personality.cpp
+===== COMMIT=82afebabd778 =====
+commit 82afebabd7782ed25017e248f319c10284f7bec7
+Author:     R51 Evidence <r51@example.invalid>
+AuthorDate: Thu Aug 20 20:20:59 2026 +0800
+Commit:     hao.lin <hao.lin@samsung.com>
+CommitDate: Fri Aug 28 18:00:10 2026 +0800
+
+    libc++abi: expose GNU forced-unwind marker type
+    
+    GNU C++ code protects pthread cancellation with a handler for
+    __cxxabiv1::__forced_unwind, but libc++abi does not expose or map that marker.
+    Define the same abstract class shape used by libstdc++, with an out-of-line
+    virtual destructor so libc++abi owns one exported strong typeinfo definition.
+    Map a forced foreign exception to this type during personality matching.
+    
+    This extension depends on the Layer A forced-unwind rethrow and ARM EHABI
+    handler fixes, at least on armv7l, because the matched handler rethrows the
+    foreign exception. Validation covers x86_64 native and armv7l hardware with
+    libgcc_s. It does not cover aarch64, LLVM libunwind, concurrent cancellation,
+    or mixed-runtime frame traversal.
+    
+    中文说明：移植 GNU 强制展开标记类型及 personality 映射；采用抽象类
+    和库内 key function，保证消费者引用 libc++abi 中唯一的强 typeinfo。
+    该扩展在 armv7l 上依赖层 A。
+
+ libcxxabi/include/cxxabi.h        |  8 ++++++++
+ libcxxabi/src/cxa_exception.cpp   |  2 ++
+ libcxxabi/src/cxa_personality.cpp | 17 +++++++++++++++++
+ 3 files changed, 27 insertions(+)
+libcxxabi/include/cxxabi.h
+libcxxabi/src/cxa_exception.cpp
+libcxxabi/src/cxa_personality.cpp
+===== COMMIT=9039afa48d5b =====
+commit 9039afa48d5bdbd30f63589b0ca68e3c564f45ab
+Author:     NOT_AVAILABLE <not-available@invalid>
+AuthorDate: Fri Aug 21 19:59:06 2026 +0800
+Commit:     hao.lin <hao.lin@samsung.com>
+CommitDate: Fri Aug 28 18:00:11 2026 +0800
+
+    libcxx: preserve forced unwind in consumer-instantiated handlers
+    
+    Catch-all handlers in consumer-instantiated iostream, future, and string
+    paths intercept pthread cancellation's foreign forced unwind.  Preserve the
+    stream state updates and future state-machine obligations, then rethrow the
+    GNU ABI marker before the generic handlers can consume it.
+    
+    Keep deferred work retryable after cancellation.  For async results, split
+    result construction from readiness publication so cancellation in the
+    pre-publication window atomically publishes broken_promise.  Reference
+    results use the same protocol without taking ownership of the referenced
+    object, and value-result destruction runs after releasing the shared-state
+    mutex.
+    
+    The twenty guarded sites are delivered in this header batch because their
+    code may be instantiated into consumers under the supported build modes.
+    This change depends on the libc++abi forced-unwind marker and unwind fixes.
+    
+    中文说明：
+    为消费者侧可能实例化的 iostream、future 与 string 共二十处站点补齐
+    强制展开防护；保留原状态更新后重抛取消展开。deferred 取消后恢复为
+    可重试；async 在发布前窗口原子完成为 broken_promise，引用结果不取得
+    对象所有权，值对象析构移到共享状态锁外。
+    
+    Validation covers x86_64 and armv7l cancellation paths, async reference
+    results, concurrent waiters, stream state assertions, and normal exception
+    propagation.  Other architectures, LTO variants outside the audited set,
+    mixed runtimes, and dynamic loading boundaries are not covered.
+
+ libcxx/include/__ostream/basic_ostream.h |   3 +
+ libcxx/include/future                    | 142 ++++++++++++++++++++++++++++++-
+ libcxx/include/istream                   |  37 ++++++++
+ libcxx/include/string                    |   3 +
+ libcxx/src/future.cpp                    |  10 ++-
+ 5 files changed, 190 insertions(+), 5 deletions(-)
+libcxx/include/__ostream/basic_ostream.h
+libcxx/include/future
+libcxx/include/istream
+libcxx/include/string
+libcxx/src/future.cpp
+===== COMMIT=08a64b6eb95e =====
+commit 08a64b6eb95ed74339f1d862a6c22a2f93fa78f9
+Author:     He Fangyu <fangyu.he@samsung.com>
+AuthorDate: Tue Aug 25 20:52:54 2026 +0800
+Commit:     hao.lin <hao.lin@samsung.com>
+CommitDate: Fri Aug 28 18:00:11 2026 +0800
+
+    libcxx: preserve forced unwind in library-delivered handlers
+    
+    Catch-all handlers in explicitly instantiated iostream paths consume foreign
+    forced unwind and can turn pthread cancellation into process termination.
+    Add typed handlers at the thirty sites whose implementation is delivered by
+    the shared libc++ library, preserving stream state before rethrowing.
+    
+    For the badbit and failbit aggregation helpers, classify and rethrow while
+    the nested handler remains active; a later bare rethrow has no active
+    exception for foreign exception paths.  Streambuf extraction commits its
+    state with the non-throwing setter before rethrowing so an exception mask
+    cannot replace the forced unwind.
+    
+    This library batch is separate from consumer-instantiated header sites and
+    depends on the libc++abi forced-unwind marker and unwind fixes.
+    
+    中文说明：
+    为由 libc++ 动态库交付的三十处 iostream 站点补齐强制展开防护。
+    badbit/failbit 汇聚函数在活动 handler 内完成条件重抛，streambuf
+    提取路径以不抛异常的接口先提交状态位，再继续传播取消展开。
+    
+    Validation covers x86_64 and armv7l cancellation paths, library-only
+    replacement, stream exception masks, state-bit assertions, and normal I/O
+    failure behavior.  Other architectures, unaudited LTO modes, mixed runtimes,
+    and dynamic loading boundaries are not covered.
+
+ libcxx/include/istream | 63 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ libcxx/src/ios.cpp     | 17 ++++++++++++--
+ 2 files changed, 78 insertions(+), 2 deletions(-)
+libcxx/include/istream
+libcxx/src/ios.cpp
