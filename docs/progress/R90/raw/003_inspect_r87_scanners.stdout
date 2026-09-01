@@ -1,0 +1,654 @@
+===== docs/progress/R87/code/scan_elf_symbols.py =====
+#!/usr/bin/env python3
+"""Scan R11's verified published-package ELF corpus for R87 mangled forms."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import json
+import os
+import re
+import struct
+import subprocess
+from pathlib import Path
+from typing import BinaryIO
+
+
+SHT_SYMTAB = 2
+SHT_DYNSYM = 11
+
+
+def read_at(stream: BinaryIO, offset: int, size: int) -> bytes:
+    stream.seek(offset)
+    data = stream.read(size)
+    if len(data) != size:
+        raise ValueError(f"short read at {offset}: wanted {size}, got {len(data)}")
+    return data
+
+
+def symbol_names(stream: BinaryIO, base: int = 0, extent: int | None = None):
+    ident = read_at(stream, base, 16)
+    if ident[:4] != b"\x7fELF":
+        raise ValueError("not ELF")
+    elf_class, data_encoding = ident[4], ident[5]
+    if data_encoding not in (1, 2):
+        raise ValueError(f"unsupported EI_DATA={data_encoding}")
+    endian = "<" if data_encoding == 1 else ">"
+    if elf_class == 1:
+        header = read_at(stream, base + 16, 36)
+        shoff = struct.unpack_from(endian + "I", header, 16)[0]
+        shentsize = struct.unpack_from(endian + "H", header, 30)[0]
+        shnum = struct.unpack_from(endian + "H", header, 32)[0]
+        shfmt = endian + "IIIIIIIIII"
+        sym_default_size = 16
+    elif elf_class == 2:
+        header = read_at(stream, base + 16, 48)
+        shoff = struct.unpack_from(endian + "Q", header, 24)[0]
+        shentsize = struct.unpack_from(endian + "H", header, 42)[0]
+        shnum = struct.unpack_from(endian + "H", header, 44)[0]
+        shfmt = endian + "IIQQQQIIQQ"
+        sym_default_size = 24
+    else:
+        raise ValueError(f"unsupported EI_CLASS={elf_class}")
+    if shentsize < struct.calcsize(shfmt):
+        raise ValueError("short section-header entry")
+    if shnum == 0:
+        # ELF gABI: e_shnum == 0 stores the real count in sh_size of section 0.
+        raw = read_at(stream, base + shoff, struct.calcsize(shfmt))
+        shnum = struct.unpack(shfmt, raw)[5]
+        if shnum == 0:
+            raise ValueError("invalid extended section count 0")
+
+    sections = []
+    for index in range(shnum):
+        raw = read_at(stream, base + shoff + index * shentsize, struct.calcsize(shfmt))
+        fields = struct.unpack(shfmt, raw)
+        if elf_class == 1:
+            sh_type, offset, size, link, entsize = fields[1], fields[4], fields[5], fields[6], fields[9]
+        else:
+            sh_type, offset, size, link, entsize = fields[1], fields[4], fields[5], fields[6], fields[9]
+        sections.append((sh_type, offset, size, link, entsize))
+
+    for section_index, (sh_type, offset, size, link, entsize) in enumerate(sections):
+        if sh_type not in (SHT_SYMTAB, SHT_DYNSYM) or size == 0:
+            continue
+        if link >= len(sections):
+            raise ValueError(f"bad strtab link {link}")
+        _, str_offset, str_size, _, _ = sections[link]
+        strings = read_at(stream, base + str_offset, str_size)
+        entry_size = entsize or sym_default_size
+        if entry_size < 4:
+            raise ValueError("bad symbol entry size")
+        count = size // entry_size
+        table_kind = "DYNSYM" if sh_type == SHT_DYNSYM else "SYMTAB"
+        for symbol_index in range(count):
+            raw = read_at(stream, base + offset + symbol_index * entry_size, 4)
+            name_offset = struct.unpack(endian + "I", raw)[0]
+            if name_offset == 0 or name_offset >= len(strings):
+                continue
+            end = strings.find(b"\0", name_offset)
+            if end < 0:
+                end = len(strings)
+            name = strings[name_offset:end]
+            if name.startswith(b"_Z"):
+                yield table_kind, name.decode("ascii", errors="replace")
+
+
+def classify(name: str) -> list[str]:
+    kinds: list[str] = []
+    targets = (
+        "condition_variable4wait",
+        "condition_variable15__do_timed_wait",
+        "wbuffer_convert",
+    )
+    present = [target for target in targets if target in name]
+    if present:
+        kinds.append("SITE_NAME_PRESENT:" + ",".join(present))
+    if present and "Do" in name:
+        kinds.append("SITE_WITH_NOEXCEPT_TYPE_ENCODING")
+    if present and ("PDo" in name or "M" in name and "DoF" in name):
+        kinds.append("SITE_WITH_POINTER_NOEXCEPT_ENCODING")
+    # A type-only use does not carry the member function's name.  For example,
+    # `void f(void (std::condition_variable::*)() noexcept)` contains the class
+    # name plus `DoF`, but not `wait`.  Retain those separately for review.
+    if "condition_variable" in name and "DoF" in name:
+        kinds.append("CONDITION_VARIABLE_NOEXCEPT_FUNCTION_TYPE")
+    if "wbuffer_convert" in name and "DoF" in name:
+        kinds.append("WBUFFER_CONVERT_NOEXCEPT_FUNCTION_TYPE")
+    # noexcept/traits can feed a boolean non-type template argument.  This is a
+    # candidate only: the mangling cannot say which expression produced it.
+    if "wbuffer_convert" in name and re.search(r"L[bB][01]E", name):
+        kinds.append("WBUFFER_CONVERT_BOOL_TEMPLATE_CANDIDATE")
+    return kinds
+
+
+def demangle(names: list[str]) -> dict[str, str]:
+    if not names:
+        return {}
+    proc = subprocess.run(["c++filt"], input="\n".join(names) + "\n", text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    return dict(zip(names, proc.stdout.splitlines()))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--shards", required=True, type=Path)
+    parser.add_argument("--extracted", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--summary", required=True, type=Path)
+    args = parser.parse_args()
+
+    json_files = sorted(entry.path for entry in os.scandir(args.shards) if entry.name.endswith(".json"))
+    package_records = 0
+    elf_records = 0
+    unique_elf_paths: set[str] = set()
+    symbols_seen = 0
+    rows: list[tuple[str, str, str, str, str, str, str, str]] = []
+    failures: list[tuple[str, str]] = []
+
+    for json_path in json_files:
+        try:
+            with open(json_path, encoding="utf-8") as stream:
+                record = json.load(stream)
+        except (OSError, ValueError) as error:
+            failures.append((json_path, f"JSON:{error}"))
+            continue
+        package_records += 1
+        package = record["package"]
+        sha = package["actual_sha256"]
+        root = args.extracted / sha[:2] / sha
+        for elf in record["elfs"]:
+            elf_records += 1
+            path = root / elf["path"].lstrip("/")
+            unique_elf_paths.add(str(path))
+            try:
+                with path.open("rb") as stream:
+                    per_file_seen: set[tuple[str, str]] = set()
+                    for table_kind, name in symbol_names(stream):
+                        key = (table_kind, name)
+                        if key in per_file_seen:
+                            continue
+                        per_file_seen.add(key)
+                        symbols_seen += 1
+                        for kind in classify(name):
+                            rows.append((
+                                package["repo_id"], package["name"], package["arch"], sha,
+                                elf["path"], table_kind, kind, name,
+                            ))
+            except (OSError, ValueError, struct.error) as error:
+                failures.append((str(path), f"ELF:{error}"))
+
+    names = sorted({row[-1] for row in rows})
+    demangled = demangle(names)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("w", newline="") as stream:
+        writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+        writer.writerow(("repo", "package", "arch", "rpm_sha256", "elf_path", "symbol_table",
+                         "classification", "raw_symbol", "demangled_symbol"))
+        for row in sorted(rows):
+            writer.writerow((*row, demangled.get(row[-1], "NOT_AVAILABLE")))
+
+    with args.summary.open("w", newline="") as stream:
+        writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+        writer.writerow(("metric", "value"))
+        writer.writerow(("json_package_records", package_records))
+        writer.writerow(("elf_records", elf_records))
+        writer.writerow(("unique_elf_paths", len(unique_elf_paths)))
+        writer.writerow(("mangled_symbols_scanned", symbols_seen))
+        writer.writerow(("site_symbol_rows", len(rows)))
+        writer.writerow(("site_with_noexcept_type_encoding_rows",
+                         sum(1 for row in rows if row[-2] == "SITE_WITH_NOEXCEPT_TYPE_ENCODING")))
+        writer.writerow(("site_with_pointer_noexcept_encoding_rows",
+                         sum(1 for row in rows if row[-2] == "SITE_WITH_POINTER_NOEXCEPT_ENCODING")))
+        writer.writerow(("condition_variable_noexcept_function_type_rows",
+                         sum(1 for row in rows if row[-2] == "CONDITION_VARIABLE_NOEXCEPT_FUNCTION_TYPE")))
+        writer.writerow(("wbuffer_convert_noexcept_function_type_rows",
+                         sum(1 for row in rows if row[-2] == "WBUFFER_CONVERT_NOEXCEPT_FUNCTION_TYPE")))
+        writer.writerow(("wbuffer_convert_bool_template_candidate_rows",
+                         sum(1 for row in rows if row[-2] == "WBUFFER_CONVERT_BOOL_TEMPLATE_CANDIDATE")))
+        writer.writerow(("parse_failures", len(failures)))
+        for path, reason in failures:
+            writer.writerow((f"FAILURE:{path}", reason))
+
+    print(f"json_package_records={package_records}")
+    print(f"elf_records={elf_records}")
+    print(f"unique_elf_paths={len(unique_elf_paths)}")
+    print(f"mangled_symbols_scanned={symbols_seen}")
+    print(f"site_symbol_rows={len(rows)}")
+    print(f"noexcept_type_rows={sum(1 for row in rows if row[-2] == 'SITE_WITH_NOEXCEPT_TYPE_ENCODING')}")
+    print(f"pointer_noexcept_rows={sum(1 for row in rows if row[-2] == 'SITE_WITH_POINTER_NOEXCEPT_ENCODING')}")
+    print(f"condition_variable_noexcept_type_rows={sum(1 for row in rows if row[-2] == 'CONDITION_VARIABLE_NOEXCEPT_FUNCTION_TYPE')}")
+    print(f"wbuffer_convert_noexcept_type_rows={sum(1 for row in rows if row[-2] == 'WBUFFER_CONVERT_NOEXCEPT_FUNCTION_TYPE')}")
+    print(f"wbuffer_convert_bool_candidate_rows={sum(1 for row in rows if row[-2] == 'WBUFFER_CONVERT_BOOL_TEMPLATE_CANDIDATE')}")
+    print(f"parse_failures={len(failures)}")
+    return 0 if not failures else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+===== docs/progress/R87/code/scan_static_archives.py =====
+#!/usr/bin/env python3
+"""Scan static archives from the R11 package corpus for R87 symbol candidates."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import importlib.util
+import json
+import subprocess
+from pathlib import Path
+
+
+def load_classifier(path: Path):
+    spec = importlib.util.spec_from_file_location("r87_elf", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module.classify, module.demangle
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--paths", required=True, type=Path)
+    parser.add_argument("--shards", required=True, type=Path)
+    parser.add_argument("--classifier", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--summary", required=True, type=Path)
+    parser.add_argument("--batch-size", type=int, default=20)
+    args = parser.parse_args()
+
+    classify, demangle = load_classifier(args.classifier)
+    paths = [Path(line) for line in args.paths.read_text().splitlines() if line]
+    metadata: dict[str, dict] = {}
+    rows: list[tuple[str, str, str, str, str, str, str]] = []
+    failures: list[tuple[str, str]] = []
+    warnings: list[tuple[str, str]] = []
+    symbols_scanned = 0
+    total_bytes = 0
+    for path in paths:
+        try:
+            total_bytes += path.stat().st_size
+        except OSError as error:
+            failures.append((str(path), f"STAT:{error}"))
+
+    for start in range(0, len(paths), args.batch_size):
+        batch = paths[start:start + args.batch_size]
+        try:
+            proc = subprocess.run(
+                ["nm", "-A", "--no-demangle", "--", *(str(path) for path in batch)],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180,
+            )
+        except subprocess.TimeoutExpired:
+            failures.append((f"BATCH:{start}", "NM_TIMEOUT_180S"))
+            continue
+        diagnostic_lines = proc.stderr.strip().splitlines()
+        serious = [line for line in diagnostic_lines if "no symbols" not in line]
+        target = str(batch[0]) if len(batch) == 1 else f"BATCH:{start}"
+        if serious:
+            failures.append((target, f"NM_EXIT_{proc.returncode}:" + "\n".join(serious)))
+        elif proc.returncode != 0 and diagnostic_lines:
+            warnings.append((target, f"NM_EXIT_{proc.returncode}:NO_SYMBOLS_ONLY"))
+        elif proc.returncode != 0:
+            failures.append((target, f"NM_EXIT_{proc.returncode}:NO_DIAGNOSTIC"))
+        for line in proc.stdout.splitlines():
+            fields = line.rsplit(maxsplit=1)
+            if len(fields) != 2 or not fields[-1].startswith("_Z"):
+                continue
+            symbols_scanned += 1
+            name = fields[-1]
+            kinds = classify(name)
+            if not kinds:
+                continue
+            archive_text = line.split(":", 1)[0]
+            archive = Path(archive_text)
+            parts = archive.parts
+            try:
+                sha_index = parts.index("extracted") + 2
+                sha = parts[sha_index]
+            except (ValueError, IndexError):
+                sha = "NOT_AVAILABLE"
+            if sha not in metadata:
+                shard = args.shards / f"{sha}.json"
+                try:
+                    metadata[sha] = json.loads(shard.read_text())["package"]
+                except (OSError, ValueError, KeyError):
+                    metadata[sha] = {}
+            package = metadata[sha]
+            for kind in kinds:
+                rows.append((
+                    package.get("repo_id", "NOT_AVAILABLE"),
+                    package.get("name", "NOT_AVAILABLE"),
+                    package.get("arch", "NOT_AVAILABLE"),
+                    sha,
+                    str(archive), kind, name,
+                ))
+
+    names = sorted({row[-1] for row in rows})
+    demangled = demangle(names)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("w", newline="") as stream:
+        writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+        writer.writerow(("repo", "package", "arch", "rpm_sha256", "archive_path",
+                         "classification", "raw_symbol", "demangled_symbol"))
+        for row in sorted(rows):
+            writer.writerow((*row, demangled.get(row[-1], "NOT_AVAILABLE")))
+    with args.summary.open("w", newline="") as stream:
+        writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+        writer.writerow(("metric", "value"))
+        writer.writerow(("archive_paths", len(paths)))
+        writer.writerow(("archive_total_bytes", total_bytes))
+        writer.writerow(("mangled_symbols_scanned", symbols_scanned))
+        writer.writerow(("candidate_rows", len(rows)))
+        for kind in (
+            "SITE_WITH_NOEXCEPT_TYPE_ENCODING",
+            "SITE_WITH_POINTER_NOEXCEPT_ENCODING",
+            "CONDITION_VARIABLE_NOEXCEPT_FUNCTION_TYPE",
+            "WBUFFER_CONVERT_NOEXCEPT_FUNCTION_TYPE",
+            "WBUFFER_CONVERT_BOOL_TEMPLATE_CANDIDATE",
+        ):
+            writer.writerow((kind, sum(1 for row in rows if row[-2] == kind)))
+        writer.writerow(("scan_failures", len(failures)))
+        for path, reason in failures:
+            writer.writerow((f"FAILURE:{path}", reason))
+        writer.writerow(("nonfatal_no_symbols_warnings", len(warnings)))
+        for path, reason in warnings:
+            writer.writerow((f"WARNING:{path}", reason))
+
+    print(f"archive_paths={len(paths)}")
+    print(f"archive_total_bytes={total_bytes}")
+    print(f"mangled_symbols_scanned={symbols_scanned}")
+    print(f"candidate_rows={len(rows)}")
+    print(f"scan_failures={len(failures)}")
+    print(f"nonfatal_no_symbols_warnings={len(warnings)}")
+    return 0 if not failures else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+===== docs/progress/R87/code/scan_noexcept_type_uses.py =====
+#!/usr/bin/env python3
+"""Scan the established platform source-RPM corpus for type-level uses of R87 sites."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import re
+import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+
+SOURCE_GLOBS = (
+    "*.c", "*.cc", "*.cp", "*.cpp", "*.cxx", "*.C", "*.h", "*.hh",
+    "*.hpp", "*.hxx", "*.ipp", "*.tcc", "*.inl", "*.ixx", "*.cppm",
+)
+
+# Patterns are deliberately redundant. Precise hits and broad candidates are
+# retained separately so a reviewer can inspect false positives and aliases.
+PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    ("D01", "EXPLICIT_ADDRESS", re.compile(
+        r"&\s*(?:(?:::)?std\s*::\s*)?condition_variable\s*::\s*wait\b", re.M)),
+    ("D01", "MEMBER_POINTER_TYPE", re.compile(
+        r"(?:(?:::)?std\s*::\s*)?condition_variable\s*::\s*\*", re.M)),
+    ("D01", "DECLTYPE_OR_TRAIT", re.compile(
+        r"(?:decltype|is_(?:nothrow_)?invocable|invoke_result|result_of|noexcept)"
+        r"\s*(?:<|\()[^;{}]{0,500}condition_variable[^;{}]{0,500}(?:::|\.)\s*wait\b", re.M)),
+    ("D02-D04", "PRIVATE_HELPER_REFERENCE", re.compile(r"\b__do_timed_wait\b", re.M)),
+    ("D05", "DESTRUCTOR_SPELLING", re.compile(r"~\s*wbuffer_convert\b", re.M)),
+    ("D05", "DESTRUCTOR_TYPE_QUERY", re.compile(
+        r"(?:is_(?:nothrow_)?destructible|destructible|decltype|noexcept)"
+        r"\s*(?:<|\()[^;{}]{0,500}wbuffer_convert\b", re.M)),
+    ("GENERAL", "BROAD_WAIT_ADDRESS", re.compile(
+        r"&[^;{}\n]{0,300}::\s*wait\b", re.M)),
+    ("GENERAL", "BROAD_WAIT_TYPE_QUERY", re.compile(
+        r"(?:decltype|is_(?:nothrow_)?invocable|invoke_result|result_of|noexcept)"
+        r"\s*(?:<|\()[^;{}\n]{0,500}&?\s*(?:[A-Za-z_]\w*\s*::\s*)+wait\b", re.M)),
+    ("GENERAL", "NOEXCEPT_WAIT_EXPRESSION", re.compile(
+        r"\bnoexcept\s*\([^;{}]{0,500}(?:\.|->)\s*wait\s*\(", re.M)),
+)
+
+RG_PREFILTER = (
+    r"\bcondition_variable\b|__do_timed_wait|wbuffer_convert|"
+    r"&[^;{}\n]{0,300}::\s*wait\b|"
+    r"(?:decltype|is_nothrow_invocable|is_invocable|invoke_result|result_of|noexcept)"
+    r"[^;{}]{0,300}\bwait\b"
+)
+
+
+def load_roots(path: Path) -> list[tuple[str, str, Path]]:
+    roots: list[tuple[str, str, Path]] = []
+    with path.open(newline="") as stream:
+        for row in csv.DictReader(stream, delimiter="\t"):
+            if row["status"] == "SCAN_OK":
+                roots.append((row["source_rpm"], row["package_name"], Path(row["root"])))
+    return roots
+
+
+def line_for_offset(text: str, offset: int) -> tuple[int, str]:
+    line_no = text.count("\n", 0, offset) + 1
+    start = text.rfind("\n", 0, offset) + 1
+    end = text.find("\n", offset)
+    if end < 0:
+        end = len(text)
+    return line_no, text[start:end].strip().replace("\t", " ")
+
+
+def aliases_for_condition_variable(text: str) -> set[str]:
+    aliases = {"condition_variable"}
+    for match in re.finditer(
+        r"\busing\s+([A-Za-z_]\w*)\s*=\s*(?:(?:::)?std\s*::\s*)?condition_variable\s*;", text):
+        aliases.add(match.group(1))
+    for match in re.finditer(
+        r"\btypedef\s+(?:(?:::)?std\s*::\s*)?condition_variable\s+([A-Za-z_]\w*)\s*;", text):
+        aliases.add(match.group(1))
+    return aliases
+
+
+def scan_root(
+    item: tuple[str, str, Path], timeout_seconds: int
+) -> tuple[str, str, list[tuple[str, str, str, int, str]], str]:
+    source_rpm, package_name, root = item
+    command = [
+        "rg", "-l", "--threads", "1", "--no-messages", "--pcre2",
+        "--hidden", "--no-ignore", RG_PREFILTER,
+    ]
+    for glob in SOURCE_GLOBS:
+        command.extend(["-g", glob])
+    command.append(str(root))
+    try:
+        proc = subprocess.run(command, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        return source_rpm, package_name, [], f"TIMEOUT_{timeout_seconds}S"
+    if proc.returncode not in (0, 1):
+        return source_rpm, package_name, [], f"RG_EXIT_{proc.returncode}:{proc.stderr.strip()}"
+
+    rows: list[tuple[str, str, str, int, str]] = []
+    for raw_path in sorted(set(proc.stdout.splitlines())):
+        path = Path(raw_path)
+        try:
+            text = path.read_text(errors="replace")
+            rel = str(path.relative_to(root))
+        except (OSError, ValueError) as error:
+            rows.append(("GENERAL", "READ_ERROR", raw_path, 0, str(error)))
+            continue
+
+        seen: set[tuple[str, str, int]] = set()
+        for site, kind, pattern in PATTERNS:
+            for match in pattern.finditer(text):
+                line_no, source_text = line_for_offset(text, match.start())
+                key = (site, kind, line_no)
+                if key not in seen:
+                    seen.add(key)
+                    rows.append((site, kind, rel, line_no, source_text))
+
+        for alias in sorted(aliases_for_condition_variable(text)):
+            alias_pattern = re.compile(r"&\s*" + re.escape(alias) + r"\s*::\s*wait\b")
+            for match in alias_pattern.finditer(text):
+                line_no, source_text = line_for_offset(text, match.start())
+                key = ("D01", f"ALIAS_ADDRESS:{alias}", line_no)
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(("D01", f"ALIAS_ADDRESS:{alias}", rel, line_no, source_text))
+            member_pointer_pattern = re.compile(re.escape(alias) + r"\s*::\s*\*")
+            for match in member_pointer_pattern.finditer(text):
+                line_no, source_text = line_for_offset(text, match.start())
+                key = ("D01", f"ALIAS_MEMBER_POINTER_TYPE:{alias}", line_no)
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(("D01", f"ALIAS_MEMBER_POINTER_TYPE:{alias}", rel, line_no, source_text))
+    return source_rpm, package_name, rows, "OK"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scan-status", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--summary", required=True, type=Path)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--timeout-seconds", type=int, default=90)
+    args = parser.parse_args()
+
+    roots = load_roots(args.scan_status)
+    results: list[tuple[str, str, str, str, str, int, str]] = []
+    failures: list[tuple[str, str]] = []
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = [executor.submit(scan_root, item, args.timeout_seconds) for item in roots]
+        for future in as_completed(futures):
+            source_rpm, package_name, rows, status = future.result()
+            if status != "OK":
+                failures.append((source_rpm, status))
+            for site, kind, rel, line_no, source_text in rows:
+                results.append((source_rpm, package_name, site, kind, rel, line_no, source_text))
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("w", newline="") as stream:
+        writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+        writer.writerow(("source_rpm", "package_name", "site", "candidate_kind", "file", "line", "source_text"))
+        writer.writerows(sorted(results))
+
+    counts: dict[tuple[str, str], int] = {}
+    for _, _, site, kind, _, _, _ in results:
+        counts[(site, kind)] = counts.get((site, kind), 0) + 1
+    with args.summary.open("w", newline="") as stream:
+        writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+        writer.writerow(("site", "candidate_kind", "candidate_count"))
+        for (site, kind), count in sorted(counts.items()):
+            writer.writerow((site, kind, count))
+        writer.writerow(("CORPUS", "SOURCE_RPM_ROOTS", len(roots)))
+        writer.writerow(("CORPUS", "SCAN_FAILURES", len(failures)))
+        for source_rpm, reason in sorted(failures):
+            writer.writerow(("FAILURE", source_rpm, reason))
+
+    print(f"source_rpm_roots={len(roots)}")
+    print(f"candidates={len(results)}")
+    print(f"scan_failures={len(failures)}")
+    for (site, kind), count in sorted(counts.items()):
+        print(f"{site}\t{kind}\t{count}")
+    return 0 if not failures else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+===== R87 ABI/report references =====
+docs/progress/R87/tables/source_candidate_classification.tsv:12:D01	ALL_371_SCANNED_SOURCE_RPMS	ALL_SCANNED_SOURCE_FILES	NOT_OBSERVED	&std::condition_variable::wait or alias-resolved equivalent	NO_VALID_HIT	no valid address/type/template/trait use among completed exact candidates; expanded alias scan has separately declared timeouts
+docs/progress/R87/tables/source_candidate_classification.tsv:13:D02-D04	ALL_371_SCANNED_SOURCE_RPMS	ALL_SCANNED_SOURCE_FILES	NOT_OBSERVED	address pointer template argument decltype or trait involving __do_timed_wait	NO_VALID_HIT	only libc++ declarations definitions and direct calls observed
+docs/progress/R87/tables/source_candidate_classification.tsv:14:D05	ALL_371_SCANNED_SOURCE_RPMS	ALL_SCANNED_SOURCE_FILES	NOT_OBSERVED	destructor address or noexcept/destructibility type query	NO_VALID_HIT	destructor address is ill-formed; no type-query candidate observed
+docs/progress/R87/tables/result_summary.tsv:2:platform source contains valid address/pointer/template/type-query use of D01	NOT_OBSERVED	source_candidate_classification.tsv; exact scan 371/371
+docs/progress/R87/tables/result_summary.tsv:4:platform source contains valid address/type-query use of D05	NOT_OBSERVED	destructor address is ill-formed; no destructor trait/noexcept query candidate
+docs/progress/R87/tables/result_summary.tsv:5:published ELF contains target function-name plus noexcept pointer/type encoding	NOT_OBSERVED	39166 ELF; 10889742 mangled symbols; zero SITE_WITH_* rows
+docs/progress/R87/tables/result_summary.tsv:6:published ELF contains condition_variable class plus type-only DoF encoding	NOT_OBSERVED	zero CONDITION_VARIABLE_NOEXCEPT_FUNCTION_TYPE rows
+docs/progress/R87/tables/result_summary.tsv:9:other ABI-changing factors exist	OBSERVED_IN_MINIMAL_PROBE	function/member-pointer types in parameters or type template arguments change; noexcept/destructibility-fed boolean specialization can change; auto non-type value argument did not change in this probe
+docs/progress/R87/tables/binary_symbol_summary.tsv:7:site_with_noexcept_type_encoding_rows	0
+docs/progress/R87/tables/binary_symbol_summary.tsv:8:site_with_pointer_noexcept_encoding_rows	0
+docs/progress/R87/tables/binary_symbol_summary_type_only.tsv:7:site_with_noexcept_type_encoding_rows	0
+docs/progress/R87/tables/binary_symbol_summary_type_only.tsv:8:site_with_pointer_noexcept_encoding_rows	0
+docs/progress/R87/tables/binary_symbol_summary_type_only.tsv:9:condition_variable_noexcept_function_type_rows	0
+docs/progress/R87/tables/binary_symbol_summary_type_only.tsv:10:wbuffer_convert_noexcept_function_type_rows	0
+docs/progress/R87/tables/abi_shape_results.tsv:1:shape	probe_noexcept_symbol	probe_potentially_throwing_symbol	changes	interpretation
+docs/progress/R87/tables/abi_shape_results.tsv:6:noexcept_or_destructibility_result_as_bool_template_argument	_Z17bool_template_useILb1EEiv	_Z17bool_template_useILb0EEiv	YES	traits/noexcept can change template selection or an Lb1E/Lb0E specialization even without a function-pointer type
+docs/progress/R87/tables/coverage_summary.tsv:2:source_exact	R32/T1 already-unpacked source-RPM corpus	371 source RPM records (347 unique package names)	371/371; scan failures 0	31 lexical candidates; 0 valid D01-D05 address/type uses	T1 originally had 372 candidates; chromium-efl was not unpacked and is outside the 371 denominator; lexical/common-extension scan only
+docs/progress/R87/tables/coverage_summary.tsv:3:source_expanded	alias/broad wait/type-query supplement over same roots	371 source RPM records	366/371; five 60-second timeouts	13 candidates in completed roots; 0 valid target uses	emulator-kernel gcc-1.14 llvm rpi4-kernel tensorflow2-1.3 timed out in this broader supplemental pass; exact target scan covered all five
+docs/progress/R87/tables/coverage_summary.tsv:4:source_extra_extensions	.mm .m .cu .cuh .hip .sycl .i	371 source-RPM roots	completed	NO_MATCH	other uncommon/generated/build-time source forms can remain outside lexical scan
+docs/progress/R87/tables/coverage_summary.tsv:5:published_ELF	R11 frozen Base+Unified binary RPM corpus	11332 package records; 39166 ELF records	39166/39166 parsed	10889742 unique-per-table mangled symbols scanned; target noexcept/type rows 0	stripped/local symbols and non-ELF runtime-generated code cannot be recovered from symbol tables
+docs/progress/R87/tables/coverage_summary.tsv:6:static_archive	.a-named files in R11 extracted RPM corpus	8911 paths; 4531706815 bytes	8896 without serious nm diagnostics; 15 individually classified non-C++/non-archive paths	4937655 mangled symbols scanned; target noexcept/type rows 0	8 Go compiler test objects; 4 missing-member kernel thin archives; 3 GNU ld text scripts were not parseable as C++ archives
+docs/progress/R87/tables/source_scan_summary_no_ignore.tsv:5:CORPUS	SOURCE_RPM_ROOTS	371
+docs/progress/R87/tables/source_scan_summary_expanded.tsv:6:CORPUS	SOURCE_RPM_ROOTS	371
+docs/progress/R87/tables/source_scan_summary.tsv:4:CORPUS	SOURCE_RPM_ROOTS	371
+docs/progress/R87/REPORT.md:11:- 源码：R32/T1 已解包的 371 个 source RPM record（347 个去重包名）精确扫描全部完成；31 个词法候选逐条复核后，有效目标使用为 0。
+docs/progress/R87/REPORT.md:12:- 已发布 ELF：R11 冻结 Base+Unified 的 11,332 个二进制包记录中，39,166/39,166 个 ELF 均完成 `.symtab`/`.dynsym` 扫描；约 1,089 万条 mangled 符号中，目标函数名型 `Do/PDo`、只含 `condition_variable` 类名的 type-only `DoF`、`wbuffer_convert` 的 `DoF`/布尔模板候选均为 0。
+docs/progress/R87/REPORT.md:25:5. `decltype(&...)`、`noexcept(...)`、`is_nothrow_invocable`、`is_invocable`、`invoke_result`、`result_of`、析构 traits 等；
+docs/progress/R87/REPORT.md:31:D05 的析构函数不能被直接取址。最小探针 `&W::~W` 被 GCC 拒绝并报告 `taking address of destructor`。因此 D05 的有效风险形态主要是析构 `noexcept(...)`、`is_nothrow_destructible`、SFINAE/overload/template 选择等类型依赖，而不是“析构函数指针”。
+docs/progress/R87/REPORT.md:39:| 成员函数自身 | 有/无顶层 `noexcept` 都是 `_ZN4Site4waitERi`，不变 |
+docs/progress/R87/REPORT.md:43:| `noexcept(expr)`/析构 trait 结果进入布尔模板实参 | `Lb1E` 对 `Lb0E`，变化 |
+docs/progress/R87/REPORT.md:48:- `noexcept(expr)`、`is_nothrow_invocable`、`is_nothrow_destructible` 等结果进入布尔非类型模板参数；
+docs/progress/R87/REPORT.md:57:- 输入：`docs/progress/R32/tables/scan_status.tsv` 中 `SCAN_OK` 的 371/371 个现有解包根；347 个去重包名。
+docs/progress/R87/REPORT.md:58:- 上游分母边界：T1 原有 372 个候选 source RPM，`chromium-efl` 因既有解包失败不在这 371 个扫描分母内。
+docs/progress/R87/REPORT.md:59:- 精确扫描：常见 C/C++ 源码与头文件后缀，`rg --hidden --no-ignore --threads 1`；查直接地址、成员指针类型、D02–D04 名字、D05 析构/trait 形态。371/371 完成，失败 0。
+docs/progress/R87/REPORT.md:60:- 补充宽扫描：加入别名、任意 `&...::wait`、宽 trait/noexcept 形态，单 worker、每包 60 秒。366/371 完成；5 个超大包超时。它是补充口径，不替代已完成的精确扫描。
+docs/progress/R87/REPORT.md:62:- 方法性质：词法扫描，不是完整 build-aware AST；不能解析任意宏拼接、生成源码、条件编译后才出现的 token 或跨文件任意别名传播。
+docs/progress/R87/REPORT.md:72:这些包的精确目标扫描均完成；未完整的是别名/宽 trait 的补充口径。
+docs/progress/R87/REPORT.md:112:- 仅含 `condition_variable` 类名与 `DoF` 的 type-only 成员函数指针类型；
+docs/progress/R87/REPORT.md:121:| 扫描的 mangled symbol records | 10,889,742 |
+docs/progress/R87/REPORT.md:123:| 具体函数名 + noexcept type encoding | 0 |
+docs/progress/R87/REPORT.md:124:| 具体函数名 + pointer noexcept encoding | 0 |
+docs/progress/R87/REPORT.md:125:| `condition_variable` type-only `DoF` | 0 |
+docs/progress/R87/REPORT.md:131:首次 ELF 扫描有一个 U-Boot 镜像使用扩展 section count；扫描脚本只修正了该 ELF 路径解析，并单独重解析成功。扩大 type-only 过滤后从头重扫，最终 `parse_failures=0`。首次失败记录未删除。
+docs/progress/R87/REPORT.md:137:- 扫描 mangled symbol records：4,937,655。
+docs/progress/R87/REPORT.md:139:- 所有目标 `Do/PDo`、type-only `condition_variable DoF`、`wbuffer_convert DoF/布尔候选`：0。
+docs/progress/R87/REPORT.md:145:- 3 个 `libm.a`：`file` 识别为 ASCII，内容是 `GROUP ( ...libm-2.40.a ...libmvec.a )` 的 GNU ld script，不是归档；目标真实归档另有独立路径并已扫描。
+docs/progress/R87/REPORT.md:147:这些 15 条未被伪记为扫描成功；它们的格式/用途判断和原始诊断均保留。
+docs/progress/R87/REPORT.md:157:- D05：析构取址本身是非法 C++；未发现 `noexcept`/destructibility trait 等依赖其异常规格的源码候选或可归属二进制候选。
+docs/progress/R87/REPORT.md:165:3. `noexcept`/析构 trait 的布尔结果成为模板实参，`Lb1E/Lb0E` 变化；
+docs/progress/R87/REPORT.md:172:1. 源码层只覆盖当前已有的 371 个 T1/R32 解包 source RPM，不是 R11 的 1,450 个平台 source RPM 全集；`chromium-efl` 是已知缺一项。平台全源码层结论因此不是穷尽证明。
+docs/progress/R87/REPORT.md:178:7. `noexcept`/trait 改变 overload 或 SFINAE 后，最终符号可能不再包含目标类/函数名；仅凭二进制不能穷尽反推“哪个表达式导致选择变化”。这部分主要依赖源码扫描，仍受其分母限制。
+docs/progress/R87/REPORT.md:184:1. 采用 R32/T1 的 371 个已解包 source RPM 作为“平台已解包源码包”的可用源码语料，并明确不把它称为平台 1,450 个 source RPM 全集。
+docs/progress/R87/REPORT.md:189:6. 为减小二进制盲区，主动补扫 `.a`；没有复制或修改任何包内容。
+docs/progress/R87/REPORT.md:193:1. 用户所指“平台已解包源码包”是否预期覆盖 R11 的 1,450 个 source RPM 全量，而非目前可用的 371 个 T1/R32 迁移相关语料？当前没有 1,450 包全部已解包的本地语料可供同口径扫描。
+docs/progress/R87/REPORT.md:202:- `010`：双路宽扫造成不必要 I/O 等待，主动终止为 143；`014` 改成单 worker 并得到 366/371 补充结果；
+docs/progress/R87/REPORT.md:204:- `015`：首版 ABI probe 的“空异常规格”使析构仍隐式 non-throwing；`016` 用 `noexcept(false)` 更正，只采用 `016`；
+docs/progress/R87/REPORT.md:205:- `019`：静态扫描以批为失败单位；`023/027` 逐归档复核并修正“return 0 仍可能有 stderr”的判定，最终列出 15 条；
+docs/progress/R87/REPORT.md:213:- 覆盖/盲区：`tables/coverage_summary.tsv`
+docs/progress/R87/REPORT.md:216:- ELF 最终汇总/候选：`tables/binary_symbol_summary_type_only.tsv`、`tables/binary_symbol_candidates_type_only.tsv`
+docs/progress/R87/REPORT.md:221:- 扫描器与探针源码：`code/`
+docs/progress/R87/code/abi_shape_probe.cpp:5:#  define R87_SPEC noexcept(false)
+docs/progress/R87/code/abi_shape_probe.cpp:7:#  define R87_SPEC noexcept
+docs/progress/R87/code/abi_shape_probe.cpp:29:       + bool_template_use<noexcept(std::declval<Site&>().wait(std::declval<int&>()))>()
+docs/progress/R87/tables/binary_symbol_candidates.tsv:14:base_binary	clang	x86_64	8b118d8b0437c7af32814237141daa637da5e87a8c34cbc0ab3b34dc79d03ac4	/usr/bin/clangd	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:15:base_binary	clang	x86_64	8b118d8b0437c7af32814237141daa637da5e87a8c34cbc0ab3b34dc79d03ac4	/usr/lib64/libclang-cpp.so.22.1	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:129:base_binary	qemu-accel-riscv64	riscv64	9b148fa46e9e72040008285ad54cdffb37180bbf215f8e63b262b12953269a89	/emul/usr/bin/ccmake	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:130:base_binary	qemu-accel-riscv64	riscv64	9b148fa46e9e72040008285ad54cdffb37180bbf215f8e63b262b12953269a89	/emul/usr/bin/cmake	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:131:base_binary	qemu-accel-riscv64	riscv64	9b148fa46e9e72040008285ad54cdffb37180bbf215f8e63b262b12953269a89	/emul/usr/bin/cpack	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:132:base_binary	qemu-accel-riscv64	riscv64	9b148fa46e9e72040008285ad54cdffb37180bbf215f8e63b262b12953269a89	/emul/usr/bin/ctest	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:133:base_binary	qemu-accel-riscv64	riscv64	9b148fa46e9e72040008285ad54cdffb37180bbf215f8e63b262b12953269a89	/emul/usr/lib64/libstdc++.so.6	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:134:base_binary	qemu-accel-riscv64	riscv64	9b148fa46e9e72040008285ad54cdffb37180bbf215f8e63b262b12953269a89	/emul/usr/lib64/libstdc++.so.6.0.33	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:182:unified_binary	app-core-ui	armv7l	8b371cf204bc295bfd6481b4ec8a3d0081d3e45119e1c7222f7e0119ca823fae	/usr/lib/libapp-core-ui-cpp.so.1.27.13	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:196:unified_binary	appcore-agent-unittests	aarch64	4f294ffa1ff0ca0a49dd0daaeb6195cd44e414eb8b56a75371a24c87a0da8651	/usr/bin/appcore-agent-test	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:319:unified_binary	libds-tizen-hwc-devel	armv7l	fe4cafd2d9b7282c7cd3ec72668661a33718d326a45146a309768c6ccef07728	/usr/bin/libds-tizen-hwc-tests	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:330:unified_binary	libds-tizen-launch-devel	aarch64	2ca9c615863f4d140869993db3716e7df16d64b014c2c13879f982d3fef1c544	/usr/bin/libds-tizen-launch-appinfo-tests	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:331:unified_binary	libds-tizen-launch-devel	aarch64	2ca9c615863f4d140869993db3716e7df16d64b014c2c13879f982d3fef1c544	/usr/bin/libds-tizen-launch-effect-tests	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:341:unified_binary	libds-tizen-policy-devel	x86_64	845054b3713d1316b77adba93f979f09859ae3687ade9b913fc6a43c92d9c9d7	/usr/bin/libds-tizen-policy-tests	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:482:unified_binary	nnfw	aarch64	abb5f19010d0997c1d7d21d0990b33f5a37181501bc4b55369e8e4e09c22b1f0	/usr/lib64/libonert_core.so	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:483:unified_binary	nnfw	aarch64	abb5f19010d0997c1d7d21d0990b33f5a37181501bc4b55369e8e4e09c22b1f0	/usr/lib64/nnfw/backend/libbackend_cpu.so	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates.tsv:484:unified_binary	nnfw	aarch64	abb5f19010d0997c1d7d21d0990b33f5a37181501bc4b55369e8e4e09c22b1f0	/usr/lib64/nnfw/backend/libbackend_train.so	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:14:base_binary	clang	x86_64	8b118d8b0437c7af32814237141daa637da5e87a8c34cbc0ab3b34dc79d03ac4	/usr/bin/clangd	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:15:base_binary	clang	x86_64	8b118d8b0437c7af32814237141daa637da5e87a8c34cbc0ab3b34dc79d03ac4	/usr/lib64/libclang-cpp.so.22.1	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:129:base_binary	qemu-accel-riscv64	riscv64	9b148fa46e9e72040008285ad54cdffb37180bbf215f8e63b262b12953269a89	/emul/usr/bin/ccmake	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:130:base_binary	qemu-accel-riscv64	riscv64	9b148fa46e9e72040008285ad54cdffb37180bbf215f8e63b262b12953269a89	/emul/usr/bin/cmake	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:131:base_binary	qemu-accel-riscv64	riscv64	9b148fa46e9e72040008285ad54cdffb37180bbf215f8e63b262b12953269a89	/emul/usr/bin/cpack	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:132:base_binary	qemu-accel-riscv64	riscv64	9b148fa46e9e72040008285ad54cdffb37180bbf215f8e63b262b12953269a89	/emul/usr/bin/ctest	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:133:base_binary	qemu-accel-riscv64	riscv64	9b148fa46e9e72040008285ad54cdffb37180bbf215f8e63b262b12953269a89	/emul/usr/lib64/libstdc++.so.6	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:134:base_binary	qemu-accel-riscv64	riscv64	9b148fa46e9e72040008285ad54cdffb37180bbf215f8e63b262b12953269a89	/emul/usr/lib64/libstdc++.so.6.0.33	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:182:unified_binary	app-core-ui	armv7l	8b371cf204bc295bfd6481b4ec8a3d0081d3e45119e1c7222f7e0119ca823fae	/usr/lib/libapp-core-ui-cpp.so.1.27.13	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:196:unified_binary	appcore-agent-unittests	aarch64	4f294ffa1ff0ca0a49dd0daaeb6195cd44e414eb8b56a75371a24c87a0da8651	/usr/bin/appcore-agent-test	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:319:unified_binary	libds-tizen-hwc-devel	armv7l	fe4cafd2d9b7282c7cd3ec72668661a33718d326a45146a309768c6ccef07728	/usr/bin/libds-tizen-hwc-tests	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:330:unified_binary	libds-tizen-launch-devel	aarch64	2ca9c615863f4d140869993db3716e7df16d64b014c2c13879f982d3fef1c544	/usr/bin/libds-tizen-launch-appinfo-tests	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:331:unified_binary	libds-tizen-launch-devel	aarch64	2ca9c615863f4d140869993db3716e7df16d64b014c2c13879f982d3fef1c544	/usr/bin/libds-tizen-launch-effect-tests	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:341:unified_binary	libds-tizen-policy-devel	x86_64	845054b3713d1316b77adba93f979f09859ae3687ade9b913fc6a43c92d9c9d7	/usr/bin/libds-tizen-policy-tests	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:482:unified_binary	nnfw	aarch64	abb5f19010d0997c1d7d21d0990b33f5a37181501bc4b55369e8e4e09c22b1f0	/usr/lib64/libonert_core.so	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:483:unified_binary	nnfw	aarch64	abb5f19010d0997c1d7d21d0990b33f5a37181501bc4b55369e8e4e09c22b1f0	/usr/lib64/nnfw/backend/libbackend_cpu.so	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
+docs/progress/R87/tables/binary_symbol_candidates_type_only.tsv:484:unified_binary	nnfw	aarch64	abb5f19010d0997c1d7d21d0990b33f5a37181501bc4b55369e8e4e09c22b1f0	/usr/lib64/nnfw/backend/libbackend_train.so	DYNSYM	SITE_NAME_PRESENT:condition_variable4wait	_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE	std::condition_variable::wait(std::unique_lock<std::mutex>&)
