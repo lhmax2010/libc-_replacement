@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Scan the established platform source-RPM corpus for type-level uses of R87 sites."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import re
+import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+
+SOURCE_GLOBS = (
+    "*.c", "*.cc", "*.cp", "*.cpp", "*.cxx", "*.C", "*.h", "*.hh",
+    "*.hpp", "*.hxx", "*.ipp", "*.tcc", "*.inl", "*.ixx", "*.cppm",
+)
+
+# Patterns are deliberately redundant. Precise hits and broad candidates are
+# retained separately so a reviewer can inspect false positives and aliases.
+PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    ("D01", "EXPLICIT_ADDRESS", re.compile(
+        r"&\s*(?:(?:::)?std\s*::\s*)?condition_variable\s*::\s*wait\b", re.M)),
+    ("D01", "MEMBER_POINTER_TYPE", re.compile(
+        r"(?:(?:::)?std\s*::\s*)?condition_variable\s*::\s*\*", re.M)),
+    ("D01", "DECLTYPE_OR_TRAIT", re.compile(
+        r"(?:decltype|is_(?:nothrow_)?invocable|invoke_result|result_of|noexcept)"
+        r"\s*(?:<|\()[^;{}]{0,500}condition_variable[^;{}]{0,500}(?:::|\.)\s*wait\b", re.M)),
+    ("D02-D04", "PRIVATE_HELPER_REFERENCE", re.compile(r"\b__do_timed_wait\b", re.M)),
+    ("D05", "DESTRUCTOR_SPELLING", re.compile(r"~\s*wbuffer_convert\b", re.M)),
+    ("D05", "DESTRUCTOR_TYPE_QUERY", re.compile(
+        r"(?:is_(?:nothrow_)?destructible|destructible|decltype|noexcept)"
+        r"\s*(?:<|\()[^;{}]{0,500}wbuffer_convert\b", re.M)),
+    ("GENERAL", "BROAD_WAIT_ADDRESS", re.compile(
+        r"&[^;{}\n]{0,300}::\s*wait\b", re.M)),
+    ("GENERAL", "BROAD_WAIT_TYPE_QUERY", re.compile(
+        r"(?:decltype|is_(?:nothrow_)?invocable|invoke_result|result_of|noexcept)"
+        r"\s*(?:<|\()[^;{}\n]{0,500}&?\s*(?:[A-Za-z_]\w*\s*::\s*)+wait\b", re.M)),
+    ("GENERAL", "NOEXCEPT_WAIT_EXPRESSION", re.compile(
+        r"\bnoexcept\s*\([^;{}]{0,500}(?:\.|->)\s*wait\s*\(", re.M)),
+)
+
+RG_PREFILTER = (
+    r"\bcondition_variable\b|__do_timed_wait|wbuffer_convert|"
+    r"&[^;{}\n]{0,300}::\s*wait\b|"
+    r"(?:decltype|is_nothrow_invocable|is_invocable|invoke_result|result_of|noexcept)"
+    r"[^;{}]{0,300}\bwait\b"
+)
+
+
+def load_roots(path: Path) -> list[tuple[str, str, Path]]:
+    roots: list[tuple[str, str, Path]] = []
+    with path.open(newline="") as stream:
+        for row in csv.DictReader(stream, delimiter="\t"):
+            if row["status"] == "SCAN_OK":
+                roots.append((row["source_rpm"], row["package_name"], Path(row["root"])))
+    return roots
+
+
+def line_for_offset(text: str, offset: int) -> tuple[int, str]:
+    line_no = text.count("\n", 0, offset) + 1
+    start = text.rfind("\n", 0, offset) + 1
+    end = text.find("\n", offset)
+    if end < 0:
+        end = len(text)
+    return line_no, text[start:end].strip().replace("\t", " ")
+
+
+def aliases_for_condition_variable(text: str) -> set[str]:
+    aliases = {"condition_variable"}
+    for match in re.finditer(
+        r"\busing\s+([A-Za-z_]\w*)\s*=\s*(?:(?:::)?std\s*::\s*)?condition_variable\s*;", text):
+        aliases.add(match.group(1))
+    for match in re.finditer(
+        r"\btypedef\s+(?:(?:::)?std\s*::\s*)?condition_variable\s+([A-Za-z_]\w*)\s*;", text):
+        aliases.add(match.group(1))
+    return aliases
+
+
+def scan_root(
+    item: tuple[str, str, Path], timeout_seconds: int
+) -> tuple[str, str, list[tuple[str, str, str, int, str]], str]:
+    source_rpm, package_name, root = item
+    command = [
+        "rg", "-l", "--threads", "1", "--no-messages", "--pcre2",
+        "--hidden", "--no-ignore", RG_PREFILTER,
+    ]
+    for glob in SOURCE_GLOBS:
+        command.extend(["-g", glob])
+    command.append(str(root))
+    try:
+        proc = subprocess.run(command, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        return source_rpm, package_name, [], f"TIMEOUT_{timeout_seconds}S"
+    if proc.returncode not in (0, 1):
+        return source_rpm, package_name, [], f"RG_EXIT_{proc.returncode}:{proc.stderr.strip()}"
+
+    rows: list[tuple[str, str, str, int, str]] = []
+    for raw_path in sorted(set(proc.stdout.splitlines())):
+        path = Path(raw_path)
+        try:
+            text = path.read_text(errors="replace")
+            rel = str(path.relative_to(root))
+        except (OSError, ValueError) as error:
+            rows.append(("GENERAL", "READ_ERROR", raw_path, 0, str(error)))
+            continue
+
+        seen: set[tuple[str, str, int]] = set()
+        for site, kind, pattern in PATTERNS:
+            for match in pattern.finditer(text):
+                line_no, source_text = line_for_offset(text, match.start())
+                key = (site, kind, line_no)
+                if key not in seen:
+                    seen.add(key)
+                    rows.append((site, kind, rel, line_no, source_text))
+
+        for alias in sorted(aliases_for_condition_variable(text)):
+            alias_pattern = re.compile(r"&\s*" + re.escape(alias) + r"\s*::\s*wait\b")
+            for match in alias_pattern.finditer(text):
+                line_no, source_text = line_for_offset(text, match.start())
+                key = ("D01", f"ALIAS_ADDRESS:{alias}", line_no)
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(("D01", f"ALIAS_ADDRESS:{alias}", rel, line_no, source_text))
+            member_pointer_pattern = re.compile(re.escape(alias) + r"\s*::\s*\*")
+            for match in member_pointer_pattern.finditer(text):
+                line_no, source_text = line_for_offset(text, match.start())
+                key = ("D01", f"ALIAS_MEMBER_POINTER_TYPE:{alias}", line_no)
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(("D01", f"ALIAS_MEMBER_POINTER_TYPE:{alias}", rel, line_no, source_text))
+    return source_rpm, package_name, rows, "OK"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scan-status", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--summary", required=True, type=Path)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--timeout-seconds", type=int, default=90)
+    args = parser.parse_args()
+
+    roots = load_roots(args.scan_status)
+    results: list[tuple[str, str, str, str, str, int, str]] = []
+    failures: list[tuple[str, str]] = []
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = [executor.submit(scan_root, item, args.timeout_seconds) for item in roots]
+        for future in as_completed(futures):
+            source_rpm, package_name, rows, status = future.result()
+            if status != "OK":
+                failures.append((source_rpm, status))
+            for site, kind, rel, line_no, source_text in rows:
+                results.append((source_rpm, package_name, site, kind, rel, line_no, source_text))
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("w", newline="") as stream:
+        writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+        writer.writerow(("source_rpm", "package_name", "site", "candidate_kind", "file", "line", "source_text"))
+        writer.writerows(sorted(results))
+
+    counts: dict[tuple[str, str], int] = {}
+    for _, _, site, kind, _, _, _ in results:
+        counts[(site, kind)] = counts.get((site, kind), 0) + 1
+    with args.summary.open("w", newline="") as stream:
+        writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+        writer.writerow(("site", "candidate_kind", "candidate_count"))
+        for (site, kind), count in sorted(counts.items()):
+            writer.writerow((site, kind, count))
+        writer.writerow(("CORPUS", "SOURCE_RPM_ROOTS", len(roots)))
+        writer.writerow(("CORPUS", "SCAN_FAILURES", len(failures)))
+        for source_rpm, reason in sorted(failures):
+            writer.writerow(("FAILURE", source_rpm, reason))
+
+    print(f"source_rpm_roots={len(roots)}")
+    print(f"candidates={len(results)}")
+    print(f"scan_failures={len(failures)}")
+    for (site, kind), count in sorted(counts.items()):
+        print(f"{site}\t{kind}\t{count}")
+    return 0 if not failures else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

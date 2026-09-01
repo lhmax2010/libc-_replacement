@@ -1,0 +1,819 @@
+===== repo status =====
+## codex/r5-ehabi-diagnosis...origin/codex/r5-ehabi-diagnosis
+?? README_UNPACK.md
+?? docs/hq/
+?? docs/plan/
+?? gbs_llvm.conf
+===== R72/R73 corpus references =====
+docs/progress/R73/REPORT.md:10:2. R72 的 **35 source RPM / 26 去重包名**是刻意宽收的词法上界，裸词 `future` 带来大量非 C++ 标准库命中。本轮按显式 `std::`/`using std::` 语法精化后，剩 **11 source RPM / 9 去重包名**；对这 9 个包名全部做了上下文复核。
+docs/progress/R73/REPORT.md:59:R72 的宽口径扫描覆盖 371/371 source RPM，得到 35/26。为避免把英文单词、注释和非标准库类型当作设施，本轮对原始命中做第二层过滤：只接受显式 `std::name`、`::std::name` 或 `using std::name`。脚本是 `code/refine_facility_hits.py`，完整逐行命中在 `raw/explicit_std_facility_hits.tsv`。
+docs/progress/R73/REPORT.md:61:精化结果为 11 source RPM / 9 去重包名：`angle`、`binutils`、`binutils-aarch64`、`binutils-armv7hl`、`binutils-armv7l`、`boost`、`gcc`、`libzypp`、`nnstreamer`。本轮不是再抽少量样本，而是复核了全部 9 个显式命中包名；多个 binutils/GCC source RPM 因版本或架构复用同一上游源码，仍按任务既有 source RPM 与去重包名两种口径分别保留。
+docs/progress/R73/REPORT.md:78:无法把后一个数字解释为“不会触发”。`pthread_cancel` 可以由包外宿主、插件管理器、运行框架或未扫描二进制发起；源码共现只能证明正关联，不能证明无关联。35/26 仍作为宽上界保留，11/9 是显式 C++ 设施使用的较可信近似，0 是本轮能在源码内部闭合的生产风险形态数。
+docs/progress/R73/REPORT.md:108:讨论的代价主要是 ABI：已有调用方依据旧头文件把函数视为不抛异常。最终[提交记录](https://gcc.gnu.org/pipermail/libstdc%2B%2B/2021-December/053631.html)采用双版本：新 `@@GLIBCXX_3.4.30` 支持取消，旧 `@GLIBCXX_3.4.11` 通过 `noexcept` wrapper 保留旧行为。社区因此没有把“标准写不抛出”解释为必须终止；同时也没有无视旧二进制兼容性。
+docs/progress/R73/REPORT.md:161:1. **按 GCC 方向移除 D01–D04 的异常规格**：涉及公开头文件、头文件 helper 和共享库定义；新消费者要重编才能取得一致的调用方异常元数据。对既有二进制还需处理 ABI/符号版本问题。若形成上游接受的 libc++ 变更，可避免永久本地偏离；若仅平台补丁，则形成平台差异。
+docs/progress/R73/REPORT.md:170:10. **接受并记录差异**：无代码或构建成本；D01–D05 的触发和 134 风险保持存在，外部发起取消的风险仍无法由包内源码扫描排除。
+docs/progress/R73/REPORT.md:178:- 包级分析只有源码，没有平台运行遥测，也未覆盖包外发起的取消、闭源二进制、插件宿主和生成代码。
+docs/progress/R73/REPORT.md:202:- **风险形态包数？** R72 宽命中 35/26；显式标准设施使用为 11 source RPM / 9 包名；源码内确证生产取消关联 0，精确同形自测 1 个包名。外部取消使“0”不能解释为零风险。
+docs/progress/R72/REPORT.md:5:本任务未修改平台源码、产品代码或任何补丁；新增内容仅为枚举脚本、消费面扫描脚本、验证用例和报告材料。
+docs/progress/R72/REPORT.md:31:平台实际口径另用与目标 libc 同版本的 GNU glibc 2.40 官方源码核对 `SYSCALL_CANCEL`/取消包装器；官方 tarball SHA256 为 `19a890175e9263d748f627993de6f4b1af9cd21e03f080e4bfb3a1fac10205a2`，GitHub mirror 的同 tag commit 为 `3d1aed874918c466a4477af1da35983ab036690e`。所抽查的取消/非取消 wrapper 文件在二者间逐文件 SHA256 相同。Linux 顶层源码确认 67 个包装器文件名；其中 32 个名字不在上述 POSIX-required 名字集中，见 `tables/platform_extension_cancel_points.tsv`。这 32 个含 64 位别名和 Linux 扩展（如 `accept4`、`epoll_wait`、`getrandom`、`preadv2`、`splice` 等），不等价于“32 个彼此独立的规范 API”。目标 GBS sysroot 的 `libc.so.6` 为 glibc 2.40，SHA256 `215bfd3dc2b21691e626990cc0990a38d6f7e9f83b5a2f64c9e1e033d07ba656`；源码材料是同版本上游旁证，不冒充平台补丁源码。
+docs/progress/R72/REPORT.md:60:逐格原始输出在 `raw/tests/`，汇总见 `tables/sample_results.tsv`。最终二进制对应的 `commands/039_final_runtime_identity.log` 中，`ldd` 与 `LD_DEBUG=libs` 证明 libc++ 格加载指定实验构建的 `libc++.so.1`/`libc++abi.so.1`，参照格加载系统 `libstdc++.so.6`。
+docs/progress/R72/REPORT.md:64:消费面以 R32 已成功扫描的 371 个 source RPM 为分母，对会到达 D01–D05 的设施做源码词法命中；结果见 `raw/facility_usage_summary.tsv`，逐文件命中见 `raw/facility_usage_hits.tsv`。
+docs/progress/R72/REPORT.md:66:扫描 371/371 source RPM 成功、失败 0；它们对应 347 个去重包名。至少命中一种相关设施的有 **35 个 source RPM / 26 个去重包名**。按 source RPM / 去重包名分设施为：`condition_variable` 13/10、future 族 35/26、timed-mutex 族 3/2、shared-mutex 族 4/3、`sleep_until` 3/2、`wbuffer_convert` 2/1。同一包可同时计入多类，故分项不可相加；`wbuffer_convert` 的唯一包名是 GCC 自身源码/测试，不是独立产品消费者。
+docs/progress/R72/REPORT.md:107:- 第一版消费面扫描按设施重复遍历 371 包，因延迟过高被中止并改为单次组合扫描；记录在 `commands/018_stop_slow_facility_scan.log`。
+docs/progress/R72/REPORT.md:109:- 一次在完整解包 GCC 源中做无界文本检索被终止；已有精确上游来源，未影响结论，记录在 `commands/026_stop_unbounded_gcc_search.log`。
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:1:source_rpm	package_name	facility	file	line	source_text
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:2:angle-2.1-1.src.rpm	angle	future	unpacked/angle-2.1.tar/angle-2.1/src/common/WorkerThread.cpp	16	// Controls if our threading code uses std::async or falls back to single-threaded operations.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:3:angle-2.1-1.src.rpm	angle	future	unpacked/angle-2.1.tar/angle-2.1/src/common/WorkerThread.cpp	17	// Note that we can't easily use std::async in UWPs due to UWP threading restrictions.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:4:angle-2.1-1.src.rpm	angle	condition_variable	unpacked/angle-2.1.tar/angle-2.1/src/common/WorkerThread.cpp	108	std::condition_variable mCondVar;  // Signals when work is available in the queue
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:5:angle-2.1-1.src.rpm	angle	condition_variable	unpacked/angle-2.1.tar/angle-2.1/src/common/WorkerThread.h	100	std::condition_variable mCondition;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:6:angle-2.1-1.src.rpm	angle	condition_variable	unpacked/angle-2.1.tar/angle-2.1/src/common/system_utils_unittest.cpp	455	std::condition_variable condVar;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:7:angle-2.1-1.src.rpm	angle	condition_variable	unpacked/angle-2.1.tar/angle-2.1/src/libANGLE/ContextMutex_unittest.cpp	26	std::condition_variable condVar;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:8:angle-2.1-1.src.rpm	angle	condition_variable	unpacked/angle-2.1.tar/angle-2.1/src/libANGLE/ContextMutex_unittest.cpp	126	std::condition_variable condVar;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:9:angle-2.1-1.src.rpm	angle	condition_variable	unpacked/angle-2.1.tar/angle-2.1/src/libANGLE/GlobalMutex_unittest.cpp	25	std::condition_variable condVar;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:10:angle-2.1-1.src.rpm	angle	condition_variable	unpacked/angle-2.1.tar/angle-2.1/src/libANGLE/renderer/EGLReusableSync.h	49	std::condition_variable mCondVar;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:11:angle-2.1-1.src.rpm	angle	condition_variable	unpacked/angle-2.1.tar/angle-2.1/src/libANGLE/renderer/metal/mtl_command_buffer.h	140	mutable std::condition_variable mCompletedBufferSerialCv;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:12:angle-2.1-1.src.rpm	angle	condition_variable	unpacked/angle-2.1.tar/angle-2.1/src/libANGLE/renderer/vulkan/CLEventVk.h	54	std::condition_variable mUserEventCondition;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:13:angle-2.1-1.src.rpm	angle	condition_variable	unpacked/angle-2.1.tar/angle-2.1/src/libANGLE/renderer/vulkan/CommandProcessor.h	672	std::condition_variable mWorkAvailableCondition;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:14:angle-2.1-1.src.rpm	angle	shared_mutex	unpacked/angle-2.1.tar/angle-2.1/third_party/vulkan_memory_allocator/include/vk_mem_alloc.h	2939	// Use std::shared_mutex from C++17.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:15:angle-2.1-1.src.rpm	angle	shared_mutex	unpacked/angle-2.1.tar/angle-2.1/third_party/vulkan_memory_allocator/include/vk_mem_alloc.h	2951	std::shared_mutex m_Mutex;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:16:binutils-2.43-2.7.src.rpm	binutils	condition_variable	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdb/dwarf2/cooked-index.h	559	std::condition_variable m_cond;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:17:binutils-2.43-2.7.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.cc	198	thread_pool::do_post_task (std::packaged_task<void ()> &&func)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:18:binutils-2.43-2.7.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.cc	203	std::packaged_task<void ()> t (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:19:binutils-2.43-2.7.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	42	using future = std::future<T>;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:20:binutils-2.43-2.7.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	57	/* A compatibility wrapper for std::future.  Once <thread> and
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:21:binutils-2.43-2.7.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	65	std::future compatibility methods.  The provided methods are chosen
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:22:binutils-2.43-2.7.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	154	std::packaged_task<void ()> task (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:23:binutils-2.43-2.7.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	156	do_post_task (std::packaged_task<void ()> (std::move (task)));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:24:binutils-2.43-2.7.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	170	std::packaged_task<T ()> task (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:25:binutils-2.43-2.7.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	172	do_post_task (std::packaged_task<void ()> (std::move (task)));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:26:binutils-2.43-2.7.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	189	void do_post_task (std::packaged_task<void ()> &&func);
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:27:binutils-2.43-2.7.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	195	typedef std::packaged_task<void ()> task_t;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:28:binutils-2.43-2.7.src.rpm	binutils	condition_variable	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	205	std::condition_variable m_tasks_cv;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:29:binutils-2.43-2.9.src.rpm	binutils	condition_variable	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdb/dwarf2/cooked-index.h	559	std::condition_variable m_cond;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:30:binutils-2.43-2.9.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.cc	198	thread_pool::do_post_task (std::packaged_task<void ()> &&func)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:31:binutils-2.43-2.9.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.cc	203	std::packaged_task<void ()> t (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:32:binutils-2.43-2.9.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	42	using future = std::future<T>;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:33:binutils-2.43-2.9.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	57	/* A compatibility wrapper for std::future.  Once <thread> and
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:34:binutils-2.43-2.9.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	65	std::future compatibility methods.  The provided methods are chosen
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:35:binutils-2.43-2.9.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	154	std::packaged_task<void ()> task (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:36:binutils-2.43-2.9.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	156	do_post_task (std::packaged_task<void ()> (std::move (task)));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:37:binutils-2.43-2.9.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	170	std::packaged_task<T ()> task (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:38:binutils-2.43-2.9.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	172	do_post_task (std::packaged_task<void ()> (std::move (task)));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:39:binutils-2.43-2.9.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	189	void do_post_task (std::packaged_task<void ()> &&func);
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:40:binutils-2.43-2.9.src.rpm	binutils	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	195	typedef std::packaged_task<void ()> task_t;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:41:binutils-2.43-2.9.src.rpm	binutils	condition_variable	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	205	std::condition_variable m_tasks_cv;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:42:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	condition_variable	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdb/dwarf2/cooked-index.h	559	std::condition_variable m_cond;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:43:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.cc	198	thread_pool::do_post_task (std::packaged_task<void ()> &&func)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:44:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.cc	203	std::packaged_task<void ()> t (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:45:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	42	using future = std::future<T>;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:46:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	57	/* A compatibility wrapper for std::future.  Once <thread> and
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:47:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	65	std::future compatibility methods.  The provided methods are chosen
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:48:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	154	std::packaged_task<void ()> task (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:49:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	156	do_post_task (std::packaged_task<void ()> (std::move (task)));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:50:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	170	std::packaged_task<T ()> task (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:51:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	172	do_post_task (std::packaged_task<void ()> (std::move (task)));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:52:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	189	void do_post_task (std::packaged_task<void ()> &&func);
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:53:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	195	typedef std::packaged_task<void ()> task_t;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:54:binutils-aarch64-2.43-2.2.src.rpm	binutils-aarch64	condition_variable	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	205	std::condition_variable m_tasks_cv;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:55:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	condition_variable	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdb/dwarf2/cooked-index.h	559	std::condition_variable m_cond;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:56:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.cc	198	thread_pool::do_post_task (std::packaged_task<void ()> &&func)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:57:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.cc	203	std::packaged_task<void ()> t (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:58:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	42	using future = std::future<T>;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:59:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	57	/* A compatibility wrapper for std::future.  Once <thread> and
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:60:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	65	std::future compatibility methods.  The provided methods are chosen
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:61:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	154	std::packaged_task<void ()> task (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:62:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	156	do_post_task (std::packaged_task<void ()> (std::move (task)));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:63:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	170	std::packaged_task<T ()> task (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:64:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	172	do_post_task (std::packaged_task<void ()> (std::move (task)));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:65:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	189	void do_post_task (std::packaged_task<void ()> &&func);
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:66:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	195	typedef std::packaged_task<void ()> task_t;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:67:binutils-armv7hl-2.43-2.2.src.rpm	binutils-armv7hl	condition_variable	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	205	std::condition_variable m_tasks_cv;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:68:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	condition_variable	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdb/dwarf2/cooked-index.h	559	std::condition_variable m_cond;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:69:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.cc	198	thread_pool::do_post_task (std::packaged_task<void ()> &&func)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:70:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.cc	203	std::packaged_task<void ()> t (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:71:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	42	using future = std::future<T>;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:72:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	57	/* A compatibility wrapper for std::future.  Once <thread> and
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:73:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	65	std::future compatibility methods.  The provided methods are chosen
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:74:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	154	std::packaged_task<void ()> task (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:75:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	156	do_post_task (std::packaged_task<void ()> (std::move (task)));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:76:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	170	std::packaged_task<T ()> task (std::move (func));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:77:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	172	do_post_task (std::packaged_task<void ()> (std::move (task)));
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:78:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	189	void do_post_task (std::packaged_task<void ()> &&func);
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:79:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	future	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	195	typedef std::packaged_task<void ()> task_t;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:80:binutils-armv7l-2.43-2.2.src.rpm	binutils-armv7l	condition_variable	unpacked/binutils-2.43.tar.bz2/binutils-2.43/gdbsupport/thread-pool.h	205	std::condition_variable m_tasks_cv;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:81:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/detail/event.hpp	29	# error Only Windows, POSIX and std::condition_variable are supported!
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:82:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/detail/future.hpp	22	// std::future class itself. However, we need to have already included the
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:83:boost-1.83.0-2.2.src.rpm	boost	sleep_until	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/detail/impl/null_event.ipp	43	std::this_thread::sleep_until((std::chrono::steady_clock::time_point::max)());
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:84:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/detail/std_event.hpp	142	// it can be passed to std::condition_variable::wait().
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:85:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/detail/std_event.hpp	178	std::condition_variable cond_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:86:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/detail/winrt_async_manager.hpp	63	std::future<void> f = promise_.get_future();
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:87:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/detail/winrt_async_manager.hpp	74	auto promise = std::make_shared<std::promise<boost::system::error_code>>();
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:88:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/detail/winrt_async_manager.hpp	106	auto promise = std::make_shared<std::promise<boost::system::error_code>>();
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:89:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/detail/winrt_async_manager.hpp	141	auto promise = std::make_shared<std::promise<boost::system::error_code>>();
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:90:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/detail/winrt_async_manager.hpp	296	std::promise<void> promise_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:91:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/experimental/use_coro.hpp	59	/// @c std::promise object for a given asynchronous operation.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:92:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	38	inline void promise_invoke_and_set(std::promise<T>& p,
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:93:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	56	inline void promise_invoke_and_set(std::promise<void>& p,
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:94:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	77	inline void promise_invoke_and_set(std::promise<T>& p, F& f)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:95:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	94	inline void promise_invoke_and_set(std::promise<void>& p, F& f)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:96:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	115	inline void promise_invoke_and_set(std::promise<T>& p, \
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:97:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	122	inline void promise_invoke_and_set(std::promise<void>& p, \
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:98:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	136	inline void promise_invoke_and_set(std::promise<T>& p, \
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:99:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	150	inline void promise_invoke_and_set(std::promise<void>& p, \
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:100:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	177	promise_invoker(const shared_ptr<std::promise<T> >& p,
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:101:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	200	shared_ptr<std::promise<T> > p_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:102:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	210	explicit promise_executor(const shared_ptr<std::promise<T> >& p)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:103:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	293	shared_ptr<std::promise<T> > p_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:104:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	308	typedef std::future<T> future_type;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:105:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	320	p_ = std::allocate_shared<std::promise<T>>(b, std::allocator_arg, b);
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:106:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/impl/use_future.hpp	323	shared_ptr<std::promise<T> > p_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:107:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/packaged_task.hpp	36	/// Partial specialisation of @c async_result for @c std::packaged_task.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:108:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/packaged_task.hpp	38	class async_result<std::packaged_task<Result(Args...)>, Signature>
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:109:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/packaged_task.hpp	42	typedef std::packaged_task<Result(Args...)> completion_handler_type;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:110:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/packaged_task.hpp	46	typedef std::future<Result> return_type;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:111:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/packaged_task.hpp	68	struct async_result<std::packaged_task<Result()>, Signature>
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:112:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/packaged_task.hpp	70	typedef std::packaged_task<Result()> completion_handler_type;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:113:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/packaged_task.hpp	71	typedef std::future<Result> return_type;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:114:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/packaged_task.hpp	91	std::packaged_task<Result(BOOST_ASIO_VARIADIC_TARGS(n))>, Signature> \
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:115:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/packaged_task.hpp	94	typedef std::packaged_task< \
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:116:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/packaged_task.hpp	98	typedef std::future<Result> return_type; \
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:117:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/use_future.hpp	45	* that an asynchronous operation should return a std::future object. A
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:118:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/use_future.hpp	50	* @code std::future<std::size_t> my_future
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:119:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/use_future.hpp	63	/// @c std::promise object for a given asynchronous operation.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:120:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/use_future.hpp	103	* operation, the result of the function object is retuned via a std::future.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:121:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/asio/use_future.hpp	107	* @code std::future<std::size_t> fut =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:122:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/beast/_experimental/test/detail/stream_state.hpp	92	std::condition_variable cv;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:123:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/compat/latch.hpp	24	mutable std::condition_variable cv_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:124:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/fiber/algo/round_robin.hpp	39	std::condition_variable     cnd_{};
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:125:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/fiber/algo/shared_work.hpp	45	std::condition_variable cnd_{};
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:126:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/fiber/algo/work_stealing.hpp	50	std::condition_variable                                 cnd_{};
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:127:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/fiber/detail/thread_barrier.hpp	33	std::condition_variable cond_{};
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:128:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/fiber/numa/algo/work_stealing.hpp	52	std::condition_variable                                 cnd_{};
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:129:boost-1.83.0-2.2.src.rpm	boost	shared_mutex	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/geometry/srs/shared_grids_std.hpp	37	typedef std::shared_mutex mutex_type;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:130:boost-1.83.0-2.2.src.rpm	boost	shared_mutex	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/geometry/srs/shared_grids_std.hpp	40	typedef std::shared_mutex mutex_type;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:131:boost-1.83.0-2.2.src.rpm	boost	shared_mutex	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/geometry/srs/shared_grids_std.hpp	42	typedef std::shared_timed_mutex mutex_type;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:132:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/interprocess/sync/interprocess_condition.hpp	58	//!Destroys the object of type std::condition_variable_any
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:133:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/interprocess/sync/interprocess_condition.hpp	60	//!Unlike std::condition_variable in C++11, it is NOT safe to invoke the destructor if all
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:134:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/interprocess/sync/interprocess_condition_any.hpp	49	//!Unlike std::condition_variable_any in C++11, it is NOT safe to invoke the destructor if all
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:135:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/quadrature/naive_monte_carlo.hpp	201	std::future<Real> integrate()
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:136:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/quadrature/naive_monte_carlo.hpp	206	return std::async(std::launch::async,
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:137:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/special_functions/daubechies_scaling.hpp	391	std::future<std::vector<Real>> t0 = std::async(std::launch::async, [&grid_refinements]() {
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:138:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/special_functions/daubechies_scaling.hpp	397	std::future<std::vector<Real>> t1 = std::async(std::launch::async, [&grid_refinements]() {
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:139:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/special_functions/daubechies_scaling.hpp	406	std::future<std::vector<Real>> t3 = std::async(std::launch::async, [&grid_refinements]() {
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:140:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/special_functions/daubechies_scaling.hpp	412	std::future<std::vector<Real>> t4 = std::async(std::launch::async, [&grid_refinements]() {
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:141:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/special_functions/daubechies_wavelet.hpp	148	std::future<std::vector<Real>> t0 = std::async(std::launch::async, [&grid_refinements]() {
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:142:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/special_functions/daubechies_wavelet.hpp	154	std::future<std::vector<Real>> t1 = std::async(std::launch::async, [&grid_refinements]() {
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:143:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/special_functions/daubechies_wavelet.hpp	163	std::future<std::vector<Real>> t3 = std::async(std::launch::async, [&grid_refinements]() {
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:144:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/special_functions/daubechies_wavelet.hpp	169	std::future<std::vector<Real>> t4 = std::async(std::launch::async, [&grid_refinements]() {
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:145:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/bivariate_statistics.hpp	106	std::vector<std::future<ReturnType>> future_manager;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:146:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/bivariate_statistics.hpp	114	future_manager.emplace_back(std::async(std::launch::async | std::launch::deferred, [u_it, v_it, elements_per_thread]() -> ReturnType
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:147:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/bivariate_statistics.hpp	122	future_manager.emplace_back(std::async(std::launch::async | std::launch::deferred, [u_it, u_end, v_it, v_end]() -> ReturnType
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:148:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/bivariate_statistics.hpp	253	std::vector<std::future<ReturnType>> future_manager;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:149:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/bivariate_statistics.hpp	261	future_manager.emplace_back(std::async(std::launch::async | std::launch::deferred, [u_it, v_it, elements_per_thread]() -> ReturnType
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:150:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/bivariate_statistics.hpp	269	future_manager.emplace_back(std::async(std::launch::async | std::launch::deferred, [u_it, u_end, v_it, v_end]() -> ReturnType
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:151:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/chatterjee_correlation.hpp	100	std::vector<std::future<std::size_t>> future_manager {};
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:152:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/chatterjee_correlation.hpp	107	future_manager.emplace_back(std::async(std::launch::async | std::launch::deferred, [it, elements_per_thread]() -> std::size_t
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:153:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/chatterjee_correlation.hpp	114	future_manager.emplace_back(std::async(std::launch::async | std::launch::deferred, [it, end]() -> std::size_t
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:154:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/detail/single_pass.hpp	153	std::vector<std::future<ReturnType>> future_manager;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:155:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/detail/single_pass.hpp	159	future_manager.emplace_back(std::async(std::launch::async | std::launch::deferred, [it, elements_per_thread]() -> ReturnType
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:156:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/detail/single_pass.hpp	166	future_manager.emplace_back(std::async(std::launch::async | std::launch::deferred, [it, last]() -> ReturnType
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:157:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/detail/single_pass.hpp	321	std::vector<std::future<range_tuple>> future_manager;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:158:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/detail/single_pass.hpp	327	future_manager.emplace_back(std::async(std::launch::async | std::launch::deferred, [it, elements_per_thread, i]() -> range_tuple
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:159:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/math/statistics/detail/single_pass.hpp	334	future_manager.emplace_back(std::async(std::launch::async | std::launch::deferred, [it, last, num_threads, elements_per_thread]() -> range_tuple
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:160:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/async.hpp	105	`std::future<int>`.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:161:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/async.hpp	114	std::future<int> exit_code;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:162:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/on_exit.hpp	22	inline std::function<void(int, const std::error_code &)> on_exit_from_future(std::future<int> &f)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:163:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/on_exit.hpp	24	std::shared_ptr<std::promise<int>> promise = std::make_shared<std::promise<int>>();
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:164:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/on_exit.hpp	43	api::on_exit_ operator= (std::future<int> &f) const {return on_exit_from_future(f);}
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:165:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/on_exit.hpp	44	api::on_exit_ operator()(std::future<int> &f) const {return on_exit_from_future(f);}
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:166:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/posix/async_in.hpp	32	std::shared_ptr<std::promise<void>> promise;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:167:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/posix/async_in.hpp	33	async_in_buffer operator>(std::future<void> & fut)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:168:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/posix/async_in.hpp	35	promise = std::make_shared<std::promise<void>>();
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:169:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/posix/async_out.hpp	118	std::shared_ptr<std::promise<Type>> promise = std::make_shared<std::promise<Type>>();
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:170:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/posix/async_out.hpp	124	async_out_future(std::future<Type> & fut)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:171:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/windows/async_in.hpp	37	std::shared_ptr<std::promise<void>> promise;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:172:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/windows/async_in.hpp	38	async_in_buffer operator>(std::future<void> & fut)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:173:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/windows/async_in.hpp	40	promise = std::make_shared<std::promise<void>>();
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:174:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/windows/async_out.hpp	116	std::shared_ptr<std::promise<Type>> promise = std::make_shared<std::promise<Type>>();
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:175:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/detail/windows/async_out.hpp	125	async_out_future(std::future<Type> & fut)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:176:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/io.hpp	95	std::future<std::string> output;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:177:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/io.hpp	245	api::async_out_future<p1,p2, std::string>       operator=(std::future<std::string> & fut)       const { return fut;}
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:178:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/io.hpp	246	api::async_out_future<p1,p2, std::string>       operator>(std::future<std::string> & fut)       const { return fut;}
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:179:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/io.hpp	247	api::async_out_future<p1,p2, std::vector<char>> operator=(std::future<std::vector<char>> & fut) const { return fut;}
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:180:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/io.hpp	248	api::async_out_future<p1,p2, std::vector<char>> operator>(std::future<std::vector<char>> & fut) const { return fut;}
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:181:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/io.hpp	370	\note  It is also possible to get a future for std_in, by chaining another `std::future<void>` onto it,
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:182:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/io.hpp	373	std::future<void> fut;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:183:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/io.hpp	497	- `std::future<std::vector<char>>`
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:184:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/process/io.hpp	498	- `std::future<std::string>`
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:185:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/sort/block_indirect_sort/block_indirect_sort.hpp	271	std::vector<std::future<void> > vfuture(nthread);
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:186:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/sort/block_indirect_sort/block_indirect_sort.hpp	281	vfuture[i] = std::async(std::launch::async, f1);
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:187:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/sort/sample_sort/sample_sort.hpp	94	std::vector<std::future<void>> vfuture;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:188:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/sort/sample_sort/sample_sort.hpp	191	vfuture[i] = std::async(std::launch::async, &this_t::execute_first,
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:189:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/sort/sample_sort/sample_sort.hpp	208	vfuture[i] = std::async(std::launch::async, &this_t::execute, this);
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:190:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/sort/sample_sort/sample_sort.hpp	372	std::vector<std::future<void>> vfuture(nthread);
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:191:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/sort/sample_sort/sample_sort.hpp	382	vfuture[i] = std::async(std::launch::async, func);
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:192:boost-1.83.0-2.2.src.rpm	boost	shared_mutex	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/boost/system/detail/mutex.hpp	60	typedef std::shared_mutex mutex;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:193:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/executors/actor.cpp	210	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:194:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/executors/fork_join.cpp	148	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:195:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/executors/pipeline.cpp	100	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:196:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/executors/pipeline.cpp	176	std::future<void> pipeline(queue_back<T> in, F f)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:197:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/executors/pipeline.cpp	188	std::future<void> pipeline(queue_back<T> in, F f, Tail... t)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:198:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/executors/pipeline.cpp	214	std::future<void> pipeline(F f, Tail... t)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:199:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/executors/priority_scheduler.cpp	125	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:200:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/futures/daytime_client.cpp	27	std::future<udp::resolver::results_type> endpoints =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:201:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/futures/daytime_client.cpp	38	std::future<std::size_t> send_length =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:202:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/futures/daytime_client.cpp	49	std::future<std::size_t> recv_length =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:203:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_1.cpp	44	// completion token is boost::asio::use_future it would be std::future<std::size_t>.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:204:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_1.cpp	135	std::future<std::size_t> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:205:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_2.cpp	102	// completion token is boost::asio::use_future it would be std::future<std::size_t>.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:206:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_2.cpp	205	std::future<std::size_t> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:207:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_3.cpp	110	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:208:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_3.cpp	213	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:209:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_4.cpp	126	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:210:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_4.cpp	228	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:211:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_5.cpp	156	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:212:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_5.cpp	265	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:213:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_6.cpp	211	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:214:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_6.cpp	325	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:215:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_7.cpp	132	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:216:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_7.cpp	244	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:217:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_8.cpp	128	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:218:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp11/operations/composed_8.cpp	239	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:219:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/executors/actor.cpp	209	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:220:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/executors/fork_join.cpp	148	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:221:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/executors/pipeline.cpp	83	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:222:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/executors/pipeline.cpp	159	std::future<void> pipeline(queue_back<T> in, F f)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:223:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/executors/pipeline.cpp	166	std::packaged_task<void()> task(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:224:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/executors/pipeline.cpp	171	std::future<void> fut = task.get_future();
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:225:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/executors/pipeline.cpp	178	std::future<void> pipeline(queue_back<T> in, F f, Tail... t)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:226:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/executors/pipeline.cpp	205	std::future<void> pipeline(F f, Tail... t)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:227:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/executors/priority_scheduler.cpp	152	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:228:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/c_callback_wrapper.cpp	216	std::future<std::string> f =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:229:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/callback_wrapper.cpp	138	std::future<std::string> f =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:230:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_1.cpp	44	// completion token is boost::asio::use_future it would be std::future<std::size_t>.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:231:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_1.cpp	131	std::future<std::size_t> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:232:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_2.cpp	50	// completion token is boost::asio::use_future it would be std::future<std::size_t>.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:233:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_2.cpp	195	std::future<std::size_t> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:234:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_3.cpp	51	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:235:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_3.cpp	203	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:236:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_4.cpp	52	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:237:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_4.cpp	218	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:238:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_5.cpp	51	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:239:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_5.cpp	256	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:240:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_6.cpp	56	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:241:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_6.cpp	316	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:242:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_7.cpp	56	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:243:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_7.cpp	237	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:244:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_8.cpp	60	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:245:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp14/operations/composed_8.cpp	230	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:246:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/c_callback_wrapper.cpp	218	std::future<std::string> f =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:247:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/callback_wrapper.cpp	140	std::future<std::string> f =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:248:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_1.cpp	46	// completion token is boost::asio::use_future it would be std::future<std::size_t>.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:249:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_1.cpp	133	std::future<std::size_t> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:250:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_2.cpp	52	// completion token is boost::asio::use_future it would be std::future<std::size_t>.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:251:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_2.cpp	201	std::future<std::size_t> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:252:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_3.cpp	52	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:253:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_3.cpp	207	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:254:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_4.cpp	53	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:255:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_4.cpp	223	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:256:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_5.cpp	52	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:257:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_5.cpp	260	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:258:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_6.cpp	57	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:259:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_6.cpp	321	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:260:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_7.cpp	57	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:261:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_7.cpp	238	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:262:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_8.cpp	61	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:263:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/doc/html/boost_asio/example/cpp20/operations/composed_8.cpp	231	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:264:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/executors/actor.cpp	210	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:265:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/executors/fork_join.cpp	148	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:266:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/executors/pipeline.cpp	100	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:267:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/executors/pipeline.cpp	176	std::future<void> pipeline(queue_back<T> in, F f)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:268:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/executors/pipeline.cpp	188	std::future<void> pipeline(queue_back<T> in, F f, Tail... t)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:269:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/executors/pipeline.cpp	214	std::future<void> pipeline(F f, Tail... t)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:270:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/executors/priority_scheduler.cpp	125	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:271:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/futures/daytime_client.cpp	27	std::future<udp::resolver::results_type> endpoints =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:272:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/futures/daytime_client.cpp	38	std::future<std::size_t> send_length =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:273:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/futures/daytime_client.cpp	49	std::future<std::size_t> recv_length =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:274:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_1.cpp	44	// completion token is boost::asio::use_future it would be std::future<std::size_t>.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:275:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_1.cpp	135	std::future<std::size_t> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:276:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_2.cpp	102	// completion token is boost::asio::use_future it would be std::future<std::size_t>.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:277:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_2.cpp	205	std::future<std::size_t> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:278:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_3.cpp	110	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:279:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_3.cpp	213	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:280:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_4.cpp	126	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:281:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_4.cpp	228	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:282:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_5.cpp	156	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:283:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_5.cpp	265	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:284:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_6.cpp	211	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:285:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_6.cpp	325	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:286:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_7.cpp	132	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:287:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_7.cpp	244	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:288:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_8.cpp	128	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:289:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp11/operations/composed_8.cpp	239	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:290:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/executors/actor.cpp	209	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:291:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/executors/fork_join.cpp	148	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:292:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/executors/pipeline.cpp	83	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:293:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/executors/pipeline.cpp	159	std::future<void> pipeline(queue_back<T> in, F f)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:294:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/executors/pipeline.cpp	166	std::packaged_task<void()> task(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:295:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/executors/pipeline.cpp	171	std::future<void> fut = task.get_future();
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:296:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/executors/pipeline.cpp	178	std::future<void> pipeline(queue_back<T> in, F f, Tail... t)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:297:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/executors/pipeline.cpp	205	std::future<void> pipeline(F f, Tail... t)
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:298:boost-1.83.0-2.2.src.rpm	boost	condition_variable	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/executors/priority_scheduler.cpp	152	std::condition_variable condition_;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:299:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/c_callback_wrapper.cpp	216	std::future<std::string> f =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:300:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/callback_wrapper.cpp	138	std::future<std::string> f =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:301:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_1.cpp	44	// completion token is boost::asio::use_future it would be std::future<std::size_t>.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:302:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_1.cpp	131	std::future<std::size_t> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:303:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_2.cpp	50	// completion token is boost::asio::use_future it would be std::future<std::size_t>.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:304:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_2.cpp	195	std::future<std::size_t> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:305:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_3.cpp	51	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:306:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_3.cpp	203	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:307:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_4.cpp	52	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:308:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_4.cpp	218	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:309:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_5.cpp	51	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:310:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_5.cpp	256	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:311:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_6.cpp	56	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:312:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_6.cpp	316	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:313:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_7.cpp	56	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:314:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_7.cpp	237	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:315:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_8.cpp	60	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:316:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp14/operations/composed_8.cpp	230	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:317:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/c_callback_wrapper.cpp	218	std::future<std::string> f =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:318:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/callback_wrapper.cpp	140	std::future<std::string> f =
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:319:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_1.cpp	46	// completion token is boost::asio::use_future it would be std::future<std::size_t>.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:320:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_1.cpp	133	std::future<std::size_t> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:321:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_2.cpp	52	// completion token is boost::asio::use_future it would be std::future<std::size_t>.
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:322:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_2.cpp	201	std::future<std::size_t> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:323:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_3.cpp	52	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:324:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_3.cpp	207	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:325:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_4.cpp	53	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:326:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_4.cpp	223	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:327:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_5.cpp	52	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:328:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_5.cpp	260	std::future<void> f = async_write_message(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:329:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_6.cpp	57	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:330:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_6.cpp	321	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:331:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_7.cpp	57	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:332:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_7.cpp	238	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:333:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_8.cpp	61	// completion token is boost::asio::use_future it would be std::future<void>. When
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:334:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/example/cpp20/operations/composed_8.cpp	231	std::future<void> f = async_write_messages(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:335:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/test/as_tuple.cpp	79	std::future<std::tuple<boost::system::error_code> > f = timer1.async_wait(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:336:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/test/redirect_error.cpp	98	std::future<void> f = timer1.async_wait(
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:337:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/test/use_future.cpp	31	std::future<void> f;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:338:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/test/use_future.cpp	99	std::future<int> f;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:339:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/test/use_future.cpp	172	std::future<std::tuple<int, double>> f;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:340:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/test/use_future.cpp	254	std::future<std::tuple<int, double, char>> f;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:341:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/test/use_future.cpp	357	std::future<int> f;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:342:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/test/use_future.cpp	435	std::future<int> f;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:343:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/test/use_future.cpp	513	std::future<int> f;
+docs/progress/R73/raw/explicit_std_facility_hits.tsv:344:boost-1.83.0-2.2.src.rpm	boost	future	unpacked/boost_1_83_0.tar.bz2/boost_1.83.0/libs/asio/test/use_future.cpp	591	std::future<int> f;
+===== likely corpus roots =====
+./artifacts/archive_2111_salvage/toolchain_rpms
+./docs/progress/R74/extracted
+./docs/progress/T1/extraction_failure_logs
+./progress/R6/rpm_meta
+./progress/R74/code/extracted
+./progress/R74/extracted
+./progress/R85/extracted
+./progress/R85/extracted/srpm
+./progress/R9/generated/srpm
+./progress/T1/extraction_failure_logs
+./progress/T8/layer1_rpmspec_results
+./tmp/GBS-ROOT/T7-BUILDCONF-EXTRACT-20260731
+./tmp/GBS-ROOT/T8-RPMSPEC-20260731
+./tmp/R11/extracted
+./tmp/R11/project_c2_extract
+./tmp/R11/project_c2_extract_v2
+./tmp/R11/rpm_conflict_test_only
+./tmp/R11/rpms
+./tmp/R11/special_unwinder_extract
+./tmp/R11/special_unwinder_extract_v2
+./tmp/R11/srpms
+./tmp/R12/extracted
+./tmp/R14/extracted
+./tmp/R16/extracted
+./tmp/R30/semantic-x86-extract
+./tmp/R47/rpm-extract
+./tmp/R6/elf-extract-armv7l-r3
+./tmp/R8/platform_srpm
+./tmp/R9C/seg2/srpm_identity
+./tmp/T2/current_macro_rpms
+./tmp/T2/current_macro_rpms/rpm
+./tmp/T2/current_macro_rpms/rpm-build
+./tmp/T3R/x86_64_srpm_verify
+./tmp/corpus
+./tmp/corpus/extract_status
+./tmp/corpus/extracted
+./tmp/corpus/extracted/Open3D-0.17-2.src.rpm
+./tmp/corpus/extracted/abseil-cpp-20250814.1-1.2.src.rpm
+./tmp/corpus/extracted/alarm-manager-0.14.12-1.src.rpm
+./tmp/corpus/extracted/alure-1.2-3.src.rpm
+./tmp/corpus/extracted/amd-1.81.6-1.src.rpm
+./tmp/corpus/extracted/angle-2.1-1.src.rpm
+./tmp/corpus/extracted/app-core-1.27.13-0.src.rpm
+./tmp/corpus/extracted/app-installers-1.37.2-1.src.rpm
+./tmp/corpus/extracted/appcore-agent-1.7.7-1.src.rpm
+./tmp/corpus/extracted/appcore-watch-1.7.25-1.src.rpm
+./tmp/corpus/extracted/appcore-widget-1.6.3-1.src.rpm
+./tmp/corpus/extracted/askuser-notification-0.8.4-1.src.rpm
+./tmp/corpus/extracted/aspell-0.60.8.1-0.src.rpm
+./tmp/corpus/extracted/aul-0.84.11-1.src.rpm
+./tmp/corpus/extracted/aurum-1.0.24-1.src.rpm
+./tmp/corpus/extracted/auth-fw-1.2.0-1.src.rpm
+./tmp/corpus/extracted/badge-0.5.5-1.src.rpm
+./tmp/corpus/extracted/bcc-tools-0.35.0-2.1.src.rpm
+./tmp/corpus/extracted/behaviortree_cpp_v3-3.6.1-0.src.rpm
+./tmp/corpus/extracted/binutils-2.43-2.7.src.rpm
+./tmp/corpus/extracted/binutils-2.43-2.9.src.rpm
+./tmp/corpus/extracted/binutils-aarch64-2.43-2.2.src.rpm
+./tmp/corpus/extracted/binutils-armv7hl-2.43-2.2.src.rpm
+./tmp/corpus/extracted/binutils-armv7l-2.43-2.2.src.rpm
+./tmp/corpus/extracted/boost-1.83.0-2.2.src.rpm
+./tmp/corpus/extracted/boot-animation-dali-1.0.0-1.src.rpm
+./tmp/corpus/extracted/bpftrace-0.24.2-2.1.src.rpm
+./tmp/corpus/extracted/building-blocks-11.0.0-0.src.rpm
+./tmp/corpus/extracted/bundle-0.18.15-0.src.rpm
+./tmp/corpus/extracted/buxton2-1.9.14-0.src.rpm
+./tmp/corpus/extracted/calendar-service-0.1.183-1.src.rpm
+./tmp/corpus/extracted/capi-appfw-alarm-0.3.7-0.src.rpm
+./tmp/corpus/extracted/capi-appfw-app-common-0.16.3-0.src.rpm
+./tmp/corpus/extracted/capi-appfw-app-control-0.26.2-0.src.rpm
+./tmp/corpus/extracted/capi-appfw-app-manager-0.18.0-1.src.rpm
+./tmp/corpus/extracted/capi-appfw-application-0.10.2-0.src.rpm
+./tmp/corpus/extracted/capi-appfw-capmgr-0.0.4-1.src.rpm
+./tmp/corpus/extracted/capi-appfw-component-manager-1.2.6-1.src.rpm
+./tmp/corpus/extracted/capi-appfw-event-0.6.22-0.src.rpm
+./tmp/corpus/extracted/capi-appfw-package-manager-0.15.3-1.src.rpm
+./tmp/corpus/extracted/capi-appfw-preference-0.6.24-0.src.rpm
+./tmp/corpus/extracted/capi-base-utils-3.1.5-2.src.rpm
+./tmp/corpus/extracted/capi-content-mime-type-0.1.9-1.src.rpm
+./tmp/corpus/extracted/capi-context-1.0.6-1.src.rpm
+./tmp/corpus/extracted/capi-context-motion-2.0.3-1.src.rpm
+./tmp/corpus/extracted/capi-media-audio-io-0.6.3-0.src.rpm
+./tmp/corpus/extracted/capi-media-editor-0.1.1-0.src.rpm
+./tmp/corpus/extracted/capi-media-metadata-editor-0.2.8-0.src.rpm
+./tmp/corpus/extracted/capi-media-transporter-1.3.0-0.src.rpm
+./tmp/corpus/extracted/capi-media-vision-1.0.17-0.src.rpm
+./tmp/corpus/extracted/capi-network-asp-0.1.23-1.src.rpm
+./tmp/corpus/extracted/capi-network-bluetooth-0.10.0-2.src.rpm
+./tmp/corpus/extracted/capi-network-connection-1.0.126-0.src.rpm
+./tmp/corpus/extracted/capi-network-nsd-0.2.8-1.src.rpm
+./tmp/corpus/extracted/capi-network-smartcard-0.0.16-0.src.rpm
+./tmp/corpus/extracted/capi-network-softap-0.1.3-1.src.rpm
+./tmp/corpus/extracted/capi-network-stc-0.0.43-1.src.rpm
+./tmp/corpus/extracted/capi-network-tethering-1.2.2-1.src.rpm
+./tmp/corpus/extracted/capi-network-vine-1.3.5-0.src.rpm
+./tmp/corpus/extracted/capi-network-wifi-direct-1.4.0-1.src.rpm
+./tmp/corpus/extracted/capi-network-wifi-manager-1.3.24-0.src.rpm
+./tmp/corpus/extracted/capi-system-info-0.5.2-1.src.rpm
+./tmp/corpus/extracted/capi-system-media-key-0.2.13-6.src.rpm
+./tmp/corpus/extracted/capi-system-sensor-0.2.5-1.src.rpm
+./tmp/corpus/extracted/capi-system-system-settings-0.0.5-0.src.rpm
+./tmp/corpus/extracted/capi-telephony-0.3.0-1.src.rpm
+./tmp/corpus/extracted/capi-ui-autofill-0.11.1-1.src.rpm
+./tmp/corpus/extracted/capi-ui-efl-util-0.9.1-1.src.rpm
+./tmp/corpus/extracted/capi-ui-gesture-1.60.2-1.src.rpm
+./tmp/corpus/extracted/capi-ui-inputmethod-0.11.6-1.src.rpm
+./tmp/corpus/extracted/capi-ui-inputmethod-manager-0.10.1-1.src.rpm
+./tmp/corpus/extracted/capi-ui-sticker-1.3.5-1.src.rpm
+./tmp/corpus/extracted/capi-web-url-download-1.2.12-0.src.rpm
+./tmp/corpus/extracted/ccache-4.12.1-2.2.src.rpm
+./tmp/corpus/extracted/ceres-solver-2.2.0-1.src.rpm
+./tmp/corpus/extracted/cert-svc-3.0.0-0.src.rpm
+./tmp/corpus/extracted/chromium-efl-1.1.144-1.src.rpm
+./tmp/corpus/extracted/cion-1.2.26-1.src.rpm
+./tmp/corpus/extracted/cmake-3.31.2-1.12.src.rpm
+./tmp/corpus/extracted/cmake-3.31.2-1.14.src.rpm
+./tmp/corpus/extracted/com.samsung.dali-demo-2.5.26-1.src.rpm
+./tmp/corpus/extracted/component-based-1.6.7-1.src.rpm
+./tmp/corpus/extracted/connectedhomeip-0.0.1-1.src.rpm
+./tmp/corpus/extracted/context-app-history-4.0.2-1.src.rpm
+./tmp/corpus/extracted/context-common-4.0.3-1.src.rpm
+./tmp/corpus/extracted/context-job-scheduler-4.0.5-1.src.rpm
+./tmp/corpus/extracted/context-sensor-recorder-4.0.1-1.src.rpm
+./tmp/corpus/extracted/context-service-4.0.3-1.src.rpm
+./tmp/corpus/extracted/context-store-4.0.0-1.src.rpm
+./tmp/corpus/extracted/cordova-api-0.18-0.src.rpm
+./tmp/corpus/extracted/coreclr-8.0.11-0.src.rpm
+./tmp/corpus/extracted/coreclr-diagnostics-8.0.547301-37.src.rpm
+./tmp/corpus/extracted/crash-worker-10.0.1-1.src.rpm
+./tmp/corpus/extracted/cynara-0.26.0-1.src.rpm
+./tmp/corpus/extracted/dali2-2.5.26-1.src.rpm
+./tmp/corpus/extracted/dali2-adaptor-2.5.26-1.src.rpm
+./tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm
+./tmp/corpus/extracted/dali2-extension-2.5.26-1.src.rpm
+./tmp/corpus/extracted/dali2-toolkit-2.5.26-1.src.rpm
+./tmp/corpus/extracted/dali2-ui-foundation-2.5.14.10210-1.src.rpm
+./tmp/corpus/extracted/data-control-0.4.31-1.src.rpm
+./tmp/corpus/extracted/data-provider-master-1.11.3-1.src.rpm
+./tmp/corpus/extracted/db4-4.8.30.NC-1.12.src.rpm
+./tmp/corpus/extracted/db4-4.8.30.NC-1.14.src.rpm
+./tmp/corpus/extracted/device-certificate-manager-3.0.1-0.src.rpm
+./tmp/corpus/extracted/deviced-10.1.0-1.src.rpm
+./tmp/corpus/extracted/dfs-adaptation-1.0.10-1.src.rpm
+./tmp/corpus/extracted/dfs-opencv-1.0.12-0.src.rpm
+./tmp/corpus/extracted/dlog-9.0.2-1.src.rpm
+./tmp/corpus/extracted/docker-launcher-1.0.1-0.src.rpm
+./tmp/corpus/extracted/dotnet-launcher-8.0.11-1.src.rpm
+./tmp/corpus/extracted/doxygen-1.14.0-2.2.src.rpm
+./tmp/corpus/extracted/drm-service-core-tizen-0.3.9-0.src.rpm
+./tmp/corpus/extracted/dynpart-tools-1.0-1.src.rpm
+./tmp/corpus/extracted/e-mod-tizen-gesture-0.3.6-1.src.rpm
+./tmp/corpus/extracted/e-tizen-unittests-0.6.30-1.src.rpm
+./tmp/corpus/extracted/edgetpu-runtime-12.1-0.src.rpm
+./tmp/corpus/extracted/elfutils-0.189-1.13.src.rpm
+./tmp/corpus/extracted/elfutils-0.189-1.15.src.rpm
+./tmp/corpus/extracted/emulator-kernel-6.18.2.tizen-0.src.rpm
+./tmp/corpus/extracted/emuld-0.11.3-0.src.rpm
+./tmp/corpus/extracted/enlightenment-0.20.0-tz11_2.26.0.src.rpm
+./tmp/corpus/extracted/esd-1.1.5-1.src.rpm
+./tmp/corpus/extracted/esplusplayer-1.4.2-1.src.rpm
+./tmp/corpus/extracted/eventsystem-0.1.57-1.src.rpm
+./tmp/corpus/extracted/flac-1.3.0-0.src.rpm
+./tmp/corpus/extracted/flatbuffers-24.3.25-1.src.rpm
+./tmp/corpus/extracted/gcc-14.2.0-1.12.src.rpm
+./tmp/corpus/extracted/gcc-14.2.0-1.14.src.rpm
+./tmp/corpus/extracted/gdb-16.3-1.3.src.rpm
+./tmp/corpus/extracted/gettext-0.21.1-2.11.src.rpm
+./tmp/corpus/extracted/gettext-0.21.1-2.13.src.rpm
+./tmp/corpus/extracted/gflags-2.2.1-1.src.rpm
+./tmp/corpus/extracted/glibmm-2.64.2-0.src.rpm
+./tmp/corpus/extracted/glog-0.3.5-1.src.rpm
+./tmp/corpus/extracted/glslang-13.1.1-0.src.rpm
+./tmp/corpus/extracted/gmp-4.2.1-1.12.src.rpm
+./tmp/corpus/extracted/gmp-4.2.1-1.14.src.rpm
+./tmp/corpus/extracted/gn-20210313-1.2.src.rpm
+./tmp/corpus/extracted/gn-20210313-1.3.src.rpm
+./tmp/corpus/extracted/gperf-3.0.4-1.src.rpm
+./tmp/corpus/extracted/gpgme-1.24.3-1.src.rpm
+./tmp/corpus/extracted/groff-1.23.0-2.2.src.rpm
+./tmp/corpus/extracted/grpc-1.76.0-0.src.rpm
+./tmp/corpus/extracted/gstreamer-1.24.11-38.src.rpm
+./tmp/corpus/extracted/gtest-1.15.2-0.src.rpm
+./tmp/corpus/extracted/hailo-rt-0.1-0.src.rpm
+./tmp/corpus/extracted/hal-api-audio-0.0.23-0.src.rpm
+./tmp/corpus/extracted/hal-api-bluetooth-0.0.1-1.src.rpm
+./tmp/corpus/extracted/hal-api-camera-1.2.0-1.src.rpm
+./tmp/corpus/extracted/hal-api-codec-1.9.4-0.src.rpm
+./tmp/corpus/extracted/hal-api-device-1.0.0-0.src.rpm
+./tmp/corpus/extracted/hal-api-drm-1.0.5-1.src.rpm
+./tmp/corpus/extracted/hal-api-hdcp-1.0.13-0.src.rpm
+./tmp/corpus/extracted/hal-api-ml-0.1.0-0.src.rpm
+./tmp/corpus/extracted/hal-api-radio-1.0.1-0.src.rpm
+./tmp/corpus/extracted/hal-api-security-1.0.0-0.src.rpm
+./tmp/corpus/extracted/hal-api-sensor-0.0.1-1.src.rpm
+./tmp/corpus/extracted/hal-backend-drm-generic-1.0.3-0.src.rpm
+./tmp/corpus/extracted/hal-backend-hdcp-generic-1.0.2-0.src.rpm
+./tmp/corpus/extracted/hal-backend-security-auth-1.0.0-0.src.rpm
+./tmp/corpus/extracted/hal-backend-sensor-emulator-1.0.4-0.src.rpm
+./tmp/corpus/extracted/hal-backend-sensor-rpi-1.0.4-0.src.rpm
+./tmp/corpus/extracted/harfbuzz-8.2.2-0.src.rpm
+./tmp/corpus/extracted/hdf5-1.10.1-0.src.rpm
+./tmp/corpus/extracted/icecream-0.9.7-1.2.src.rpm
+./tmp/corpus/extracted/icecream-0.9.7-1.3.src.rpm
+./tmp/corpus/extracted/icu-78.1-1.3.src.rpm
+./tmp/corpus/extracted/icu-78.1-1.4.src.rpm
+./tmp/corpus/extracted/inference-engine-interface-0.5.2-0.src.rpm
+./tmp/corpus/extracted/inference-engine-mlapi-0.4.11-0.src.rpm
+./tmp/corpus/extracted/inference-engine-opencv-0.0.2-7.src.rpm
+./tmp/corpus/extracted/inference-engine-tflite-0.0.9-0.src.rpm
+./tmp/corpus/extracted/initrd-recovery-7.5.3-0.src.rpm
+./tmp/corpus/extracted/iotivity-1.2.1-0.src.rpm
+./tmp/corpus/extracted/ise-default-1.13.8-1.src.rpm
+./tmp/corpus/extracted/ise-default-dali-0.3.0-1.src.rpm
+./tmp/corpus/extracted/ise-engine-anthy-1.0.12-1.src.rpm
+./tmp/corpus/extracted/ise-engine-default-1.0.11-1.src.rpm
+./tmp/corpus/extracted/ise-engine-glm-1.0.18-1.src.rpm
+./tmp/corpus/extracted/ise-engine-hangul-1.0.14-1.src.rpm
+./tmp/corpus/extracted/ise-engine-sunpinyin-1.0.12-1.src.rpm
+./tmp/corpus/extracted/ise-engine-tables-1.0.11-1.src.rpm
+./tmp/corpus/extracted/ise-engine-thai-1.0.1-1.src.rpm
+./tmp/corpus/extracted/ise-engine-unikey-0.3.2-1.src.rpm
+./tmp/corpus/extracted/isf-11.1.28-1.src.rpm
+./tmp/corpus/extracted/jsoncpp-1.9.6-1.11.src.rpm
+./tmp/corpus/extracted/jsoncpp-1.9.6-1.13.src.rpm
+./tmp/corpus/extracted/jsoncpp-1.9.6-1.15.src.rpm
+./tmp/corpus/extracted/key-manager-0.1.90-1.src.rpm
+./tmp/corpus/extracted/klay-0.0.2-0.src.rpm
+./tmp/corpus/extracted/launchpad-0.50.17-1.src.rpm
+./tmp/corpus/extracted/lbs-server-1.3.8-1.src.rpm
+./tmp/corpus/extracted/leveldb-1.23-1.src.rpm
+./tmp/corpus/extracted/libabigail-2.3-0.src.rpm
+./tmp/corpus/extracted/libaudio-effect-0.0.26-0.src.rpm
+./tmp/corpus/extracted/libconfig-1.6-0.src.rpm
+./tmp/corpus/extracted/libcryptsvc-0.0.2-6.src.rpm
+./tmp/corpus/extracted/libcynara-commons-0.26.0-1.src.rpm
+./tmp/corpus/extracted/libcynara-creds-dbus-0.26.0-1.src.rpm
+./tmp/corpus/extracted/libdbuspolicy-1.2.0-0.src.rpm
+./tmp/corpus/extracted/libds-0.1.20-0.src.rpm
+./tmp/corpus/extracted/libds-tizen-0.1.16-0.src.rpm
+./tmp/corpus/extracted/libgbm-msm-1.0.0-0.src.rpm
+./tmp/corpus/extracted/libinput-1.27.2-0.src.rpm
+./tmp/corpus/extracted/libjxl-0.11.1-0.src.rpm
+./tmp/corpus/extracted/libmedia-service-0.8.8-0.src.rpm
+./tmp/corpus/extracted/libmm-utility-0.5.2-0.src.rpm
+./tmp/corpus/extracted/libphonenumber-7.0.6-1.src.rpm
+./tmp/corpus/extracted/libscl-core-0.11.3-1.src.rpm
+./tmp/corpus/extracted/libscl-ui-0.11.9-1.src.rpm
+./tmp/corpus/extracted/libscl-ui-nui-0.11.2-1.src.rpm
+./tmp/corpus/extracted/libscreen_connector-1.9.12-1.src.rpm
+./tmp/corpus/extracted/libsessiond-10.6.21-1.src.rpm
+./tmp/corpus/extracted/libshortcut-0.10.4-0.src.rpm
+./tmp/corpus/extracted/libsigc++-2.12.1-1.1.src.rpm
+./tmp/corpus/extracted/libsigc++-2.12.1-1.2.src.rpm
+./tmp/corpus/extracted/libsigc++-2.12.1-1.3.src.rpm
+./tmp/corpus/extracted/libslp-db-util-0.1.2-0.src.rpm
+./tmp/corpus/extracted/libsndfile-1.2.2-1.2.src.rpm
+./tmp/corpus/extracted/libtapi-0.9.0-2.src.rpm
+./tmp/corpus/extracted/libtbb-2019U3-0.src.rpm
+./tmp/corpus/extracted/libtbm-4.8.6-1.src.rpm
+./tmp/corpus/extracted/libtdm-3.4.0-0.src.rpm
+./tmp/corpus/extracted/libtrackrenderer-0.2.1-0.src.rpm
+./tmp/corpus/extracted/libvpx-1.12.0-2.src.rpm
+./tmp/corpus/extracted/libwatchface-complication-2.2.6-1.src.rpm
+./tmp/corpus/extracted/libwayland-tbm-0.9.0-0.src.rpm
+./tmp/corpus/extracted/libwebappenc-0.1.1-1.src.rpm
+./tmp/corpus/extracted/libwidget_service-1.3.9-1.src.rpm
+./tmp/corpus/extracted/libwidget_viewer_dali-1.4.12-1.src.rpm
+./tmp/corpus/extracted/libxml++-5.6.0-1.src.rpm
+./tmp/corpus/extracted/libzypp-17.23.7-1.src.rpm
+./tmp/corpus/extracted/libzypp-bindings-0.7.4-0.src.rpm
+./tmp/corpus/extracted/lightweight-web-engine-1.4.0-1.src.rpm
+./tmp/corpus/extracted/llvm-22.1.8-18.1.src.rpm
+./tmp/corpus/extracted/lottie-player-0.2.5-1.src.rpm
+./tmp/corpus/extracted/lwnode-1.0.0-1.src.rpm
+./tmp/corpus/extracted/manifest-parser-1.9.0-1.src.rpm
+./tmp/corpus/extracted/mdg-manager-0.0.1-0.src.rpm
+./tmp/corpus/extracted/mesa-24.3.4-0.src.rpm
+./tmp/corpus/extracted/message-port-1.4.32-0.src.rpm
+./tmp/corpus/extracted/minicontrol-0.2.0-1.src.rpm
+./tmp/corpus/extracted/mlops-agent-1.8.8-0.src.rpm
+./tmp/corpus/extracted/mmi-2.2.2-0.src.rpm
+./tmp/corpus/extracted/mmi-manager-1.0.3-0.src.rpm
+./tmp/corpus/extracted/mosquitto-1.6.8-0.src.rpm
+./tmp/corpus/extracted/mtp-initiator-1.4.39-0.src.rpm
+./tmp/corpus/extracted/multi-assistant-0.3.22-1.src.rpm
+./tmp/corpus/extracted/nan-manager-0.2.2-1.src.rpm
+./tmp/corpus/extracted/ncnn-20240102-1e88fb8.src.rpm
+./tmp/corpus/extracted/ncurses-6.6-1.12.src.rpm
+./tmp/corpus/extracted/ncurses-6.6-1.14.src.rpm
+./tmp/corpus/extracted/net-config-1.2.15-1.src.rpm
+./tmp/corpus/extracted/nfc-manager-0.2.0-0.src.rpm
+./tmp/corpus/extracted/nghttp2-1.51.0-1.2.src.rpm
+./tmp/corpus/extracted/nghttp2-1.51.0-1.3.src.rpm
+./tmp/corpus/extracted/ninja-1.13.1-1.13.src.rpm
+./tmp/corpus/extracted/ninja-1.13.1-1.14.src.rpm
+./tmp/corpus/extracted/nnfw-1.28.0-1.src.rpm
+./tmp/corpus/extracted/nnstreamer-2.7.0-0.src.rpm
+./tmp/corpus/extracted/nntrainer-0.5.0-0.src.rpm
+./tmp/corpus/extracted/noise-suppression-1.2-2.src.rpm
+./tmp/corpus/extracted/notification-0.12.4-1.src.rpm
+===== R72 tables/raw names =====
+docs/progress/R72/INDEX.tsv
+docs/progress/R72/MATERIALS.md
+docs/progress/R72/REPORT.md
+docs/progress/R72/code/enumerate_noexcept_cancel.py
+docs/progress/R72/code/noexcept_cancel_samples.cpp
+docs/progress/R72/code/scan_facility_usage.py
+docs/progress/R72/commands/001_resource_gate.log
+docs/progress/R72/commands/002_inventory.log
+docs/progress/R72/commands/003_tooling_inventory.log
+docs/progress/R72/commands/004_cancellation_sources.log
+docs/progress/R72/commands/005_platform_source_inventory.log
+docs/progress/R72/commands/006_enumerator_calibration.log
+docs/progress/R72/commands/007_unique_wrapper_paths.log
+docs/progress/R72/commands/008_enumerator_rerun.log
+docs/progress/R72/commands/009_stop_overbroad_find.log
+docs/progress/R72/commands/010_clone_glibc240.log
+docs/progress/R72/commands/011_clone_glibc240_mirror.log
+docs/progress/R72/commands/012_glibc_cancellation_scan.log
+docs/progress/R72/commands/013_compile_samples.log
+docs/progress/R72/commands/014_run_samples.log
+docs/progress/R72/commands/015_runtime_identity.log
+docs/progress/R72/commands/016_facility_usage_scan.log
+docs/progress/R72/commands/017_condition_variable_source_evidence.log
+docs/progress/R72/commands/018_stop_slow_facility_scan.log
+docs/progress/R72/commands/019_facility_usage_scan_one_pass.log
+docs/progress/R72/commands/020_create_output_dirs.log
+docs/progress/R72/commands/021_toolchain_config_identity.log
+docs/progress/R72/commands/022_active_libcxx_macros.log
+docs/progress/R72/commands/023_platform_cancel_point_summary.log
+docs/progress/R72/commands/024_platform_extension_set.log
+docs/progress/R72/commands/025_platform_extension_set_corrected.log
+docs/progress/R72/commands/026_stop_unbounded_gcc_search.log
+docs/progress/R72/commands/027_libcxx_noexcept_policy.log
+docs/progress/R72/commands/028_calibration_verified_rows.log
+docs/progress/R72/commands/029_common_boundary_source_evidence.log
+docs/progress/R72/commands/030_stop_stalled_whole_corpus_scan.log
+docs/progress/R72/commands/031_facility_usage_scan_bounded.log
+docs/progress/R72/commands/032_tizen_glibc_source_identity.log
+docs/progress/R72/commands/033_tizen_glibc_provenance_correction.log
+docs/progress/R72/commands/034_facility_usage_scan_with_wbuffer.log
+docs/progress/R72/commands/035_additional_boundary_source_evidence.log
+docs/progress/R72/commands/036_facility_usage_scan_package_names.log
+docs/progress/R72/commands/037_recompile_confirmed_wait_samples.log
+docs/progress/R72/commands/038_run_confirmed_wait_samples.log
+docs/progress/R72/commands/039_final_runtime_identity.log
+docs/progress/R72/commands/040_final_validation_before_packaging.log
+docs/progress/R72/commands/041_package_materials.log
+docs/progress/R72/commands/042_generate_index.log
+docs/progress/R72/commands/044_final_package_validation.log
+docs/progress/R72/commands/045_remove_cache_and_refresh_index.log
+docs/progress/R72/raw/cancellation_points.tsv
+docs/progress/R72/raw/direct_cancel_calls.tsv
+docs/progress/R72/raw/facility_usage_hits.tsv
+docs/progress/R72/raw/facility_usage_summary.tsv
+docs/progress/R72/raw/glibc240_cancellation_implementation_files.txt
+docs/progress/R72/raw/glibc240_linux_cancel_wrapper_names.txt
+docs/progress/R72/raw/libcxx_actual_cp_lexical_hits.txt
+docs/progress/R72/raw/noexcept_candidates.tsv
+docs/progress/R72/raw/noexcept_candidates_depth_le3.tsv
+docs/progress/R72/raw/platform_libc_disassembly.txt
+docs/progress/R72/raw/tests/libcxx_custom_clock.log
+docs/progress/R72/raw/tests/libcxx_wait.log
+docs/progress/R72/raw/tests/libcxx_wait_for.log
+docs/progress/R72/raw/tests/libstdcxx_custom_clock.log
+docs/progress/R72/raw/tests/libstdcxx_wait.log
+docs/progress/R72/raw/tests/libstdcxx_wait_for.log
+docs/progress/R72/research/upstream_sources.tsv
+docs/progress/R72/tables/count_summary.tsv
+docs/progress/R72/tables/facility_paths.tsv
+docs/progress/R72/tables/platform_extension_cancel_points.tsv
+docs/progress/R72/tables/portable_only_candidates.tsv
+docs/progress/R72/tables/sample_results.tsv
+docs/progress/R72/tables/verified_boundaries.tsv
+progress/R72/MATERIALS.md
+progress/R72/REPORT.md
+progress/R72/code/__pycache__/enumerate_noexcept_cancel.cpython-310.pyc
+progress/R72/code/__pycache__/scan_facility_usage.cpython-310.pyc
+progress/R72/code/enumerate_noexcept_cancel.py
+progress/R72/code/noexcept_cancel_samples.cpp
+progress/R72/code/scan_facility_usage.py
+progress/R72/commands/001_resource_gate.log
+progress/R72/commands/002_inventory.log
+progress/R72/commands/003_tooling_inventory.log
+progress/R72/commands/004_cancellation_sources.log
+progress/R72/commands/005_platform_source_inventory.log
+progress/R72/commands/006_enumerator_calibration.log
+progress/R72/commands/007_unique_wrapper_paths.log
+progress/R72/commands/008_enumerator_rerun.log
+progress/R72/commands/009_stop_overbroad_find.log
+progress/R72/commands/010_clone_glibc240.log
+progress/R72/commands/011_clone_glibc240_mirror.log
+progress/R72/commands/012_glibc_cancellation_scan.log
+progress/R72/commands/013_compile_samples.log
+progress/R72/commands/014_run_samples.log
+progress/R72/commands/015_runtime_identity.log
+progress/R72/commands/016_facility_usage_scan.log
+progress/R72/commands/017_condition_variable_source_evidence.log
+progress/R72/commands/018_stop_slow_facility_scan.log
+progress/R72/commands/019_facility_usage_scan_one_pass.log
+progress/R72/commands/020_create_output_dirs.log
+progress/R72/commands/021_toolchain_config_identity.log
+progress/R72/commands/022_active_libcxx_macros.log
+progress/R72/commands/023_platform_cancel_point_summary.log
+progress/R72/commands/024_platform_extension_set.log
+progress/R72/commands/025_platform_extension_set_corrected.log
+progress/R72/commands/026_stop_unbounded_gcc_search.log
+progress/R72/commands/027_libcxx_noexcept_policy.log
+progress/R72/commands/028_calibration_verified_rows.log
+progress/R72/commands/029_common_boundary_source_evidence.log
+progress/R72/commands/030_stop_stalled_whole_corpus_scan.log
+progress/R72/commands/031_facility_usage_scan_bounded.log
+progress/R72/commands/032_tizen_glibc_source_identity.log
+progress/R72/commands/033_tizen_glibc_provenance_correction.log
+progress/R72/commands/034_facility_usage_scan_with_wbuffer.log
+progress/R72/commands/035_additional_boundary_source_evidence.log
+progress/R72/commands/036_facility_usage_scan_package_names.log
+progress/R72/commands/037_recompile_confirmed_wait_samples.log
+progress/R72/commands/038_run_confirmed_wait_samples.log
+progress/R72/commands/039_final_runtime_identity.log
+progress/R72/commands/040_final_validation_before_packaging.log
+progress/R72/commands/041_package_materials.log
+progress/R72/commands/042_generate_index.log
+progress/R72/commands/043_finalize_index.log
+progress/R72/commands/044_final_package_validation.log
+progress/R72/commands/045_remove_cache_and_refresh_index.log
+progress/R72/commands/046_finalize_package.log
+progress/R72/commands/047_refresh_index_after_report_correction.log
+progress/R72/raw/cancellation_points.tsv
+progress/R72/raw/direct_cancel_calls.tsv
+progress/R72/raw/facility_usage_hits.tsv
+progress/R72/raw/facility_usage_summary.tsv
+progress/R72/raw/glibc240_cancellation_implementation_files.txt
+progress/R72/raw/glibc240_linux_cancel_wrapper_names.txt
+progress/R72/raw/libcxx_actual_cp_lexical_hits.txt
+progress/R72/raw/noexcept_candidates.tsv
+progress/R72/raw/noexcept_candidates_depth_le3.tsv
+progress/R72/raw/platform_libc_disassembly.txt
+progress/R72/raw/tests/libcxx_custom_clock.log
+progress/R72/raw/tests/libcxx_wait.log
+progress/R72/raw/tests/libcxx_wait_for.log
+progress/R72/raw/tests/libstdcxx_custom_clock.log
+progress/R72/raw/tests/libstdcxx_wait.log
+progress/R72/raw/tests/libstdcxx_wait_for.log
+progress/R72/research/upstream_sources.tsv
+progress/R72/tables/count_summary.tsv
+progress/R72/tables/facility_paths.tsv
+progress/R72/tables/platform_extension_cancel_points.tsv
+progress/R72/tables/portable_only_candidates.tsv
+progress/R72/tables/sample_results.tsv
+progress/R72/tables/verified_boundaries.tsv
