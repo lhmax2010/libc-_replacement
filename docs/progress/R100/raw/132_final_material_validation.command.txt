@@ -1,0 +1,35 @@
+./progress/R100/code/run_logged.sh 132 final_material_validation bash -c 'set -eu
+rules=docs/progress/R100/STAGE1_RULES.md
+decisions=docs/progress/R100/tables/base_cpp_package_decisions.tsv
+for stale in "待人工确认" AWAITING_RULE_CONFIRMATION "收到确认前"; do
+  if grep -Fn "$stale" "$rules"; then
+    echo "STALE_MARKER_FOUND=$stale" >&2
+    exit 1
+  fi
+done
+python3 - "$decisions" <<"PY"
+import csv, sys
+p=sys.argv[1]
+with open(p, newline="") as f:
+    rows=list(csv.DictReader(f, delimiter="\t"))
+from collections import Counter
+c=Counter(r["final_class"] for r in rows)
+print("decision_rows", len(rows))
+print("class_counts", dict(sorted(c.items())))
+expected={"NEED_LIBCXX":10,"NO_LIBCXX_NEEDED":55,"CANNOT_SWITCH_CURRENTLY":6,"UNDETERMINED":2}
+assert len(rows)==73
+assert c==expected, (c, expected)
+PY
+for p in docs/progress/R100/README.md docs/progress/R100/REPORT.md docs/progress/R100/OPTION_PROBE.md docs/progress/R100/STAGE1_RULES.md docs/progress/R100/tables/base_cpp_package_decisions.tsv docs/progress/R100/tables/driver_option_probe.tsv; do
+  test -s "$p"
+  sha256sum "$p"
+done
+if grep -RFn "n+以及" docs/progress/R100 --include="*.md"; then
+  echo "TYPO_MARKER_FOUND" >&2
+  exit 1
+fi
+printf "tracked_or_untracked_scope:\n"
+git status --short -- docs/progress/R100
+printf "repository_status:\n"
+git status --short --branch
+'

@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Scan exact Base Toolchain build logs for positive C++ build evidence.
+
+The scanner reads logs from the URLs already frozen by R98.  It records only
+positive, line-oriented evidence and does not infer C++ from an exported CXX
+variable alone.
+"""
+
+import csv
+import re
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+INPUT = Path("progress/R98/tables/buildlog_compiler_evidence.tsv")
+OUTPUT = Path("progress/R100/tables/base_cpp_buildlog_scan.tsv")
+
+PATTERNS = [
+    ("CMAKE_CXX_ID", re.compile(r"(?:The )?CXX compiler identification is\s+", re.I)),
+    ("CMAKE_CXX_BUILD", re.compile(r"(?:Building|Linking) CXX (?:object|executable|shared library|static library)", re.I)),
+    ("CMAKE_CXX_COMPILER", re.compile(r"CMAKE_CXX_COMPILER(?::FILEPATH)?=.+(?:clang\+\+|g\+\+|c\+\+)", re.I)),
+    ("AUTOCONF_CXX", re.compile(r"checking (?:whether|for).*(?:GNU C\+\+ compiler|C\+\+ compiler)", re.I)),
+    ("MESON_CPP", re.compile(r"C\+\+ compiler for the (?:host|build) machine:", re.I)),
+    ("COMPILER_COMMAND", re.compile(r"(?:^|[\s'\"])(?:/[A-Za-z0-9_./+-]+/)?(?:[A-Za-z0-9_.+-]+-)?(?:clang\+\+|g\+\+|c\+\+)(?:[\s'\"]|$)")),
+    ("CXX_SOURCE_COMPILE", re.compile(r"(?:\s-c\s+|compil(?:e|ing).*?)(?:\S+/)?\S+\.(?:cc|cpp|cxx|C)(?:\s|$)", re.I)),
+]
+
+
+def scan(row):
+    url = row["url"]
+    last_error = ""
+    for attempt in range(1, 4):
+        try:
+            req = Request(url, headers={"User-Agent": "R100-cpp-log-audit/1"})
+            with urlopen(req, timeout=90) as response:
+                evidence = []
+                total = 0
+                for line_no, raw in enumerate(response, 1):
+                    total += len(raw)
+                    text = raw.decode("utf-8", "replace").rstrip("\r\n")
+                    for kind, pattern in PATTERNS:
+                        if pattern.search(text):
+                            # Export-only lines are not compile evidence.
+                            if kind == "COMPILER_COMMAND" and re.search(r"\bexport\s+CC=.*\bCXX=", text):
+                                continue
+                            evidence.append((kind, line_no, text[:1000]))
+                            break
+                    if len(evidence) >= 5:
+                        break
+            return row, "YES" if evidence else "NO", evidence, total, "OK"
+        except Exception as exc:  # network/transient errors are preserved
+            last_error = f"{type(exc).__name__}: {exc}"
+            time.sleep(attempt)
+    return row, "NOT_AVAILABLE", [], 0, last_error
+
+
+rows = []
+with INPUT.open(newline="", encoding="utf-8") as handle:
+    for row in csv.DictReader(handle, delimiter="\t"):
+        if row["project"] == "base" and row["fetch_result"] == "OK":
+            rows.append(row)
+
+OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+fields = [
+    "snapshot", "arch", "source_package", "cpp_compile_detected",
+    "evidence_kinds", "evidence_lines", "evidence_text", "bytes_read",
+    "url", "scan_status",
+]
+results = []
+with ThreadPoolExecutor(max_workers=2) as executor:
+    futures = [executor.submit(scan, row) for row in rows]
+    for index, future in enumerate(as_completed(futures), 1):
+        row, detected, evidence, total, status = future.result()
+        results.append({
+            "snapshot": row["snapshot"],
+            "arch": row["arch"],
+            "source_package": row["source_package"],
+            "cpp_compile_detected": detected,
+            "evidence_kinds": ";".join(item[0] for item in evidence) or "NONE",
+            "evidence_lines": ";".join(str(item[1]) for item in evidence) or "NONE",
+            "evidence_text": " || ".join(item[2] for item in evidence) or "NONE",
+            "bytes_read": str(total),
+            "url": row["url"],
+            "scan_status": status,
+        })
+        if index % 100 == 0:
+            print(f"progress={index}/{len(rows)}", file=sys.stderr, flush=True)
+
+results.sort(key=lambda item: (item["source_package"], item["arch"]))
+with OUTPUT.open("w", newline="", encoding="utf-8") as handle:
+    writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(results)
+
+yes = sum(item["cpp_compile_detected"] == "YES" for item in results)
+no = sum(item["cpp_compile_detected"] == "NO" for item in results)
+na = sum(item["cpp_compile_detected"] == "NOT_AVAILABLE" for item in results)
+unique_yes = len({item["source_package"] for item in results if item["cpp_compile_detected"] == "YES"})
+print(f"rows={len(results)} yes={yes} no={no} not_available={na} unique_cpp_sources={unique_yes}")
