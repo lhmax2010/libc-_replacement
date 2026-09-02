@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-if [ "$#" -ne 4 ]; then
-  echo "usage: $0 CELL BUILDROOT ARCH LIBDIR" >&2
+if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
+  echo "usage: $0 CELL BUILDROOT ARCH LIBDIR [RELEASE]" >&2
   exit 2
 fi
 
@@ -10,6 +10,7 @@ cell=$1
 buildroot=$2
 arch=$3
 libdir=$4
+release=${5:-96.1}
 workspace=$(cd "$(dirname "$0")/../../.." && pwd)
 repo="$buildroot/local/repos/tizen_unified_standard/$arch/RPMS"
 extract="$workspace/progress/R96/work/verify/$cell"
@@ -32,9 +33,9 @@ select_one() {
   printf '%s\n' "${matches[0]}"
 }
 
-devel=$(select_one "libc++-devel-22.1.8-96.1.$arch.rpm")
-libcxx=$(select_one "libc++-22.1.8-96.1.$arch.rpm")
-libcxxabi=$(select_one "libc++abi-22.1.8-96.1.$arch.rpm")
+devel=$(select_one "libc++-devel-22.1.8-$release.$arch.rpm")
+libcxx=$(select_one "libc++-22.1.8-$release.$arch.rpm")
+libcxxabi=$(select_one "libc++abi-22.1.8-$release.$arch.rpm")
 
 echo "cell=$cell"
 echo "repo=$repo"

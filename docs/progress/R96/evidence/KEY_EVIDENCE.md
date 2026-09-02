@@ -1,23 +1,28 @@
 # R96 关键证据索引
 
-- 资源门禁：`raw/001_resource_gate_medium.*`，退出码 0。
-- aarch64 编译器名门禁：`raw/011_aarch64_compiler_name_gate_final.*`。
-  `%{_host}` 展开为 `aarch64-tizen-linux-gnu`；构建根内存在
-  `aarch64-tizen-linux-gnu-clang` 与 `-clang++`，其目标为 `clang-22`；
-  同构建族历史日志确认该名称实际识别为 Clang 22.1.8。
-- 修改前分支、spec 与全部 sandbox 分支：`raw/012_premodify_branch_and_spec_state.*`。
-- 候选完整 diff：`raw/013_spec_change_diff.*`。
-- 候选工作树范围：`raw/014_candidate_worktree_cleanliness.*`。
-- armv7l / GCC 环境完整构建：`raw/015_build_armv7l_gcc_env.*`，退出码 0。
-- armv7l / GCC 环境产物核验：`raw/016_verify_armv7l_gcc_env.*`，退出码 0。
-- armv7l / LLVM 环境完整构建：`raw/017_build_armv7l_llvm_env.*`，退出码 0。
-- armv7l / LLVM 环境产物核验：`raw/018_verify_armv7l_llvm_env.*`，退出码 0。
-- aarch64 / GCC 环境完整构建尝试：`raw/019_build_aarch64_gcc_env.*`，退出码 1。
-- aarch64 / GCC 环境失败摘录：`raw/020_inspect_aarch64_gcc_env_failure.*`。
-- 停止后的本地/远端分支与矩阵退出码核验：`raw/022_stop_audit.*`。
-- 两次日志包装器技术性误用：第一次未能落盘；第二次由
-  `raw/021_stop_audit_bash.*` 记录为退出码 127。两次均未执行核验主体，
-  未改变 Git 或构建状态；随后使用正确调用生成 `raw/022_*`。
+- 资源门禁：`raw/001_*`、续跑状态与资源复核 `raw/029_*`，均退出码 0。
+- aarch64 编译器名门禁：`raw/011_*`。`%{_host}` 展开为
+  `aarch64-tizen-linux-gnu`，构建根内存在目标前缀 Clang/Clang++。
+- 初始分支、spec 与全部 sandbox 分支：`raw/012_*`。
+- 初始编译器选择 diff 和范围：`raw/013_*`、`raw/014_*`。
+- armv7l/GCC 完整构建与核验：`raw/015_*`、`raw/016_*`，均退出码 0。
+- armv7l/LLVM 完整构建与核验：`raw/017_*`、`raw/018_*`，均退出码 0。
+- aarch64/GCC 初次失败及定位：`raw/019_*`、`raw/020_*`。这是规范化前的
+  历史证据，证明复合 `-mtune` 是原阻断点。
+- R97 后的最终规范化 diff 与作用域：`raw/030_*`。
+- aarch64/GCC 最终完整构建：`raw/031_*`，退出码 0；运行中资源采样见
+  `raw/032_*` 至 `raw/034_*`。
+- aarch64/GCC 参数、编译器与构建结果提取：`raw/035_*`；产物及五处头文件
+  核验：`raw/036_*`，退出码 0、`verification_result=PASS`。
+- aarch64/LLVM 最终完整构建：`raw/037_*`，退出码 0；运行中资源采样见
+  `raw/038_*`、`raw/039_*`。
+- aarch64/LLVM 参数、编译器与构建结果提取：`raw/040_*`；产物及五处头文件
+  核验：`raw/041_*`，退出码 0、`verification_result=PASS`。
+- 推送前远端/本地门禁：`raw/042_*` 至 `raw/045_*`。
+- 平台提交及提交内容：`raw/046_*`、`raw/047_*`。
+- 普通 sandbox 推送：`raw/048_*`，退出码 0。
+- 推送后全分支和快进关系核对：`raw/049_*`，退出码 0。
+- 四格证据集中提取与核验尾部：`raw/050_*`、`raw/051_*`。
 
-完整命令在每组 `.command.txt`，标准输出、标准错误和退出码分别在
-`.stdout`、`.stderr`、`.exitcode`，未裁剪。
+每组 `.command.txt` 保存完整命令；`.stdout`、`.stderr`、`.exitcode` 分别
+保存未裁剪的标准输出、标准错误与退出码。

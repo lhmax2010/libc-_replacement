@@ -2,23 +2,21 @@
 
 ## 结论
 
-状态：**BLOCKED；未提交、未推送 sandbox。**
+状态：**PASS；四格全部通过，已普通快进推送 sandbox。**
 
-确认后的方案 A 在两格 armv7l 环境中全部通过，也在 aarch64/GCC 环境中
-正确选择了 Clang 22.1.8；但该 aarch64 构建随后被 GCC 标准环境注入的
-`-mtune=cortex-a57.cortex-a53` 阻断。Clang 22.1.8 不接受该参数值，CMake
-连简单 C 编译器测试都未通过，构建退出码为 1。
+平台提交为 `c3f8578a4db871d9d6de96d751f4c2ea7b1638fa`，已从
+`dd4beffc30be18841818651756f4dbe1f54b0016` 快进追加到
+`sandbox/lhmax2025/libcxx-ehabi-backport`。提交只改
+`packaging/libcxx-runtimes.spec`，未新建分支、未使用 force、未触碰正式
+`tizen_base` 或其他 sandbox 分支，也未向 LLVM 上游提交。
 
-这不属于“仍选到了 GCC”，而是方案 A 与 aarch64 GCC 标准环境的现有
-编译 flags 不兼容。由于四格必须全部成功是推送前硬门禁，失败后立即停止；
-aarch64/LLVM 格未启动，sandbox 没有 commit、没有 push，正式分支和其他
-sandbox 分支均未触碰。
+最终四格均实际使用 Clang 22.1.8、完整构建成功；产出的 libc++ 与
+libc++abi 都直接依赖 `libgcc_s.so.1`，规定的五处安装头文件检查全部通过。
 
 ## 1. 方案与预先判据
 
-人工已确认采用 R94 选项 A：删除无效的
-`%define _toolchain_override clang`，把本 spec 传给 CMake 的三个编译器
-直接设为目标前缀 Clang：
+人工确认采用方案 A：删除无效的 `%define _toolchain_override clang`，将
+CMake 的 C/C++/ASM 编译器明确设为目标前缀 Clang：
 
 ```spec
 -DCMAKE_C_COMPILER=%{_host}-clang
@@ -26,48 +24,54 @@ sandbox 分支均未触碰。
 -DCMAKE_ASM_COMPILER=%{_host}-clang
 ```
 
-选择机制和排除 B/C/D 的理由见 `STAGE1_DECISION.md`。四格在执行前已统一
-申报为：实际编译器必须为 Clang 22.1.8、完整构建成功、libc++ 与
-libc++abi 均直接依赖 `libgcc_s.so.1`、五处头文件全部命中；任一项失败
-即停止且不推送。
+R97 后续证实，aarch64 的 GCC 默认环境注入 GCC 专用复合参数
+`-mtune=cortex-a57.cortex-a53`，LLVM 环境则使用 Clang 可接受的
+`-mtune=cortex-a53`。按人工确认，只在 aarch64 构建块内精确替换这一项，
+并同时处理 CFLAGS/CXXFLAGS；CMake 的 ASM flags 也取自已处理的 CFLAGS。
+其他环境参数原样保留。选择 `cortex-a53` 是与 LLVM project_config 的目标
+状态对齐，不是另行选择新的平台调优值。
 
-## 2. 资源门禁
+四格执行前统一判据为：实际编译器必须为 Clang 22.1.8、构建成功、两库
+均直接依赖 `libgcc_s.so.1`、五处安装头文件全部命中；任一格失败或不可得
+即不得推送。
 
-执行 `tools/resource_gate.sh --level medium`，退出码 0，结果 PASS。完整记录
-见 `raw/001_resource_gate_medium.*`。所有构建均使用 `nice -n 15`、
-`ionice -c 3`、GBS `--threads 1` 和 RPM `_smp_mflags -j2`。
+## 2. 资源与 aarch64 编译器门禁
 
-## 3. aarch64 编译器名先行确认
+`tools/resource_gate.sh --level medium` 退出码 0、结果 PASS。构建均使用
+`nice -n 15`、`ionice -c 3`、GBS `--threads 1` 与 RPM
+`_smp_mflags -j2`。证据见 `raw/001_*` 与续跑时的 `raw/029_*`。
 
-在改动和构建前确认：
+改动前已确认 aarch64 下 `%{_host}` 展开为
+`aarch64-tizen-linux-gnu`，构建根内存在
+`aarch64-tizen-linux-gnu-clang` 和 `-clang++`，均指向 `clang-22`；证据见
+`raw/011_*`。没有换用其他名称。
 
-- `%{_host}` 在 aarch64 展开为 `aarch64-tizen-linux-gnu`；
-- 构建根中存在 `aarch64-tizen-linux-gnu-clang` 与
-  `aarch64-tizen-linux-gnu-clang++`；
-- 两者均指向构建根内的 `usr/bin/clang-22`；
-- 同构建族的实际历史 CMake 日志显示，使用这两个名称时 C/C++ 编译器均
-  被识别为 Clang 22.1.8。
-
-证据见 `raw/011_aarch64_compiler_name_gate_final.*`。因此满足“若二进制
-不存在则停”的先行门禁，没有替换成其他名称。
-
-## 4. spec 候选改动
-
-只改了 `packaging/libcxx-runtimes.spec`：
+## 3. 最终 spec 改动
 
 ```diff
 diff --git a/packaging/libcxx-runtimes.spec b/packaging/libcxx-runtimes.spec
-index a8a2e8ea078a..3e686becdf09 100644
+index a8a2e8ea078a..f2a0c0c0e8ab 100644
 --- a/packaging/libcxx-runtimes.spec
 +++ b/packaging/libcxx-runtimes.spec
 @@ -1,6 +1,5 @@
  %define llvm_major 22
  %define llvm_version 22.1.8
 -%define _toolchain_override clang
- 
+
  Name:           libcxx-runtimes
  Version:        22.1.8
-@@ -68,9 +67,9 @@ cd build
+@@ -63,14 +62,20 @@ cp %{SOURCE2} .
+ cp %{SOURCE3} .
+
+ %build
++%ifarch aarch64
++CFLAGS="$(printf '%%s\n' "$CFLAGS" | sed 's/-mtune=cortex-a57\.cortex-a53/-mtune=cortex-a53/g')"
++CXXFLAGS="$(printf '%%s\n' "$CXXFLAGS" | sed 's/-mtune=cortex-a57\.cortex-a53/-mtune=cortex-a53/g')"
++export CFLAGS CXXFLAGS
++%endif
++
+ mkdir -p build
+ cd build
  
  cmake -G Ninja \
    -DCMAKE_BUILD_TYPE=Release \
@@ -82,140 +86,136 @@ index a8a2e8ea078a..3e686becdf09 100644
    -DCMAKE_ASM_COMPILER_TARGET=%{_host} \
 ```
 
-候选 spec SHA256：
-`f17402b373a9d74841faf28e364b23c48bc54771a5ff8e96173c5a530b0d350e`。
-完整 diff 与工作树范围核验见 `raw/013_*`、`raw/014_*`。除该文件外没有
-平台文件改动，也没有平台未跟踪文件。
+最终 spec SHA256 为
+`155701f3da8d54d649ccd05620a9f20cda82cd5a249eaa232d5e614c3fb085a5`。
+完整 diff 另存 `SPEC_CHANGE.diff`，范围核验见 `raw/030_*`、`raw/045_*`。
 
-删除 `_toolchain_override` 的原因：Tizen-Base 实际消费链不会用这个包内
-宏重选 `%{__cc}` / `%{__cxx}`；R94 已实测加入它后仍选择 GCC 14.2.0，
-故它是无效修复。因本轮未通过推送门禁，没有创建相应 commit message；
-上述原因已在本报告固化，未来获准提交时必须写入提交说明。
+删除 `_toolchain_override` 的原因：Tizen-Base 的实际消费链不会因包内定义
+该宏而重选 `%{__cc}` / `%{__cxx}`；R94 已实测加上该行后仍选择 GCC
+14.2.0。新方案不依赖该机制，而直接把目标前缀 Clang 交给 CMake。
 
-## 5. 四格结果
+## 4. 四格验证矩阵
 
-| 架构 | 环境 | 实际编译器 | 构建 | 两库 `libgcc_s.so.1` | 五处头文件 | 判定 |
+| 架构 | 环境 | 实际编译器 | 构建 | libc++ / libc++abi 的 `libgcc_s.so.1` | 五处头文件 | 判定 |
 | --- | --- | --- | --- | --- | --- | --- |
-| armv7l | GCC 标准仓 | Clang 22.1.8 | PASS | PASS | PASS | PASS |
-| armv7l | LLVM Toolchain 仓 | Clang 22.1.8 | PASS | PASS | PASS | PASS |
-| aarch64 | GCC 标准仓 | Clang 22.1.8 | **FAIL** | NOT_OBSERVED | NOT_OBSERVED | **FAIL** |
-| aarch64 | LLVM Toolchain 仓 | NOT_OBSERVED | NOT_RUN_AFTER_STOP | NOT_OBSERVED | NOT_OBSERVED | NOT_RUN_AFTER_STOP |
+| armv7l | GCC 默认环境 | Clang 22.1.8 | PASS | PASS / PASS | PASS | PASS |
+| armv7l | LLVM 环境 | Clang 22.1.8 | PASS | PASS / PASS | PASS | PASS |
+| aarch64 | GCC 默认环境 | Clang 22.1.8 | PASS | PASS / PASS | PASS | PASS |
+| aarch64 | LLVM 环境 | Clang 22.1.8 | PASS | PASS / PASS | PASS | PASS |
 
-机器可读表见 `RESULT_MATRIX.tsv`。
+机器可读结果见 `RESULT_MATRIX.tsv`。
 
-### 5.1 armv7l / GCC 标准仓
+### 4.1 armv7l 两格
 
-完整构建退出码 0。CMake 实际收到
-`armv7l-tizen-linux-gnueabi-clang` / `-clang++`，识别为 Clang 22.1.8；
-RPM 全部生成。产物核验退出码 0：
+两格均退出码 0。GCC 默认环境证据为 `raw/015_*`、`raw/016_*`；LLVM
+环境为 `raw/017_*`、`raw/018_*`。CMake 明确使用目标前缀 Clang 并识别为
+22.1.8；两库的动态段均含 `NEEDED libgcc_s.so.1`，五处头文件的实际代码
+片段均已原样落盘。由于本次新增规范化受 `%ifarch aarch64` 限定，续跑时
+没有无意义地重跑这两格，沿用同一最终候选中已经完成的结果。
 
-- `libc++.so.1.0` 与 `libc++abi.so.1.0` 的动态依赖均含
-  `libgcc_s.so.1`；
-- `__ostream/basic_ostream.h`、`future`、`istream`、`string` 中的
-  `__forced_unwind` 防护及 `cxxabi.h` 的类定义全部命中；
-- 实际代码片段完整记录于 `raw/016_verify_armv7l_gcc_env.stdout`。
+### 4.2 aarch64 / GCC 默认环境
 
-命令与完整构建输出见 `raw/015_*`，核验见 `raw/016_*`。
+规范化后的构建退出码 0，完整输出见 `raw/031_*`。日志证明：
 
-### 5.2 armv7l / LLVM Toolchain 仓
+- 进入规范化前 CFLAGS/CXXFLAGS 含 `-mtune=cortex-a57.cortex-a53`；
+- 进入 CMake 时 C/C++/ASM flags 都只含 `-mtune=cortex-a53`；
+- 规范化后复合参数命中数为 0；
+- C/C++ 编译器均识别为 Clang 22.1.8。
 
-完整构建退出码 0。实际编译器同样为目标前缀 Clang 22.1.8；RPM 全部
-生成。两库 `libgcc_s.so.1` 依赖和五处头文件检查全部 PASS。命令与完整
-输出见 `raw/017_*`，产物核验及实际代码片段见 `raw/018_*`。
+定位证据见 `raw/035_*`。产物核验 `raw/036_*` 退出码 0、结果 PASS：两库
+均直接依赖 `libgcc_s.so.1`，五处安装头文件均匹配到实际防护代码。
 
-### 5.3 aarch64 / GCC 标准仓
+该环境继承的 CFLAGS 中还含 `-Wl,-z,relro,--as-needed`，Clang 在若干编译
+步骤报告其为未使用的 linker input。它不是本次参数替换产生的告警，构建
+仍成功；完整告警保留在 `raw/031_build_aarch64_gcc_normalized.stdout`。
 
-完整构建尝试退出码 1。方案 A 已经生效：CMake 命令明确为
-`aarch64-tizen-linux-gnu-clang` / `-clang++`，C/C++ 均识别为
-Clang 22.1.8。失败发生在 CMake 的简单 C 编译器测试：
+### 4.3 aarch64 / LLVM 环境
+
+完整构建退出码 0，见 `raw/037_*`。环境原本已经使用
+`-mtune=cortex-a53`，精确替换前后内容不变；CMake 的 C/C++/ASM flags
+保持该值，复合参数命中数为 0，C/C++ 编译器识别为 Clang 22.1.8，证据见
+`raw/040_*`。产物核验 `raw/041_*` 退出码 0、结果 PASS：两库均直接依赖
+`libgcc_s.so.1`，五处安装头文件全部命中。
+
+## 5. 提交、推送与分支核对
+
+推送前远端目标为 `dd4beffc30be18841818651756f4dbe1f54b0016`，本地 HEAD
+相同，工作树仅修改 spec。提交者按要求为
+`hao.lin <hao.lin@samsung.com>`。新提交：
 
 ```text
-aarch64-tizen-linux-gnu-clang: error: unsupported argument
-'cortex-a57.cortex-a53' to option '-mtune='
+c3f8578a4db871d9d6de96d751f4c2ea7b1638fa
+packaging: select Clang explicitly for libc++ runtimes
+Change-Id: I088643ca32ce84bd4f065309a3cd32fb5a6e7a19
 ```
 
-实际命令行中的来源是 GCC 标准环境注入的：
+普通命令 `git push origin
+HEAD:refs/heads/sandbox/lhmax2025/libcxx-ehabi-backport` 成功；未使用任何
+force 形式。推送后核对确认：
 
-```text
--march=armv8-a+fp+simd+crc+crypto -mtune=cortex-a57.cortex-a53
-```
+- 目标远端 HEAD 为 `c3f8578a4db871d9d6de96d751f4c2ea7b1638fa`；
+- `dd4beffc…` 是新 HEAD 的祖先，之间恰好 1 个提交，既有提交未丢；
+- `mlgo=08ffd8cd…`、`mlgo_aot=88ff57ca…`、
+  `llvm_only_clang=f8277158…` 均未变化；
+- 正式 `tizen_base=6771dbc4…` 未变化；
+- 平台工作树干净。
 
-所以没有生成可核验 RPM，展开器依赖与五处头文件均为 `NOT_OBSERVED`。
-完整输出在 `raw/019_*`，定位摘录在 `raw/020_*`。
+原始记录见 `raw/042_*` 至 `raw/049_*`。
 
-### 5.4 aarch64 / LLVM Toolchain 仓
+## 6. 给总部的说明材料
 
-`NOT_RUN_AFTER_STOP`。第三格已不符合预先判据，按“任一格失败即停、不得
-以其余格通过为由推送”的明确纪律，没有启动第四格。终态检查也确认不存在
-任何名称包含 aarch64/LLVM 的本轮构建日志，见 `raw/022_*`。
+可直接用于 Gerrit 留言：
 
-## 6. 推送门禁与分支对照
-
-推送前基准和停止后的状态均为：
-
-- sandbox 本地 HEAD：`dd4beffc30be18841818651756f4dbe1f54b0016`；
-- sandbox 远端 HEAD：`dd4beffc30be18841818651756f4dbe1f54b0016`；
-- 正式 `tizen_base`：`6771dbc48b7e3db2ec53919a8eebd3514374137b`。
-
-推送前记录的其他 sandbox 分支为：
-
-| 分支 | SHA |
-| --- | --- |
-| `sandbox/lhmax2025/mlgo` | `08ffd8cd7c72f5dd6e612d8395362def96d84029` |
-| `sandbox/lhmax2025/mlgo_aot` | `88ff57cadcff52ab50ca6865db7faed7388358fe` |
-| `sandbox/lhmax2025/llvm_only_clang` | `f8277158cf44f872e2b2d62a2e839cb33bd0afea` |
-
-本轮没有执行任何 platform commit 或 push，因而目标分支、其他 sandbox
-分支和正式分支均未被本轮改变。完整前态见 `raw/012_*`，停止核验见
-`raw/022_*`。候选 spec diff 保留在本地工作树供人工审阅，未进入任何提交。
-
-## 7. 给总部的说明材料
-
-由于四格未全部通过且没有新提交，本轮不应在 Gerrit 声称修复完成。可直接
-用于同步当前阻断事实的措辞如下：
-
-> We replaced the ineffective package-local `_toolchain_override` with explicit
-> target-prefixed Clang drivers in the CMake invocation. The previous macro did
-> not affect compiler selection in the Tizen-Base build environment, where the
-> RPM compiler macros still resolved to GCC.
+> The previous package-local `_toolchain_override` did not affect the RPM
+> compiler macros in the Tizen-Base build environment, so GCC was still
+> selected and rejected the Clang-only `--rtlib=libgcc` option.
 >
-> The candidate succeeds in both armv7l standard-repository and LLVM-toolchain
-> environments with Clang 22.1.8. Both produced libc++ and libc++abi shared
-> libraries depend on `libgcc_s.so.1`, and all five packaged-header checks pass.
+> The updated spec passes the target-prefixed Clang drivers directly to CMake.
+> For the transitional combination where the default environment is GCC but
+> this package explicitly selects Clang, the aarch64 GCC-specific composite
+> `-mtune=cortex-a57.cortex-a53` is normalized to `-mtune=cortex-a53`. This is
+> the value already used by the LLVM project configuration; other environment
+> flags are left unchanged. No platform-side configuration change is needed,
+> because the LLVM environment already supplies the compatible value.
 >
-> The aarch64 standard-repository build selects Clang 22.1.8 as intended, but
-> fails during CMake's compiler test because that environment supplies the
-> GCC-specific option `-mtune=cortex-a57.cortex-a53`, which Clang rejects. We
-> stopped at that point, did not run the fourth cell, and did not push the
-> candidate change.
+> We built all four combinations: armv7l and aarch64 in both GCC-default and
+> LLVM environments. Every build used Clang 22.1.8 and completed successfully.
+> In every cell, both libc++ and libc++abi directly depend on `libgcc_s.so.1`,
+> and all five packaged-header checks for the forced-unwind changes pass.
 
-这段仅是人工材料；本任务未在 Gerrit 留言。
+本任务未自行在 Gerrit 留言。
 
-## 8. 自行判断、未覆盖范围与尚存疑问
+## 7. 自行判断、疑问与未覆盖范围
 
-自行判断：在第三格失败后只做只读日志定位，没有尝试过滤、改写或替换
-`-mtune`，因为那会超出已确认的方案 A 和“只处理编译器选择”的最小改动
-范围，并引入新的方案裁决。
+自行判断：
 
-未覆盖范围：aarch64/LLVM 构建；aarch64 两格的产物依赖与头文件核验。
+1. 将规范化限制为 `%ifarch aarch64`，并只精确替换已证实不兼容的完整
+   参数值，避免改变其他架构或其他 flags；取值采用人工建议且与 LLVM
+   配置一致。
+2. armv7l 两格不重跑，因为其结果已来自同一最终候选，而续跑新增代码仅在
+   aarch64 生效；原始结果继续作为四格证据。
+3. aarch64/GCC 环境的 linker-input warning 被完整保留并申报，但不判为
+   本次规范化失败，因为它来自未改动的环境 flags，且构建及所有硬判据通过。
 
-尚存疑问：aarch64 GCC 标准环境中，后续应当让 spec 针对 Clang 规范化
-该环境注入的 `-mtune=cortex-a57.cortex-a53`，还是应从平台 aarch64
-构建 flags 的来源修正。两种做法的作用域不同，需要人工裁决后再继续，
-本轮未自行选择。
+尚存疑问：无阻塞疑问。
 
-## 9. 技术性命令错误
+未覆盖范围：本任务只验证 libcxx-runtimes 包的两架构、两环境构建及规定的
+产物判据，不等同于全平台软件包重编或运行时全量回归测试。
 
-终态核验时两次误用日志包装器：第一次把输出目录重复放入前缀，包装器在
-执行主体前因目标目录不存在而失败，且自身未成功落盘；第二次少传了标签后
-的命令字段，由 `raw/021_stop_audit_bash.*` 记录为退出码 127。两次均未
-执行核验主体、未改变 Git 或构建状态。随后按脚本声明的
-`NUMBER LABEL COMMAND...` 接口正确重跑，`raw/022_stop_audit.exitcode` 为 0。
+## 8. 技术性命令错误
 
-## 10. 最终纪律确认
+续跑期间两次把相对日志器路径用于平台子工作目录，shell 在执行主体前报
+“No such file or directory”；均未执行 GBS/Git 主体、未改变状态，随后改用
+绝对路径重跑。另一次本地 `.git/hooks/commit-msg` 可执行性探测返回 1，
+原因是该工作树的 hook 实际通过共享仓库/配置路径生效；最终提交已自动带
+Change-Id。上述技术错误不属于判据失败。
 
-- 只改了候选 `packaging/libcxx-runtimes.spec`，未改其他平台文件；
-- 四格未全部通过，未提交、未推送 sandbox；
-- 未新建分支，未使用 force；
-- 未推送正式分支，未向 LLVM 上游提交；
-- 所有已执行构建的命令、完整输出与退出码均保存在 `raw/`。
+## 9. 最终纪律确认
+
+- 平台源码仅改 `packaging/libcxx-runtimes.spec`；
+- 四格全部通过后才提交并推送；
+- 只普通快进推送既有 sandbox 分支；
+- 未新建分支、未使用 force；
+- 未修改 project_config、未推送正式分支、未向 LLVM 上游提交；
+- 所有实际执行的构建、核验和 Git 操作均以完整命令、stdout、stderr、退出码
+  保存于 `raw/`。
