@@ -1,0 +1,259 @@
+[R94 options]
+> `dd4beffc...`，仍会复现总部的 GCC 失败。
+
+## 5. 替代路径实测与选项（不作选择）
+
+### 选项 A：在 CMake 参数中明确写目标前缀 Clang
+
+可能改法：
+
+```spec
+-DCMAKE_C_COMPILER=%{_host}-clang
+-DCMAKE_CXX_COMPILER=%{_host}-clang++
+-DCMAKE_ASM_COMPILER=%{_host}-clang
+```
+
+实际依据：未修改 spec，而由 GBS 命令行把 `__cc/__cxx/__cpp` 直接定义为
+对应目标前缀 Clang，得到与上述 CMake 展开相同的结果。armv7l 完整构建
+成功，CMake 识别 Clang 22.1.8，生成七个二进制 RPM 和一个 SRPM；两个
+共享库均 `NEEDED libgcc_s.so.1`。
+
+完整命令与输出见 `raw/022_*`，产物/依赖核验见 `raw/023_*`、
+`raw/027_*`。
+
+- Tizen-Base：armv7l 已完整实测有效。
+- Tizen-Unified：人工提供的 Base+Unified 组合已完整实测有效。
+- Toolchain 项目：宏原本就会展开成相同驱动名；R91 的 Toolchain
+  x86_64 构建已有实际成功记录。
+- aarch64、x86_64 在本次 R94 未重跑：`NOT_OBSERVED`。
+
+后果：明确贯彻“该包只用 Clang 构建”的方向；不允许平台的默认 GCC
+选择渗入。代价是三处 CMake 编译器参数直接绑定目标前缀 Clang。
+
+### 选项 B：在 spec 中直接重定义 `__cc/__cxx`
+
+可能改法：
+
+```spec
+%define __cc %{_host}-clang
+%define __cxx %{_host}-clang++
+```
+
+GBS 命令行定义同名宏的 armv7l 完整构建已经成功，因此其最终宏值与
+驱动行为有实测依据。但“由 spec 内 `%define` 覆盖平台宏”的优先级形式
+没有在 R94 中另改 spec 实测，记为 `NOT_OBSERVED`；若采用该选项，仍应
+在两套实际环境各做一次完整构建。该做法还会改变 RPM 通用编译器宏，
+作用面比只改三项 CMake 参数更广。
+
+### 选项 C：按总部建议，仅对 Clang 添加 `--rtlib=libgcc`
+
+可在 `%build` 的 shell 中执行当前 driver 的 `--version`，以输出中稳定的
+`clang version` 识别 Clang；不要依赖标准平台里不存在的 `_toolchain`。
+示意（不是已实施补丁）：
+
+```sh
+rtlib_flag=
+case "$(%{__cc} --version 2>&1)" in
+  *[Cc]lang*) rtlib_flag=--rtlib=libgcc ;;
+esac
+```
+
+然后在 C、C++、共享链接和可执行链接四处统一使用 `$rtlib_flag`。
+
+实测依据：实际 armv7l 构建根中 GCC 输出
+`Tizen GCC 14.2.0...`，Clang 输出 `clang version 22.1.8`；QEMU 驱动探针
+能把二者正确分档。Clang 接受该选项，GCC 明确拒绝。
+
+- 标准 Base/Unified：会识别 GCC并省略该选项。
+- Toolchain：会识别实际 Clang并保留该选项；若有人确实切成 GCC，
+  同样会省略。
+
+未验证点：R94 没有修改 spec，因此没有完整实测“GCC 省略该选项后”
+libc++ 全包是否还能构建；该项为 `NOT_OBSERVED`。这一路线也改变了原先
+“包必须由 Clang 构建”的约束，允许 GCC 路径继续，需由人工裁决。
+
+### 选项 D：无条件删除 `--rtlib=libgcc`
+
+armv7l 实际 Clang 22.1.8 的 `-###` 链接计划显示：有无该选项都选择
+`-lgcc` 与 `-lgcc_s`，见 `raw/028_*`。因此在当前 armv7l 驱动配置上，
+该标志是冗余的；GCC 也将不再遇到未知选项。
+
+但是该事实只在本次 armv7l 构建根实测。其他架构、未来 Clang 配置和
+完整 GCC 构建均为 `NOT_OBSERVED`；无条件删除还会弱化 spec 对展开器的
+显式约束。
+
+### 不可靠的判断方式
+
+- 用 `_toolchain` / `_toolchain_override` 条件：标准平台配置没有消费者，
+  不可靠。
+- 仅凭 `BuildRequires: clang`：它只保证安装 Clang；此次构建根同时安装
+  GCC 与 Clang，实际仍选择 GCC。
+- 在 spec 配置前直接判断 CMake 的 `CMAKE_*_COMPILER_ID`：ID 要在 CMake
+  `project()` 后才产生，无法直接解决传给首次 compiler check 的 flag。
+
+本报告只列选项及证据，不推荐、不排序、不实施。
+
+## 6. R91 第一阶段为什么查错
+
+R91 的方法链有四个具体问题：
+
+[R94 key matrix]
+case	commit	spec_sha256	attempt	exit_code	actual_compiler	result
+no_override	48fc3a299ba20dd321a7d4a37c4e13ce095176cd	a8437cca668ee785906ba5349efcd5b4b91a049ffd4b53e5234a6c2c6066af74	011	1	GCC 14.2.0	CMake compiler check failed: GCC rejects --rtlib=libgcc
+with_override_network_attempt	dd4beffc30be18841818651756f4dbe1f54b0016	49caee5d58d737fc5a6809cd1abd19afa389c51598f174d5b9968545a7b4c8e8	013	1	NOT_OBSERVED	RPM download timed out before CMake; not a criterion result
+with_override_retry	dd4beffc30be18841818651756f4dbe1f54b0016	49caee5d58d737fc5a6809cd1abd19afa389c51598f174d5b9968545a7b4c8e8	015	1	GCC 14.2.0	CMake compiler check failed: GCC rejects --rtlib=libgcc
+direct_cc_clang_probe	dd4beffc30be18841818651756f4dbe1f54b0016	49caee5d58d737fc5a6809cd1abd19afa389c51598f174d5b9968545a7b4c8e8	022	0	Clang 22.1.8	Full build succeeded; RPMs generated; libraries need libgcc_s.so.1
+[current sandbox commit and spec]
+dd4beffc30be18841818651756f4dbe1f54b0016
+     1	%define llvm_major 22
+     2	%define llvm_version 22.1.8
+     3	%define _toolchain_override clang
+     4	
+     5	Name:           libcxx-runtimes
+     6	Version:        22.1.8
+     7	Release:        1
+     8	ExclusiveArch:  armv7l aarch64 x86_64
+     9	Summary:        LLVM libc++ and libc++abi runtimes
+    10	Group:          Development/Toolchain
+    11	License:        Apache-2.0 WITH LLVM-exception
+    12	URL:            https://llvm.org/
+    13	Source0:        llvm-%{version}.tar.gz
+    14	Source1:        libcxx-llvm22.map
+    15	Source2:        libcxx-runtimes.manifest
+    16	Source3:        SOURCE_PROVENANCE
+    17	
+    18	BuildRequires:  clang = %{version}
+    19	BuildRequires:  cmake
+    20	BuildRequires:  ninja
+    21	BuildRequires:  python3
+    22	BuildRequires:  glibc-devel
+    23	BuildRequires:  libgcc
+    24	
+    25	%description
+    26	Source package for the LLVM libc++ standard library and libc++abi runtime.
+    27	The libraries use libgcc_s as the unwinder and export only default-version
+    28	LLVM_22 symbols.
+    29	
+    30	%package -n libc++
+    31	Summary:        LLVM C++ standard library runtime
+    32	Requires:       libc++abi = %{version}-%{release}
+    33	
+    34	%description -n libc++
+    35	Shared LLVM libc++ runtime, built against libc++abi and libgcc_s.
+    36	
+    37	%package -n libc++-devel
+    38	Summary:        LLVM C++ standard library headers and development files
+    39	Requires:       libc++ = %{version}-%{release}
+    40	Requires:       libc++abi-devel = %{version}-%{release}
+    41	
+    42	%description -n libc++-devel
+    43	Headers, ABI linker script, module metadata, and development files for LLVM
+    44	libc++.
+    45	
+    46	%package -n libc++abi
+    47	Summary:        LLVM C++ ABI runtime
+    48	
+    49	%description -n libc++abi
+    50	Shared LLVM libc++abi runtime using libgcc_s rather than LLVM libunwind.
+    51	
+    52	%package -n libc++abi-devel
+    53	Summary:        LLVM C++ ABI development files
+    54	Requires:       libc++abi = %{version}-%{release}
+    55	
+    56	%description -n libc++abi-devel
+    57	Linker name for LLVM libc++abi.  Its public headers are installed in the
+    58	common c++/v1 tree shipped by libc++-devel.
+    59	
+    60	%prep
+    61	%setup -q -n llvm-%{version}
+    62	cp %{SOURCE2} .
+    63	cp %{SOURCE3} .
+    64	
+    65	%build
+    66	mkdir -p build
+    67	cd build
+    68	
+    69	cmake -G Ninja \
+    70	  -DCMAKE_BUILD_TYPE=Release \
+    71	  -DCMAKE_C_COMPILER=%{__cc} \
+    72	  -DCMAKE_CXX_COMPILER=%{__cxx} \
+    73	  -DCMAKE_ASM_COMPILER=%{__cc} \
+    74	  -DCMAKE_C_COMPILER_TARGET=%{_host} \
+    75	  -DCMAKE_CXX_COMPILER_TARGET=%{_host} \
+    76	  -DCMAKE_ASM_COMPILER_TARGET=%{_host} \
+    77	  -DCMAKE_C_FLAGS="$CFLAGS --rtlib=libgcc" \
+    78	  -DCMAKE_CXX_FLAGS="$CXXFLAGS --rtlib=libgcc" \
+    79	  -DCMAKE_ASM_FLAGS="$CFLAGS" \
+    80	  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--version-script=%{SOURCE1} -Wl,-z,now --rtlib=libgcc" \
+    81	  -DCMAKE_EXE_LINKER_FLAGS="--rtlib=libgcc" \
+    82	  -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+    83	  -DCMAKE_INSTALL_LIBDIR=%{_lib} \
+    84	  -DLIBCXX_INSTALL_LIBRARY_DIR=%{_lib} \
+    85	  -DLIBCXXABI_INSTALL_LIBRARY_DIR=%{_lib} \
+    86	  -DLLVM_ENABLE_RUNTIMES="libcxxabi;libcxx" \
+    87	  -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+    88	  -DLLVM_INCLUDE_TESTS=OFF \
+    89	  -DLIBCXX_ENABLE_SHARED=ON \
+    90	  -DLIBCXX_ENABLE_STATIC=OFF \
+    91	  -DLIBCXX_INSTALL_SHARED_LIBRARY=ON \
+    92	  -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF \
+    93	  -DLIBCXX_CXX_ABI=libcxxabi \
+    94	  -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF \
+    95	  -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=ON \
+    96	  -DLIBCXX_USE_COMPILER_RT=OFF \
+    97	  -DLIBCXXABI_ENABLE_SHARED=ON \
+    98	  -DLIBCXXABI_ENABLE_STATIC=OFF \
+    99	  -DLIBCXXABI_INSTALL_SHARED_LIBRARY=ON \
+   100	  -DLIBCXXABI_INSTALL_STATIC_LIBRARY=OFF \
+[R91 one-line diff]
+diff --git a/packaging/libcxx-runtimes.spec b/packaging/libcxx-runtimes.spec
+index 5b44b01f9438..a8a2e8ea078a 100644
+--- a/packaging/libcxx-runtimes.spec
++++ b/packaging/libcxx-runtimes.spec
+@@ -1,5 +1,6 @@
+ %define llvm_major 22
+ %define llvm_version 22.1.8
++%define _toolchain_override clang
+ 
+ Name:           libcxx-runtimes
+ Version:        22.1.8
+[R94 direct-Clang actual CMake and result]
+553-[  326s] + mkdir -p build
+554-[  326s] + cd build
+555:[  326s] + cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=armv7l-tizen-linux-gnueabi-clang -DCMAKE_CXX_COMPILER=armv7l-tizen-linux-gnueabi-clang++ -DCMAKE_ASM_COMPILER=armv7l-tizen-linux-gnueabi-clang -DCMAKE_C_COMPILER_TARGET=armv7l-tizen-linux-gnueabi -DCMAKE_CXX_COMPILER_TARGET=armv7l-tizen-linux-gnueabi -DCMAKE_ASM_COMPILER_TARGET=armv7l-tizen-linux-gnueabi '-DCMAKE_C_FLAGS=-O2 -fno-inline-functions -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong -Wformat-security -fmessage-length=0 -frecord-gcc-switches -Wl,-z,relro,--as-needed --param=ssp-buffer-size=4 -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -Wl,-O1 -Wl,--hash-style=gnu -Wa,-mimplicit-it=thumb -D_FILE_OFFSET_BITS=64 -g --rtlib=libgcc' '-DCMAKE_CXX_FLAGS=-O2 -fno-inline-functions -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong -Wformat-security -fmessage-length=0 -frecord-gcc-switches -Wl,-z,relro,--as-needed --param=ssp-buffer-size=4 -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -Wl,-O1 -Wl,--hash-style=gnu -Wa,-mimplicit-it=thumb -D_FILE_OFFSET_BITS=64 -g --rtlib=libgcc' '-DCMAKE_ASM_FLAGS=-O2 -fno-inline-functions -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong -Wformat-security -fmessage-length=0 -frecord-gcc-switches -Wl,-z,relro,--as-needed --param=ssp-buffer-size=4 -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -Wl,-O1 -Wl,--hash-style=gnu -Wa,-mimplicit-it=thumb -D_FILE_OFFSET_BITS=64 -g' '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--version-script=/home/abuild/rpmbuild/SOURCES/libcxx-llvm22.map -Wl,-z,now --rtlib=libgcc' -DCMAKE_EXE_LINKER_FLAGS=--rtlib=libgcc -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib -DLIBCXX_INSTALL_LIBRARY_DIR=lib -DLIBCXXABI_INSTALL_LIBRARY_DIR=lib '-DLLVM_ENABLE_RUNTIMES=libcxxabi;libcxx' -DLLVM_DEFAULT_TARGET_TRIPLE=armv7l-tizen-linux-gnueabi -DLLVM_INCLUDE_TESTS=OFF -DLIBCXX_ENABLE_SHARED=ON -DLIBCXX_ENABLE_STATIC=OFF -DLIBCXX_INSTALL_SHARED_LIBRARY=ON -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF -DLIBCXX_CXX_ABI=libcxxabi -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=ON -DLIBCXX_USE_COMPILER_RT=OFF -DLIBCXXABI_ENABLE_SHARED=ON -DLIBCXXABI_ENABLE_STATIC=OFF -DLIBCXXABI_INSTALL_SHARED_LIBRARY=ON -DLIBCXXABI_INSTALL_STATIC_LIBRARY=OFF -DLIBCXXABI_USE_COMPILER_RT=OFF -DLIBCXXABI_USE_LLVM_UNWINDER=OFF -DLIBCXXABI_ENABLE_STATIC_UNWINDER=OFF -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=OFF -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=OFF -DLIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS=ON -DLIBCXX_INCLUDE_TESTS=OFF -DLIBCXXABI_INCLUDE_TESTS=OFF -DLIBCXX_INCLUDE_BENCHMARKS=OFF ../runtimes
+556-[  326s] -- Performing standalone runtimes build.
+557:[  327s] -- The C compiler identification is Clang 22.1.8
+558:[  328s] -- The CXX compiler identification is Clang 22.1.8
+559:[  329s] -- The ASM compiler identification is Clang with GNU-like command-line
+560-[  329s] -- Found assembler: /bin/armv7l-tizen-linux-gnueabi-clang
+561-[  329s] -- Detecting C compiler ABI info
+--
+4756-info: updating local repo
+4757-info: *** Build Status Summary ***
+4758:=== Total succeeded built packages: (1) ===
+4759-info: generated html format report:
+4760-     /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R94-direct-clang-armv7l/local/repos/tizen_unified_standard/armv7l/index.html
+[R94 output dependencies]
+===== tmp/GBS-ROOT/R94-direct-clang-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/clang.cfg =====
+-rw-r--r-- 1 root root 67 Aug 28 10:32 tmp/GBS-ROOT/R94-direct-clang-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/clang.cfg
+/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R94-direct-clang-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/clang.cfg
+     1	-target armv7l-tizen-linux-gnueabi
+     2	-resource-dir /usr/lib/clang/22
+===== tmp/GBS-ROOT/R94-direct-clang-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/clang++.cfg =====
+lrwxrwxrwx 1 root root 9 Aug 28 10:32 tmp/GBS-ROOT/R94-direct-clang-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/clang++.cfg -> clang.cfg
+/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R94-direct-clang-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/clang.cfg
+     1	-target armv7l-tizen-linux-gnueabi
+     2	-resource-dir /usr/lib/clang/22
+NOT_FOUND=tmp/GBS-ROOT/R94-direct-clang-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/etc/clang/clang.cfg
+[built library dependencies]
+===== tmp/GBS-ROOT/R94-direct-clang-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib/libc++.so.1.0 =====
+ 0x00000001 (NEEDED)                     Shared library: [libc++abi.so.1]
+ 0x00000001 (NEEDED)                     Shared library: [libgcc_s.so.1]
+ 0x00000001 (NEEDED)                     Shared library: [libc.so.6]
+ 0x00000001 (NEEDED)                     Shared library: [ld-linux.so.3]
+ 0x0000000e (SONAME)                     Library soname: [libc++.so.1]
+===== tmp/GBS-ROOT/R94-direct-clang-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/home/abuild/rpmbuild/BUILD/llvm-22.1.8/build/lib/libc++abi.so.1.0 =====
+ 0x00000001 (NEEDED)                     Shared library: [libgcc_s.so.1]
+ 0x00000001 (NEEDED)                     Shared library: [libc.so.6]
+ 0x00000001 (NEEDED)                     Shared library: [ld-linux.so.3]
+ 0x0000000e (SONAME)                     Library soname: [libc++abi.so.1]
