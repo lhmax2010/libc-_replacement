@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""Resolve actual Unified->Base ELF edges and classify symbol/interface evidence."""
+
+import argparse
+import csv
+import os
+import re
+import shlex
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+csv.field_size_limit(sys.maxsize)
+VERSION_INDEX_RE = re.compile(r"\s+\(\d+\)$")
+SONAME_RE = re.compile(r"\(SONAME\).*Library soname: \[([^]]+)\]")
+
+
+def read(path):
+    with path.open(encoding="utf-8", newline="") as stream:
+        return list(csv.DictReader(stream, delimiter="\t"))
+
+
+def write(path, fields, rows):
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields, delimiter="\t", lineterminator="\n", extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def normalize_symbol(raw):
+    value = VERSION_INDEX_RE.sub("", raw).strip().split()[0]
+    return value.split("@", 1)[0]
+
+
+def symbols(path, ledger):
+    cmd = ["readelf", "--dyn-syms", "-W", str(path)]
+    run = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    ledger.append({"command": shlex.join(cmd), "exit_code": str(run.returncode),
+                   "stderr": run.stderr.replace("\n", "\\n")})
+    if run.returncode:
+        return None
+    und, defined = set(), set()
+    for line in run.stdout.splitlines():
+        parts = line.split(None, 7)
+        if len(parts) != 8 or not parts[0].endswith(":"):
+            continue
+        ndx = parts[6]
+        name = normalize_symbol(parts[7])
+        if not name or name == "0":
+            continue
+        (und if ndx == "UND" else defined).add(name)
+    return {"und": und, "defined": defined}
+
+
+def dynamic_soname(path, ledger):
+    cmd = ["readelf", "-d", "-W", str(path)]
+    run = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    ledger.append({"command": shlex.join(cmd), "exit_code": str(run.returncode),
+                   "stderr": run.stderr.replace("\n", "\\n")})
+    if run.returncode:
+        return None
+    match = SONAME_RE.search(run.stdout)
+    return match.group(1) if match else ""
+
+
+def demangle(names):
+    if not names:
+        return []
+    run = subprocess.run(["c++filt"], input="\n".join(names) + "\n", text=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    return run.stdout.splitlines()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--package-edges", type=Path, required=True)
+    ap.add_argument("--elf-inventory", type=Path, required=True)
+    ap.add_argument("--needed", type=Path, required=True)
+    ap.add_argument("--extract-root", type=Path, required=True)
+    ap.add_argument("--output-dir", type=Path, required=True)
+    ap.add_argument("--ledger", type=Path, required=True)
+    args = ap.parse_args()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    package_edges = read(args.package_edges)
+    elfs = read(args.elf_inventory)
+    needed = read(args.needed)
+    elf_by_rpm = defaultdict(list)
+    for row in elfs:
+        elf_by_rpm[row["rpm_sha256"]].append(row)
+    needed_by_rpm_soname = defaultdict(list)
+    for row in needed:
+        needed_by_rpm_soname[(row["rpm_sha256"], row["soname"])].append(row)
+
+    ledger = []
+    provider_sonames = defaultdict(list)
+    provider_shas = {row["provider_rpm_sha256"] for row in package_edges}
+    for rpm_sha in sorted(provider_shas):
+        for provider in elf_by_rpm.get(rpm_sha, []):
+            local = args.extract_root / rpm_sha[:2] / rpm_sha / provider["path"].lstrip("/")
+            if not local.exists():
+                continue
+            soname = dynamic_soname(local, ledger)
+            if soname:
+                provider_sonames[(rpm_sha, soname)].append(provider)
+
+    resolved = []
+    unresolved = []
+    unique_package_sonames = {}
+    for row in package_edges:
+        soname = row["requirement"].split("(", 1)[0]
+        key = (row["consumer_rpm_sha256"], row["provider_rpm_sha256"], soname)
+        unique_package_sonames[key] = {**row, "needed_soname": soname}
+    for row in unique_package_sonames.values():
+        consumer_elfs = needed_by_rpm_soname.get((row["consumer_rpm_sha256"], row["needed_soname"]), [])
+        candidates = provider_sonames.get((row["provider_rpm_sha256"], row["needed_soname"]), [])
+        if len(candidates) != 1:
+            unresolved.append({**row, "consumer_elf_count": str(len(consumer_elfs)),
+                               "provider_elf_candidate_count": str(len(candidates)),
+                               "provider_candidates": ";".join(r["path"] for r in candidates),
+                               "reason": "PROVIDER_ELF_NOT_UNIQUE"})
+            continue
+        for consumer in consumer_elfs:
+            resolved.append({**row, "consumer_elf": consumer["path"], "provider_elf": candidates[0]["path"]})
+
+    probe_keys = sorted({(r["consumer_rpm_sha256"], r["consumer_elf"]) for r in resolved}
+                        | {(r["provider_rpm_sha256"], r["provider_elf"]) for r in resolved})
+    cache = {}
+    for rpm_sha, path in probe_keys:
+        local = args.extract_root / rpm_sha[:2] / rpm_sha / path.lstrip("/")
+        cache[(rpm_sha, path)] = symbols(local, ledger) if local.exists() else None
+        if not local.exists():
+            ledger.append({"command": f"test -e {shlex.quote(str(local))}", "exit_code": "NOT_RUN", "stderr": "NOT_FOUND"})
+
+    evidence = []
+    for row in resolved:
+        consumer = cache[(row["consumer_rpm_sha256"], row["consumer_elf"])]
+        provider = cache[(row["provider_rpm_sha256"], row["provider_elf"])]
+        if consumer is None or provider is None:
+            classification = "NOT_AVAILABLE"
+            cpp = []
+            c_symbols = []
+            demangled = []
+            layout = "NOT_AVAILABLE"
+        else:
+            intersection = sorted(consumer["und"] & provider["defined"])
+            cpp = [name for name in intersection if name.startswith("_Z")]
+            c_symbols = [name for name in intersection if not name.startswith("_Z")]
+            demangled = demangle(cpp)
+            if cpp:
+                classification = "TRUE_CPP_ABI_COUPLING"
+            elif c_symbols:
+                classification = "PURE_C_INTERFACE"
+            else:
+                classification = "OTHER_NO_SYMBOL_INTERSECTION"
+            direct_std = any("std::" in name for name in demangled)
+            provider_binary = row["provider_binary"]
+            if direct_std:
+                layout = "DIRECT_STD_LAYOUT"
+            elif provider_binary in {"boost-filesystem", "boost-iostreams", "boost-program-options"} and cpp:
+                layout = "KNOWN_HIDDEN_STD_LAYOUT"
+            elif cpp:
+                layout = "CPP_ABI_NO_STD_LAYOUT_PROVEN"
+            elif c_symbols:
+                layout = "PURE_C_INTERFACE"
+            else:
+                layout = "NO_SYMBOL_INTERSECTION"
+        evidence.append({**row, "classification": classification,
+                         "layout_classification": layout,
+                         "cpp_symbol_count": str(len(cpp)), "c_symbol_count": str(len(c_symbols)),
+                         "cpp_symbols": ";".join(cpp), "c_symbols": ";".join(c_symbols),
+                         "demangled_cpp_symbols": ";".join(demangled)})
+
+    evidence_fields = ["arch", "consumer_sourcerpm", "consumer_binary", "consumer_rpm_sha256", "consumer_elf",
+                       "needed_soname", "provider_sourcerpm", "provider_binary", "provider_rpm_sha256", "provider_elf",
+                       "classification", "layout_classification", "cpp_symbol_count", "c_symbol_count",
+                       "cpp_symbols", "c_symbols", "demangled_cpp_symbols"]
+    write(args.output_dir / "actual_cross_elf_edge_evidence.tsv", evidence_fields,
+          sorted(evidence, key=lambda r: tuple(r.get(k, "") for k in evidence_fields[:10])))
+    unresolved_fields = ["arch", "consumer_sourcerpm", "consumer_binary", "consumer_rpm_sha256", "needed_soname",
+                         "provider_sourcerpm", "provider_binary", "provider_rpm_sha256", "consumer_elf_count",
+                         "provider_elf_candidate_count", "provider_candidates", "reason"]
+    write(args.output_dir / "actual_cross_edge_unresolved.tsv", unresolved_fields, unresolved)
+
+    pairs = defaultdict(list)
+    for row in evidence:
+        pairs[(row["consumer_sourcerpm"], row["provider_sourcerpm"])].append(row)
+    pair_rows = []
+    for (consumer, provider), rows in sorted(pairs.items()):
+        classes = Counter(r["classification"] for r in rows)
+        layout_classes = Counter(r["layout_classification"] for r in rows)
+        cpp = sorted({s for r in rows for s in r["cpp_symbols"].split(";") if s})
+        demangled = sorted({s for r in rows for s in r["demangled_cpp_symbols"].split(";") if s})
+        if layout_classes["DIRECT_STD_LAYOUT"] or layout_classes["KNOWN_HIDDEN_STD_LAYOUT"]:
+            aggregate = "LAYOUT_SENSITIVE_STD_TYPE"
+        elif classes["TRUE_CPP_ABI_COUPLING"]:
+            aggregate = "CPP_ABI_NO_STD_LAYOUT_PROVEN"
+        elif classes["NOT_AVAILABLE"]:
+            aggregate = "NOT_AVAILABLE"
+        elif classes["PURE_C_INTERFACE"]:
+            aggregate = "PURE_C_INTERFACE"
+        else:
+            aggregate = "OTHER_NO_SYMBOL_INTERSECTION"
+        pair_rows.append({
+            "consumer_sourcerpm": consumer, "provider_sourcerpm": provider,
+            "classification": aggregate, "elf_edge_count": str(len(rows)),
+            "cpp_symbol_count": str(len(cpp)), "cpp_symbols": ";".join(cpp),
+            "demangled_cpp_symbols": ";".join(demangled),
+            "detail_classes": ";".join(f"{k}={v}" for k, v in sorted(layout_classes.items())),
+        })
+    pair_fields = ["consumer_sourcerpm", "provider_sourcerpm", "classification", "elf_edge_count",
+                   "cpp_symbol_count", "cpp_symbols", "demangled_cpp_symbols", "detail_classes"]
+    write(args.output_dir / "actual_cross_source_edge_classification.tsv", pair_fields, pair_rows)
+
+    with args.ledger.open("w", encoding="utf-8") as stream:
+        for index, row in enumerate(ledger, 1):
+            stream.write(f"LABEL=symbol_probe_{index:05d}\n")
+            stream.write(f"PWD={os.getcwd()}\nCOMMAND={row['command']}\n")
+            if row["stderr"]:
+                stream.write(f"STDERR={row['stderr']}\n")
+            stream.write(f"EXIT_CODE={row['exit_code']}\n\n")
+        stream.write(f"RECORDED_COMMANDS={len(ledger)}\n")
+
+    print(f"package_soname_candidates={len(unique_package_sonames)}")
+    print(f"resolved_elf_edges={len(evidence)}")
+    print(f"unresolved_package_sonames={len(unresolved)}")
+    print(f"symbol_probe_elfs={len(probe_keys)}")
+    for key, value in sorted(Counter(r["classification"] for r in evidence).items()):
+        print(f"elf_classification[{key}]={value}")
+    for key, value in sorted(Counter(r["classification"] for r in pair_rows).items()):
+        print(f"source_pair_classification[{key}]={value}")
+
+
+if __name__ == "__main__":
+    main()
