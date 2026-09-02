@@ -76,8 +76,8 @@ def main() -> int:
                 "arch": row["arch"],
                 "path": row["path"],
                 "cpp_indicator": row["cpp_indicator"],
-                "r87_elf_scan_scope": "INCLUDED",
-                "basis": "R87 scanned every R11 ELF inventory row (39166/39166)",
+                "r87_elf_scan_scope": "INCLUDED_IN_INPUT",
+                "basis": "Included in R87's 39166-row input; parse success requires exclusion of R87's failure list",
             })
 
     write(OUT / "cpp_gap_140.tsv", (
