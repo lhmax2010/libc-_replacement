@@ -1,0 +1,783 @@
+FETCH_SCRIPT
+#!/usr/bin/env python3
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+OUTPUT = ROOT / "progress/R103/inputs/source_git"
+TARGETS = {
+    "gmp": ("product/upstream/gmp", "tizen_base", "490fe651469987ccb00b5cba908d69609345e226"),
+    "tensorflow2-base": ("platform/upstream/tensorflow2", "accepted/tizen_base_toolchain", "1cdba73549f741720f11dd53da1bb516b03763a2"),
+    "eigen": ("platform/upstream/eigen", "tizen", "e8e4707a11713b39909fc9db916b5db1ecbfdf6a"),
+    "python-pycrypto": ("platform/upstream/python-pycrypto", "tizen", "fa4a7de575838f0884364ebd05423927f9f79734"),
+    "inference-engine-tflite": ("platform/core/multimedia/inference-engine-tflite", "tizen", "e59b18b7575bf713023442a51d386bec006f2e16"),
+    "nnstreamer": ("platform/upstream/nnstreamer", "accepted/tizen_unified_toolchain", "40ae293fe1e293e5d9bfc332e4b293a27ddcb1a4"),
+    "nntrainer": ("platform/core/ml/nntrainer", "accepted/tizen_unified_toolchain", "97ddb43dcd9e5173d7cb4245ff9bae5d760e5834"),
+}
+
+
+def run(command, cwd=None, check=True):
+    print("COMMAND", " ".join(command), flush=True)
+    return subprocess.run(command, cwd=cwd, check=check)
+
+
+OUTPUT.mkdir(parents=True, exist_ok=True)
+for name, (repo, branch, revision) in TARGETS.items():
+    target = OUTPUT / name
+    if target.exists():
+        actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=target, text=True).strip()
+        if actual == revision:
+            print(f"REUSE\t{name}\t{repo}\t{revision}", flush=True)
+            continue
+        raise RuntimeError(f"refusing to replace existing path: {target} head={actual}")
+    url = f"ssh://lhmax2025@review.tizen.org:29418/{repo}"
+    run(
+        [
+            "git", "clone", "--filter=blob:none", "--no-checkout", "--depth", "1",
+            "--branch", branch, url, str(target),
+        ]
+    )
+    if run(["git", "cat-file", "-e", f"{revision}^{{commit}}"], cwd=target, check=False).returncode:
+        run(["git", "fetch", "--depth", "1", "origin", revision], cwd=target)
+    run(["git", "sparse-checkout", "set", "packaging"], cwd=target)
+    run(["git", "checkout", "--detach", revision], cwd=target)
+    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=target, text=True).strip()
+    if actual != revision:
+        raise RuntimeError(f"revision mismatch {name}: expected={revision} actual={actual}")
+    specs = sorted(str(path.relative_to(target)) for path in target.glob("packaging/*.spec"))
+    print(f"RESULT\t{name}\t{repo}\t{revision}\t{';'.join(specs) or 'NO_SPEC'}", flush=True)
+FETCH_LOG_024_028
+===== docs/progress/R103/raw/024_fetch_packaging_sources.command.txt =====
+/usr/bin/python3 progress/R103/code/fetch_packaging_sources.py 
+===== docs/progress/R103/raw/024_fetch_packaging_sources.exitcode =====
+1
+===== docs/progress/R103/raw/024_fetch_packaging_sources.stderr =====
+Cloning into '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/gmp'...
+warning: filtering not recognized by server, ignoring
+Total 1324 (delta 152), reused 350 (delta 152)
+warning: filtering not recognized by server, ignoring
+Total 6125 (delta 3120), reused 6121 (delta 3120)
+HEAD is now at 490fe65 packaging: change initialization flags
+Cloning into '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/tensorflow2-base'...
+warning: Could not find remote branch tizen_base to clone.
+fatal: Remote branch tizen_base not found in upstream origin
+Traceback (most recent call last):
+  File "/home/toolchain/development/libc++_replacement/progress/R103/code/fetch_packaging_sources.py", line 30, in <module>
+    run(
+  File "/home/toolchain/development/libc++_replacement/progress/R103/code/fetch_packaging_sources.py", line 21, in run
+    return subprocess.run(command, cwd=cwd, check=check)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['git', 'clone', '--filter=blob:none', '--no-checkout', '--depth', '1', '--branch', 'tizen_base', 'ssh://lhmax2025@review.tizen.org:29418/platform/upstream/tensorflow2', '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/tensorflow2-base']' returned non-zero exit status 128.
+===== docs/progress/R103/raw/024_fetch_packaging_sources.stdout =====
+COMMAND git clone --filter=blob:none --no-checkout --depth 1 --branch tizen_base ssh://lhmax2025@review.tizen.org:29418/product/upstream/gmp /home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/gmp
+COMMAND git cat-file -e 490fe651469987ccb00b5cba908d69609345e226^{commit}
+COMMAND git sparse-checkout set packaging
+COMMAND git checkout --detach 490fe651469987ccb00b5cba908d69609345e226
+RESULT	gmp	product/upstream/gmp	490fe651469987ccb00b5cba908d69609345e226	packaging/gmp.spec
+COMMAND git clone --filter=blob:none --no-checkout --depth 1 --branch tizen_base ssh://lhmax2025@review.tizen.org:29418/platform/upstream/tensorflow2 /home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/tensorflow2-base
+===== docs/progress/R103/raw/025_inspect_source_repo_heads.command.txt =====
+bash -c for\ repo\ in\ platform/upstream/tensorflow2\ platform/upstream/eigen\ platform/upstream/python-pycrypto\ platform/core/multimedia/inference-engine-tflite\ platform/upstream/nnstreamer\ platform/core/ml/nntrainer\;\ do\ printf\ \"REPO\ %s\\n\"\ \"\$repo\"\;\ timeout\ 30\ git\ ls-remote\ --heads\ \"ssh://lhmax2025@review.tizen.org:29418/\$repo\"\;\ printf\ \"RC\ %s\\n\"\ \"\$\?\"\;\ done 
+===== docs/progress/R103/raw/025_inspect_source_repo_heads.exitcode =====
+0
+===== docs/progress/R103/raw/025_inspect_source_repo_heads.stderr =====
+===== docs/progress/R103/raw/025_inspect_source_repo_heads.stdout =====
+REPO platform/upstream/tensorflow2
+ea3f134d35fc64667c2eebd72992bbb3c8e0069d	refs/heads/accepted/tizen_10.0_unified
+ea3f134d35fc64667c2eebd72992bbb3c8e0069d	refs/heads/accepted/tizen_10.0_unified_mr
+ea3f134d35fc64667c2eebd72992bbb3c8e0069d	refs/heads/accepted/tizen_10.1_unified
+4fd01087fe8338c84eaa0ebe5286e192c272f2b8	refs/heads/accepted/tizen_6.0_unified
+ea0d2b30321824d8b7d771380d33a98f7a6aad8c	refs/heads/accepted/tizen_6.0_unified_hotfix
+4fd01087fe8338c84eaa0ebe5286e192c272f2b8	refs/heads/accepted/tizen_6.5_unified
+6e5d7ac430ac0438f84860710c521f13ff2edda2	refs/heads/accepted/tizen_7.0_unified
+6e5d7ac430ac0438f84860710c521f13ff2edda2	refs/heads/accepted/tizen_7.0_unified_hotfix
+0c71b1fc4818579ec4ce33fc2ffe269066e97730	refs/heads/accepted/tizen_8.0_unified
+c096358130da6d1d85c37caa5323af9bd8cb88f0	refs/heads/accepted/tizen_9.0_unified
+1cdba73549f741720f11dd53da1bb516b03763a2	refs/heads/accepted/tizen_base_toolchain
+ea3f134d35fc64667c2eebd72992bbb3c8e0069d	refs/heads/accepted/tizen_unified
+c096358130da6d1d85c37caa5323af9bd8cb88f0	refs/heads/accepted/tizen_unified_dev
+b9e79ae51395860daad8c0ff457415f0cb7c66b7	refs/heads/accepted/tizen_unified_riscv
+ea3f134d35fc64667c2eebd72992bbb3c8e0069d	refs/heads/accepted/tizen_unified_sc
+ea3f134d35fc64667c2eebd72992bbb3c8e0069d	refs/heads/accepted/tizen_unified_toolchain
+ea3f134d35fc64667c2eebd72992bbb3c8e0069d	refs/heads/accepted/tizen_unified_x
+ea3f134d35fc64667c2eebd72992bbb3c8e0069d	refs/heads/accepted/tizen_unified_x_asan
+1a0d4584cf258cbead29de500e40fe5d719ed23e	refs/heads/master
+70981781c5bbe698e20e24672e7956c0f41a70d2	refs/heads/ref/for/tizen
+4fd01087fe8338c84eaa0ebe5286e192c272f2b8	refs/heads/ref/for/tizen_6.0
+4fd01087fe8338c84eaa0ebe5286e192c272f2b8	refs/heads/ref/for/tizen_6.0_hotfix
+5d214174ae4e20423766f966e22573ad8cc4d0f8	refs/heads/sandbox/anyj0527/fix-vd-emulator
+739c57c1bf35b6716922315832ef1aac01881a82	refs/heads/sandbox/anyj0527/v2.11.0
+b9e79ae51395860daad8c0ff457415f0cb7c66b7	refs/heads/sandbox/anyj0527/v2.15.0
+f2edcc80e814c5f6ea039f8926882a69b982d807	refs/heads/sandbox/anyj0527/v2.18.0
+1a9c10df2152409f282bc104bba5c1bff4bfdd7e	refs/heads/sandbox/anyj0527/v2.7.0
+38426bae6f6c043a4b9e6c55e5e3a3dbb683faf3	refs/heads/sandbox/anyj0527/v2.8.1
+10eaa7ff3c7d1e5e388a27847e82141c71613e69	refs/heads/sandbox/anyj0527/v2.9.0
+1cdba73549f741720f11dd53da1bb516b03763a2	refs/heads/sandbox/dkson95/aot
+ff6a5f113ce3fca434c9dc3ffc28d80011b2e275	refs/heads/sandbox/dkson95/tizen_dev
+72e42518fa987ba82ffe5732b00adfdcc878c370	refs/heads/sandbox/leemgs/tf2-ubuntu
+c5c4230a988bec124e83a89d8ffedb8ce07e01ea	refs/heads/sandbox/lhmax2025/mlgo_aot_v3
+0c75bcb867d14178417f8e7bd94e74ffd00dddad	refs/heads/sandbox/lhmax2025/mlgo_x86_known_good
+ff892890f38d8f4e758b1d3f86d13a2214ca42ba	refs/heads/sandbox/mzx/v2.11.0_TFBuild
+c096358130da6d1d85c37caa5323af9bd8cb88f0	refs/heads/sandbox/sangjung/backup_tizen_10
+4fd01087fe8338c84eaa0ebe5286e192c272f2b8	refs/heads/sandbox/sangjung/backup_tizen_6.5
+1dbbd3f80369e4336c4a4e4bc9cbf0e1025eb923	refs/heads/sandbox/sangjung/backup_tizen_7.0.m2
+4450aaae62fd9bc1af205ca7235df8fd301f8b7e	refs/heads/tizen
+ea3f134d35fc64667c2eebd72992bbb3c8e0069d	refs/heads/tizen_10.0
+ea3f134d35fc64667c2eebd72992bbb3c8e0069d	refs/heads/tizen_10.1
+4fd01087fe8338c84eaa0ebe5286e192c272f2b8	refs/heads/tizen_6.0
+ea0d2b30321824d8b7d771380d33a98f7a6aad8c	refs/heads/tizen_6.0_hotfix
+4fd01087fe8338c84eaa0ebe5286e192c272f2b8	refs/heads/tizen_6.5
+6e5d7ac430ac0438f84860710c521f13ff2edda2	refs/heads/tizen_7.0
+6e5d7ac430ac0438f84860710c521f13ff2edda2	refs/heads/tizen_7.0_hotfix
+0c71b1fc4818579ec4ce33fc2ffe269066e97730	refs/heads/tizen_8.0
+c096358130da6d1d85c37caa5323af9bd8cb88f0	refs/heads/tizen_9.0
+7172215058a714fc89fec8d9ab8ca0198996cd74	refs/heads/upstream
+RC 0
+REPO platform/upstream/eigen
+21f0b1e24ef8a30fe36ecb04a9a98d9550578fc8	refs/heads/accepted/tizen_10.0_unified
+21f0b1e24ef8a30fe36ecb04a9a98d9550578fc8	refs/heads/accepted/tizen_10.0_unified_mr
+21f0b1e24ef8a30fe36ecb04a9a98d9550578fc8	refs/heads/accepted/tizen_10.1_unified
+21f0b1e24ef8a30fe36ecb04a9a98d9550578fc8	refs/heads/accepted/tizen_9.0_unified
+e8e4707a11713b39909fc9db916b5db1ecbfdf6a	refs/heads/accepted/tizen_unified
+e8e4707a11713b39909fc9db916b5db1ecbfdf6a	refs/heads/accepted/tizen_unified_dev
+e8e4707a11713b39909fc9db916b5db1ecbfdf6a	refs/heads/accepted/tizen_unified_sc
+e8e4707a11713b39909fc9db916b5db1ecbfdf6a	refs/heads/accepted/tizen_unified_toolchain
+e8e4707a11713b39909fc9db916b5db1ecbfdf6a	refs/heads/accepted/tizen_unified_x
+21f0b1e24ef8a30fe36ecb04a9a98d9550578fc8	refs/heads/accepted/tizen_unified_x_asan
+21f0b1e24ef8a30fe36ecb04a9a98d9550578fc8	refs/heads/backup/eigen-3.3.8_20250327
+d85dd2657f305abd63ce49cbf8d43a5c638079ef	refs/heads/master
+42b4e65acbb5fe5bf3b2cfdc11cebd1198027944	refs/heads/sandbox/backup/eigen_3.3.8_20240214
+7633affb4300a2398ce1a8eb865dd07fabb96274	refs/heads/sandbox/eigen_3.4.0
+e8e4707a11713b39909fc9db916b5db1ecbfdf6a	refs/heads/tizen
+21f0b1e24ef8a30fe36ecb04a9a98d9550578fc8	refs/heads/tizen_10.0
+21f0b1e24ef8a30fe36ecb04a9a98d9550578fc8	refs/heads/tizen_10.1
+21f0b1e24ef8a30fe36ecb04a9a98d9550578fc8	refs/heads/tizen_8.0_foxy
+21f0b1e24ef8a30fe36ecb04a9a98d9550578fc8	refs/heads/tizen_9.0
+08fc3b5827caff43ff8204c968715d1afbe4b03b	refs/heads/upstream
+RC 0
+REPO platform/upstream/python-pycrypto
+fa4a7de575838f0884364ebd05423927f9f79734	refs/heads/accepted/tizen_10.0_unified
+fa4a7de575838f0884364ebd05423927f9f79734	refs/heads/accepted/tizen_10.0_unified_mr
+fa4a7de575838f0884364ebd05423927f9f79734	refs/heads/accepted/tizen_10.1_unified
+7843698fb286dc2f31c91c2f85c4dd69783c15ea	refs/heads/accepted/tizen_6.5_unified
+7843698fb286dc2f31c91c2f85c4dd69783c15ea	refs/heads/accepted/tizen_7.0_unified
+7843698fb286dc2f31c91c2f85c4dd69783c15ea	refs/heads/accepted/tizen_7.0_unified_hotfix
+3c08b62667f1a15b677e86aed11186ce5a5890c7	refs/heads/accepted/tizen_8.0_unified
+3c08b62667f1a15b677e86aed11186ce5a5890c7	refs/heads/accepted/tizen_9.0_unified
+fa4a7de575838f0884364ebd05423927f9f79734	refs/heads/accepted/tizen_unified
+3c08b62667f1a15b677e86aed11186ce5a5890c7	refs/heads/accepted/tizen_unified_dev
+fa4a7de575838f0884364ebd05423927f9f79734	refs/heads/accepted/tizen_unified_sc
+fa4a7de575838f0884364ebd05423927f9f79734	refs/heads/accepted/tizen_unified_toolchain
+3c08b62667f1a15b677e86aed11186ce5a5890c7	refs/heads/accepted/tizen_unified_x_asan
+cf1c6fe02eb35c47c278e577812dd1a10b042c23	refs/heads/master
+fa4a7de575838f0884364ebd05423927f9f79734	refs/heads/tizen
+fa4a7de575838f0884364ebd05423927f9f79734	refs/heads/tizen_10.0
+fa4a7de575838f0884364ebd05423927f9f79734	refs/heads/tizen_10.1
+7843698fb286dc2f31c91c2f85c4dd69783c15ea	refs/heads/tizen_6.5
+338f7aec6c7add2cb9330ea3b47b6c1614164012	refs/heads/tizen_7.0
+7843698fb286dc2f31c91c2f85c4dd69783c15ea	refs/heads/tizen_7.0_hotfix
+3c08b62667f1a15b677e86aed11186ce5a5890c7	refs/heads/tizen_8.0
+3c08b62667f1a15b677e86aed11186ce5a5890c7	refs/heads/tizen_9.0
+0eabb32bac4bac3d7475ff6e5ddb99bddaa56bea	refs/heads/upstream
+RC 0
+REPO platform/core/multimedia/inference-engine-tflite
+72dccd29c74707cfda56360fe4dd20fce2373d03	refs/heads/accepted/tizen_10.0_unified
+72dccd29c74707cfda56360fe4dd20fce2373d03	refs/heads/accepted/tizen_10.0_unified_mr
+72dccd29c74707cfda56360fe4dd20fce2373d03	refs/heads/accepted/tizen_10.1_unified
+d36f44305879cd2e7dd72866ac030b6bb06e20a8	refs/heads/accepted/tizen_5.5_unified
+d36f44305879cd2e7dd72866ac030b6bb06e20a8	refs/heads/accepted/tizen_5.5_unified_mobile_hotfix
+d36f44305879cd2e7dd72866ac030b6bb06e20a8	refs/heads/accepted/tizen_5.5_unified_wearable_hotfix
+863a079d4304ffbcff47fd1c77ad88a649e94453	refs/heads/accepted/tizen_6.0_unified
+863a079d4304ffbcff47fd1c77ad88a649e94453	refs/heads/accepted/tizen_6.0_unified_hotfix
+540c264c7ce5340bbe14207e4eeb5d38468d94c6	refs/heads/accepted/tizen_6.5_unified
+d6259b371456de2c6d3b30dfb83234c574afcc05	refs/heads/accepted/tizen_7.0_unified
+d6259b371456de2c6d3b30dfb83234c574afcc05	refs/heads/accepted/tizen_7.0_unified_hotfix
+d6259b371456de2c6d3b30dfb83234c574afcc05	refs/heads/accepted/tizen_8.0_unified
+a2200e6e848aabbb1a4f4a2eddf6b4789193e7e3	refs/heads/accepted/tizen_9.0_unified
+e59b18b7575bf713023442a51d386bec006f2e16	refs/heads/accepted/tizen_unified
+e59b18b7575bf713023442a51d386bec006f2e16	refs/heads/accepted/tizen_unified_dev
+72dccd29c74707cfda56360fe4dd20fce2373d03	refs/heads/accepted/tizen_unified_sc
+e59b18b7575bf713023442a51d386bec006f2e16	refs/heads/accepted/tizen_unified_toolchain
+e59b18b7575bf713023442a51d386bec006f2e16	refs/heads/accepted/tizen_unified_x
+72dccd29c74707cfda56360fe4dd20fce2373d03	refs/heads/accepted/tizen_unified_x_asan
+99a6a73259c21ce16c95ad2b77e6be4d961d5044	refs/heads/master
+4598e3172e26c9aaa156e98e6a189b206defffdb	refs/heads/ref/for/tizen
+e7458e25ee91672e64f57f82325fa679f144c5df	refs/heads/sandbox/anyj0527/fix-gpu-delegate
+fe14a1edc94bf306fbf5ea9f1c140ea946431d7a	refs/heads/sandbox/hance.park/dev
+37afb15ca78aeaaba23e6ef8a690311274a86273	refs/heads/sandbox/inki.dae/tflite_2.3
+fff95beb44ab99482fd4e11a72ba2ddf230a78de	refs/heads/sandbox/inki.dae/xnnpack_support
+9d1f8cfb9e4417a469972b5509cd2aa2de631858	refs/heads/sandbox/tyzeroy/dev
+a9cc16c9fe95c71ab15b97d2ccc1a9e6a661ce1d	refs/heads/sandbox/tyzeroy/flex
+e59b18b7575bf713023442a51d386bec006f2e16	refs/heads/tizen
+f5822344eb8b778eee8c3094233fc83d613d85f4	refs/heads/tizen_10.0
+72dccd29c74707cfda56360fe4dd20fce2373d03	refs/heads/tizen_10.1
+d36f44305879cd2e7dd72866ac030b6bb06e20a8	refs/heads/tizen_5.5
+d36f44305879cd2e7dd72866ac030b6bb06e20a8	refs/heads/tizen_5.5_mobile_hotfix
+d36f44305879cd2e7dd72866ac030b6bb06e20a8	refs/heads/tizen_5.5_tv
+d36f44305879cd2e7dd72866ac030b6bb06e20a8	refs/heads/tizen_5.5_wearable_hotfix
+863a079d4304ffbcff47fd1c77ad88a649e94453	refs/heads/tizen_6.0
+863a079d4304ffbcff47fd1c77ad88a649e94453	refs/heads/tizen_6.0_hotfix
+540c264c7ce5340bbe14207e4eeb5d38468d94c6	refs/heads/tizen_6.5
+d6259b371456de2c6d3b30dfb83234c574afcc05	refs/heads/tizen_7.0
+d6259b371456de2c6d3b30dfb83234c574afcc05	refs/heads/tizen_7.0_hotfix
+d6259b371456de2c6d3b30dfb83234c574afcc05	refs/heads/tizen_8.0
+a2200e6e848aabbb1a4f4a2eddf6b4789193e7e3	refs/heads/tizen_9.0
+f5ecd907d2f131e8dc07090c281bc5c780cf9e28	refs/heads/tizen_devel
+b1c634a4a6352cf995a4d45261817caa9933f8ad	refs/heads/tizen_devel_gesture
+RC 0
+REPO platform/upstream/nnstreamer
+5773de0b24e9b5dce333ff6df84e4c47ca7723d1	refs/heads/accepted/tizen_10.0_unified
+8dfb4f01d854f77f7d57c5b4d681a0dca6491e94	refs/heads/accepted/tizen_10.0_unified_mr
+52db30a309878353f0282a2d781e82ebcb619f00	refs/heads/accepted/tizen_10.1_unified
+dba7b9bb9f32cda9f829872506fa5f74091b4f9f	refs/heads/accepted/tizen_5.5_unified
+6cd9067d89f57d79b3dbbc7fc4aff5e76ef0ba91	refs/heads/accepted/tizen_5.5_unified_mobile_hotfix
+230ed5f22686263a8204e23cc095abd69b5caf2e	refs/heads/accepted/tizen_5.5_unified_wearable_hotfix
+32fa3d388124573574592cdda804df99f868cd5a	refs/heads/accepted/tizen_6.0_unified
+7e6734e88ccb194942e166d972c61313b9625bdb	refs/heads/accepted/tizen_6.0_unified_hotfix
+35887432b830afae901fc5c7cdc75cd2df2ed513	refs/heads/accepted/tizen_6.5_unified
+af4411bdd095d153968c795f96780b1948fb203f	refs/heads/accepted/tizen_7.0_unified
+f82789170b8f2696e50cbc5027b74b767f5e9415	refs/heads/accepted/tizen_7.0_unified_hotfix
+92967435fc083c6c361419771785e8f4d2cc936a	refs/heads/accepted/tizen_8.0_unified
+e8a9465ce2b56f00c9c5adf2bc5d2ac281e04fa3	refs/heads/accepted/tizen_9.0_unified
+52db30a309878353f0282a2d781e82ebcb619f00	refs/heads/accepted/tizen_unified
+40ae293fe1e293e5d9bfc332e4b293a27ddcb1a4	refs/heads/accepted/tizen_unified_dev
+66a206bb6d5ceb9112c8c41daa3e8f0cd5ff0b65	refs/heads/accepted/tizen_unified_riscv
+40ae293fe1e293e5d9bfc332e4b293a27ddcb1a4	refs/heads/accepted/tizen_unified_sc
+40ae293fe1e293e5d9bfc332e4b293a27ddcb1a4	refs/heads/accepted/tizen_unified_toolchain
+52db30a309878353f0282a2d781e82ebcb619f00	refs/heads/accepted/tizen_unified_x
+5773de0b24e9b5dce333ff6df84e4c47ca7723d1	refs/heads/accepted/tizen_unified_x_asan
+f7343048c44d1616dff21d347b35e1d4cbcdd0ab	refs/heads/lts/1.0.y
+b35a7d1c44fd95032268ed9a2eb2daa41b6045e4	refs/heads/lts/1.6.y
+f7250fa9d83235d63a897c5f4150dcfb625bdd66	refs/heads/lts/2.0.y
+52db30a309878353f0282a2d781e82ebcb619f00	refs/heads/main
+f7631dbf717ae2197787c09a72a77949acf780d7	refs/heads/sandbox/dkson95/clang
+c0974fb94140e0a5229265f6406567e8de78ca30	refs/heads/sandbox/dkson95/linux-glibc-devel-update
+30d8a6224cbc711cfd62a2072534312d2efc52bd	refs/heads/sandbox/helloahn/gbs_test
+25889c7b00f7729d0c5de2e6aa937a008979485c	refs/heads/sandbox/kparichay/tizen_5.5_nnfw
+5f406ba03757ae28863a67ddfdb78dec67849fcc	refs/heads/sandbox/playchang/new_glibc_header
+ba694d8d15fb24055cdd2be0bc4fb7d492d23304	refs/heads/sandbox/sangjung/tizen_7_backport
+60ebd437bd203032728f3fd6a8e7a1456230f6e5	refs/heads/sandbox/sangjung/tizen_7_backup
+807060954acfdb6cec130559d00eef1af61457cf	refs/heads/sandbox/sangjung/tizen_8_backup
+52db30a309878353f0282a2d781e82ebcb619f00	refs/heads/tizen
+5773de0b24e9b5dce333ff6df84e4c47ca7723d1	refs/heads/tizen_10.0
+8dfb4f01d854f77f7d57c5b4d681a0dca6491e94	refs/heads/tizen_10.0_mr
+52db30a309878353f0282a2d781e82ebcb619f00	refs/heads/tizen_10.1
+f7343048c44d1616dff21d347b35e1d4cbcdd0ab	refs/heads/tizen_5.5
+6cd9067d89f57d79b3dbbc7fc4aff5e76ef0ba91	refs/heads/tizen_5.5_mobile_hotfix
+0ffca4fd0006000c977bed309740a66be41c66ef	refs/heads/tizen_5.5_tv
+230ed5f22686263a8204e23cc095abd69b5caf2e	refs/heads/tizen_5.5_wearable_hotfix
+32fa3d388124573574592cdda804df99f868cd5a	refs/heads/tizen_6.0
+7e6734e88ccb194942e166d972c61313b9625bdb	refs/heads/tizen_6.0_hotfix
+35887432b830afae901fc5c7cdc75cd2df2ed513	refs/heads/tizen_6.5
+af4411bdd095d153968c795f96780b1948fb203f	refs/heads/tizen_7.0
+f82789170b8f2696e50cbc5027b74b767f5e9415	refs/heads/tizen_7.0_hotfix
+92967435fc083c6c361419771785e8f4d2cc936a	refs/heads/tizen_8.0
+e8a9465ce2b56f00c9c5adf2bc5d2ac281e04fa3	refs/heads/tizen_9.0
+RC 0
+REPO platform/core/ml/nntrainer
+c5d188a1a54a71df82831e71dccbcc1f21cc6a9f	refs/heads/accepted/tizen_10.0_unified
+c5d188a1a54a71df82831e71dccbcc1f21cc6a9f	refs/heads/accepted/tizen_10.0_unified_mr
+c5d188a1a54a71df82831e71dccbcc1f21cc6a9f	refs/heads/accepted/tizen_10.1_unified
+94614124a728f98cd7621be1cddebfea8b7b371c	refs/heads/accepted/tizen_6.0_unified
+2ef3cbb92208d42f5f4678d71beef2f1242c9a2d	refs/heads/accepted/tizen_6.0_unified_hotfix
+07b160c6a60866b0943b599bd96aadd46d0ef077	refs/heads/accepted/tizen_6.5_unified
+82a39748094c35dc983a9e5b5e019ccc46576a2f	refs/heads/accepted/tizen_7.0_unified
+f493ff37cfc77c87df9117d84bb5c5afcf266895	refs/heads/accepted/tizen_7.0_unified_hotfix
+8110d0b8bafb94ac5decfc4e4a2ffc8c1ae9b9fa	refs/heads/accepted/tizen_8.0_unified
+df291689af442a591beae2a45f9f72c84e130d80	refs/heads/accepted/tizen_9.0_unified
+97ddb43dcd9e5173d7cb4245ff9bae5d760e5834	refs/heads/accepted/tizen_unified
+97ddb43dcd9e5173d7cb4245ff9bae5d760e5834	refs/heads/accepted/tizen_unified_dev
+371f15454208f30243b4ca93971661314c5e54c1	refs/heads/accepted/tizen_unified_riscv
+97ddb43dcd9e5173d7cb4245ff9bae5d760e5834	refs/heads/accepted/tizen_unified_sc
+97ddb43dcd9e5173d7cb4245ff9bae5d760e5834	refs/heads/accepted/tizen_unified_toolchain
+97ddb43dcd9e5173d7cb4245ff9bae5d760e5834	refs/heads/accepted/tizen_unified_x
+0b4de7f901d29a2ea5b12cee6cc877f8a46d56f7	refs/heads/accepted/tizen_unified_x_asan
+029c43738897cce68150e4a241cd0f09f92ccda2	refs/heads/lts/v0.5.y
+65c586632a4afbe6b11468b2391c7198cf19e314	refs/heads/main
+c5d188a1a54a71df82831e71dccbcc1f21cc6a9f	refs/heads/master
+656a231787c426e021f0c58479d2ffaabf3558b2	refs/heads/release/tizen7.0
+9621f3436f93fe1df0f79dd39cd895a69171275a	refs/heads/remove_vocab
+7b5d689feb2ab6bb915a7c51cb51a98dcb3522e6	refs/heads/sandbox/playchang/riscv64
+b9cb29c01288c056bc76f6ab299cd12e07a9922b	refs/heads/tizen
+c5d188a1a54a71df82831e71dccbcc1f21cc6a9f	refs/heads/tizen_10.0
+c5d188a1a54a71df82831e71dccbcc1f21cc6a9f	refs/heads/tizen_10.1
+94614124a728f98cd7621be1cddebfea8b7b371c	refs/heads/tizen_6.0
+2ef3cbb92208d42f5f4678d71beef2f1242c9a2d	refs/heads/tizen_6.0_hotfix
+07b160c6a60866b0943b599bd96aadd46d0ef077	refs/heads/tizen_6.5
+fc38ca92ae31a040b1462f300e6ad9298a95f73a	refs/heads/tizen_6.5_m1
+82a39748094c35dc983a9e5b5e019ccc46576a2f	refs/heads/tizen_7.0
+f493ff37cfc77c87df9117d84bb5c5afcf266895	refs/heads/tizen_7.0_hotfix
+8110d0b8bafb94ac5decfc4e4a2ffc8c1ae9b9fa	refs/heads/tizen_8.0
+df291689af442a591beae2a45f9f72c84e130d80	refs/heads/tizen_9.0
+f86685c4320c8b6143545fe0dff4d958500b4306	refs/heads/ttt
+RC 0
+===== docs/progress/R103/raw/026_fetch_packaging_sources_retry.command.txt =====
+/usr/bin/python3 progress/R103/code/fetch_packaging_sources.py 
+===== docs/progress/R103/raw/026_fetch_packaging_sources_retry.exitcode =====
+1
+===== docs/progress/R103/raw/026_fetch_packaging_sources_retry.stderr =====
+Cloning into '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/tensorflow2-base'...
+warning: Could not find remote branch tizen_base_toolchain to clone.
+fatal: Remote branch tizen_base_toolchain not found in upstream origin
+Traceback (most recent call last):
+  File "/home/toolchain/development/libc++_replacement/progress/R103/code/fetch_packaging_sources.py", line 34, in <module>
+    run(
+  File "/home/toolchain/development/libc++_replacement/progress/R103/code/fetch_packaging_sources.py", line 21, in run
+    return subprocess.run(command, cwd=cwd, check=check)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['git', 'clone', '--filter=blob:none', '--no-checkout', '--depth', '1', '--branch', 'tizen_base_toolchain', 'ssh://lhmax2025@review.tizen.org:29418/platform/upstream/tensorflow2', '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/tensorflow2-base']' returned non-zero exit status 128.
+===== docs/progress/R103/raw/026_fetch_packaging_sources_retry.stdout =====
+REUSE	gmp	product/upstream/gmp	490fe651469987ccb00b5cba908d69609345e226
+COMMAND git clone --filter=blob:none --no-checkout --depth 1 --branch tizen_base_toolchain ssh://lhmax2025@review.tizen.org:29418/platform/upstream/tensorflow2 /home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/tensorflow2-base
+===== docs/progress/R103/raw/027_fetch_packaging_sources_retry_2.command.txt =====
+/usr/bin/python3 progress/R103/code/fetch_packaging_sources.py 
+===== docs/progress/R103/raw/027_fetch_packaging_sources_retry_2.exitcode =====
+0
+===== docs/progress/R103/raw/027_fetch_packaging_sources_retry_2.stderr =====
+Cloning into '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/tensorflow2-base'...
+warning: filtering not recognized by server, ignoring
+Total 33621 (delta 7507), reused 16673 (delta 7507)
+HEAD is now at 1cdba735 fix: Add include directories and EIGEN_NEON_GEBP_NR=4 for XLA AOT runtime
+Cloning into '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/eigen'...
+warning: filtering not recognized by server, ignoring
+Total 1928 (delta 243), reused 1226 (delta 243)
+HEAD is now at e8e4707 Bump to eigen 3.4.0
+Cloning into '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/python-pycrypto'...
+warning: filtering not recognized by server, ignoring
+Total 234 (delta 53), reused 224 (delta 53)
+HEAD is now at fa4a7de Change python to %{__python} macro
+Cloning into '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/inference-engine-tflite'...
+warning: filtering not recognized by server, ignoring
+Total 17 (delta 0), reused 13 (delta 0)
+HEAD is now at e59b18b Fix UNKNOWN READ crash in BuildFromFile by validating model file before parsing
+Cloning into '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/nnstreamer'...
+warning: filtering not recognized by server, ignoring
+Total 913 (delta 52), reused 403 (delta 52)
+HEAD is now at 40ae293 [spec] Disable trix-engine build
+Cloning into '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/nntrainer'...
+warning: filtering not recognized by server, ignoring
+Total 1339 (delta 152), reused 694 (delta 152)
+HEAD is now at 97ddb43 Support builds for compiler gcc only
+===== docs/progress/R103/raw/027_fetch_packaging_sources_retry_2.stdout =====
+REUSE	gmp	product/upstream/gmp	490fe651469987ccb00b5cba908d69609345e226
+COMMAND git clone --filter=blob:none --no-checkout --depth 1 --branch accepted/tizen_base_toolchain ssh://lhmax2025@review.tizen.org:29418/platform/upstream/tensorflow2 /home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/tensorflow2-base
+COMMAND git cat-file -e 1cdba73549f741720f11dd53da1bb516b03763a2^{commit}
+COMMAND git sparse-checkout set packaging
+COMMAND git checkout --detach 1cdba73549f741720f11dd53da1bb516b03763a2
+RESULT	tensorflow2-base	platform/upstream/tensorflow2	1cdba73549f741720f11dd53da1bb516b03763a2	packaging/tensorflow2.spec
+COMMAND git clone --filter=blob:none --no-checkout --depth 1 --branch tizen ssh://lhmax2025@review.tizen.org:29418/platform/upstream/eigen /home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/eigen
+COMMAND git cat-file -e e8e4707a11713b39909fc9db916b5db1ecbfdf6a^{commit}
+COMMAND git sparse-checkout set packaging
+COMMAND git checkout --detach e8e4707a11713b39909fc9db916b5db1ecbfdf6a
+RESULT	eigen	platform/upstream/eigen	e8e4707a11713b39909fc9db916b5db1ecbfdf6a	packaging/eigen.spec
+COMMAND git clone --filter=blob:none --no-checkout --depth 1 --branch tizen ssh://lhmax2025@review.tizen.org:29418/platform/upstream/python-pycrypto /home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/python-pycrypto
+COMMAND git cat-file -e fa4a7de575838f0884364ebd05423927f9f79734^{commit}
+COMMAND git sparse-checkout set packaging
+COMMAND git checkout --detach fa4a7de575838f0884364ebd05423927f9f79734
+RESULT	python-pycrypto	platform/upstream/python-pycrypto	fa4a7de575838f0884364ebd05423927f9f79734	packaging/python-pycrypto.spec
+COMMAND git clone --filter=blob:none --no-checkout --depth 1 --branch tizen ssh://lhmax2025@review.tizen.org:29418/platform/core/multimedia/inference-engine-tflite /home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/inference-engine-tflite
+COMMAND git cat-file -e e59b18b7575bf713023442a51d386bec006f2e16^{commit}
+COMMAND git sparse-checkout set packaging
+COMMAND git checkout --detach e59b18b7575bf713023442a51d386bec006f2e16
+RESULT	inference-engine-tflite	platform/core/multimedia/inference-engine-tflite	e59b18b7575bf713023442a51d386bec006f2e16	packaging/inference-engine-tflite.spec
+COMMAND git clone --filter=blob:none --no-checkout --depth 1 --branch accepted/tizen_unified_toolchain ssh://lhmax2025@review.tizen.org:29418/platform/upstream/nnstreamer /home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/nnstreamer
+COMMAND git cat-file -e 40ae293fe1e293e5d9bfc332e4b293a27ddcb1a4^{commit}
+COMMAND git sparse-checkout set packaging
+COMMAND git checkout --detach 40ae293fe1e293e5d9bfc332e4b293a27ddcb1a4
+RESULT	nnstreamer	platform/upstream/nnstreamer	40ae293fe1e293e5d9bfc332e4b293a27ddcb1a4	packaging/nnstreamer.spec
+COMMAND git clone --filter=blob:none --no-checkout --depth 1 --branch accepted/tizen_unified_toolchain ssh://lhmax2025@review.tizen.org:29418/platform/core/ml/nntrainer /home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/nntrainer
+COMMAND git cat-file -e 97ddb43dcd9e5173d7cb4245ff9bae5d760e5834^{commit}
+COMMAND git sparse-checkout set packaging
+COMMAND git checkout --detach 97ddb43dcd9e5173d7cb4245ff9bae5d760e5834
+RESULT	nntrainer	platform/core/ml/nntrainer	97ddb43dcd9e5173d7cb4245ff9bae5d760e5834	packaging/nntrainer.spec
+===== docs/progress/R103/raw/028_inspect_target_specs.command.txt =====
+bash -c for\ d\ in\ progress/R103/inputs/source_git/\*\;\ do\ printf\ \"=====\ %s\ =====\\n\"\ \"\$d\"\;\ rg\ -n\ -C\ 3\ \"gmp\|gmpxx\|tensorflow\|tflite\|xla\|BuildRequires\|cmake\|meson\|setup.py\"\ \"\$d\"/packaging/\*.spec\ \|\|\ true\;\ done 
+===== docs/progress/R103/raw/028_inspect_target_specs.exitcode =====
+0
+===== docs/progress/R103/raw/028_inspect_target_specs.stderr =====
+===== docs/progress/R103/raw/028_inspect_target_specs.stdout =====
+===== progress/R103/inputs/source_git/eigen =====
+25-URL:            http://eigen.tuxfamily.org/
+26-Source:         http://bitbucket.org/eigen/eigen/get/%{version}.tar.bz2
+27-
+28:BuildRequires:  blas-devel
+29:BuildRequires:  boost-devel
+30:BuildRequires:  cmake
+31:BuildRequires:  doxygen
+32:BuildRequires:  gmp-devel
+33:BuildRequires:  pkg-config
+34-
+35:# BuildRequires:  graphviz
+36:# BuildRequires:  libqt4-devel
+37:# BuildRequires:  pkgconfig(adolc)
+38:# BuildRequires:  pkgconfig(fftw3)
+39:# BuildRequires:  superlu-devel
+40:# BuildRequires:  texlive-dvips
+41:# BuildRequires:  texlive-latex
+42-
+43-BuildArch:      noarch
+44-
+--
+72-%build
+73-mkdir build
+74-pushd build
+75:cmake .. -DCMAKE_INSTALL_PREFIX=%{_prefix}
+76-%{__make} %{?_smp_mflags}
+77-popd
+78-
+--
+85-%files devel
+86-%license COPYING.*
+87-%{_includedir}/eigen3/*
+88:%{_datadir}/eigen3/cmake/*.cmake
+89-%{_datadir}/pkgconfig/eigen3.pc
+90-
+===== progress/R103/inputs/source_git/gmp =====
+1-%define keepstatic 1
+2:Name:           gmp
+3-Version:        4.2.1
+4-Release:        1
+5-License:        LGPL-2.1
+6-Summary:        The GNU MP Library
+7:Url:            http://gmplib.org/
+8-Group:          Base/Libraries
+9-Source:         %{name}-%{version}.tar.bz2
+10-Source2:        baselibs.conf
+11:Source1001: 	gmp.manifest
+12:BuildRequires:  gcc-c++
+13:BuildRequires:  pkg-config
+14-
+15-%description
+16-A library for calculating huge numbers (integer and floating point).
+17-
+18:%package -n libgmp
+19-Summary:        Shared library for the GNU MP Library
+20-Group:          Base/Libraries
+21-
+22:%description -n libgmp
+23-Shared library for the GNU MP Library.
+24-
+25:%package -n libgmpxx
+26-Summary:        C++ bindings for the GNU MP Library
+27-Group:          Base/Libraries
+28:Requires:       libgmp = %{version}
+29-
+30:%description -n libgmpxx
+31-C++ bindings for the GNU MP Library.
+32-
+33-%package devel
+34-Summary:        Include Files and Libraries for Development with the GNU MP Library
+35-Group:          Base/Development
+36:Requires:       libgmp = %{version}
+37:Requires:       libgmpxx = %{version}
+38-
+39-%description devel
+40-These libraries are needed to develop programs which calculate with
+--
+57-%install
+58-%make_install
+59-
+60:%post -n libgmp -p /sbin/ldconfig
+61-
+62:%post -n libgmpxx -p /sbin/ldconfig
+63-
+64:%postun -n libgmp -p /sbin/ldconfig
+65-
+66:%postun -n libgmpxx -p /sbin/ldconfig
+67-
+68-%files
+69-%manifest %{name}.manifest
+70-%license COPYING
+71-%doc AUTHORS README NEWS
+72-
+73:%files -n libgmp
+74-%manifest %{name}.manifest
+75-%license COPYING.LIB
+76-%defattr(-,root,root)
+77:%{_libdir}/libgmp.so.*
+78-
+79:%files -n libgmpxx
+80-%manifest %{name}.manifest
+81-%license COPYING.LIB
+82-%defattr(-,root,root)
+83:%{_libdir}/libgmpxx.so.*
+84-
+85-%files devel
+86-%manifest %{name}.manifest
+87-%defattr(-,root,root)
+88-%doc AUTHORS README NEWS
+89:%doc %{_infodir}/gmp.info*.gz
+90:%{_libdir}/libgmp.a
+91:%{_libdir}/libgmpxx.a
+92:%{_libdir}/libgmp.so
+93:%{_libdir}/libgmpxx.so
+94:#%{_libdir}/pkgconfig/gmp.pc
+95:/usr/include/gmp.h
+96:/usr/include/gmpxx.h
+===== progress/R103/inputs/source_git/inference-engine-tflite =====
+1:Name:       inference-engine-tflite
+2-Summary:    Tensorflow-Lite based implementation of inference-engine-interface
+3-Version:    0.0.9
+4-Release:    0
+--
+7-Source0:    %{name}-%{version}.tar.gz
+8-Requires(post): /sbin/ldconfig
+9-Requires(postun): /sbin/ldconfig
+10:BuildRequires: cmake
+11:BuildRequires: python
+12:BuildRequires: pkgconfig(dlog)
+13:BuildRequires: pkgconfig(inference-engine-interface-common)
+14:BuildRequires: coregl-devel
+15:BuildRequires: flatbuffers-devel
+16:BuildRequires: tensorflow2-lite-devel
+17-
+18-%description
+19-Tensorflow-Lite based implementation of inference-engine-interface
+--
+29-export FFLAGS="$FFLAGS -DTIZEN_DEBUG_ENABLE"
+30-%endif
+31-
+32:%cmake .
+33-
+34-make %{?jobs:-j%jobs}
+35-
+===== progress/R103/inputs/source_git/nnstreamer =====
+20-# Default features for Tizen releases
+21-# If you want to build RPM for other Linux distro, you may need to
+22-# touch these values for your needs.
+23:%define		tensorflow_support 0
+24:%define		tensorflow_lite_support	0
+25:%define		tensorflow2_lite_support 1
+26-%define		armnn_support 0
+27-%define		vivante_support 0
+28-%define		flatbuf_support 1
+--
+77-# tizen 6.0 (or less) backward-compatibility check
+78-%if ( 0%{?tizen_version_major} == 6 && 0%{?tizen_version_minor} < 5 ) || 0%{?tizen_version_major} < 6
+79-%define		grpc_support 0
+80:%define		tensorflow2_lite_support 0
+81-%define		trix_engine_support 0
+82-%endif
+83-
+--
+116-%define		vivante_support 0
+117-%define		pytorch_support 0
+118-%define		caffe2_support 0
+119:%define		tensorflow_support 0
+120-%define		lua_support 0
+121-%define		mqtt_support 0
+122-%define		tvm_support 0
+--
+141-%define		vivante_support 0
+142-%define		pytorch_support 0
+143-%define		caffe2_support 0
+144:%define		tensorflow_support 0
+145-%define		lua_support 0
+146-%define		mqtt_support 0
+147-%define		tvm_support 0
+--
+167-%define		executorch_support 0
+168-
+169-# Enable subplugins for specific profiles
+170:%if 0%{?_with_meson64}
+171-%define		vivante_support 1
+172-%endif
+173-
+--
+200-# 1. Ubuntu : ./debian/changelog
+201-# 2. Tizen  : ./packaging/nnstreamer.spec
+202-# 3. Android: ./jni/nnstreamer.mk
+203:# 4. Meson  : ./meson.build
+204-Version:	2.7.0
+205-Release:	0
+206-Group:		Machine Learning/ML Framework
+--
+215-Requires: nnstreamer-single = %{version}-%{release}
+216-Recommends: nnstreamer-default-configuration = %{version}-%{release}
+217-%if 0%{?nnstreamer_edge_support}
+218:BuildRequires: nnstreamer-edge-devel
+219-%endif
+220-
+221-## Define build requirements ##
+222:BuildRequires:	gstreamer-devel
+223:BuildRequires:	gst-plugins-base-devel
+224:BuildRequires:	gst-plugins-bad-devel
+225:BuildRequires:	glib2-devel
+226:BuildRequires:	meson >= 0.62.0
+227-
+228-%{?_toolchain:
+229-%if %{toolchain_is clang}
+230:BuildRequires:	compiler-rt
+231-%endif
+232-}
+233-
+234-# To run test cases, we need gst plugins
+235:BuildRequires:	gst-plugins-good
+236-%if 0%{tizen_version_major} >= 5
+237:BuildRequires:	gst-plugins-good-extra
+238-%endif
+239:BuildRequires:	gst-plugins-base
+240-# and gtest
+241:BuildRequires:	gtest-devel
+242-# a few test cases uses python
+243-%if 0%{?check_test}
+244:BuildRequires:	python3
+245-%endif
+246-%if 0%{?python3_support}
+247-# for python3 custom filters
+248:BuildRequires:	python3-devel
+249:BuildRequires:	python3-numpy-devel
+250-%endif
+251-# Testcase requires bmp2png, which requires libpng
+252:BuildRequires:  pkgconfig(libpng)
+253-%if 0%{?flatbuf_support}
+254-# for flatbuffers
+255:BuildRequires: flatbuffers-devel
+256-%if 0%{?unit_test}
+257:BuildRequires: flatbuffers-python
+258-%endif
+259-%endif
+260:%if 0%{?tensorflow_lite_support}
+261:# for tensorflow-lite
+262:BuildRequires: tensorflow-lite-devel
+263-%endif
+264:%if 0%{?tensorflow2_lite_support}
+265:# for tensorflow2-lite
+266:BuildRequires: tensorflow2-lite-devel
+267:# tensorflow2-lite-custom requires scripts for rpm >= 4.9
+268:BuildRequires:  rpm >= 4.9
+269:%global __requires_exclude ^libtensorflow2-lite-custom.*$
+270-%endif
+271-# custom_example_opencv filter requires opencv-devel
+272:BuildRequires: opencv-devel
+273-# For './testAll.sh' time limit.
+274:BuildRequires: procps
+275-# for protobuf
+276-%if 0%{?protobuf_support}
+277:BuildRequires: protobuf-devel >= 3.4.0
+278-%endif
+279:# for tensorflow
+280:%if 0%{?tensorflow_support}
+281:BuildRequires: tensorflow
+282:BuildRequires: tensorflow-devel
+283-%endif
+284-# for armnn
+285-%if 0%{?armnn_support}
+286:BuildRequires: armnn-devel
+287-%endif
+288-
+289-%if 0%{?edgetpu_support}
+290:BuildRequires:	pkgconfig(edgetpu)
+291-%endif
+292-
+293-%if 0%{?testcoverage}
+294-# to be compatible with gcc-9, lcov should have a higher version than 1.14.1
+295:BuildRequires: lcov
+296:# BuildRequires:	taos-ci-unittest-coverage-assessment
+297-%endif
+298-
+299-%if 0%{mvncsdk2_support}
+300:BuildRequires:	pkgconfig(libmvnc)
+301-%endif
+302-
+303-%if 0%{openvino_support}
+304:BuildRequires:	pkgconfig(openvino)
+305-%endif
+306-
+307-# for Vivante
+308-%if 0%{?vivante_support}
+309:BuildRequires:  pkgconfig(ovxlib)
+310:BuildRequires:  pkgconfig(amlogic-vsi-npu-sdk)
+311-%endif
+312-
+313-# TensorRT
+314-%if 0%{?tensorrt_support}
+315:BuildRequires: tensorrt-devel
+316-%endif
+317-
+318-%if 0%{?grpc_support}
+319:BuildRequires:  grpc-devel
+320-%endif
+321-
+322-%if %{with tizen}
+323:BuildRequires:	pkgconfig(dlog)
+324-# For tizen sensor support
+325:BuildRequires:	pkgconfig(sensor)
+326:BuildRequires:	capi-system-sensor-devel
+327-%endif  # tizen
+328-
+329-%if 0%{?nnfw_support}
+330-# Tizen 5.5 M2+ support nn-runtime (nnfw)
+331-# As of 2019-09-24, unfortunately, nnfw does not support pkg-config
+332:BuildRequires:  nnfw-devel
+333-%endif
+334-
+335-%if 0%{?pytorch_support}
+336:BuildRequires:	pytorch-devel
+337-%endif
+338-
+BUILDLOG_PROVIDER_LINES
+===== docs/progress/R103/inputs/buildlogs/aarch64_inference-engine-tflite.buildlog.txt =====
+117:[    5s] [65/194] cumulate tensorflow2-lite-devel-2.18.0-1
+280:[   16s] tensorflow2-lite-devel-2.18.0-1       ########################################
+===== docs/progress/R103/inputs/buildlogs/armv7l_inference-engine-tflite.buildlog.txt =====
+119:[    7s] [67/193] cumulate tensorflow2-lite-devel-2.18.0-1
+263:[   11s] tensorflow2-lite-devel-2.18.0-1       ########################################
+===== docs/progress/R103/inputs/buildlogs/x86_64_inference-engine-tflite.buildlog.txt =====
+98:[    4s] [64/192] cumulate tensorflow2-lite-devel-2.18.0-1
+256:[   10s] tensorflow2-lite-devel-2.18.0-1       ########################################
+===== docs/progress/R103/inputs/buildlogs/aarch64_nnstreamer.buildlog.txt =====
+194:[   29s] [85/364] cumulate tensorflow2-lite-devel-2.18.0-1
+675:[  127s] tensorflow2-lite-devel-2.18.0-1       ########################################
+1647:[  241s] Installing subdir /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow_lite to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.aarch64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow_lite
+1648:[  241s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow_lite/runTest.sh to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.aarch64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow_lite
+1649:[  241s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow_lite/checkLabel.py to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.aarch64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow_lite
+1659:[  241s] Installing subdir /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.aarch64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1660:[  241s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/config_file_golden.0 to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.aarch64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1661:[  241s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/config_file_golden.1 to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.aarch64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1662:[  241s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/runTest.sh to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.aarch64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1663:[  241s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/unittest_filter_tensorflow2_lite.cc to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.aarch64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1664:[  241s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/config_file_golden.2 to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.aarch64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1665:[  241s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/config_file.0 to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.aarch64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+===== docs/progress/R103/inputs/buildlogs/armv7l_nnstreamer.buildlog.txt =====
+234:[   43s] [88/361] cumulate tensorflow2-lite-devel-2.18.0-1
+615:[  103s] tensorflow2-lite-devel-2.18.0-1       ########################################
+1592:[  253s] Installing subdir /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow_lite to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.arm/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow_lite
+1593:[  253s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow_lite/runTest.sh to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.arm/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow_lite
+1594:[  253s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow_lite/checkLabel.py to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.arm/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow_lite
+1604:[  253s] Installing subdir /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.arm/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1605:[  253s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/config_file_golden.0 to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.arm/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1606:[  253s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/config_file_golden.1 to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.arm/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1607:[  253s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/runTest.sh to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.arm/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1608:[  253s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/unittest_filter_tensorflow2_lite.cc to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.arm/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1609:[  253s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/config_file_golden.2 to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.arm/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1610:[  253s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/config_file.0 to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.arm/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+===== docs/progress/R103/inputs/buildlogs/x86_64_nnstreamer.buildlog.txt =====
+172:[   11s] [84/365] cumulate tensorflow2-lite-devel-2.18.0-1
+677:[   55s] tensorflow2-lite-devel-2.18.0-1       ########################################
+1648:[  124s] Installing subdir /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow_lite to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.x86_64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow_lite
+1649:[  124s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow_lite/runTest.sh to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.x86_64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow_lite
+1650:[  124s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow_lite/checkLabel.py to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.x86_64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow_lite
+1660:[  124s] Installing subdir /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.x86_64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1661:[  124s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/config_file_golden.0 to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.x86_64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1662:[  124s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/config_file_golden.1 to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.x86_64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1663:[  124s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/runTest.sh to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.x86_64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1664:[  124s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/unittest_filter_tensorflow2_lite.cc to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.x86_64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1665:[  124s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/config_file_golden.2 to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.x86_64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+1666:[  124s] Installing /home/abuild/rpmbuild/BUILD/nnstreamer-2.7.0/tests/nnstreamer_filter_tensorflow2_lite/config_file.0 to /home/abuild/rpmbuild/BUILDROOT/nnstreamer-2.7.0-0.x86_64/usr/lib/nnstreamer/bin/unittest-nnstreamer/tests/nnstreamer_filter_tensorflow2_lite
+===== docs/progress/R103/inputs/buildlogs/aarch64_nntrainer.buildlog.txt =====
+350:[   26s] [83/282] cumulate tensorflow2-lite-devel-2.18.0-1
+602:[   32s] tensorflow2-lite-devel-2.18.0-1       ########################################
+===== docs/progress/R103/inputs/buildlogs/armv7l_nntrainer.buildlog.txt =====
+130:[    7s] [88/282] cumulate tensorflow2-lite-devel-2.18.0-1
+432:[   29s] tensorflow2-lite-devel-2.18.0-1       ########################################
+===== docs/progress/R103/inputs/buildlogs/x86_64_nntrainer.buildlog.txt =====
+323:[   55s] [82/280] cumulate tensorflow2-lite-devel-2.18.0-1
+576:[   69s] tensorflow2-lite-devel-2.18.0-1       ########################################
+REMOTE_BRANCH_ANCESTRY_LOCAL_OBJECTS
+1cdba73549f741720f11dd53da1bb516b03763a2 a5e093af9470d15b3673dc7650cb09ca636a7f35 fix: Add include directories and EIGEN_NEON_GEBP_NR=4 for XLA AOT runtime
+1cdba73549f741720f11dd53da1bb516b03763a2

@@ -1,0 +1,521 @@
+R103_REPORT
+# R103：gmp 与 tensorflow2 静态归档实际链入查证
+
+## 1. 结论
+
+本次查证得到可用于收口 R100/R102 两个未定项的直接证据；本任务未修改 R100/R102 的表，也未修改任何 spec、配置或平台源码。
+
+| 提供方 | 查证结论 | 对 R100 分类的建议 | 核心依据 |
+| --- | --- | --- | --- |
+| `gmp` | 指定的两个消费方均未实际链入 `libgmpxx.a` | `NO_LIBCXX_NEEDED`（不需要改） | `eigen` 最终包只有头文件/配置文件、无 ELF；`python-pycrypto` 三架构真实链接命令均为 `-lgmp`，最终 `_fastmath.so` 动态依赖 `libgmp.so.3`，不依赖 `libgmpxx`/`libstdc++`；最终 ELF 与 `libgmpxx.a` 的强定义符号交集为 0。 |
+| `tensorflow2` | 三个指定消费方都实际链入 `libtensorflow2-lite.a` 的大量 C++ 成员；未观察到它们链入 `libtf_xla_runtime.a` | `NEED_LIBCXX`（需要改） | 三架构最终 ELF 各命中 2,591–4,800 个精确强符号、下界 319–517 个归档成员；构建日志、pkg-config/Meson/CMake 关系和最终 ELF 互相印证。消费代码持有并传递 `std::unique_ptr<tflite::Interpreter>`、`std::unique_ptr<tflite::FlatBufferModel>`，不是只使用纯 C 接口。 |
+
+这里的 `NO_LIBCXX_NEEDED`/`NEED_LIBCXX` 是本次证据对 R100 分类的建议，不是对既有清单的修改。
+
+## 2. 输入身份与覆盖口径
+
+### 2.1 仓库快照
+
+- Base Toolchain：沿用 R98/R100 已校验材料，`Tizen-Base-Toolchain` 快照中的 `gmp-4.2.1-1.8`、`tensorflow2-2.18.0-1.1`。
+- Unified Toolchain：`https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/standard/packages/`。
+- 消费方源码 revision：
+  - `eigen`: `e8e4707a11713b39909fc9db916b5db1ecbfdf6a`
+  - `python-pycrypto`: `fa4a7de575838f0884364ebd05423927f9f79734`
+  - `inference-engine-tflite`: `e59b18b7575bf713023442a51d386bec006f2e16`
+  - `nnstreamer`: `40ae293fe1e293e5d9bfc332e4b293a27ddcb1a4`
+  - `nntrainer`: `97ddb43dcd9e5173d7cb4245ff9bae5d760e5834`
+- 提供方源码 revision：
+  - Base `gmp`: `490fe651469987ccb00b5cba908d69609345e226`
+  - Base `tensorflow2`: `1cdba73549f741720f11dd53da1bb516b03763a2`
+  - Unified `tensorflow2`: `ea3f134d35fc64667c2eebd72992bbb3c8e0069d`
+
+消费方五个源码包的全部 144 个二进制 RPM 均已下载并校验，覆盖 aarch64、armv7l、x86_64（`eigen-devel` 为一份 noarch 包）。共检查 571 个 ELF。另取得五个消费源码包在三架构上的 15 份公开成功构建日志，并保存完整原文及 SHA256。
+
+### 2.2 TensorFlow 提供方版本差异
+
+公开消费方构建日志明确显示构建根安装的是 Unified Toolchain 的 `tensorflow2-lite-devel-2.18.0-1`，所以它才是这些已发布消费 ELF 的实际提供方。Base Toolchain 的候选是 `2.18.0-1.1`。两者归档 SHA256 不同，不能声称字节相同：
+
+| 架构 | Base `1.1` SHA256 | Unified `1` SHA256 |
+| --- | --- | --- |
+| aarch64 | `ffabc2dd7f4155e34e5117c659e55b4375652adacb36402ffb4390c1a6945234` | `277e689134bf51859596a6c97ac63901a8db90c3ea5caef353cb3c864cab2a4c` |
+| armv7l | `76d217d8432bea70cb98e9cad6601be7857b6b8bb4eca6d7b2bd4a4383275219` | `797072a9e1b92bac34980c84f89530a6cbcdddff173130d7b19abef19ec0d0f9` |
+| x86_64 | `a116a39b156f61f63927bca0a8b2aa39c2c65c9494e7d69e9f6a89db75fdee7e` | `aa1da1d91ad208cd3a59c8e3b1b6413f69a0e62fa71bd316de5b111ce0bb3721` |
+
+因此，本报告关于“已发布消费 ELF 实际链入”的版本身份严格限定为 Unified `2.18.0-1`。同时用 Base `1.1` 归档进行了同样的精确符号交集检查：每个消费 ELF 的命中符号集合与 Unified 归档完全一致（20/20 个 ELF 分组均为 `base_only=0`、`unified_only=0`）。这证明 Base 候选提供同一批被消费的符号，但不把它误述为这些现存 ELF 的实际构建输入。
+
+## 3. 方法
+
+按任务书的可靠性顺序使用了三层证据：
+
+1. 对最终 RPM 解包，识别 ELF；对提供方归档执行 `nm -A -P -g --defined-only`，对消费 ELF 同时执行静态/动态符号表检查，以“同名强定义符号”为交集，并把归档侧符号回溯到成员名。
+2. 检查最终 ELF 的 `DT_NEEDED`，判断代码来自静态归档还是运行期共享库。
+3. 读取实际成功构建日志中的构建根包版本和链接命令，再用精确 revision 的 spec、构建文件与消费代码解释边界形态。
+
+对 stripped ELF，最终动态符号表只能给出“可见成员/符号的下界”，不能恢复全部局部符号；LTO、内联、dead stripping 和 ICF 也会让成员计数偏低。因此报告将成员数明确标为下界。这里不是仅凭“可能会链接”的源代码推断：TensorFlow 有数千个最终强定义符号、无 TensorFlow 共享库依赖，且构建日志/构建描述明确使用静态库。
+
+## 4. gmp
+
+### 4.1 `eigen`
+
+- spec 将 `gmp-devel` 列为 BuildRequires，但 `BuildArch: noarch`。
+- 最终 `eigen-devel` 只包含头文件、CMake 文件、pkg-config 文件和许可证，未包含 ELF。
+- 因而该包自身不存在可把 `libgmpxx.a` 链入的最终二进制。其头文件用户将来是否使用 GMP，是用户自己的实例化/链接行为，不是 `eigen` RPM 已实际链入静态归档。
+
+### 4.2 `python-pycrypto`
+
+源码与三架构构建日志一致：
+
+```text
+Extension("Crypto.PublicKey._fastmath",
+          libraries=['gmp'],
+          sources=["src/_fastmath.c"])
+```
+
+`_fastmath.c` 包含的是 `<gmp.h>`。aarch64、armv7l、x86_64 的实际链接命令均使用 `-lgmp`，没有 `-lgmpxx`；最终 `_fastmath.so` 的 `DT_NEEDED` 是 `libgmp.so.3`，没有 `libgmpxx` 或 `libstdc++.so.6`。对全部 18 个 Python 扩展 ELF 与三架构 `libgmpxx.a` 做精确强符号交集，命中为 0。
+
+### 4.3 判定边界
+
+就任务指定的 `eigen`、`python-pycrypto` 两个消费方以及所用快照而言，`libgmpxx.a` 实际链入为否；证据支持将 `gmp` 从“未定”归为“不需要改”。本结论不外推到未列入本任务的任意第三方消费方。
+
+## 5. tensorflow2
+
+### 5.1 最终产物反查结果
+
+下表只列三个任务指定消费方的核心最终库，并使用构建日志确认的 Unified `2.18.0-1` 归档。完整结果还记录了 nnstreamer edgetpu 插件和 nntrainer 三个应用中的命中，见 TSV。
+
+| 消费方 | 架构 | 最终 ELF | 精确强符号 | 可归属归档成员下界 | 其中 C++ mangled 符号 |
+| --- | --- | --- | ---: | ---: | ---: |
+| inference-engine-tflite | aarch64 | `libinference-engine-tflite.so` | 4,776 | 499 | 3,842 |
+| inference-engine-tflite | armv7l | `libinference-engine-tflite.so` | 4,713 | 498 | 3,798 |
+| inference-engine-tflite | x86_64 | `libinference-engine-tflite.so` | 4,711 | 515 | 3,772 |
+| nnstreamer | aarch64 | `libnnstreamer_filter_tensorflow2-lite.so` | 4,800 | 501 | 3,862 |
+| nnstreamer | armv7l | `libnnstreamer_filter_tensorflow2-lite.so` | 4,737 | 500 | 3,818 |
+| nnstreamer | x86_64 | `libnnstreamer_filter_tensorflow2-lite.so` | 4,735 | 517 | 3,792 |
+| nntrainer | aarch64 | `libnntrainer.so` | 2,619 | 319 | 1,690 |
+| nntrainer | armv7l | `libnntrainer.so` | 2,914 | 351 | 2,004 |
+| nntrainer | x86_64 | `libnntrainer.so` | 2,591 | 337 | 1,657 |
+
+观察到的代表性成员包括 `interpreter.cc.o`、`interpreter_builder.cc.o`、`model_builder.cc.o`、`subgraph.cc.o`、`gpu_info.cc.o`、`flatbuffer_conversions.cc.o`、`opencl_wrapper.cc.o`。最终库中可直接看到来自这些实现的定义，例如：
+
+```text
+tflite::impl::Interpreter::SetOutputs(std::vector<int, std::allocator<int> >)
+tflite::impl::Interpreter::AddProfiler(std::unique_ptr<tflite::Profiler, ...>)
+tflite::impl::Interpreter::SetMetadata(std::map<std::__cxx11::basic_string<...>, ...> const&)
+```
+
+上述核心库的 `DT_NEEDED` 含 `libstdc++.so.6` 和 `libgcc_s.so.1`，不含 TensorFlow Lite 共享库；包内提供者只有 `libtensorflow2-lite.a`。这排除了“这些只是对外部 TensorFlow 共享库的未定义引用”的解释。
+
+### 5.2 构建与源码证据
+
+- `inference-engine-tflite`：三架构真实链接命令都含 `-ltensorflow2-lite`。类成员直接保存 `std::unique_ptr<tflite::Interpreter>` 和 `std::unique_ptr<tflite::FlatBufferModel>`，并调用 `BuildFromFile`、`InterpreterBuilder`。
+- `nnstreamer`：spec 明确写明 TensorFlow2 Lite 只提供 `.a`，会嵌入 subplugin；最终 `libnnstreamer_filter_tensorflow2-lite.so` 的符号证据验证了这句话。插件同样保存上述两个 `std::unique_ptr` 并调用 C++ builder API。
+- `nntrainer`：Meson 把 `tflite_dep` 加入 `libnntrainer.so` 的依赖并编译 `tflite_layer.cpp`；最终库中有 2,591–2,914 个精确强符号。`TfLiteLayer` 持有两个 TFLite `std::unique_ptr` 并调用同一组 C++ API。
+
+这三处不是“静态归档可能被列在命令中但没有成员被拉入”的情况；最终 ELF 已包含大量归档实现。它们也不是纯 C 边界，而是实际交换标准库模板类型/所有权对象的 C++ 边界。
+
+### 5.3 两个归档分别如何
+
+| 归档 | 实际链入观察 |
+| --- | --- |
+| `libtensorflow2-lite.a` | **YES**。三个指定消费方、三架构均有大量直接证据。全体已观察消费 ELF 合并后，至少涉及 5,312 个不同强符号、546 个不同成员名。 |
+| `libtf_xla_runtime.a` | **NO（限定于本任务的三个消费方）**。最终 ELF 强符号交集为 0，实际链接日志/构建描述中也未见该归档。该零结果不影响 `tensorflow2` 的 NEED 判定，因为 Lite 归档已足以形成真实边界。 |
+
+## 6. 未覆盖与局限
+
+1. 没有 link map；因此无法声称恢复了“所有被拉入成员”的精确全集，表中的成员数是可观测下界。
+2. gmp 的否定结论只覆盖任务指定的两个消费方和该快照，不代表平台所有潜在消费者。
+3. `libtf_xla_runtime.a` 的否定结论同样只覆盖三个指定 TensorFlow 消费方。
+4. 现存 Unified 消费产物实际使用 TensorFlow `2.18.0-1`，不是 Base `2.18.0-1.1`；两套候选对最终 ELF 的命中集合相同，但本报告没有把版本身份混同。
+5. 未重新构建软件包：第一、二层已有实际最终 ELF 与真实成功构建日志，足以回答“是否实际链入”；重建不会增加本题所需的事实确定性。
+
+## 7. 自行判断与尚存疑问
+
+### 自行判断
+
+1. 将“精确同名强定义符号 + 无对应共享库依赖 + 实际构建关系”作为实际静态链入证据；仅有一两个通用模板符号的应用程序命中不单独用于结论。
+2. 将归档成员计数报告为下界，避免把 stripped/LTO 后仍可见的成员误称为完整集合。
+3. 对 R100 的包级分类，`tensorflow2` 只要任一交付归档形成实际布局敏感边界即应归入 NEED；`libtf_xla_runtime.a` 在这些消费方中零命中不抵消 Lite 归档的阳性事实。
+
+### 尚存疑问
+
+- 若人工要求证明“Base `2.18.0-1.1` 的具体字节已进入某个现存消费 ELF”，当前答案是 **NOT_OBSERVED**：现存日志证明用的是 Unified `2.18.0-1`。要取得这种版本级直接证据，需要以 Base `1.1` 为构建输入重新链接消费方并保留 link map；这不影响本次对消费方式和 R100 包级分类的判断。
+
+## 8. 纪律确认
+
+- 未修改任何 spec、配置或平台源码。
+- 未修改 R100/R102 的表。
+- 未向 Gerrit 或其他外部源码仓推送。
+- 命令、stdout、stderr、退出码均归档在 `raw/`。所有非零均为已记录并已纠正的技术性错误，不是判据失败：第 004 次首次读取大字段 TSV 时触发 Python CSV 默认字段长度上限，第 005 次提高读取上限后成功；第 024、026 次尝试了 Gerrit 上不存在的 TensorFlow 分支短名，第 025 次先读取真实 refs、第 027 次改用实际存在的 `accepted/tizen_base_toolchain` 后成功；第 050 次是包装器无执行位，第 051 次通过 `bash` 调用同一包装器成功。
+- 第 041 次过宽本地日志检索被终止；退出码 143 是恢复时人工补记，不是日志包装器自动写入，说明保存在同名前缀的 `recovery_note.txt`。
+R103_FILES
+README.md
+REPORT.md
+SHA256SUMS
+code/extract_rpms.py
+code/fetch_consumer_rpms.py
+code/fetch_packaging_sources.py
+code/fetch_unified_tensorflow_archives.py
+code/run_logged.sh
+code/scan_final_elf_linkage.py
+code/select_consumer_rpms.py
+code/summarize_evidence.py
+inputs/buildlogs/aarch64_eigen.buildlog.txt
+inputs/buildlogs/aarch64_inference-engine-tflite.buildlog.txt
+inputs/buildlogs/aarch64_nnstreamer.buildlog.txt
+inputs/buildlogs/aarch64_nntrainer.buildlog.txt
+inputs/buildlogs/aarch64_python-pycrypto.buildlog.txt
+inputs/buildlogs/armv7l_eigen.buildlog.txt
+inputs/buildlogs/armv7l_inference-engine-tflite.buildlog.txt
+inputs/buildlogs/armv7l_nnstreamer.buildlog.txt
+inputs/buildlogs/armv7l_nntrainer.buildlog.txt
+inputs/buildlogs/armv7l_python-pycrypto.buildlog.txt
+inputs/buildlogs/x86_64_eigen.buildlog.txt
+inputs/buildlogs/x86_64_inference-engine-tflite.buildlog.txt
+inputs/buildlogs/x86_64_nnstreamer.buildlog.txt
+inputs/buildlogs/x86_64_nntrainer.buildlog.txt
+inputs/buildlogs/x86_64_python-pycrypto.buildlog.txt
+raw/.gitkeep
+raw/001_resource_gate_medium.command.txt
+raw/001_resource_gate_medium.exitcode
+raw/001_resource_gate_medium.stderr
+raw/001_resource_gate_medium.stdout
+raw/002_inventory_existing_inputs.command.txt
+raw/002_inventory_existing_inputs.exitcode
+raw/002_inventory_existing_inputs.stderr
+raw/002_inventory_existing_inputs.stdout
+raw/003_inspect_consumer_metadata_schemas.command.txt
+raw/003_inspect_consumer_metadata_schemas.exitcode
+raw/003_inspect_consumer_metadata_schemas.stderr
+raw/003_inspect_consumer_metadata_schemas.stdout
+raw/004_select_consumer_rpms.command.txt
+raw/004_select_consumer_rpms.exitcode
+raw/004_select_consumer_rpms.stderr
+raw/004_select_consumer_rpms.stdout
+raw/005_select_consumer_rpms_retry.command.txt
+raw/005_select_consumer_rpms_retry.exitcode
+raw/005_select_consumer_rpms_retry.stderr
+raw/005_select_consumer_rpms_retry.stdout
+raw/006_fetch_consumer_rpms.command.txt
+raw/006_fetch_consumer_rpms.exitcode
+raw/006_fetch_consumer_rpms.stderr
+raw/006_fetch_consumer_rpms.stdout
+raw/007_inspect_rpm_payload_paths.command.txt
+raw/007_inspect_rpm_payload_paths.exitcode
+raw/007_inspect_rpm_payload_paths.stderr
+raw/007_inspect_rpm_payload_paths.stdout
+raw/008_download_progress.command.txt
+raw/008_download_progress.exitcode
+raw/008_download_progress.stderr
+raw/008_download_progress.stdout
+raw/009_provider_symbol_format_probe.command.txt
+raw/009_provider_symbol_format_probe.exitcode
+raw/009_provider_symbol_format_probe.stderr
+raw/009_provider_symbol_format_probe.stdout
+raw/010_locate_prior_consumer_sources.command.txt
+raw/010_locate_prior_consumer_sources.exitcode
+raw/010_locate_prior_consumer_sources.stderr
+raw/010_locate_prior_consumer_sources.stdout
+raw/011_download_stall_diagnostic.command.txt
+raw/011_download_stall_diagnostic.exitcode
+raw/011_download_stall_diagnostic.stderr
+raw/011_download_stall_diagnostic.stdout
+raw/012_inspect_prior_static_scanner.command.txt
+raw/012_inspect_prior_static_scanner.exitcode
+raw/012_inspect_prior_static_scanner.stderr
+raw/012_inspect_prior_static_scanner.stdout
+raw/013_extract_provider_and_consumer_rpms.command.txt
+raw/013_extract_provider_and_consumer_rpms.exitcode
+raw/013_extract_provider_and_consumer_rpms.stderr
+raw/013_extract_provider_and_consumer_rpms.stdout
+raw/014_extraction_progress.command.txt
+raw/014_extraction_progress.exitcode
+raw/014_extraction_progress.stderr
+raw/014_extraction_progress.stdout
+raw/015_extraction_progress_2.command.txt
+raw/015_extraction_progress_2.exitcode
+raw/015_extraction_progress_2.stderr
+raw/015_extraction_progress_2.stdout
+raw/016_source_identity_lookup.command.txt
+raw/016_source_identity_lookup.exitcode
+raw/016_source_identity_lookup.stderr
+raw/016_source_identity_lookup.stdout
+raw/017_tensorflow_provider_candidates.command.txt
+raw/017_tensorflow_provider_candidates.exitcode
+raw/017_tensorflow_provider_candidates.stderr
+raw/017_tensorflow_provider_candidates.stdout
+raw/018_syntax_check_r103_scripts.command.txt
+raw/018_syntax_check_r103_scripts.exitcode
+raw/018_syntax_check_r103_scripts.stderr
+raw/018_syntax_check_r103_scripts.stdout
+raw/019_scan_final_elf_linkage.command.txt
+raw/019_scan_final_elf_linkage.exitcode
+raw/019_scan_final_elf_linkage.stderr
+raw/019_scan_final_elf_linkage.stdout
+raw/020_summarize_symbol_matches.command.txt
+raw/020_summarize_symbol_matches.exitcode
+raw/020_summarize_symbol_matches.stderr
+raw/020_summarize_symbol_matches.stdout
+raw/021_inspect_matched_elf_dependencies.command.txt
+raw/021_inspect_matched_elf_dependencies.exitcode
+raw/021_inspect_matched_elf_dependencies.stderr
+raw/021_inspect_matched_elf_dependencies.stdout
+raw/022_inspect_high_confidence_member_matches.command.txt
+raw/022_inspect_high_confidence_member_matches.exitcode
+raw/022_inspect_high_confidence_member_matches.stderr
+raw/022_inspect_high_confidence_member_matches.stdout
+raw/023_inspect_prior_gerrit_fetch_method.command.txt
+raw/023_inspect_prior_gerrit_fetch_method.exitcode
+raw/023_inspect_prior_gerrit_fetch_method.stderr
+raw/023_inspect_prior_gerrit_fetch_method.stdout
+raw/024_fetch_packaging_sources.command.txt
+raw/024_fetch_packaging_sources.exitcode
+raw/024_fetch_packaging_sources.stderr
+raw/024_fetch_packaging_sources.stdout
+raw/025_inspect_source_repo_heads.command.txt
+raw/025_inspect_source_repo_heads.exitcode
+raw/025_inspect_source_repo_heads.stderr
+raw/025_inspect_source_repo_heads.stdout
+raw/026_fetch_packaging_sources_retry.command.txt
+raw/026_fetch_packaging_sources_retry.exitcode
+raw/026_fetch_packaging_sources_retry.stderr
+raw/026_fetch_packaging_sources_retry.stdout
+raw/027_fetch_packaging_sources_retry_2.command.txt
+raw/027_fetch_packaging_sources_retry_2.exitcode
+raw/027_fetch_packaging_sources_retry_2.stderr
+raw/027_fetch_packaging_sources_retry_2.stdout
+raw/028_inspect_target_specs.command.txt
+raw/028_inspect_target_specs.exitcode
+raw/028_inspect_target_specs.stderr
+raw/028_inspect_target_specs.stdout
+raw/029_materialize_consumer_sources.command.txt
+raw/029_materialize_consumer_sources.exitcode
+raw/029_materialize_consumer_sources.stderr
+raw/029_materialize_consumer_sources.stdout
+raw/030_inspect_gmp_consumer_linkage_sources.command.txt
+raw/030_inspect_gmp_consumer_linkage_sources.exitcode
+raw/030_inspect_gmp_consumer_linkage_sources.stderr
+raw/030_inspect_gmp_consumer_linkage_sources.stdout
+raw/031_inspect_gmp_consumer_final_artifacts.command.txt
+raw/031_inspect_gmp_consumer_final_artifacts.exitcode
+raw/031_inspect_gmp_consumer_final_artifacts.stderr
+raw/031_inspect_gmp_consumer_final_artifacts.stdout
+raw/032_inspect_tensorflow_consumer_linkage_sources.command.txt
+raw/032_inspect_tensorflow_consumer_linkage_sources.exitcode
+raw/032_inspect_tensorflow_consumer_linkage_sources.stderr
+raw/032_inspect_tensorflow_consumer_linkage_sources.stdout
+raw/033_focused_tensorflow_link_and_api_evidence.command.txt
+raw/033_focused_tensorflow_link_and_api_evidence.exitcode
+raw/033_focused_tensorflow_link_and_api_evidence.stderr
+raw/033_focused_tensorflow_link_and_api_evidence.stdout
+raw/034_focused_tensorflow_cpp_boundary.command.txt
+raw/034_focused_tensorflow_cpp_boundary.exitcode
+raw/034_focused_tensorflow_cpp_boundary.stderr
+raw/034_focused_tensorflow_cpp_boundary.stdout
+raw/035_fetch_unified_tensorflow_archives.command.txt
+raw/035_fetch_unified_tensorflow_archives.exitcode
+raw/035_fetch_unified_tensorflow_archives.stderr
+raw/035_fetch_unified_tensorflow_archives.stdout
+raw/036_extract_and_compare_tensorflow_archives.command.txt
+raw/036_extract_and_compare_tensorflow_archives.exitcode
+raw/036_extract_and_compare_tensorflow_archives.stderr
+raw/036_extract_and_compare_tensorflow_archives.stdout
+raw/037_scan_final_elf_linkage_both_provider_variants.command.txt
+raw/037_scan_final_elf_linkage_both_provider_variants.exitcode
+raw/037_scan_final_elf_linkage_both_provider_variants.stderr
+raw/037_scan_final_elf_linkage_both_provider_variants.stdout
+raw/038_compare_provider_variant_matches.command.txt
+raw/038_compare_provider_variant_matches.exitcode
+raw/038_compare_provider_variant_matches.stderr
+raw/038_compare_provider_variant_matches.stdout
+raw/039_locate_layout_sensitive_calls.command.txt
+raw/039_locate_layout_sensitive_calls.exitcode
+raw/039_locate_layout_sensitive_calls.stderr
+raw/039_locate_layout_sensitive_calls.stdout
+raw/040_inspect_tensorflow_pkgconfig.command.txt
+raw/040_inspect_tensorflow_pkgconfig.exitcode
+raw/040_inspect_tensorflow_pkgconfig.stderr
+raw/040_inspect_tensorflow_pkgconfig.stdout
+raw/041_search_existing_build_logs.command.txt
+raw/041_search_existing_build_logs.exitcode
+raw/041_search_existing_build_logs.recovery_note.txt
+raw/041_search_existing_build_logs.stderr
+raw/041_search_existing_build_logs.stdout
+raw/042_stop_overbroad_log_search.command.txt
+raw/042_stop_overbroad_log_search.exitcode
+raw/042_stop_overbroad_log_search.stderr
+raw/042_stop_overbroad_log_search.stdout
+raw/043_inspect_snapshot_builddata_index.command.txt
+raw/043_inspect_snapshot_builddata_index.exitcode
+raw/043_inspect_snapshot_builddata_index.stderr
+raw/043_inspect_snapshot_builddata_index.stdout
+raw/044_inspect_buildlogs_index.command.txt
+raw/044_inspect_buildlogs_index.exitcode
+raw/044_inspect_buildlogs_index.stderr
+raw/044_inspect_buildlogs_index.stdout
+raw/045_inspect_standard_buildlogs_index.command.txt
+raw/045_inspect_standard_buildlogs_index.exitcode
+raw/045_inspect_standard_buildlogs_index.stderr
+raw/045_inspect_standard_buildlogs_index.stdout
+raw/046_inspect_target_buildlog_names.command.txt
+raw/046_inspect_target_buildlog_names.exitcode
+raw/046_inspect_target_buildlog_names.stderr
+raw/046_inspect_target_buildlog_names.stdout
+raw/047_inspect_succeeded_buildlog_names.command.txt
+raw/047_inspect_succeeded_buildlog_names.exitcode
+raw/047_inspect_succeeded_buildlog_names.stderr
+raw/047_inspect_succeeded_buildlog_names.stdout
+raw/048_download_target_buildlogs.command.txt
+raw/048_download_target_buildlogs.exitcode
+raw/048_download_target_buildlogs.stderr
+raw/048_download_target_buildlogs.stdout
+raw/049_extract_relevant_link_commands.command.txt
+raw/049_extract_relevant_link_commands.exitcode
+raw/049_extract_relevant_link_commands.stderr
+raw/049_extract_relevant_link_commands.stdout
+raw/050_summarize_evidence_wrapper_permission.command.txt
+raw/050_summarize_evidence_wrapper_permission.exitcode
+raw/050_summarize_evidence_wrapper_permission.stderr
+raw/050_summarize_evidence_wrapper_permission.stdout
+raw/051_summarize_evidence.command.txt
+raw/051_summarize_evidence.exitcode
+raw/051_summarize_evidence.stderr
+raw/051_summarize_evidence.stdout
+raw/052_inspect_curated_inputs.command.txt
+raw/052_inspect_curated_inputs.exitcode
+raw/052_inspect_curated_inputs.stderr
+raw/052_inspect_curated_inputs.stdout
+raw/053_locate_exact_evidence_files.command.txt
+raw/053_locate_exact_evidence_files.exitcode
+raw/053_locate_exact_evidence_files.stderr
+raw/053_locate_exact_evidence_files.stdout
+raw/054_inspect_buildlog_evidence.command.txt
+raw/054_inspect_buildlog_evidence.exitcode
+raw/054_inspect_buildlog_evidence.stderr
+raw/054_inspect_buildlog_evidence.stdout
+raw/055_direct_symbol_spotcheck.command.txt
+raw/055_direct_symbol_spotcheck.exitcode
+raw/055_direct_symbol_spotcheck.stderr
+raw/055_direct_symbol_spotcheck.stdout
+raw/056_source_boundary_excerpts.command.txt
+raw/056_source_boundary_excerpts.exitcode
+raw/056_source_boundary_excerpts.stderr
+raw/056_source_boundary_excerpts.stdout
+raw/057_archive_evidence_materials.command.txt
+raw/057_archive_evidence_materials.exitcode
+raw/057_archive_evidence_materials.stderr
+raw/057_archive_evidence_materials.stdout
+raw/058_sync_last_progress_raw.command.txt
+raw/058_sync_last_progress_raw.exitcode
+raw/058_sync_last_progress_raw.stderr
+raw/058_sync_last_progress_raw.stdout
+raw/059_validate_archived_materials.command.txt
+raw/059_validate_archived_materials.exitcode
+raw/059_validate_archived_materials.stderr
+raw/059_validate_archived_materials.stdout
+raw/060_generate_evidence_checksums.command.txt
+raw/060_generate_evidence_checksums.exitcode
+raw/060_generate_evidence_checksums.stderr
+raw/060_generate_evidence_checksums.stdout
+raw/061_remove_generated_bytecode.command.txt
+raw/061_remove_generated_bytecode.exitcode
+raw/061_remove_generated_bytecode.stderr
+raw/061_remove_generated_bytecode.stdout
+raw/062_precommit_review.command.txt
+raw/062_precommit_review.exitcode
+raw/062_precommit_review.stderr
+raw/062_precommit_review.stdout
+raw/063_audit_exitcodes.command.txt
+raw/063_audit_exitcodes.exitcode
+raw/063_audit_exitcodes.stderr
+raw/063_audit_exitcodes.stdout
+raw/064_refresh_checksums_after_report_update.command.txt
+raw/064_refresh_checksums_after_report_update.exitcode
+raw/064_refresh_checksums_after_report_update.stderr
+raw/064_refresh_checksums_after_report_update.stdout
+raw/065_prepush_remote_gate.command.txt
+raw/065_prepush_remote_gate.exitcode
+raw/065_prepush_remote_gate.stderr
+raw/065_prepush_remote_gate.stdout
+raw/066_inspect_commit_convention.command.txt
+raw/066_inspect_commit_convention.exitcode
+raw/066_inspect_commit_convention.stderr
+raw/066_inspect_commit_convention.stdout
+raw/067_compress_machine_tables_with_empty_fields.command.txt
+raw/067_compress_machine_tables_with_empty_fields.exitcode
+raw/067_compress_machine_tables_with_empty_fields.stderr
+raw/067_compress_machine_tables_with_empty_fields.stdout
+raw/068_refresh_checksums_after_table_compression.command.txt
+raw/068_refresh_checksums_after_table_compression.exitcode
+raw/068_refresh_checksums_after_table_compression.stderr
+raw/068_refresh_checksums_after_table_compression.stdout
+raw/scan_final_elf_subcommands.log
+tables/archive_member_matches.tsv.gz
+tables/archive_symbol_matches.tsv.gz
+tables/consumer_binary_candidates.tsv.gz
+tables/consumer_download_status.tsv.gz
+tables/consumer_elf_inventory.tsv.gz
+tables/consumer_linkage_summary.tsv
+tables/consumer_needed_libraries.tsv.gz
+tables/provider_archive_symbols.tsv.gz
+tables/provider_observation_summary.tsv
+tables/representative_archive_members.tsv
+TENSORFLOW_SOURCE_METADATA_HITS
+docs/progress/R103/REPORT.md:18:- Base Toolchain：沿用 R98/R100 已校验材料，`Tizen-Base-Toolchain` 快照中的 `gmp-4.2.1-1.8`、`tensorflow2-2.18.0-1.1`。
+docs/progress/R103/REPORT.md:28:  - Base `tensorflow2`: `1cdba73549f741720f11dd53da1bb516b03763a2`
+docs/progress/R103/REPORT.md:147:- 命令、stdout、stderr、退出码均归档在 `raw/`。所有非零均为已记录并已纠正的技术性错误，不是判据失败：第 004 次首次读取大字段 TSV 时触发 Python CSV 默认字段长度上限，第 005 次提高读取上限后成功；第 024、026 次尝试了 Gerrit 上不存在的 TensorFlow 分支短名，第 025 次先读取真实 refs、第 027 次改用实际存在的 `accepted/tizen_base_toolchain` 后成功；第 050 次是包装器无执行位，第 051 次通过 `bash` 调用同一包装器成功。
+docs/progress/R101/tables/base_all_source_packages.md:237:| tensorflow2 | 是：ACTUAL_CPP_BUILD_LOG;CPP_RUNTIME_DEPENDENCY;GLOBAL_DEMANGLED_CPP_IN_STATIC_ARCHIVE;CPP_HEADER_PAYLOAD | 直接链接 libstdc++ | 未定 | 含真实 C++ 静态归档且有 Unified 构建依赖方，但尚无实际链接证据。 | R100=UNDETERMINED/U_STATIC_CPP_ARCHIVE_WITH_BUILDREQUIRE_CONSUMERS_LINK_NOT_PROVEN；直接libstdc++二进制=tensorflow2-lite-util；Unified边=NONE；Base内部消费边=NONE；VCS=platform/upstream/tensorflow2#1cdba73549f741720f11dd53da1bb516b03763a2；Summary=TensorFlow 2.x with Lite and XLA AOT support | 否：六个精确镜像清单无该 VCS | 否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R101/tables/base_all_source_packages.tsv:232:tensorflow2	是：ACTUAL_CPP_BUILD_LOG;CPP_RUNTIME_DEPENDENCY;GLOBAL_DEMANGLED_CPP_IN_STATIC_ARCHIVE;CPP_HEADER_PAYLOAD	直接链接 libstdc++	未定	含真实 C++ 静态归档且有 Unified 构建依赖方，但尚无实际链接证据。	R100=UNDETERMINED/U_STATIC_CPP_ARCHIVE_WITH_BUILDREQUIRE_CONSUMERS_LINK_NOT_PROVEN；直接libstdc++二进制=tensorflow2-lite-util；Unified边=NONE；Base内部消费边=NONE；VCS=platform/upstream/tensorflow2#1cdba73549f741720f11dd53da1bb516b03763a2；Summary=TensorFlow 2.x with Lite and XLA AOT support	否：六个精确镜像清单无该 VCS	否：仓库元数据的主要用途不是测试/诊断/基准
+docs/progress/R103/raw/027_fetch_packaging_sources_retry_2.stderr:4:HEAD is now at 1cdba735 fix: Add include directories and EIGEN_NEON_GEBP_NR=4 for XLA AOT runtime
+docs/progress/R103/raw/024_fetch_packaging_sources.stderr:18:subprocess.CalledProcessError: Command '['git', 'clone', '--filter=blob:none', '--no-checkout', '--depth', '1', '--branch', 'tizen_base', 'ssh://lhmax2025@review.tizen.org:29418/platform/upstream/tensorflow2', '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/tensorflow2-base']' returned non-zero exit status 128.
+docs/progress/R103/raw/026_fetch_packaging_sources_retry.stderr:12:subprocess.CalledProcessError: Command '['git', 'clone', '--filter=blob:none', '--no-checkout', '--depth', '1', '--branch', 'tizen_base_toolchain', 'ssh://lhmax2025@review.tizen.org:29418/platform/upstream/tensorflow2', '/home/toolchain/development/libc++_replacement/progress/R103/inputs/source_git/tensorflow2-base']' returned non-zero exit status 128.
+docs/progress/R103/code/fetch_packaging_sources.py:10:    "tensorflow2-base": ("platform/upstream/tensorflow2", "accepted/tizen_base_toolchain", "1cdba73549f741720f11dd53da1bb516b03763a2"),
+docs/progress/R100/tables/static_rpm_manifest.tsv:78:base	binary	libtensorflow2-aot-runtime	aarch64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	aarch64/libtensorflow2-aot-runtime-2.18.0-1.1.aarch64.rpm	sha256	406d0a80bb8036d875fd90c59483f20dc31cd7f2bc0ca683647080d9d6b5b615	3005229	NOT_AVAILABLE
+docs/progress/R100/tables/static_rpm_manifest.tsv:79:base	binary	libtensorflow2-aot-runtime	armv7l	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	armv7l/libtensorflow2-aot-runtime-2.18.0-1.1.armv7l.rpm	sha256	3795c638044c38dbb80ed1c77c14434acda6653c38973121b4c351f05b5b9b75	3707477	NOT_AVAILABLE
+docs/progress/R100/tables/static_rpm_manifest.tsv:80:base	binary	libtensorflow2-aot-runtime	x86_64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	x86_64/libtensorflow2-aot-runtime-2.18.0-1.1.x86_64.rpm	sha256	6c13329c33a92f3a7464b0595a1c19315e05ab16a0f2330d57611d8d5f351ed9	2937833	NOT_AVAILABLE
+docs/progress/R100/tables/static_rpm_manifest.tsv:129:base	binary	tensorflow2-lite-devel	aarch64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	aarch64/tensorflow2-lite-devel-2.18.0-1.1.aarch64.rpm	sha256	777a41cdce6612973c78058115daa0aef2e70fb2427c8b5c07acdce98eaba123	5003101	NOT_AVAILABLE
+docs/progress/R100/tables/static_rpm_manifest.tsv:130:base	binary	tensorflow2-lite-devel	armv7l	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	armv7l/tensorflow2-lite-devel-2.18.0-1.1.armv7l.rpm	sha256	3a9f6ad64fbcc36fc69dfbd717eef37804f1f6d5cd08149796d8105f4927612f	5078957	NOT_AVAILABLE
+docs/progress/R100/tables/static_rpm_manifest.tsv:131:base	binary	tensorflow2-lite-devel	x86_64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	x86_64/tensorflow2-lite-devel-2.18.0-1.1.x86_64.rpm	sha256	68a8bd49cf892ceb4a03abdf62b3f8ae065ba9f7bab6a67aca345150033261d9	5472485	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:221:base	binary	libtensorflow2-aot-runtime	aarch64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	aarch64/libtensorflow2-aot-runtime-2.18.0-1.1.aarch64.rpm	sha256	406d0a80bb8036d875fd90c59483f20dc31cd7f2bc0ca683647080d9d6b5b615	3005229	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:222:base	binary	libtensorflow2-aot-runtime	armv7l	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	armv7l/libtensorflow2-aot-runtime-2.18.0-1.1.armv7l.rpm	sha256	3795c638044c38dbb80ed1c77c14434acda6653c38973121b4c351f05b5b9b75	3707477	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:223:base	binary	libtensorflow2-aot-runtime	x86_64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	x86_64/libtensorflow2-aot-runtime-2.18.0-1.1.x86_64.rpm	sha256	6c13329c33a92f3a7464b0595a1c19315e05ab16a0f2330d57611d8d5f351ed9	2937833	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:370:base	binary	tensorflow2-aot-devel	aarch64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	aarch64/tensorflow2-aot-devel-2.18.0-1.1.aarch64.rpm	sha256	aabc971573870d1bfc9c4f0a49d02f9631ce877ce01c50c9551a82557882ede1	34697285	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:371:base	binary	tensorflow2-aot-devel	armv7l	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	armv7l/tensorflow2-aot-devel-2.18.0-1.1.armv7l.rpm	sha256	f86ab42594c151a97188b304edd5314363281ac81499441a6c1fac7f094b0a71	34694689	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:372:base	binary	tensorflow2-aot-devel	x86_64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	x86_64/tensorflow2-aot-devel-2.18.0-1.1.x86_64.rpm	sha256	08eb22be45b8a0cb77b4bc325925c27f8eceaa501b3d73aaab639ab7dd58f6e3	34693041	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:373:base	binary	tensorflow2-lite-devel	aarch64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	aarch64/tensorflow2-lite-devel-2.18.0-1.1.aarch64.rpm	sha256	777a41cdce6612973c78058115daa0aef2e70fb2427c8b5c07acdce98eaba123	5003101	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:374:base	binary	tensorflow2-lite-devel	armv7l	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	armv7l/tensorflow2-lite-devel-2.18.0-1.1.armv7l.rpm	sha256	3a9f6ad64fbcc36fc69dfbd717eef37804f1f6d5cd08149796d8105f4927612f	5078957	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:375:base	binary	tensorflow2-lite-devel	x86_64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	x86_64/tensorflow2-lite-devel-2.18.0-1.1.x86_64.rpm	sha256	68a8bd49cf892ceb4a03abdf62b3f8ae065ba9f7bab6a67aca345150033261d9	5472485	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:376:base	binary	tensorflow2-lite-flatbuf-schema	aarch64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	aarch64/tensorflow2-lite-flatbuf-schema-2.18.0-1.1.aarch64.rpm	sha256	b7973461e5dafc3e0ebade737406324882c38eb55e4e7de01d1fdba6a62a1bb0	19433	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:377:base	binary	tensorflow2-lite-flatbuf-schema	armv7l	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	armv7l/tensorflow2-lite-flatbuf-schema-2.18.0-1.1.armv7l.rpm	sha256	328036844b5dcd7587692625acbeb36a59216fba1e79197b7a61eced7d20f7a2	19509	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:378:base	binary	tensorflow2-lite-flatbuf-schema	x86_64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	x86_64/tensorflow2-lite-flatbuf-schema-2.18.0-1.1.x86_64.rpm	sha256	3ba62ce93ec48c2b3d71e0ea1339cc09a1fac388134a5bb086995d2023fd4da4	19521	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:379:base	binary	tensorflow2-lite-util	aarch64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	aarch64/tensorflow2-lite-util-2.18.0-1.1.aarch64.rpm	sha256	92305d7a37f5a2cd3ea4c53dc22c3d92c9bc77ee7cd5572230a7fb02a387ebce	2479569	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:380:base	binary	tensorflow2-lite-util	armv7l	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	armv7l/tensorflow2-lite-util-2.18.0-1.1.armv7l.rpm	sha256	d22c5d08ce697f08d2a221b3625fdd74b55271deea82355cb7a8a6c3f3523479	2487201	NOT_AVAILABLE
+docs/progress/R100/tables/undetermined_binary_manifest.tsv:381:base	binary	tensorflow2-lite-util	x86_64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	x86_64/tensorflow2-lite-util-2.18.0-1.1.x86_64.rpm	sha256	ad6d06c725a83b68d85add6cb8309afbb2f6fbd6ed50ff307a070e6b51eb0035	3027693	NOT_AVAILABLE
+docs/progress/R100/tables/static_archive_symbols.tsv:2196:tensorflow2-2.18.0-1.1.src.rpm	libtensorflow2-aot-runtime	aarch64	406d0a80bb8036d875fd90c59483f20dc31cd7f2bc0ca683647080d9d6b5b615	/usr/lib64/libtf_xla_runtime.a	0	YES	47526	_ZGVZN5Eigen8internal20manage_caching_sizesENS_6ActionEPlS2_S2_E12m_cacheSizes;_ZGVZZ34__xla_cpu_runtime_ParallelForkJoinENK3$_0clEiPKcE17vmodule_activated;_ZGVZZ34__xla_cpu_runtime_ParallelForkJoinENK3$_2clEiPKcE17vmodule_activated;_ZGVZZ34__xla_cpu_runtime_ParallelForkJoinENK3$_4clEiPKcE17vmodule_activated;_ZGVZZZ34__xla_cpu_runtime_ParallelForkJoinENK3$_1clEvENKUliPKcE_clEiS1_E17vmodule_activated;_ZL18__gthread_active_pv;_ZL20__gthread_mutex_lockP15pthread_mutex_t;_ZL22__gthread_mutex_unlockP15pthread_mutex_t;_ZL4PowiIdET_S0_i;_ZL4PowiIfET_S0_i;_ZL4TopKIfEvlllPKT_PS0_Pi;_ZN10tensorflow12_GLOBAL__N_112MemrefHolderC2EOS1_;_ZN10tensorflow12_GLOBAL__N_112MemrefHolderC2ERKNS_22XlaCompiledCpuFunction9ShapeInfoEPv;_ZN10tensorflow12_GLOBAL__N_112MemrefHolderD2Ev;_ZN10tensorflow12_GLOBAL__N_115LookupNameIndexERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEPPKc;_ZN10tensorflow22XlaCompiledCpuFunction13RunXlaRuntimeEv;_ZN10tensorflow22XlaCompiledCpuFunction29MakeXlaRuntimeDescriptorTableEv;_ZN10tensorflow22XlaCompiledCpuFunction3RunEv;_ZN10tensorflow22XlaCompiledCpuFunctionC1ERKNS0_10StaticDataENS0_9AllocModeE;_ZN10tensorflow22XlaCompiledCpuFunctionC2ERKNS0_10StaticDataENS0_9AllocModeE	PASS
+docs/progress/R100/tables/static_archive_symbols.tsv:2197:tensorflow2-2.18.0-1.1.src.rpm	libtensorflow2-aot-runtime	armv7l	3795c638044c38dbb80ed1c77c14434acda6653c38973121b4c351f05b5b9b75	/usr/lib/libtf_xla_runtime.a	0	YES	47469	_ZGVZN5Eigen8internal20manage_caching_sizesENS_6ActionEPiS2_S2_E12m_cacheSizes;_ZGVZZ34__xla_cpu_runtime_ParallelForkJoinENK3$_0clEiPKcE17vmodule_activated;_ZGVZZ34__xla_cpu_runtime_ParallelForkJoinENK3$_2clEiPKcE17vmodule_activated;_ZGVZZ34__xla_cpu_runtime_ParallelForkJoinENK3$_4clEiPKcE17vmodule_activated;_ZGVZZZ34__xla_cpu_runtime_ParallelForkJoinENK3$_1clEvENKUliPKcE_clEiS1_E17vmodule_activated;_ZL18__gthread_active_pv;_ZL20__gthread_mutex_lockP15pthread_mutex_t;_ZL22__gthread_mutex_unlockP15pthread_mutex_t;_ZL4PowiIdET_S0_i;_ZL4PowiIfET_S0_i;_ZL4TopKIfEvxxxPKT_PS0_Pi;_ZN10tensorflow12_GLOBAL__N_112MemrefHolderC2EOS1_;_ZN10tensorflow12_GLOBAL__N_112MemrefHolderC2ERKNS_22XlaCompiledCpuFunction9ShapeInfoEPv;_ZN10tensorflow12_GLOBAL__N_112MemrefHolderD2Ev;_ZN10tensorflow12_GLOBAL__N_115LookupNameIndexERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEPPKc;_ZN10tensorflow22XlaCompiledCpuFunction13RunXlaRuntimeEv;_ZN10tensorflow22XlaCompiledCpuFunction29MakeXlaRuntimeDescriptorTableEv;_ZN10tensorflow22XlaCompiledCpuFunction3RunEv;_ZN10tensorflow22XlaCompiledCpuFunctionC1ERKNS0_10StaticDataENS0_9AllocModeE;_ZN10tensorflow22XlaCompiledCpuFunctionC2ERKNS0_10StaticDataENS0_9AllocModeE	PASS
+docs/progress/R100/tables/static_archive_symbols.tsv:2198:tensorflow2-2.18.0-1.1.src.rpm	libtensorflow2-aot-runtime	x86_64	6c13329c33a92f3a7464b0595a1c19315e05ab16a0f2330d57611d8d5f351ed9	/usr/lib64/libtf_xla_runtime.a	0	YES	47331	_ZGVZN5Eigen8internal20manage_caching_sizesENS_6ActionEPlS2_S2_E12m_cacheSizes;_ZGVZZ34__xla_cpu_runtime_ParallelForkJoinENK3$_0clEiPKcE17vmodule_activated;_ZGVZZ34__xla_cpu_runtime_ParallelForkJoinENK3$_2clEiPKcE17vmodule_activated;_ZGVZZ34__xla_cpu_runtime_ParallelForkJoinENK3$_4clEiPKcE17vmodule_activated;_ZGVZZZ34__xla_cpu_runtime_ParallelForkJoinENK3$_1clEvENKUliPKcE_clEiS1_E17vmodule_activated;_ZL18__gthread_active_pv;_ZL20__gthread_mutex_lockP15pthread_mutex_t;_ZL22__gthread_mutex_unlockP15pthread_mutex_t;_ZL4PowiIdET_S0_i;_ZL4PowiIfET_S0_i;_ZL4TopKIfEvlllPKT_PS0_Pi;_ZN10tensorflow12_GLOBAL__N_112MemrefHolderC2EOS1_;_ZN10tensorflow12_GLOBAL__N_112MemrefHolderC2ERKNS_22XlaCompiledCpuFunction9ShapeInfoEPv;_ZN10tensorflow12_GLOBAL__N_112MemrefHolderD2Ev;_ZN10tensorflow12_GLOBAL__N_115LookupNameIndexERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEPPKc;_ZN10tensorflow22XlaCompiledCpuFunction13RunXlaRuntimeEv;_ZN10tensorflow22XlaCompiledCpuFunction29MakeXlaRuntimeDescriptorTableEv;_ZN10tensorflow22XlaCompiledCpuFunction3RunEv;_ZN10tensorflow22XlaCompiledCpuFunctionC1ERKNS0_10StaticDataENS0_9AllocModeE;_ZN10tensorflow22XlaCompiledCpuFunctionC2ERKNS0_10StaticDataENS0_9AllocModeE	PASS
+docs/progress/R100/tables/static_archive_symbols.tsv:2199:tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-lite-devel	aarch64	777a41cdce6612973c78058115daa0aef2e70fb2427c8b5c07acdce98eaba123	/usr/lib64/libtensorflow2-lite.a	0	YES	12134	_Z19NnApiImplementationv;_Z29CreateNnApiFromSupportLibraryPK20NnApiSLDriverImplFL5;_Z29TfLiteDelegatePrepareInternalP13TfLiteContextP14TfLiteDelegate;_Z30TfLiteDelegateGetFlagsInternalP14TfLiteDelegate;_Z38TfLiteDelegateFreeBufferHandleInternalP13TfLiteContextP14TfLiteDelegatePi;_Z42TfLiteDelegateCopyFromBufferHandleInternalP13TfLiteContextP14TfLiteDelegateiP12TfLiteTensor;_ZGVZ25TfLiteGpuDelegateV2CreateE8s_logged;_ZGVZN14EigenForTFLite8internal20manage_caching_sizesENS_6ActionEPlS2_S2_E12m_cacheSizes;_ZGVZN4absl12lts_2023080212_GLOBAL__N_19CrcEngineEvE6engine;_ZGVZN4absl12lts_2023080212crc_internal12CrcCordState17RefSharedEmptyRepEvE5empty;_ZGVZN4absl12lts_2023080212crc_internal3CRC6Crc32cEvE9singleton;_ZGVZN4absl12lts_2023080212crc_internal9CrcMemcpy10CrcAndCopyEPvPKvmNS0_8crc32c_tEbE7engines;_ZGVZN4absl12lts_2023080213base_internal12GetCachedTIDEvE9thread_id;_ZGVZN4absl12lts_2023080213base_internal8StrErrorB5cxx11EiE5tableB5cxx11;_ZGVZN4absl12lts_2023080213cord_internal12_GLOBAL__N_111GlobalQueueEvE12global_queue;_ZGVZN4absl12lts_2023080213time_internal4cctz12_GLOBAL__N_113TimeZoneMutexEvE15time_zone_mutex;_ZGVZN4absl12lts_2023080213time_internal4cctz9time_zone4Impl24ClearTimeZoneMapTestOnlyEvE7cleared;_ZGVZN4absl12lts_2023080213time_internal4cctz9time_zone4Impl7UTCImplEvE8utc_impl;_ZGVZN4absl12lts_2023080214flags_internal12FlagRegistry14GlobalRegistryEvE15global_registry;_ZGVZN4absl12lts_2023080218container_internal23GlobalHashtablezSamplerEvE7sampler	PASS
+docs/progress/R100/tables/static_archive_symbols.tsv:2200:tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-lite-devel	armv7l	3a9f6ad64fbcc36fc69dfbd717eef37804f1f6d5cd08149796d8105f4927612f	/usr/lib/libtensorflow2-lite.a	0	YES	12139	_Z19NnApiImplementationv;_Z29CreateNnApiFromSupportLibraryPK20NnApiSLDriverImplFL5;_Z29TfLiteDelegatePrepareInternalP13TfLiteContextP14TfLiteDelegate;_Z30TfLiteDelegateGetFlagsInternalP14TfLiteDelegate;_Z38TfLiteDelegateFreeBufferHandleInternalP13TfLiteContextP14TfLiteDelegatePi;_Z42TfLiteDelegateCopyFromBufferHandleInternalP13TfLiteContextP14TfLiteDelegateiP12TfLiteTensor;_ZGVZ25TfLiteGpuDelegateV2CreateE8s_logged;_ZGVZN14EigenForTFLite8internal20manage_caching_sizesENS_6ActionEPiS2_S2_E12m_cacheSizes;_ZGVZN4absl12lts_2023080212_GLOBAL__N_19CrcEngineEvE6engine;_ZGVZN4absl12lts_2023080212crc_internal12CrcCordState17RefSharedEmptyRepEvE5empty;_ZGVZN4absl12lts_2023080212crc_internal3CRC6Crc32cEvE9singleton;_ZGVZN4absl12lts_2023080212crc_internal9CrcMemcpy10CrcAndCopyEPvPKvjNS0_8crc32c_tEbE7engines;_ZGVZN4absl12lts_2023080213base_internal12GetCachedTIDEvE9thread_id;_ZGVZN4absl12lts_2023080213base_internal8StrErrorB5cxx11EiE5tableB5cxx11;_ZGVZN4absl12lts_2023080213cord_internal12_GLOBAL__N_111GlobalQueueEvE12global_queue;_ZGVZN4absl12lts_2023080213time_internal4cctz12_GLOBAL__N_113TimeZoneMutexEvE15time_zone_mutex;_ZGVZN4absl12lts_2023080213time_internal4cctz9time_zone4Impl24ClearTimeZoneMapTestOnlyEvE7cleared;_ZGVZN4absl12lts_2023080213time_internal4cctz9time_zone4Impl7UTCImplEvE8utc_impl;_ZGVZN4absl12lts_2023080214flags_internal12FlagRegistry14GlobalRegistryEvE15global_registry;_ZGVZN4absl12lts_2023080218container_internal23GlobalHashtablezSamplerEvE7sampler	PASS
+docs/progress/R100/tables/static_archive_symbols.tsv:2201:tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-lite-devel	x86_64	68a8bd49cf892ceb4a03abdf62b3f8ae065ba9f7bab6a67aca345150033261d9	/usr/lib64/libtensorflow2-lite.a	0	YES	11941	_Z19NnApiImplementationv;_Z29CreateNnApiFromSupportLibraryPK20NnApiSLDriverImplFL5;_Z29TfLiteDelegatePrepareInternalP13TfLiteContextP14TfLiteDelegate;_Z30TfLiteDelegateGetFlagsInternalP14TfLiteDelegate;_Z38TfLiteDelegateFreeBufferHandleInternalP13TfLiteContextP14TfLiteDelegatePi;_Z42TfLiteDelegateCopyFromBufferHandleInternalP13TfLiteContextP14TfLiteDelegateiP12TfLiteTensor;_ZGVZ25TfLiteGpuDelegateV2CreateE8s_logged;_ZGVZN14EigenForTFLite8internal20manage_caching_sizesENS_6ActionEPlS2_S2_E12m_cacheSizes;_ZGVZN4absl12lts_2023080212_GLOBAL__N_19CrcEngineEvE6engine;_ZGVZN4absl12lts_2023080212crc_internal12CrcCordState17RefSharedEmptyRepEvE5empty;_ZGVZN4absl12lts_2023080212crc_internal3CRC6Crc32cEvE9singleton;_ZGVZN4absl12lts_2023080212crc_internal9CrcMemcpy10CrcAndCopyEPvPKvmNS0_8crc32c_tEbE7engines;_ZGVZN4absl12lts_2023080213base_internal12GetCachedTIDEvE9thread_id;_ZGVZN4absl12lts_2023080213base_internal8StrErrorB5cxx11EiE5tableB5cxx11;_ZGVZN4absl12lts_2023080213cord_internal12_GLOBAL__N_111GlobalQueueEvE12global_queue;_ZGVZN4absl12lts_2023080213time_internal4cctz12_GLOBAL__N_113TimeZoneMutexEvE15time_zone_mutex;_ZGVZN4absl12lts_2023080213time_internal4cctz9time_zone4Impl24ClearTimeZoneMapTestOnlyEvE7cleared;_ZGVZN4absl12lts_2023080213time_internal4cctz9time_zone4Impl7UTCImplEvE8utc_impl;_ZGVZN4absl12lts_2023080214flags_internal12FlagRegistry14GlobalRegistryEvE15global_registry;_ZGVZN4absl12lts_2023080218container_internal23GlobalHashtablezSamplerEvE7sampler	PASS
+docs/progress/R100/tables/static_rpm_download_status.tsv:78:base	binary	libtensorflow2-aot-runtime	aarch64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	aarch64/libtensorflow2-aot-runtime-2.18.0-1.1.aarch64.rpm	sha256	406d0a80bb8036d875fd90c59483f20dc31cd7f2bc0ca683647080d9d6b5b615	3005229	NOT_AVAILABLE	progress/R100/downloads/static_archives/base/libtensorflow2-aot-runtime-2.18.0-1.1.aarch64.rpm	406d0a80bb8036d875fd90c59483f20dc31cd7f2bc0ca683647080d9d6b5b615	0	PASS	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/aarch64/libtensorflow2-aot-runtime-2.18.0-1.1.aarch64.rpm
+docs/progress/R100/tables/static_rpm_download_status.tsv:79:base	binary	libtensorflow2-aot-runtime	armv7l	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	armv7l/libtensorflow2-aot-runtime-2.18.0-1.1.armv7l.rpm	sha256	3795c638044c38dbb80ed1c77c14434acda6653c38973121b4c351f05b5b9b75	3707477	NOT_AVAILABLE	progress/R100/downloads/static_archives/base/libtensorflow2-aot-runtime-2.18.0-1.1.armv7l.rpm	3795c638044c38dbb80ed1c77c14434acda6653c38973121b4c351f05b5b9b75	0	PASS	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/armv7l/libtensorflow2-aot-runtime-2.18.0-1.1.armv7l.rpm
+docs/progress/R100/tables/static_rpm_download_status.tsv:80:base	binary	libtensorflow2-aot-runtime	x86_64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	x86_64/libtensorflow2-aot-runtime-2.18.0-1.1.x86_64.rpm	sha256	6c13329c33a92f3a7464b0595a1c19315e05ab16a0f2330d57611d8d5f351ed9	2937833	NOT_AVAILABLE	progress/R100/downloads/static_archives/base/libtensorflow2-aot-runtime-2.18.0-1.1.x86_64.rpm	6c13329c33a92f3a7464b0595a1c19315e05ab16a0f2330d57611d8d5f351ed9	0	PASS	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/x86_64/libtensorflow2-aot-runtime-2.18.0-1.1.x86_64.rpm
+docs/progress/R100/tables/static_rpm_download_status.tsv:129:base	binary	tensorflow2-lite-devel	aarch64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	aarch64/tensorflow2-lite-devel-2.18.0-1.1.aarch64.rpm	sha256	777a41cdce6612973c78058115daa0aef2e70fb2427c8b5c07acdce98eaba123	5003101	NOT_AVAILABLE	progress/R100/downloads/static_archives/base/tensorflow2-lite-devel-2.18.0-1.1.aarch64.rpm	777a41cdce6612973c78058115daa0aef2e70fb2427c8b5c07acdce98eaba123	0	PASS	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/aarch64/tensorflow2-lite-devel-2.18.0-1.1.aarch64.rpm
+docs/progress/R100/tables/static_rpm_download_status.tsv:130:base	binary	tensorflow2-lite-devel	armv7l	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	armv7l/tensorflow2-lite-devel-2.18.0-1.1.armv7l.rpm	sha256	3a9f6ad64fbcc36fc69dfbd717eef37804f1f6d5cd08149796d8105f4927612f	5078957	NOT_AVAILABLE	progress/R100/downloads/static_archives/base/tensorflow2-lite-devel-2.18.0-1.1.armv7l.rpm	3a9f6ad64fbcc36fc69dfbd717eef37804f1f6d5cd08149796d8105f4927612f	0	PASS	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/armv7l/tensorflow2-lite-devel-2.18.0-1.1.armv7l.rpm
+docs/progress/R100/tables/static_rpm_download_status.tsv:131:base	binary	tensorflow2-lite-devel	x86_64	0	2.18.0	1.1	tensorflow2-2.18.0-1.1.src.rpm	x86_64/tensorflow2-lite-devel-2.18.0-1.1.x86_64.rpm	sha256	68a8bd49cf892ceb4a03abdf62b3f8ae065ba9f7bab6a67aca345150033261d9	5472485	NOT_AVAILABLE	progress/R100/downloads/static_archives/base/tensorflow2-lite-devel-2.18.0-1.1.x86_64.rpm	68a8bd49cf892ceb4a03abdf62b3f8ae065ba9f7bab6a67aca345150033261d9	0	PASS	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/x86_64/tensorflow2-lite-devel-2.18.0-1.1.x86_64.rpm
+docs/progress/R100/tables/static_archive_symbols_refined.tsv:2196:tensorflow2-2.18.0-1.1.src.rpm	libtensorflow2-aot-runtime	aarch64	406d0a80bb8036d875fd90c59483f20dc31cd7f2bc0ca683647080d9d6b5b615	/usr/lib64/libtf_xla_runtime.a	0	YES	46921	_ZGVZN5Eigen8internal20manage_caching_sizesENS_6ActionEPlS2_S2_E12m_cacheSizes;_ZN10tensorflow22XlaCompiledCpuFunction13RunXlaRuntimeEv;_ZN10tensorflow22XlaCompiledCpuFunction29MakeXlaRuntimeDescriptorTableEv;_ZN10tensorflow22XlaCompiledCpuFunction3RunEv;_ZN10tensorflow22XlaCompiledCpuFunctionC1ERKNS0_10StaticDataENS0_9AllocModeE;_ZN10tensorflow22XlaCompiledCpuFunctionC2ERKNS0_10StaticDataENS0_9AllocModeE;_ZN10tensorflow22XlaCompiledCpuFunctionD0Ev;_ZN10tensorflow22XlaCompiledCpuFunctionD1Ev;_ZN10tensorflow22XlaCompiledCpuFunctionD2Ev;_ZN10tensorflow3xla15EigenConv2DImplIN5Eigen13DefaultDeviceENS2_4halfEEEvRKT_PT0_S9_S9_lllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv2DImplIN5Eigen13DefaultDeviceEfEEvRKT_PT0_S8_S8_lllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv2DImplIN5Eigen16ThreadPoolDeviceENS2_4halfEEEvRKT_PT0_S9_S9_lllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv2DImplIN5Eigen16ThreadPoolDeviceEfEEvRKT_PT0_S8_S8_lllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv3DImplIN5Eigen13DefaultDeviceENS2_4halfEEEvRKT_PT0_S9_S9_lllllllllllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv3DImplIN5Eigen13DefaultDeviceEfEEvRKT_PT0_S8_S8_lllllllllllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv3DImplIN5Eigen16ThreadPoolDeviceENS2_4halfEEEvRKT_PT0_S9_S9_lllllllllllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv3DImplIN5Eigen16ThreadPoolDeviceEfEEvRKT_PT0_S8_S8_lllllllllllllllllllllllllllll;_ZN20XlaCustomCallStatus_C2Ev;_ZN20XlaCustomCallStatus_D2Ev;_ZN3tsl10mutex_lockC2ERNS_5mutexE	PASS
+docs/progress/R100/tables/static_archive_symbols_refined.tsv:2197:tensorflow2-2.18.0-1.1.src.rpm	libtensorflow2-aot-runtime	armv7l	3795c638044c38dbb80ed1c77c14434acda6653c38973121b4c351f05b5b9b75	/usr/lib/libtf_xla_runtime.a	0	YES	46865	_ZGVZN5Eigen8internal20manage_caching_sizesENS_6ActionEPiS2_S2_E12m_cacheSizes;_ZN10tensorflow22XlaCompiledCpuFunction13RunXlaRuntimeEv;_ZN10tensorflow22XlaCompiledCpuFunction29MakeXlaRuntimeDescriptorTableEv;_ZN10tensorflow22XlaCompiledCpuFunction3RunEv;_ZN10tensorflow22XlaCompiledCpuFunctionC1ERKNS0_10StaticDataENS0_9AllocModeE;_ZN10tensorflow22XlaCompiledCpuFunctionC2ERKNS0_10StaticDataENS0_9AllocModeE;_ZN10tensorflow22XlaCompiledCpuFunctionD0Ev;_ZN10tensorflow22XlaCompiledCpuFunctionD1Ev;_ZN10tensorflow22XlaCompiledCpuFunctionD2Ev;_ZN10tensorflow3xla15EigenConv2DImplIN5Eigen13DefaultDeviceENS2_4halfEEEvRKT_PT0_S9_S9_iiiiiiiiiiiiiiiiiiiii;_ZN10tensorflow3xla15EigenConv2DImplIN5Eigen13DefaultDeviceEfEEvRKT_PT0_S8_S8_iiiiiiiiiiiiiiiiiiiii;_ZN10tensorflow3xla15EigenConv2DImplIN5Eigen16ThreadPoolDeviceENS2_4halfEEEvRKT_PT0_S9_S9_iiiiiiiiiiiiiiiiiiiii;_ZN10tensorflow3xla15EigenConv2DImplIN5Eigen16ThreadPoolDeviceEfEEvRKT_PT0_S8_S8_iiiiiiiiiiiiiiiiiiiii;_ZN10tensorflow3xla15EigenConv3DImplIN5Eigen13DefaultDeviceENS2_4halfEEEvRKT_PT0_S9_S9_iiiiiiiiiiiiiiiiiiiiiiiiiiiii;_ZN10tensorflow3xla15EigenConv3DImplIN5Eigen13DefaultDeviceEfEEvRKT_PT0_S8_S8_iiiiiiiiiiiiiiiiiiiiiiiiiiiii;_ZN10tensorflow3xla15EigenConv3DImplIN5Eigen16ThreadPoolDeviceENS2_4halfEEEvRKT_PT0_S9_S9_iiiiiiiiiiiiiiiiiiiiiiiiiiiii;_ZN10tensorflow3xla15EigenConv3DImplIN5Eigen16ThreadPoolDeviceEfEEvRKT_PT0_S8_S8_iiiiiiiiiiiiiiiiiiiiiiiiiiiii;_ZN20XlaCustomCallStatus_C2Ev;_ZN20XlaCustomCallStatus_D2Ev;_ZN3tsl10mutex_lockC2ERNS_5mutexE	PASS
+docs/progress/R100/tables/static_archive_symbols_refined.tsv:2198:tensorflow2-2.18.0-1.1.src.rpm	libtensorflow2-aot-runtime	x86_64	6c13329c33a92f3a7464b0595a1c19315e05ab16a0f2330d57611d8d5f351ed9	/usr/lib64/libtf_xla_runtime.a	0	YES	46727	_ZGVZN5Eigen8internal20manage_caching_sizesENS_6ActionEPlS2_S2_E12m_cacheSizes;_ZN10tensorflow22XlaCompiledCpuFunction13RunXlaRuntimeEv;_ZN10tensorflow22XlaCompiledCpuFunction29MakeXlaRuntimeDescriptorTableEv;_ZN10tensorflow22XlaCompiledCpuFunction3RunEv;_ZN10tensorflow22XlaCompiledCpuFunctionC1ERKNS0_10StaticDataENS0_9AllocModeE;_ZN10tensorflow22XlaCompiledCpuFunctionC2ERKNS0_10StaticDataENS0_9AllocModeE;_ZN10tensorflow22XlaCompiledCpuFunctionD0Ev;_ZN10tensorflow22XlaCompiledCpuFunctionD1Ev;_ZN10tensorflow22XlaCompiledCpuFunctionD2Ev;_ZN10tensorflow3xla15EigenConv2DImplIN5Eigen13DefaultDeviceENS2_4halfEEEvRKT_PT0_S9_S9_lllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv2DImplIN5Eigen13DefaultDeviceEfEEvRKT_PT0_S8_S8_lllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv2DImplIN5Eigen16ThreadPoolDeviceENS2_4halfEEEvRKT_PT0_S9_S9_lllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv2DImplIN5Eigen16ThreadPoolDeviceEfEEvRKT_PT0_S8_S8_lllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv3DImplIN5Eigen13DefaultDeviceENS2_4halfEEEvRKT_PT0_S9_S9_lllllllllllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv3DImplIN5Eigen13DefaultDeviceEfEEvRKT_PT0_S8_S8_lllllllllllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv3DImplIN5Eigen16ThreadPoolDeviceENS2_4halfEEEvRKT_PT0_S9_S9_lllllllllllllllllllllllllllll;_ZN10tensorflow3xla15EigenConv3DImplIN5Eigen16ThreadPoolDeviceEfEEvRKT_PT0_S8_S8_lllllllllllllllllllllllllllll;_ZN20XlaCustomCallStatus_C2Ev;_ZN20XlaCustomCallStatus_D2Ev;_ZN3tsl10mutex_lockC2ERNS_5mutexE	PASS
+docs/progress/R100/tables/static_archive_symbols_refined.tsv:2199:tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-lite-devel	aarch64	777a41cdce6612973c78058115daa0aef2e70fb2427c8b5c07acdce98eaba123	/usr/lib64/libtensorflow2-lite.a	0	YES	10038	_Z19NnApiImplementationv;_Z29CreateNnApiFromSupportLibraryPK20NnApiSLDriverImplFL5;_Z29TfLiteDelegatePrepareInternalP13TfLiteContextP14TfLiteDelegate;_Z30TfLiteDelegateGetFlagsInternalP14TfLiteDelegate;_Z38TfLiteDelegateFreeBufferHandleInternalP13TfLiteContextP14TfLiteDelegatePi;_Z42TfLiteDelegateCopyFromBufferHandleInternalP13TfLiteContextP14TfLiteDelegateiP12TfLiteTensor;_ZGVZN14EigenForTFLite8internal20manage_caching_sizesENS_6ActionEPlS2_S2_E12m_cacheSizes;_ZGVZN4absl12lts_2023080212crc_internal9CrcMemcpy10CrcAndCopyEPvPKvmNS0_8crc32c_tEbE7engines;_ZGVZN5Eigen8internal20manage_caching_sizesENS_6ActionEPlS2_S2_E12m_cacheSizes;_ZGVZN6tflite13optimized_ops22ClampWithRangeAndStoreEPa11__Int8x16_t12uint8x16x2_tE7max_dup;_ZGVZN6tflite13optimized_ops22ClampWithRangeAndStoreEPa11__Int8x16_t12uint8x16x2_tE7min_dup;_ZGVZN8gemmlowp13GlobalMutexes15EightBitIntGemmEvE1m;_ZGVZN8gemmlowp22GetHardwareConcurrencyEiE22hardware_threads_count;_ZN10farmhashcc14Fingerprint128EPKcm;_ZN10farmhashcc14Hash32WithSeedEPKcmj;_ZN10farmhashcc19CityHash128WithSeedEPKcmSt4pairImmE;_ZN10farmhashcc6Hash32EPKcm;_ZN10farmhashmk14Hash32WithSeedEPKcmj;_ZN10farmhashmk6Hash32EPKcm;_ZN10farmhashna14Hash64WithSeedEPKcmm	PASS
+docs/progress/R100/tables/static_archive_symbols_refined.tsv:2200:tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-lite-devel	armv7l	3a9f6ad64fbcc36fc69dfbd717eef37804f1f6d5cd08149796d8105f4927612f	/usr/lib/libtensorflow2-lite.a	0	YES	10040	_Z19NnApiImplementationv;_Z29CreateNnApiFromSupportLibraryPK20NnApiSLDriverImplFL5;_Z29TfLiteDelegatePrepareInternalP13TfLiteContextP14TfLiteDelegate;_Z30TfLiteDelegateGetFlagsInternalP14TfLiteDelegate;_Z38TfLiteDelegateFreeBufferHandleInternalP13TfLiteContextP14TfLiteDelegatePi;_Z42TfLiteDelegateCopyFromBufferHandleInternalP13TfLiteContextP14TfLiteDelegateiP12TfLiteTensor;_ZGVZN14EigenForTFLite8internal20manage_caching_sizesENS_6ActionEPiS2_S2_E12m_cacheSizes;_ZGVZN4absl12lts_2023080212crc_internal9CrcMemcpy10CrcAndCopyEPvPKvjNS0_8crc32c_tEbE7engines;_ZGVZN5Eigen8internal20manage_caching_sizesENS_6ActionEPiS2_S2_E12m_cacheSizes;_ZGVZN6tflite12tensor_utils14RoundToNearestE19__simd128_float32_tE12zero_val_dup;_ZGVZN6tflite12tensor_utils14RoundToNearestE19__simd128_float32_tE14point5_val_dup;_ZGVZN6tflite13optimized_ops14RoundToNearestE19__simd128_float32_tE12zero_val_dup;_ZGVZN6tflite13optimized_ops14RoundToNearestE19__simd128_float32_tE14point5_val_dup;_ZGVZN6tflite13optimized_ops14RoundToNearestE19__simd128_float32_tE20minus_point5_val_dup;_ZGVZN6tflite13optimized_ops22ClampWithRangeAndStoreEPa16__simd128_int8_t12uint8x16x2_tE7max_dup;_ZGVZN6tflite13optimized_ops22ClampWithRangeAndStoreEPa16__simd128_int8_t12uint8x16x2_tE7min_dup;_ZGVZN8gemmlowp13GlobalMutexes15EightBitIntGemmEvE1m;_ZGVZN8gemmlowp22GetHardwareConcurrencyEiE22hardware_threads_count;_ZN10farmhashcc14Fingerprint128EPKcj;_ZN10farmhashcc14Hash32WithSeedEPKcjj	PASS
+docs/progress/R100/tables/static_archive_symbols_refined.tsv:2201:tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-lite-devel	x86_64	68a8bd49cf892ceb4a03abdf62b3f8ae065ba9f7bab6a67aca345150033261d9	/usr/lib64/libtensorflow2-lite.a	0	YES	9854	_Z19NnApiImplementationv;_Z29CreateNnApiFromSupportLibraryPK20NnApiSLDriverImplFL5;_Z29TfLiteDelegatePrepareInternalP13TfLiteContextP14TfLiteDelegate;_Z30TfLiteDelegateGetFlagsInternalP14TfLiteDelegate;_Z38TfLiteDelegateFreeBufferHandleInternalP13TfLiteContextP14TfLiteDelegatePi;_Z42TfLiteDelegateCopyFromBufferHandleInternalP13TfLiteContextP14TfLiteDelegateiP12TfLiteTensor;_ZGVZN14EigenForTFLite8internal20manage_caching_sizesENS_6ActionEPlS2_S2_E12m_cacheSizes;_ZGVZN4absl12lts_2023080212crc_internal9CrcMemcpy10CrcAndCopyEPvPKvmNS0_8crc32c_tEbE7engines;_ZGVZN5Eigen8internal20manage_caching_sizesENS_6ActionEPlS2_S2_E12m_cacheSizes;_ZGVZN8gemmlowp13GlobalMutexes15EightBitIntGemmEvE1m;_ZGVZN8gemmlowp22GetHardwareConcurrencyEiE22hardware_threads_count;_ZN10farmhashcc14Fingerprint128EPKcm;_ZN10farmhashcc14Hash32WithSeedEPKcmj;_ZN10farmhashcc19CityHash128WithSeedEPKcmSt4pairImmE;_ZN10farmhashcc6Hash32EPKcm;_ZN10farmhashmk14Hash32WithSeedEPKcmj;_ZN10farmhashmk6Hash32EPKcm;_ZN10farmhashna14Hash64WithSeedEPKcmm;_ZN10farmhashna15Hash64WithSeedsEPKcmmm;_ZN10farmhashna6Hash64EPKcm	PASS
+docs/progress/R100/tables/base_filelist_cpp_carriers.tsv:137:tensorflow2	tensorflow2-2.18.0-1.1.src.rpm	libtensorflow2-aot-runtime	aarch64	406d0a80bb8036d875fd90c59483f20dc31cd7f2bc0ca683647080d9d6b5b615	aarch64/libtensorflow2-aot-runtime-2.18.0-1.1.aarch64.rpm	1	0	/usr/lib64/libtf_xla_runtime.a	NONE
+docs/progress/R100/tables/base_filelist_cpp_carriers.tsv:138:tensorflow2	tensorflow2-2.18.0-1.1.src.rpm	libtensorflow2-aot-runtime	armv7l	3795c638044c38dbb80ed1c77c14434acda6653c38973121b4c351f05b5b9b75	armv7l/libtensorflow2-aot-runtime-2.18.0-1.1.armv7l.rpm	1	0	/usr/lib/libtf_xla_runtime.a	NONE
+docs/progress/R100/tables/base_filelist_cpp_carriers.tsv:139:tensorflow2	tensorflow2-2.18.0-1.1.src.rpm	libtensorflow2-aot-runtime	x86_64	6c13329c33a92f3a7464b0595a1c19315e05ab16a0f2330d57611d8d5f351ed9	x86_64/libtensorflow2-aot-runtime-2.18.0-1.1.x86_64.rpm	1	0	/usr/lib64/libtf_xla_runtime.a	NONE
+docs/progress/R100/tables/base_filelist_cpp_carriers.tsv:140:tensorflow2	tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-aot-devel	aarch64	aabc971573870d1bfc9c4f0a49d02f9631ce877ce01c50c9551a82557882ede1	aarch64/tensorflow2-aot-devel-2.18.0-1.1.aarch64.rpm	0	912	NONE	/usr/include/tensorflow2/aot/include/external/cudnn_frontend_archive/_virtual_includes/cudnn_frontend/third_party/cudnn_frontend/include/contrib/nlohmann/json/json.hpp;/usr/include/tensorflow2/aot/include/external/cudnn_frontend_archive/include/contrib/nlohmann/json/json.hpp;/usr/include/tensorflow2/aot/include/external/nccl_archive/_virtual_includes/include_hdrs/nvtx3.hpp;/usr/include/tensorflow2/aot/include/external/nccl_archive/src/include/nvtx3.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl_ocl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl_sycl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl_threadpool.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl_threadpool_iface.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_common.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_graph.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_graph_sycl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_ocl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_sycl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_threadpool.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_threadpool_iface.hpp;/usr/include/tensorflow2/aot/include/external/onednn/src/common/batch_normalization_pd.hpp;/usr/include/tensorflow2/aot/include/external/onednn/src/common/bfloat16.hpp;/usr/include/tensorflow2/aot/include/external/onednn/src/common/binary_pd.hpp
+docs/progress/R100/tables/base_filelist_cpp_carriers.tsv:141:tensorflow2	tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-aot-devel	armv7l	f86ab42594c151a97188b304edd5314363281ac81499441a6c1fac7f094b0a71	armv7l/tensorflow2-aot-devel-2.18.0-1.1.armv7l.rpm	0	912	NONE	/usr/include/tensorflow2/aot/include/external/cudnn_frontend_archive/_virtual_includes/cudnn_frontend/third_party/cudnn_frontend/include/contrib/nlohmann/json/json.hpp;/usr/include/tensorflow2/aot/include/external/cudnn_frontend_archive/include/contrib/nlohmann/json/json.hpp;/usr/include/tensorflow2/aot/include/external/nccl_archive/_virtual_includes/include_hdrs/nvtx3.hpp;/usr/include/tensorflow2/aot/include/external/nccl_archive/src/include/nvtx3.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl_ocl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl_sycl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl_threadpool.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl_threadpool_iface.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_common.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_graph.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_graph_sycl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_ocl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_sycl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_threadpool.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_threadpool_iface.hpp;/usr/include/tensorflow2/aot/include/external/onednn/src/common/batch_normalization_pd.hpp;/usr/include/tensorflow2/aot/include/external/onednn/src/common/bfloat16.hpp;/usr/include/tensorflow2/aot/include/external/onednn/src/common/binary_pd.hpp
+docs/progress/R100/tables/base_filelist_cpp_carriers.tsv:142:tensorflow2	tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-aot-devel	x86_64	08eb22be45b8a0cb77b4bc325925c27f8eceaa501b3d73aaab639ab7dd58f6e3	x86_64/tensorflow2-aot-devel-2.18.0-1.1.x86_64.rpm	0	912	NONE	/usr/include/tensorflow2/aot/include/external/cudnn_frontend_archive/_virtual_includes/cudnn_frontend/third_party/cudnn_frontend/include/contrib/nlohmann/json/json.hpp;/usr/include/tensorflow2/aot/include/external/cudnn_frontend_archive/include/contrib/nlohmann/json/json.hpp;/usr/include/tensorflow2/aot/include/external/nccl_archive/_virtual_includes/include_hdrs/nvtx3.hpp;/usr/include/tensorflow2/aot/include/external/nccl_archive/src/include/nvtx3.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl_ocl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl_sycl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl_threadpool.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/dnnl_threadpool_iface.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_common.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_graph.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_graph_sycl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_ocl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_sycl.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_threadpool.hpp;/usr/include/tensorflow2/aot/include/external/onednn/include/oneapi/dnnl/dnnl_threadpool_iface.hpp;/usr/include/tensorflow2/aot/include/external/onednn/src/common/batch_normalization_pd.hpp;/usr/include/tensorflow2/aot/include/external/onednn/src/common/bfloat16.hpp;/usr/include/tensorflow2/aot/include/external/onednn/src/common/binary_pd.hpp
+docs/progress/R100/tables/base_filelist_cpp_carriers.tsv:143:tensorflow2	tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-lite-devel	aarch64	777a41cdce6612973c78058115daa0aef2e70fb2427c8b5c07acdce98eaba123	aarch64/tensorflow2-lite-devel-2.18.0-1.1.aarch64.rpm	1	0	/usr/lib64/libtensorflow2-lite.a	NONE
+docs/progress/R100/tables/base_filelist_cpp_carriers.tsv:144:tensorflow2	tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-lite-devel	armv7l	3a9f6ad64fbcc36fc69dfbd717eef37804f1f6d5cd08149796d8105f4927612f	armv7l/tensorflow2-lite-devel-2.18.0-1.1.armv7l.rpm	1	0	/usr/lib/libtensorflow2-lite.a	NONE
+docs/progress/R100/tables/base_filelist_cpp_carriers.tsv:145:tensorflow2	tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-lite-devel	x86_64	68a8bd49cf892ceb4a03abdf62b3f8ae065ba9f7bab6a67aca345150033261d9	x86_64/tensorflow2-lite-devel-2.18.0-1.1.x86_64.rpm	1	0	/usr/lib64/libtensorflow2-lite.a	NONE
+docs/progress/R100/tables/base_cpp_package_decisions.tsv:68:tensorflow2	UNDETERMINED	U_STATIC_CPP_ARCHIVE_WITH_BUILDREQUIRE_CONSUMERS_LINK_NOT_PROVEN	ACTUAL_CPP_BUILD_LOG;CPP_RUNTIME_DEPENDENCY;GLOBAL_DEMANGLED_CPP_IN_STATIC_ARCHIVE;CPP_HEADER_PAYLOAD	aarch64;armv7l;x86_64	YES	6	3	NO	0	NONE	NONE	3	inference-engine-tflite;nnstreamer;nntrainer	NONE	NO	platform/upstream/tensorflow2#1cdba73549f741720f11dd53da1bb516b03763a2	ARMV7L_SYMBOL_EDGES;ALL_ARCH_BUILDS_AND_ARTIFACT_METADATA
+docs/progress/R98/tables/runtime_signal_source_summary.tsv:37:base	tensorflow2	tensorflow2-2.18.0-1.1.src.rpm	tensorflow2-lite-util	aarch64;armv7l;x86_64	3	0	libstdc++.so.6;libstdc++.so.6()(64bit);libstdc++.so.6(CXXABI_1.3);libstdc++.so.6(CXXABI_1.3)(64bit);libstdc++.so.6(CXXABI_1.3.5);libstdc++.so.6(CXXABI_1.3.5)(64bit);libstdc++.so.6(CXXABI_1.3.9);libstdc++.so.6(CXXABI_1.3.9)(64bit);libstdc++.so.6(GLIBCXX_3.4);libstdc++.so.6(GLIBCXX_3.4)(64bit);libstdc++.so.6(GLIBCXX_3.4.11);libstdc++.so.6(GLIBCXX_3.4.11)(64bit);libstdc++.so.6(GLIBCXX_3.4.14);libstdc++.so.6(GLIBCXX_3.4.14)(64bit);libstdc++.so.6(GLIBCXX_3.4.15);libstdc++.so.6(GLIBCXX_3.4.15)(64bit);libstdc++.so.6(GLIBCXX_3.4.17);libstdc++.so.6(GLIBCXX_3.4.17)(64bit);libstdc++.so.6(GLIBCXX_3.4.18);libstdc++.so.6(GLIBCXX_3.4.18)(64bit);libstdc++.so.6(GLIBCXX_3.4.19);libstdc++.so.6(GLIBCXX_3.4.19)(64bit);libstdc++.so.6(GLIBCXX_3.4.20);libstdc++.so.6(GLIBCXX_3.4.20)(64bit);libstdc++.so.6(GLIBCXX_3.4.21);libstdc++.so.6(GLIBCXX_3.4.21)(64bit);libstdc++.so.6(GLIBCXX_3.4.22);libstdc++.so.6(GLIBCXX_3.4.22)(64bit);libstdc++.so.6(GLIBCXX_3.4.26);libstdc++.so.6(GLIBCXX_3.4.26)(64bit);libstdc++.so.6(GLIBCXX_3.4.29);libstdc++.so.6(GLIBCXX_3.4.29)(64bit);libstdc++.so.6(GLIBCXX_3.4.30);libstdc++.so.6(GLIBCXX_3.4.30)(64bit);libstdc++.so.6(GLIBCXX_3.4.32);libstdc++.so.6(GLIBCXX_3.4.32)(64bit);libstdc++.so.6(GLIBCXX_3.4.9);libstdc++.so.6(GLIBCXX_3.4.9)(64bit)
