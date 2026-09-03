@@ -1,0 +1,146 @@
+# 10 个 NEED_LIBCXX 包的实施清单
+
+以下仅是后续实施输入，本任务未修改 spec、未执行构建。`R100快照revision` 是判定证据锚点；另一列是 2026-09-03 实际读取的分支 HEAD。
+
+## 共同行为
+
+每个包建议显式声明 `BuildRequires: libc++-devel` 与 `BuildRequires: libc++abi-devel`，并只对 C++/链接添加：
+
+```sh
+export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+```
+
+| 源码包 | 仓库 | R100快照revision | 2026-09-03观测到的tizen_base_HEAD | spec路径 | 当前spec中build行 | 建议改法 | 验证 |
+|---|---|---|---|---|---|---|---|
+| abseil-cpp | platform/upstream/abseil-cpp | 9c39c516dca54c786ddc5da45a5a15acf41ef75e | 9c39c516dca54c786ddc5da45a5a15acf41ef75e | packaging/abseil-cpp.spec | 45 | 增加 libc++-devel/libc++abi-devel BuildRequires；在 %build 后、%{cmake} 前追加仅作用于 C++/链接的标准库 flags。 通用 flags：CXXFLAGS="${CXXFLAGS} -stdlib=libc++"；LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" | 三架构构建日志确认 clang++ 22.1.8 且编译/链接命令含目标 flags；逐个 C++ ELF 用 readelf -d 确认直接 NEEDED 含 libc++.so.1/libc++abi.so.1、不含 libstdc++.so.6，并用 readelf/nm 确认无 GLIBCXX 引用；重跑 Unified→Base 与 Base 内部精确符号边及包自带测试/代表性 smoke test。 |
+| bcc-tools | platform/upstream/bcc | 97128ee3dbccd2851cfa94dc723edb2abcbefc1d | dd26ba03fc8109396bf841f1bbf7b4df0a8ed9d2 | packaging/bcc-tools.spec | 58 | 增加两个 devel BuildRequires；在 %build 后、LLVM_VERSION_MAJOR 探测和 cmake 前导出 CXXFLAGS/LDFLAGS。 通用 flags：CXXFLAGS="${CXXFLAGS} -stdlib=libc++"；LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" | 三架构构建日志确认 clang++ 22.1.8 且编译/链接命令含目标 flags；逐个 C++ ELF 用 readelf -d 确认直接 NEEDED 含 libc++.so.1/libc++abi.so.1、不含 libstdc++.so.6，并用 readelf/nm 确认无 GLIBCXX 引用；重跑 Unified→Base 与 Base 内部精确符号边及包自带测试/代表性 smoke test。 |
+| boost | platform/upstream/boost | 58b70f335aec5641540dbe04dfd56fad5af43658 | 69203710b8582c489f420ef53a769cc6077c250b | packaging/boost.spec | 429 | 增加两个 devel BuildRequires；把 boost-devel 的 libstdc++-devel Requires 改为 libc++-devel；在现有 arm flags 后扩展 CXXFLAGS，并把 libc++ 链接 flags 合入现有 LDFLAGS；b2 已显式消费两变量。 通用 flags：CXXFLAGS="${CXXFLAGS} -stdlib=libc++"；LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" | 三架构构建日志确认 clang++ 22.1.8 且编译/链接命令含目标 flags；逐个 C++ ELF 用 readelf -d 确认直接 NEEDED 含 libc++.so.1/libc++abi.so.1、不含 libstdc++.so.6，并用 readelf/nm 确认无 GLIBCXX 引用；重跑 Unified→Base 与 Base 内部精确符号边及包自带测试/代表性 smoke test。 |
+| bpftrace | platform/upstream/bpftrace | 30e51cd665360f85b665308dc13ba27df0c5f739 | 30e51cd665360f85b665308dc13ba27df0c5f739 | packaging/bpftrace.spec | 67 | 增加两个 devel BuildRequires；在 sanitizer unforce 之后、创建 build 目录之前导出 CXXFLAGS/LDFLAGS，再进入 cmake。 通用 flags：CXXFLAGS="${CXXFLAGS} -stdlib=libc++"；LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" | 三架构构建日志确认 clang++ 22.1.8 且编译/链接命令含目标 flags；逐个 C++ ELF 用 readelf -d 确认直接 NEEDED 含 libc++.so.1/libc++abi.so.1、不含 libstdc++.so.6，并用 readelf/nm 确认无 GLIBCXX 引用；重跑 Unified→Base 与 Base 内部精确符号边及包自带测试/代表性 smoke test。 |
+| icu | platform/upstream/icu | e4a4d7411b0f288581cf020a176b5dddbb504ae7 | e4a4d7411b0f288581cf020a176b5dddbb504ae7 | packaging/icu.spec | 74 | 增加两个 devel BuildRequires；在既有 CXXFLAGS export 上追加 -stdlib=libc++，并在 configure 前导出 libc++abi 链接 flags。 通用 flags：CXXFLAGS="${CXXFLAGS} -stdlib=libc++"；LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" | 三架构构建日志确认 clang++ 22.1.8 且编译/链接命令含目标 flags；逐个 C++ ELF 用 readelf -d 确认直接 NEEDED 含 libc++.so.1/libc++abi.so.1、不含 libstdc++.so.6，并用 readelf/nm 确认无 GLIBCXX 引用；重跑 Unified→Base 与 Base 内部精确符号边及包自带测试/代表性 smoke test。 |
+| jsoncpp | platform/upstream/jsoncpp | 21c9dcd2bc8f51f8bfe5173b49780dc707eef9f9 | 96bf0c36eed62a6d7bfc9bdb30f0e41d877aa6f0 | packaging/jsoncpp.spec | 35 | 增加两个 devel BuildRequires；在 %build 后、build 子目录与 %cmake 前导出 CXXFLAGS/LDFLAGS。 通用 flags：CXXFLAGS="${CXXFLAGS} -stdlib=libc++"；LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" | 三架构构建日志确认 clang++ 22.1.8 且编译/链接命令含目标 flags；逐个 C++ ELF 用 readelf -d 确认直接 NEEDED 含 libc++.so.1/libc++abi.so.1、不含 libstdc++.so.6，并用 readelf/nm 确认无 GLIBCXX 引用；重跑 Unified→Base 与 Base 内部精确符号边及包自带测试/代表性 smoke test。 |
+| libsigc++ | platform/upstream/libsigc++ | 5f177f7c98ea29833989b5d0d6a79fece9701545 | 5f177f7c98ea29833989b5d0d6a79fece9701545 | packaging/libsigc++.spec | 39 | 增加两个 devel BuildRequires；在 %build 后、%meson 前导出 CXXFLAGS/LDFLAGS；Meson 从环境初始化编译与链接参数。 通用 flags：CXXFLAGS="${CXXFLAGS} -stdlib=libc++"；LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" | 三架构构建日志确认 clang++ 22.1.8 且编译/链接命令含目标 flags；逐个 C++ ELF 用 readelf -d 确认直接 NEEDED 含 libc++.so.1/libc++abi.so.1、不含 libstdc++.so.6，并用 readelf/nm 确认无 GLIBCXX 引用；重跑 Unified→Base 与 Base 内部精确符号边及包自带测试/代表性 smoke test。 |
+| llvm | platform/upstream/llvm | 08a64b6eb95ed74339f1d862a6c22a2f93fa78f9 | 2d23367d74afbf2bb1e9e4013fce072b3a154109 | packaging/llvm.spec | 170 | 增加两个 devel BuildRequires；在 release flags 规范化后追加 CXXFLAGS/LDFLAGS；同时把该 LDFLAGS 合入显式 CMAKE_SHARED_LINKER_FLAGS 与 CMAKE_EXE_LINKER_FLAGS，避免显式 -D 覆盖环境初始化值。不要修改 libcxx-runtimes.spec。 通用 flags：CXXFLAGS="${CXXFLAGS} -stdlib=libc++"；LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" | 三架构构建日志确认 clang++ 22.1.8 且编译/链接命令含目标 flags；逐个 C++ ELF 用 readelf -d 确认直接 NEEDED 含 libc++.so.1/libc++abi.so.1、不含 libstdc++.so.6，并用 readelf/nm 确认无 GLIBCXX 引用；重跑 Unified→Base 与 Base 内部精确符号边及包自带测试/代表性 smoke test。 |
+| pcre | platform/upstream/pcre | feba6a19627f5d6e74d551ef2fc8b33af0547780 | feba6a19627f5d6e74d551ef2fc8b33af0547780 | packaging/pcre.spec | 99 | 增加两个 devel BuildRequires；把 pcre-devel 的 libstdc++-devel Requires 改为 libc++-devel；在既有 CFLAGS export 后、autoreconf/configure 前导出 CXXFLAGS/LDFLAGS。 通用 flags：CXXFLAGS="${CXXFLAGS} -stdlib=libc++"；LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" | 三架构构建日志确认 clang++ 22.1.8 且编译/链接命令含目标 flags；逐个 C++ ELF 用 readelf -d 确认直接 NEEDED 含 libc++.so.1/libc++abi.so.1、不含 libstdc++.so.6，并用 readelf/nm 确认无 GLIBCXX 引用；重跑 Unified→Base 与 Base 内部精确符号边及包自带测试/代表性 smoke test。 |
+| taglib | platform/upstream/taglib | 4e7de646d897ed5a92111799058b21705a3bd34c | 4e7de646d897ed5a92111799058b21705a3bd34c | packaging/taglib.spec | 28 | 增加两个 devel BuildRequires；在 %build 后、版本计算和 %cmake 前导出 CXXFLAGS/LDFLAGS。 通用 flags：CXXFLAGS="${CXXFLAGS} -stdlib=libc++"；LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed" | 三架构构建日志确认 clang++ 22.1.8 且编译/链接命令含目标 flags；逐个 C++ ELF 用 readelf -d 确认直接 NEEDED 含 libc++.so.1/libc++abi.so.1、不含 libstdc++.so.6，并用 readelf/nm 确认无 GLIBCXX 引用；重跑 Unified→Base 与 Base 内部精确符号边及包自带测试/代表性 smoke test。 |
+
+## 构建次序检查点
+
+`libcxx-runtimes` 必须先产出并发布四个 runtime/devel 包；随后构建 `llvm`；`bcc-tools` 与 `bpftrace` 在新 LLVM 之后构建。其余库可在新 runtime/devel 可解析后构建。仅有 project_config 的 `Support:` 不能证明 QuickBuild 会自动建立该 source 调度边，实施前需检查任务图或采用 R84 记录的两阶段方式。
+--- R101 report relevant ---
+docs/progress/R101/SUMMARY_ONE_PAGE.md:1:# Tizen-Base-Toolchain libc++ 逐包方案：一页汇总
+docs/progress/R101/SUMMARY_ONE_PAGE.md-2-
+docs/progress/R101/SUMMARY_ONE_PAGE.md-3-## 范围与数字
+docs/progress/R101/SUMMARY_ONE_PAGE.md-4-
+docs/progress/R101/SUMMARY_ONE_PAGE.md-5-输入是 `tizen-base-toolchain_20260828.101647`，不是 R95 的 GCC 标准
+--
+docs/progress/R101/SUMMARY_ONE_PAGE.md-16-
+docs/progress/R101/SUMMARY_ONE_PAGE.md-17-需要改的 10 包：`abseil-cpp`、`bcc-tools`、`boost`、`bpftrace`、`icu`、
+docs/progress/R101/SUMMARY_ONE_PAGE.md-18-`jsoncpp`、`libsigc++`、`llvm`、`pcre`、`taglib`。
+docs/progress/R101/SUMMARY_ONE_PAGE.md-19-
+docs/progress/R101/SUMMARY_ONE_PAGE.md:20:## 为什么采用逐包方式
+docs/progress/R101/SUMMARY_ONE_PAGE.md-21-
+docs/progress/R101/SUMMARY_ONE_PAGE.md:22:- 逐包方式只触及 10 个已由实际符号边证实需要迁移的 spec。
+docs/progress/R101/SUMMARY_ONE_PAGE.md-23-- 全局方式会把定义暴露给全部 254 包，并额外触及 55 个已判定不需要迁移的
+docs/progress/R101/SUMMARY_ONE_PAGE.md-24-  C++ 包、6 个当前 GCC 包和 2 个未定包。
+docs/progress/R101/SUMMARY_ONE_PAGE.md:25:- GCC 14.2.0 在 armv7l/x86_64 实测明确拒绝 `-stdlib=libc++`，不是静默忽略；
+docs/progress/R101/SUMMARY_ONE_PAGE.md-26-  这 6 个当前 GCC 包会形成明确失败暴露面。aarch64 GCC driver 环境自身退出
+docs/progress/R101/SUMMARY_ONE_PAGE.md-27-  139，故该架构的同项实测是 `NOT_OBSERVED`。
+docs/progress/R101/SUMMARY_ONE_PAGE.md-28-- Clang 22.1.8 会无诊断接受该选项，但 `-###` 证明它实际选择 `-lc++`，不是
+docs/progress/R101/SUMMARY_ONE_PAGE.md-29-  “编过但选项没作用”。对 55 个不需要迁移的 C++ 包，全局注入会真实改变标准库。
+--
+docs/progress/R101/SUMMARY_ONE_PAGE.md-33-121 条布局敏感 ELF 边归并为 4 个源码包对：`bcc-tools→llvm`、
+docs/progress/R101/SUMMARY_ONE_PAGE.md-34-`boost→boost`、`bpftrace→llvm`、`llvm→llvm`。四个 provider 全在 10 包集合内；
+docs/progress/R101/SUMMARY_ONE_PAGE.md-35-**`NEED_LIBCXX → NO_LIBCXX_NEEDED` 的布局敏感边为 0**。
+docs/progress/R101/SUMMARY_ONE_PAGE.md-36-
+docs/progress/R101/SUMMARY_ONE_PAGE.md:37:## 实施与验证要点
+docs/progress/R101/SUMMARY_ONE_PAGE.md-38-
+docs/progress/R101/SUMMARY_ONE_PAGE.md-39-每个目标 spec 显式声明 libc++ devel 依赖，只对 C++/链接加入
+docs/progress/R101/SUMMARY_ONE_PAGE.md:40:`-stdlib=libc++` 和 libc++abi 链接参数。Boost/PCRE 还需更新 devel 子包中现有的
+docs/progress/R101/SUMMARY_ONE_PAGE.md-41-`libstdc++-devel` Requires；LLVM 要把 LDFLAGS 合入其显式 CMake linker flags。
+docs/progress/R101/SUMMARY_ONE_PAGE.md-42-
+docs/progress/R101/SUMMARY_ONE_PAGE.md-43-构建顺序：先发布 `libcxx-runtimes`，再构建 LLVM，之后构建 BCC/bpftrace 及其余
+docs/progress/R101/SUMMARY_ONE_PAGE.md:44:目标包。逐架构验证编译器、实际命令、`DT_NEEDED`、`GLIBCXX_*`、精确边界和
+docs/progress/R101/SUMMARY_ONE_PAGE.md-45-运行 smoke test。
+docs/progress/R101/SUMMARY_ONE_PAGE.md-46-
+docs/progress/R101/SUMMARY_ONE_PAGE.md-47-## 尚未覆盖
+docs/progress/R101/SUMMARY_ONE_PAGE.md-48-
+--
+docs/progress/R101/REPORT.md-112-本轮通过 Gerrit SSH 只读取得其 `tizen_base`，并从 R100 快照 revision 检出
+docs/progress/R101/REPORT.md-113-`packaging/` 复核；随后又从 2026-09-03 实际分支 HEAD 导出当前 spec。当前
+docs/progress/R101/REPORT.md-114-`bcc-tools`、`boost`、`jsoncpp`、`llvm` 已较 R100 快照前移，其余六个 HEAD 与
+docs/progress/R101/REPORT.md-115-快照锚点相同。完整双 revision、仓库、spec 路径和 `%build` 行号见
+docs/progress/R101/REPORT.md:116:`tables/implementation_10_packages.tsv`。
+docs/progress/R101/REPORT.md-117-
+docs/progress/R101/REPORT.md:118:共同建议是显式增加 `libc++-devel`、`libc++abi-devel` BuildRequires，仅向
+docs/progress/R101/REPORT.md-119-C++ 与链接阶段加入：
+docs/progress/R101/REPORT.md-120-
+docs/progress/R101/REPORT.md-121-```sh
+docs/progress/R101/REPORT.md:122:export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+docs/progress/R101/REPORT.md:123:export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+docs/progress/R101/REPORT.md-124-```
+docs/progress/R101/REPORT.md-125-
+docs/progress/R101/REPORT.md-126-包级差异：
+docs/progress/R101/REPORT.md-127-
+--
+docs/progress/R101/REPORT.md-135-  必须把新的 `LDFLAGS` 合入这两个 `-D` 值，避免覆盖。这里改的是
+docs/progress/R101/REPORT.md-136-  `packaging/llvm.spec`，不是已显式构建目标运行时的
+docs/progress/R101/REPORT.md-137-  `packaging/libcxx-runtimes.spec`。
+docs/progress/R101/REPORT.md-138-
+docs/progress/R101/REPORT.md:139:这些是后续实施建议，不是已验证补丁。实施时先产出并发布
+docs/progress/R101/REPORT.md-140-`libcxx-runtimes`，再构建 LLVM，然后构建 `bcc-tools`/`bpftrace`；不能仅凭
+docs/progress/R101/REPORT.md-141-`Support:` 推断 QuickBuild 自动排序。
+docs/progress/R101/REPORT.md-142-
+docs/progress/R101/REPORT.md:143:每包验证至少包括：三架构日志确认 Clang 22.1.8 和 flags；所有该包 C++ ELF 的
+docs/progress/R101/REPORT.md-144-`DT_NEEDED` 不再含 `libstdc++.so.6`、包含目标 libc++/libc++abi 依赖；符号表无
+docs/progress/R101/REPORT.md-145-`GLIBCXX_*` 引用；重跑 Unified→Base/Base 内部边扫描；运行包自测及代表性 smoke
+docs/progress/R101/REPORT.md:146:test。具体逐包放置点见 Markdown 实施清单。
+docs/progress/R101/REPORT.md-147-
+docs/progress/R101/REPORT.md-148-## 6. 两个未定包
+docs/progress/R101/REPORT.md-149-
+docs/progress/R101/REPORT.md-150-细节见 `UNDETERMINED.md`。两者继续保持 R100 的 `UNDETERMINED`：
+docs/progress/R101/REPORT.md-151-
+docs/progress/R101/REPORT.md-152-- `gmp`：`libgmpxx.a` 三架构均含 11 个真实 C++ 全局符号；`eigen`、
+docs/progress/R101/REPORT.md:153:  `python-pycrypto` 仅有 BuildRequires 关系，是否实际链接 C++ 归档未知。
+docs/progress/R101/REPORT.md-154-- `tensorflow2`：`libtf_xla_runtime.a` 与 `libtensorflow2-lite.a` 含大量真实 C++
+docs/progress/R101/REPORT.md:155:  符号；`inference-engine-tflite`、`nnstreamer`、`nntrainer` 仅有 BuildRequires
+docs/progress/R101/REPORT.md-156-  关系，实际归档成员是否进入最终 ELF 未闭合。
+docs/progress/R101/REPORT.md-157-
+docs/progress/R101/REPORT.md:158:临时处理建议是：不要把两者降为“不需要改”；在实施排期和验证预算里按“可能
+docs/progress/R101/REPORT.md-159-需要改”预留，但在拿到真实链接命令/最终 ELF 归属前不直接修改 spec。这不是对
+docs/progress/R101/REPORT.md-160-R100 判定的变更。
+docs/progress/R101/REPORT.md-161-
+docs/progress/R101/REPORT.md:162:## 7. 为什么按人工决定采用逐包方案
+docs/progress/R101/REPORT.md-163-
+docs/progress/R101/REPORT.md-164-这里记录人工已作出的方案决定及其事实基础，不追溯修改 R100 当时“不推荐”的
+docs/progress/R101/REPORT.md-165-报告定位：
+docs/progress/R101/REPORT.md-166-
+docs/progress/R101/REPORT.md:167:- 逐包方案只修改 10 个已证实需要的 spec；2 个未定项不计入已确认修改数。
+docs/progress/R101/REPORT.md-168-- 全局 project_config 会把环境定义暴露给全部 254 个源码包，并触及 55 个已
+docs/progress/R101/REPORT.md-169-  判定不需要迁移的 C++ 包、6 个当前 GCC 包、2 个未定包。
+docs/progress/R101/REPORT.md-170-- 实际 C++ 构建日志中有 69 个规范化源码包消费 C++ 工具链；C-only 包是否把
+docs/progress/R101/REPORT.md:171:  LDFLAGS 继续传到 driver 未逐包穷尽，因此不能把“254 全部实际受影响”写成实测。
+docs/progress/R101/REPORT.md:172:- armv7l/x86_64 的 GCC 14.2.0 实测明确拒绝 `-stdlib=libc++`，未出现静默
+docs/progress/R101/REPORT.md-173-  忽略；aarch64 GCC buildroot 的 driver 自身退出 139，该格仍为
+docs/progress/R101/REPORT.md-174-  `NOT_OBSERVED`。
+docs/progress/R101/REPORT.md-175-- 三架构 Clang 22.1.8 无诊断接受该选项，但 `-###` 证明它实际选择 `-lc++`
+docs/progress/R101/REPORT.md-176-  并转发 libc++abi 链接参数，不是无害的静默忽略。
+--
+docs/progress/R101/REPORT.md-186-3. 测试/诊断/基准属性来自仓元数据主要用途/明确子包，不是源码功能穷举。
+docs/progress/R101/REPORT.md-187-4. `gmp` 与 `tensorflow2` 的静态链接归属仍未观测。
+docs/progress/R101/REPORT.md-188-5. R100 锚点之后四个目标仓分支已前移；本轮只读检查了当前 spec，但没有在新
+docs/progress/R101/REPORT.md-189-   HEAD 上重跑边界分析或构建。
+docs/progress/R101/REPORT.md:190:6. 本任务未实施建议、未构建迁移包，所有实施后验证均待后续任务。
+docs/progress/R101/REPORT.md-191-
+docs/progress/R101/REPORT.md-192-### 自行判断
+docs/progress/R101/REPORT.md-193-
+docs/progress/R101/REPORT.md-194-1. 把四路完整候选扫描均未命中的 181 包在全量表中标为“非 C++/不需要改”，
+docs/progress/R101/REPORT.md-195-   是对 R100 分母的机械补全，不改变其 73 包分类。
+docs/progress/R101/REPORT.md-196-2. 工具属性采用“仓元数据主要用途或明确子包”的可复核口径；没有用包名印象
+docs/progress/R101/REPORT.md-197-   扩大分类。
+docs/progress/R101/REPORT.md-198-3. 两个未定包的临时处理只影响计划预留，不把它们写入 10 包实施集合。
+docs/progress/R101/REPORT.md:199:4. 实施建议显式写 BuildRequires，以免依赖 project_config `Support:` 的非调度
+docs/progress/R101/REPORT.md-200-   语义；是否接受该 packaging 形式仍由后续实施评审决定。
+docs/progress/R101/REPORT.md-201-
+docs/progress/R101/REPORT.md-202-### 尚存疑问
+docs/progress/R101/REPORT.md-203-

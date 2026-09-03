@@ -1,0 +1,503 @@
+FILE codes/R104/boost/packaging/boost.spec LINES 420-570
+   420	%setup -q -n %{name}_%{version}
+   421	cp %{SOURCE1001} .
+   422	%{__patch} -p1 < %{SOURCE1004}
+   423	#everything in the tarball has the executable flag set ...
+   424	find -type f ! \( -name \*.sh -o -name \*.py -o -name \*.pl \) -exec chmod -x {} +
+   425	
+   426	#stupid build machinery copies .orig files
+   427	find . -name \*.orig -exec rm {} +
+   428	
+   429	%build
+   430	CC="%{__cc}"
+   431	export LDFLAGS="-Wl,--as-needed ${LDFLAGS}"
+   432	%ifarch %arm
+   433	CFLAGS="${CFLAGS} -Wp,-D_FILE_OFFSET_BITS=64"
+   434	CXXFLAGS="${CXXFLAGS} -Wp,-D_FILE_OFFSET_BITS=64"
+   435	%endif
+   436	find . -type f -exec chmod u+w {} +
+   437	
+   438	# Create shared build instructions
+   439	cat << \EOF >.build
+   440	# Now build it
+   441	J_P=%{jobs}
+   442	J_G=$(getconf _NPROCESSORS_ONLN)
+   443	JOBS=${JOBS-$J_P}
+   444	[ $J_G -gt 64 ] && J_G=64
+   445	
+   446	if test -z "$JOBS"; then
+   447	  JOBS=$J_G
+   448	else
+   449	  test 1 -gt "$JOBS" && JOBS=1
+   450	fi
+   451	
+   452	%if %{disable_long_double}
+   453	export LONG_DOUBLE_FLAGS="--disable-long-double"
+   454	%endif
+   455	BJAM_CONFIG="-d2 -j$JOBS -sICU_PATH=%{_prefix}"
+   456	PYTHON_VERSION=$(python3 -c 'import sys; pyVer=sys.version.split(" ")[0].split(".");print("{0}.{1}".format(pyVer[0], pyVer[1]))')
+   457	PYTHON_FLAGS=" --with-python-root=/usr/lib/python${PYTHON_VERSION} --with-python-version=${PYTHON_VERSION}"
+   458	export REGEX_FLAGS="--with-icu"
+   459	export EXPAT_INCLUDE=/usr/include EXPAT_LIBPATH=%{_libdir}
+   460	export PYTHON_FLAGS
+   461	LIBRARIES_FLAGS=--with-libraries=all
+   462	
+   463	%if !%{build_context}
+   464	# coroutine/coroutine2 depend on context
+   465	LIBRARIES_FLAGS="${LIBRARIES_FLAGS} --without-libraries=context,coroutine"
+   466	%endif
+   467	
+   468	%if !%{build_fiber}
+   469	LIBRARIES_FLAGS="${LIBRARIES_FLAGS} --without-libraries=fiber"
+   470	%endif
+   471	
+   472	EOF
+   473	
+   474	touch user-config.jam
+   475	
+   476	# Read shared build instructions
+   477	. ./.build
+   478	
+   479	%if %build_mpi
+   480	# Set PATH, MANPATH and LD_LIBRARY_PATH for mpi
+   481	. /var/mpi-selector/data/$(rpm --qf "%{NAME}-%{VERSION}" -q openmpi).sh
+   482	%endif
+   483	
+   484	# use supplied bootstrap.sh instead of mucking with old bjam
+   485	# see also: https://svn.boost.org/trac/boost/ticket/9304
+   486	./bootstrap.sh $LIBRARIES_FLAGS \
+   487	    --prefix=%{_prefix} --exec-prefix=%{_bindir} \
+   488	    --libdir=%{_libdir} --includedir=%{_includedir} \
+   489	    --with-toolset=${CC##*-}
+   490	
+   491	# add specific wishes in user-config.jam
+   492	%if %build_docs
+   493	cat << EOF >user-config.jam
+   494	using xsltproc ;
+   495	
+   496	using boostbook
+   497	    : /usr/share/xml/docbook/stylesheet/nwalsh/current
+   498	    : /usr/share/xml/docbook/schema/dtd/4.2
+   499	    ;
+   500	
+   501	using doxygen ;
+   502	EOF
+   503	%endif
+   504	
+   505	%if %build_mpi
+   506	cat << EOF >>user-config.jam
+   507	using mpi ;
+   508	EOF
+   509	%endif
+   510	
+   511	cat << EOF >>user-config.jam
+   512	
+   513	using python
+   514	    : ${PYTHON_VERSION}
+   515	    : /usr/bin/python3
+   516	    : %{_includedir}/python${PYTHON_VERSION}
+   517	    :
+   518	    :
+   519	    ;
+   520	
+   521	EOF
+   522	
+   523	# perform the compilation
+   524	./b2 %{?_smp_mflags} --prefix=%{_prefix} --libdir=%{_libdir} \
+   525	    --user-config=./user-config.jam ${CFLAGS:+cflags="$CFLAGS"} \
+   526	    ${CXXFLAGS:+cxxflags="$CXXFLAGS"} ${LDFLAGS:+linkflags="$LDFLAGS"} \
+   527	    target-os=unix
+   528	
+   529	
+   530	%if %build_docs
+   531	cd doc
+   532	../b2 --user-config=../user-config.jam --v2 man
+   533	%endif
+   534	
+   535	%if 0%{?run_tests}
+   536	BOOST_LIBS="chrono,program_options,thread,system,filesystem,date_time,regex,serialization,iostreams,random,test"
+   537	install -m 0755 %{SOURCE1003} ./
+   538	echo "RUN run_test.sh"
+   539	./run_test.sh %{version} $BOOST_LIBS %{testlogfile} || exit 0
+   540	%endif
+   541	
+   542	%install
+   543	
+   544	%if 0%{?run_tests}
+   545	install -D -m 644 %{testlogfile} $RPM_BUILD_ROOT%{_datadir}/boosttestsuite.log
+   546	%endif
+   547	
+   548	# Read shared build instructions
+   549	. ./.build
+   550	
+   551	%if %build_mpi
+   552	# Set PATH, MANPATH and LD_LIBRARY_PATH for mpi
+   553	. /var/mpi-selector/data/$(rpm --qf "%{NAME}-%{VERSION}" -q openmpi).sh
+   554	%endif
+   555	
+   556	./b2 install %{?_smp_mflags} \
+   557	    --prefix=%{buildroot}%{_prefix} --exec-prefix=%{buildroot}%{_bindir} \
+   558	    --libdir=%{buildroot}%{_libdir} --includedir=%{buildroot}%{_includedir} \
+   559	    --user-config=./user-config.jam target-os=unix
+   560	
+   561	# do not install the python module - as long as noone needs it, it requires more fixes
+   562	# see https://bugzilla.redhat.com/show_bug.cgi?id=801534 for details
+   563	rm -f %{buildroot}%{_libdir}/mpi.so
+   564	
+   565	mkdir -p %{buildroot}%{_docdir}
+   566	
+   567	(
+   568	cd %{buildroot}%{_libdir}
+   569	blibs=$(find . -name \*.so.%{version})
+   570	echo $blibs | xargs chrpath -d
+FILE codes/R104/llvm/packaging/llvm.spec LINES 1-30
+     1	%define keepstatic 1
+     2	
+     3	# MLGO AOT support for LLVM MLGO (Ahead-of-Time compilation)
+     4	# TODO: switch back to a project_config-controlled macro after MLGO is enabled
+     5	# for all required arches.
+     6	# %%bcond_with mlgo
+     7	%ifarch armv7l aarch64 x86_64
+     8	%bcond_without mlgo
+     9	%endif
+    10	
+    11	%if %{defined _toolchain}
+    12	%define _toolchain_override clang
+    13	%define llvm_release_build 0
+    14	%else
+    15	%define llvm_release_build 1
+    16	%endif
+    17	
+    18	%define llvm_version 22
+    19	
+    20	%define sdk_install_prefix /home/owner/share/tmp/sdk_tools/lldb
+    21	%define sdk_bin_dir %{sdk_install_prefix}/bin
+    22	%define sdk_lib_dir %{sdk_install_prefix}/%{_lib}
+    23	
+    24	%if 0%{llvm_release_build}
+    25	# Disable debug packages building
+    26	%define debug_package %{nil}
+    27	%define __debug_install_post %{_rpmconfigdir}/find-debuginfo.sh %{?_find_debuginfo_opts} %{?_find_debuginfo_strip_opts} %{?_find_debuginfo_ko_strip_opts} "%{_builddir}/%{?buildsubdir}"\
+    28		rm -rf "%{buildroot}/usr/lib/debug"\
+    29		rm -rf "%{buildroot}/usr/src/debug"
+    30	%endif
+FILE codes/R104/llvm/packaging/llvm.spec LINES 160-260
+   160	tar -C mlgo_verify_assets -xzf %{SOURCE1002}
+   161	%endif
+   162	%ifarch aarch64
+   163	tar -C mlgo_verify_assets -xzf %{SOURCE1003}
+   164	%endif
+   165	%ifarch x86_64
+   166	tar -C mlgo_verify_assets -xzf %{SOURCE1004}
+   167	%endif
+   168	%endif
+   169	
+   170	%build
+   171	%if 0%{llvm_release_build}
+   172	# Not to build debug info
+   173	RELCFLAGS=$(echo $CFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\|dwarf-[[:digit:]]\)\?* *g')
+   174	export CFLAGS=${RELCFLAGS}
+   175	RELCXXFLAGS=$(echo $CXXFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\|dwarf-[[:digit:]]\)\?* *g')
+   176	export CXXFLAGS=${RELCXXFLAGS}
+   177	RELFFLAGS=$(echo $FFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\)|dwarf-[[:digit:]]\\?* *g')
+   178	export FFLAGS=${RELFFLAGS}
+   179	%endif
+   180	
+   181	cp %{SOURCE1001} .
+   182	%{?asan:%gcc_unforce_options}
+   183	
+   184	%ifarch armv7l
+   185	export QEMU_RESERVED_VA=0x100000000
+   186	%endif
+   187	
+   188	# Set up MLGO AOT model paths from bundled verify assets
+   189	%if %{with mlgo}
+   190	MLGO_AOT_DIR="$PWD/mlgo_verify_assets"
+   191	MLGO_BUILD_DIR="$PWD/build"
+   192	MLGO_RUNTIME_OBJECTS="${MLGO_AOT_DIR}/xla_runtime_objects/xla_compiled_cpu_function.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/cpu_function_runtime.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/custom_call_status.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/executable_run_options.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/runtime_single_threaded_matmul_f32.cc.o"
+   193	MLGO_REQUIRED_RUNTIME_OBJECTS="xla_compiled_cpu_function.cc.o cpu_function_runtime.cc.o custom_call_status.cc.o executable_run_options.cc.o runtime_single_threaded_matmul_f32.cc.o"
+   194	%endif
+   195	
+   196	mkdir -p build
+   197	cd build
+   198	cmake \
+   199	    -G Ninja \
+   200	    -DTIZEN=1 \
+   201	    -DCMAKE_C_COMPILER=%__cc \
+   202	    -DCMAKE_CXX_COMPILER=%__cxx \
+   203	    -DLLVM_HOST_TRIPLE=%{_host} \
+   204	    -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+   205	    -DLLVM_TARGET_TRIPLE_ENV=%{_host} \
+   206	    -DCMAKE_ASM_FLAGS="$CFLAGS" \
+   207	    -DCMAKE_C_FLAGS="$CFLAGS" \
+   208	    -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
+   209	%if %{defined _toolchain}
+   210	    -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections" \
+   211	    -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections" \
+   212	    -DLLVM_USE_LINKER=lld \
+   213	%endif
+   214	    -DLLVM_ENABLE_ASSERTIONS=No \
+   215	    -DLLVM_ENABLE_RTTI=ON \
+   216	%ifarch x86_64 i686
+   217	    -DCMAKE_BUILD_TYPE=Release \
+   218	    -DLLVM_TARGETS_TO_BUILD='X86;ARM;AArch64;BPF' \
+   219	%endif
+   220	%ifarch armv7l
+   221	    -DCMAKE_BUILD_TYPE=MinSizeRel \
+   222	    -DLLVM_TARGETS_TO_BUILD='ARM;BPF' \
+   223	    -DLLVM_TARGET_ARCH="ARM" \
+   224	%endif
+   225	%ifarch aarch64
+   226	    -DCMAKE_BUILD_TYPE=Release \
+   227	    -DLLVM_TARGETS_TO_BUILD='AArch64;BPF' \
+   228	    -DLLVM_TARGET_ARCH="AArch64" \
+   229	%endif
+   230	%ifarch riscv64
+   231	    -DCMAKE_BUILD_TYPE=Release \
+   232	    -DLLVM_TARGETS_TO_BUILD='RISCV;BPF' \
+   233	%endif
+   234	    -DCLANG_ENABLE_ARCMT=OFF \
+   235	    -DLLVM_BUILD_LLVM_DYLIB=ON \
+   236	    -DCLANG_BUILD_CLANG_DYLIB=ON \
+   237	%if %{defined _toolchain}
+   238	    -DLLVM_LINK_LLVM_DYLIB=ON \
+   239	    -DCLANG_LINK_CLANG_DYLIB=ON \
+   240	%endif
+   241	    -DLLVM_ENABLE_PROJECTS="clang;lldb;clang-tools-extra;lld;compiler-rt;openmp" \
+   242	    -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
+   243	    -DLLVM_BUILD_EXAMPLES=OFF \
+   244	    -DLLVM_INCLUDE_EXAMPLES=OFF \
+   245	    -DLLVM_BUILD_TESTS=OFF \
+   246	    -DLLVM_INCLUDE_TESTS=OFF \
+   247	    -DLLVM_ENABLE_DOXYGEN=OFF \
+   248	    -DLLVM_BUILD_DOCS=OFF \
+   249	    -DLLVM_INCLUDE_DOCS=OFF \
+   250	    -DLLVM_OPTIMIZED_TABLEGEN=ON \
+   251	    -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+   252	    -DLLVM_LIBDIR_SUFFIX=`echo %{_lib} | sed s/lib//g` \
+   253	    -DCLANG_RESOURCE_DIR="../%{_lib}/clang/%{llvm_version}" \
+   254	    -DLLVM_BINUTILS_INCDIR=/usr/include \
+   255	    -DLLVM_PARALLEL_COMPILE_JOBS=6 \
+   256	    -DLLVM_PARALLEL_LINK_JOBS=2 \
+   257	%if %{with mlgo}
+   258	%ifarch armv7l aarch64 x86_64
+   259	    -DTENSORFLOW_AOT_PATH="${MLGO_AOT_DIR}/mlgo_sysroot" \
+   260	    -DLLVM_MLGO_EXPORT_TF_XLA_RUNTIME=OFF \
+FILE codes/R104/tensorflow2/packaging/tensorflow2.spec LINES 1-90
+     1	Name:           tensorflow2
+     2	Summary:        TensorFlow 2.x with Lite and XLA AOT support
+     3	Version:        2.18.0
+     4	Release:        1
+     5	License:        Apache-2.0
+     6	Source0:        %{name}-%{version}.tar.gz
+     7	Source1001:     tensorflow2.manifest
+     8	Source1002:     tensorflow2-lite.pc.in
+     9	Source1003:     tensorflow2-aot.pc.in
+    10	
+    11	Source2000:     abseil-cpp.tar.gz
+    12	Source2001:     cpuinfo.tar.gz
+    13	Source2002:     egl_headers.tar.gz
+    14	Source2003:     eigen.tar.gz
+    15	Source2004:     farmhash.tar.gz
+    16	Source2005:     fft2d.tar.gz
+    17	Source2006:     flatbuffers.tar.gz
+    18	Source2007:     fp16.tar.gz
+    19	Source2008:     gemmlowp.tar.gz
+    20	Source2009:     ml_dtypes.tar.gz
+    21	Source2010:     neon2sse.tar.gz
+    22	Source2011:     opencl_headers.tar.gz
+    23	Source2012:     opengl_headers.tar.gz
+    24	Source2013:     protobuf.tar.gz
+    25	Source2014:     ruy.tar.gz
+    26	Source2015:     vulkan_headers.tar.gz
+    27	Source2016:     XNNPACK-cpuinfo.tar.gz
+    28	Source2017:     XNNPACK-FP16-psimd.tar.gz
+    29	Source2018:     XNNPACK-fp16.tar.gz
+    30	Source2019:     XNNPACK-fxdiv.tar.gz
+    31	Source2020:     XNNPACK-kleidiai.tar.gz
+    32	Source2021:     XNNPACK-pthreadpool.tar.gz
+    33	Source2022:     xnnpack.tar.gz
+    34	
+    35	# AOT (Ahead-of-Time) compilation support for LLVM MLGO
+    36	# Generated by: scripts/extract_aot_components.sh
+    37	Source3000:     tensorflow2-aot.tar.gz
+    38	
+    39	%define USE_CLANG     "ON"
+    40	%define USE_XNNPACK   "ON"
+    41	%define USE_OPENCL    "ON"
+    42	%define SHARED_LIB    "OFF"
+    43	
+    44	# clang + armv7hl build fails
+    45	%ifarch armv7hl
+    46	%define USE_CLANG     "OFF"
+    47	%endif
+    48	
+    49	%if %{USE_CLANG} == "ON"
+    50	%ifarch armv7l
+    51	BuildRequires: python-accel-armv7l-cross-arm
+    52	BuildRequires: clang-accel-armv7l-cross-arm
+    53	%endif
+    54	
+    55	%ifarch armv7hl
+    56	BuildRequires: python-accel-armv7hl-cross-arm
+    57	BuildRequires: clang-accel-armv7hl-cross-arm
+    58	%endif
+    59	
+    60	%ifarch aarch64
+    61	BuildRequires: python-accel-aarch64-cross-aarch64
+    62	BuildRequires: clang-accel-aarch64-cross-aarch64
+    63	%endif
+    64	
+    65	%ifarch riscv64
+    66	BuildRequires: python-accel-riscv64-cross-riscv64
+    67	BuildRequires: clang-accel-riscv64-cross-riscv64
+    68	%endif
+    69	
+    70	BuildRequires: clang
+    71	%endif
+    72	
+    73	BuildRequires: cmake
+    74	BuildRequires: ninja
+    75	BuildRequires: python3
+    76	
+    77	%description
+    78	This is a standalone package of TensorFlow Lite.
+    79	TensorFlow Lite is TensorFlow's lightweight solution for mobile and embedded devices. It enables low-latency inference of on-device machine learning models with a small binary size and fast performance supporting hardware acceleration.
+    80	
+    81	See the documentation: https://www.tensorflow.org/lite/
+    82	
+    83	%package lite-devel
+    84	Summary: TensorFlow Lite development headers and static library.
+    85	
+    86	%description lite-devel
+    87	TensorFlow Lite development headers and static library.
+    88	
+    89	%package lite-flatbuf-schema
+    90	Summary: TensorFlow Lite schema file
+FILE codes/R104/tensorflow2/packaging/tensorflow2.spec LINES 145-270
+   145	cp %{SOURCE2018} .
+   146	cp %{SOURCE2019} .
+   147	cp %{SOURCE2020} .
+   148	cp %{SOURCE2021} .
+   149	cp %{SOURCE2022} .
+   150	popd
+   151	
+   152	# Extract AOT components for LLVM MLGO support
+   153	mkdir -p aot
+   154	pushd aot
+   155	tar xzf %{SOURCE3000}
+   156	popd
+   157	
+   158	%build
+   159	mkdir -p build
+   160	pushd build
+   161	
+   162	%if %{USE_CLANG} == "ON"
+   163	%define host_triplet %(echo %{_host} | sed 's/^i686-/i586-/')
+   164	CLANG_ASMFLAGS=" --target=%{host_triplet} "
+   165	CLANG_CFLAGS=" --target=%{host_triplet} "
+   166	CLANG_CXXFLAGS=" --target=%{host_triplet} "
+   167	
+   168	export ASMFLAGS="${CLANG_ASMFLAGS}"
+   169	export CFLAGS="${CLANG_CFLAGS}"
+   170	export CXXFLAGS="${CLANG_CXXFLAGS}"
+   171	%else # USE_CLANG OFF
+   172	%ifarch %arm aarch64
+   173	  EXTRA_CFLAGS="${EXTRA_CFLAGS} -funsafe-math-optimizations"
+   174	  EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -funsafe-math-optimizations"
+   175	  %ifarch %arm
+   176	    EXTRA_CFLAGS="${EXTRA_CFLAGS} -mno-unaligned-access"
+   177	    EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -mno-unaligned-access"
+   178	  %endif
+   179	  %ifarch armv7l
+   180	    EXTRA_CFLAGS="${EXTRA_CFLAGS} -mfloat-abi=softfp -march=armv7-a -mfpu=neon-vfpv4 -funsafe-math-optimizations -mfp16-format=ieee"
+   181	    EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -mfloat-abi=softfp -march=armv7-a -mfpu=neon-vfpv4 -funsafe-math-optimizations -mfp16-format=ieee"
+   182	  %endif
+   183	  %ifarch armv7hl
+   184	    EXTRA_CFLAGS="${EXTRA_CFLAGS} -mfloat-abi=hard -march=armv7-a -mfpu=neon-vfpv4 -funsafe-math-optimizations -mfp16-format=ieee"
+   185	    EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -mfloat-abi=hard -march=armv7-a -mfpu=neon-vfpv4 -funsafe-math-optimizations -mfp16-format=ieee"
+   186	  %endif
+   187	%endif
+   188	
+   189	# VD/TV: Disable a link-time optimization (requested on 2020-06-09)
+   190	%if "%{?profile}" == "tv"
+   191	  EXTRA_CFLAGS="${EXTRA_CFLAGS} -fno-lto"
+   192	  EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -fno-lto"
+   193	  %ifarch armv7l
+   194	    EXTRA_CFLAGS="${EXTRA_CFLAGS} -march=armv7-a -mtune=cortex-a8"
+   195	    EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -march=armv7-a -mtune=cortex-a8"
+   196	    EXTRA_CFLAGS=${EXTRA_CFLAGS/-mcpu=cortex-a53/}
+   197	    EXTRA_CXXFLAGS=${EXTRA_CXXFLAGS/-mcpu=cortex-a53/}
+   198	  %endif
+   199	%endif
+   200	%endif # USE_CLANG
+   201	
+   202	%if %{USE_CLANG} == "ON"
+   203	export CC=clang
+   204	export CXX=clang++
+   205	CC=clang CXX=clang++ \
+   206	cmake \
+   207	  -DCMAKE_C_COMPILER=clang \
+   208	  -DCMAKE_CXX_COMPILER=clang++ \
+   209	  -DCMAKE_VERBOSE_MAKEFILE=ON \
+   210	  -GNinja \
+   211	  -DTFLITE_BUILD_SHARED_LIB="%{SHARED_LIB}" \
+   212	  -DTFLITE_ENABLE_XNNPACK="%{USE_XNNPACK}" \
+   213	  -DTFLITE_ENABLE_GPU="%{USE_OPENCL}" \
+   214	  ../tensorflow/lite
+   215	%else # USE_CLANG OFF
+   216	cmake \
+   217	  -DCMAKE_VERBOSE_MAKEFILE=ON \
+   218	  -GNinja \
+   219	  -DCMAKE_C_FLAGS="${EXTRA_CFLAGS}" \
+   220	  -DCMAKE_CXX_FLAGS="${EXTRA_CXXFLAGS}" \
+   221	  -DTFLITE_BUILD_SHARED_LIB="%{SHARED_LIB}" \
+   222	  -DTFLITE_ENABLE_XNNPACK="%{USE_XNNPACK}" \
+   223	  -DXNNPACK_ENABLE_ARM_BF16=OFF \
+   224	  -DXNNPACK_ENABLE_ARM_I8MM=OFF \
+   225	  -DTFLITE_ENABLE_GPU="%{USE_OPENCL}" \
+   226	  ../tensorflow/lite
+   227	%endif # USE_CLANG
+   228	
+   229	cmake --build . %{?_smp_mflags}
+   230	
+   231	cmake --build . %{?_smp_mflags} -t benchmark_model
+   232	
+   233	popd
+   234	
+   235	# Build AOT runtime library (xla_aot_runtime_src)
+   236	# Use the same cross-compilation setup as TFLite build
+   237	mkdir -p build-aot
+   238	pushd build-aot
+   239	
+   240	%if %{USE_CLANG} == "ON"
+   241	cmake \
+   242	  -DCMAKE_C_COMPILER=clang \
+   243	  -DCMAKE_CXX_COMPILER=clang++ \
+   244	  -DCMAKE_C_FLAGS="${CFLAGS}" \
+   245	  -DCMAKE_CXX_FLAGS="${CXXFLAGS}" \
+   246	  -DCMAKE_VERBOSE_MAKEFILE=ON \
+   247	  -GNinja \
+   248	  %{_builddir}/%{name}-%{version}/aot/xla_aot_runtime_src
+   249	%else
+   250	cmake \
+   251	  -DCMAKE_C_FLAGS="${EXTRA_CFLAGS}" \
+   252	  -DCMAKE_CXX_FLAGS="${EXTRA_CXXFLAGS}" \
+   253	  -DCMAKE_VERBOSE_MAKEFILE=ON \
+   254	  -GNinja \
+   255	  %{_builddir}/%{name}-%{version}/aot/xla_aot_runtime_src
+   256	%endif
+   257	
+   258	ninja
+   259	popd
+   260	
+   261	%install
+   262	mkdir -p %{buildroot}%{_libdir}
+   263	mkdir -p %{buildroot}%{_libdir}/pkgconfig
+   264	mkdir -p %{buildroot}%{_includedir}/tensorflow2/lite
+   265	mkdir -p %{buildroot}%{_includedir}/tensorflow2/compiler/mlir
+   266	mkdir -p %{buildroot}%{_bindir}
+   267	mkdir -p %{buildroot}%{_datadir}/tensorflow2/lite/schema
+   268	pushd %{buildroot}%{_includedir}/tensorflow2
+   269	ln -sf . %{buildroot}%{_includedir}/tensorflow2/tensorflow
+   270	# TF2Lite users do: #include <tensorflow/FILENAME.h>
