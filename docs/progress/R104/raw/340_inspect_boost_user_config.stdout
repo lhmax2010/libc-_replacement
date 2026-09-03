@@ -1,0 +1,154 @@
+
+%description -n boost-nowide
+Run-time support for Boost.Nowide.
+
+
+%if 0%{?run_tests}
+%package testresults
+Summary: Results of test suite
+
+%description testresults
+Restults of Boost test suite execution
+%endif
+
+%prep
+%setup -q -n %{name}_%{version}
+cp %{SOURCE1001} .
+%{__patch} -p1 < %{SOURCE1004}
+#everything in the tarball has the executable flag set ...
+find -type f ! \( -name \*.sh -o -name \*.py -o -name \*.pl \) -exec chmod -x {} +
+
+#stupid build machinery copies .orig files
+find . -name \*.orig -exec rm {} +
+
+%build
+CC="%{__cc}"
+export LDFLAGS="-Wl,--as-needed ${LDFLAGS}"
+%if 0%{?build_with_libcxx}
+CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+%endif
+%ifarch %arm
+CFLAGS="${CFLAGS} -Wp,-D_FILE_OFFSET_BITS=64"
+CXXFLAGS="${CXXFLAGS} -Wp,-D_FILE_OFFSET_BITS=64"
+%endif
+find . -type f -exec chmod u+w {} +
+
+# Create shared build instructions
+cat << \EOF >.build
+# Now build it
+J_P=%{jobs}
+J_G=$(getconf _NPROCESSORS_ONLN)
+JOBS=${JOBS-$J_P}
+[ $J_G -gt 64 ] && J_G=64
+
+if test -z "$JOBS"; then
+  JOBS=$J_G
+else
+  test 1 -gt "$JOBS" && JOBS=1
+fi
+
+%if %{disable_long_double}
+export LONG_DOUBLE_FLAGS="--disable-long-double"
+%endif
+BJAM_CONFIG="-d2 -j$JOBS -sICU_PATH=%{_prefix}"
+PYTHON_VERSION=$(python3 -c 'import sys; pyVer=sys.version.split(" ")[0].split(".");print("{0}.{1}".format(pyVer[0], pyVer[1]))')
+PYTHON_FLAGS=" --with-python-root=/usr/lib/python${PYTHON_VERSION} --with-python-version=${PYTHON_VERSION}"
+export REGEX_FLAGS="--with-icu"
+export EXPAT_INCLUDE=/usr/include EXPAT_LIBPATH=%{_libdir}
+export PYTHON_FLAGS
+LIBRARIES_FLAGS=--with-libraries=all
+
+%if !%{build_context}
+# coroutine/coroutine2 depend on context
+LIBRARIES_FLAGS="${LIBRARIES_FLAGS} --without-libraries=context,coroutine"
+%endif
+
+%if !%{build_fiber}
+LIBRARIES_FLAGS="${LIBRARIES_FLAGS} --without-libraries=fiber"
+%endif
+
+EOF
+
+touch user-config.jam
+
+# Read shared build instructions
+. ./.build
+
+%if %build_mpi
+# Set PATH, MANPATH and LD_LIBRARY_PATH for mpi
+. /var/mpi-selector/data/$(rpm --qf "%{NAME}-%{VERSION}" -q openmpi).sh
+%endif
+
+# use supplied bootstrap.sh instead of mucking with old bjam
+# see also: https://svn.boost.org/trac/boost/ticket/9304
+./bootstrap.sh $LIBRARIES_FLAGS \
+    --prefix=%{_prefix} --exec-prefix=%{_bindir} \
+    --libdir=%{_libdir} --includedir=%{_includedir} \
+    --with-toolset=${CC##*-}
+
+# add specific wishes in user-config.jam
+%if %build_docs
+cat << EOF >user-config.jam
+using xsltproc ;
+
+using boostbook
+    : /usr/share/xml/docbook/stylesheet/nwalsh/current
+    : /usr/share/xml/docbook/schema/dtd/4.2
+    ;
+
+using doxygen ;
+EOF
+%endif
+
+%if %build_mpi
+cat << EOF >>user-config.jam
+using mpi ;
+EOF
+%endif
+
+cat << EOF >>user-config.jam
+
+using python
+    : ${PYTHON_VERSION}
+    : /usr/bin/python3
+    : %{_includedir}/python${PYTHON_VERSION}
+    :
+    :
+    ;
+
+EOF
+
+# perform the compilation
+./b2 %{?_smp_mflags} --prefix=%{_prefix} --libdir=%{_libdir} \
+    --user-config=./user-config.jam ${CFLAGS:+cflags="$CFLAGS"} \
+    ${CXXFLAGS:+cxxflags="$CXXFLAGS"} ${LDFLAGS:+linkflags="$LDFLAGS"} \
+    target-os=unix
+
+
+%if %build_docs
+cd doc
+../b2 --user-config=../user-config.jam --v2 man
+%endif
+
+%if 0%{?run_tests}
+BOOST_LIBS="chrono,program_options,thread,system,filesystem,date_time,regex,serialization,iostreams,random,test"
+install -m 0755 %{SOURCE1003} ./
+echo "RUN run_test.sh"
+./run_test.sh %{version} $BOOST_LIBS %{testlogfile} || exit 0
+%endif
+
+%install
+
+%if 0%{?run_tests}
+install -D -m 644 %{testlogfile} $RPM_BUILD_ROOT%{_datadir}/boosttestsuite.log
+%endif
+
+progress/R104/raw/320_build_boost_armv7l_libcxx.stdout:427:[   54s] + LDFLAGS='-Wl,--as-needed -Wl,-z,relro,--as-needed,-O1,--hash-style=gnu -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed'
+progress/R104/raw/320_build_boost_armv7l_libcxx.stdout:432:[   55s] + touch user-config.jam
+progress/R104/raw/320_build_boost_armv7l_libcxx.stdout:499:[   64s] + ./b2 -j2 --prefix=/usr --libdir=/usr/lib --user-config=./user-config.jam 'cflags=-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g -Wp,-D_FILE_OFFSET_BITS=64' 'cxxflags=-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g -stdlib=libc++ -Wp,-D_FILE_OFFSET_BITS=64' 'linkflags=-Wl,--as-needed -Wl,-z,relro,--as-needed,-O1,--hash-style=gnu -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed' target-os=unix
+progress/R104/raw/320_build_boost_armv7l_libcxx.stdout:537:[   74s] note: to enable them, add "using mpi ;" to your user-config.jam.
+progress/R104/raw/320_build_boost_armv7l_libcxx.stdout:572:[   85s] note: to enable MPI support, add "using mpi ;" to user-config.jam.
+progress/R104/raw/320_build_boost_armv7l_libcxx.stdout:4413:[  374s] + ./b2 install -j2 --prefix=/home/abuild/rpmbuild/BUILDROOT/boost-1.83.0-104.32.1.arm/usr --exec-prefix=/home/abuild/rpmbuild/BUILDROOT/boost-1.83.0-104.32.1.arm/usr/bin --libdir=/home/abuild/rpmbuild/BUILDROOT/boost-1.83.0-104.32.1.arm/usr/lib --includedir=/home/abuild/rpmbuild/BUILDROOT/boost-1.83.0-104.32.1.arm/usr/include --user-config=./user-config.jam target-os=unix
+progress/R104/raw/320_build_boost_armv7l_libcxx.stdout:4447:[  432s] note: to enable them, add "using mpi ;" to your user-config.jam.
+progress/R104/raw/320_build_boost_armv7l_libcxx.stdout:4482:[  486s] note: to enable MPI support, add "using mpi ;" to user-config.jam.
