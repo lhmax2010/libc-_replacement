@@ -1,0 +1,136 @@
+#!/bin/bash
+set -euo pipefail
+
+if [ "$#" -ne 4 ]; then
+  echo "usage: $0 CELL BUILDROOT ARCH EXPECTED_STDLIB" >&2
+  exit 2
+fi
+
+cell=$1
+buildroot=$2
+arch=$3
+expected_stdlib=$4
+workspace=$(cd "$(dirname "$0")/../../.." && pwd)
+scratch="$buildroot/local/BUILD-ROOTS/scratch.$arch.0"
+verify_dir="$workspace/progress/R104/work/llvm_verify/$cell"
+
+case "$expected_stdlib" in
+  libcxx|libstdcxx) ;;
+  *) echo "EXPECTED_STDLIB must be libcxx or libstdcxx" >&2; exit 2 ;;
+esac
+
+mapfile -t rpm_dirs < <(find "$buildroot/local/repos" -mindepth 3 -maxdepth 3 \
+  -type d -path "*/$arch/RPMS" -print | sort)
+if [ "${#rpm_dirs[@]}" -ne 1 ]; then
+  printf 'expected one RPM directory, found %d\n' "${#rpm_dirs[@]}" >&2
+  printf '%s\n' "${rpm_dirs[@]}" >&2
+  exit 3
+fi
+repo=${rpm_dirs[0]}
+
+if [ -e "$verify_dir" ]; then
+  echo "verification directory already exists: $verify_dir" >&2
+  exit 4
+fi
+mkdir -p "$verify_dir/extract"
+
+echo "cell=$cell"
+echo "buildroot=$buildroot"
+echo "scratch=$scratch"
+echo "repo=$repo"
+echo "expected_stdlib=$expected_stdlib"
+
+mapfile -t rpms < <(find "$repo" -maxdepth 1 -type f \
+  \( -name 'llvm-22.1.8-*.rpm' -o -name 'libllvm-22.1.8-*.rpm' \
+     -o -name 'clang-22.1.8-*.rpm' -o -name 'lldb-22.1.8-*.rpm' \) \
+  ! -name '*-devel-*' -print | sort)
+if [ "${#rpms[@]}" -ne 4 ]; then
+  printf 'expected four runtime RPMs, found %d\n' "${#rpms[@]}" >&2
+  printf '%s\n' "${rpms[@]}" >&2
+  exit 5
+fi
+sha256sum "${rpms[@]}"
+for rpm_file in "${rpms[@]}"; do
+  echo "extracting=$rpm_file"
+  (cd "$verify_dir/extract" && rpm2cpio "$rpm_file" | cpio -idm --quiet)
+done
+
+echo "===== packaged C++ ELF dependencies ====="
+elf_count=0
+libcxx_needed=0
+libstdcxx_needed=0
+while IFS= read -r -d '' candidate; do
+  if ! readelf -h "$candidate" >/dev/null 2>&1; then
+    continue
+  fi
+  elf_count=$((elf_count + 1))
+  needed=$(readelf -d "$candidate" 2>/dev/null | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' || true)
+  if rg -q '^libc\+\+\.so\.1$' <<<"$needed"; then
+    libcxx_needed=$((libcxx_needed + 1))
+    printf 'LIBCXX_NEEDED\t%s\t%s\n' "$candidate" "$(tr '\n' ',' <<<"$needed")"
+  fi
+  if rg -q '^libstdc\+\+\.so\.6$' <<<"$needed"; then
+    libstdcxx_needed=$((libstdcxx_needed + 1))
+    printf 'LIBSTDCXX_NEEDED\t%s\t%s\n' "$candidate" "$(tr '\n' ',' <<<"$needed")"
+  fi
+done < <(find "$verify_dir/extract" -type f -print0)
+printf 'elf_count=%d\nlibcxx_needed=%d\nlibstdcxx_needed=%d\n' \
+  "$elf_count" "$libcxx_needed" "$libstdcxx_needed"
+
+if [ "$expected_stdlib" = libcxx ]; then
+  test "$libcxx_needed" -gt 0
+  test "$libstdcxx_needed" -eq 0
+else
+  test "$libstdcxx_needed" -gt 0
+  test "$libcxx_needed" -eq 0
+fi
+
+echo "===== five installed libc++ header guards ====="
+inc="$scratch/usr/include/c++/v1"
+test -d "$inc"
+rg -n -C 2 '__forced_unwind' "$inc/__ostream/basic_ostream.h"
+rg -n -C 2 '__forced_unwind' "$inc/future"
+rg -n -C 2 '__forced_unwind' "$inc/istream"
+rg -n -C 2 '__forced_unwind' "$inc/string"
+rg -n -C 2 'class .*__forced_unwind' "$inc/cxxabi.h"
+
+case "$arch" in
+  armv7l) qemu=qemu-arm-static ;;
+  aarch64) qemu=qemu-arm64-static ;;
+  x86_64) qemu= ;;
+  *) echo "unsupported arch: $arch" >&2; exit 6 ;;
+esac
+
+driver="$verify_dir/extract/usr/bin/clang++"
+test -e "$driver"
+mapfile -t extracted_libdirs < <(find "$verify_dir/extract/usr" -maxdepth 2 -type d \
+  \( -name lib -o -name lib64 \) -print | sort)
+ld_path=$(IFS=:; echo "${extracted_libdirs[*]}")
+
+echo "===== built clang version ====="
+if [ -n "$qemu" ]; then
+  command -v "$qemu"
+  "$qemu" -L "$scratch" -E "LD_LIBRARY_PATH=$ld_path" "$driver" --version
+  runner=("$qemu" -L "$scratch" -E "LD_LIBRARY_PATH=$ld_path" "$driver")
+else
+  LD_LIBRARY_PATH="$ld_path" "$driver" --version
+  runner=(env "LD_LIBRARY_PATH=$ld_path" "$driver")
+fi
+
+echo "===== built clang++ -### without -stdlib ====="
+"${runner[@]}" -### --sysroot="$scratch" -x c++ /dev/null -o /dev/null 2>&1 | tee "$verify_dir/clang_no_stdlib.txt"
+rg -q -- '-lstdc\+\+' "$verify_dir/clang_no_stdlib.txt"
+if rg -q -- '-lc\+\+' "$verify_dir/clang_no_stdlib.txt"; then
+  echo "unexpected libc++ default in produced driver" >&2
+  exit 7
+fi
+
+echo "===== built clang++ -### with explicit -stdlib=libc++ ====="
+"${runner[@]}" -### --sysroot="$scratch" -stdlib=libc++ -x c++ /dev/null -o /dev/null 2>&1 | tee "$verify_dir/clang_explicit_libcxx.txt"
+rg -q -- '-lc\+\+' "$verify_dir/clang_explicit_libcxx.txt"
+if rg -q -- '-lstdc\+\+' "$verify_dir/clang_explicit_libcxx.txt"; then
+  echo "unexpected libstdc++ in explicit libc++ driver plan" >&2
+  exit 8
+fi
+
+echo "verification_result=PASS"

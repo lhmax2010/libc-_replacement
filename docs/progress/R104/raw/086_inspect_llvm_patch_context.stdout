@@ -1,0 +1,610 @@
+     1	%define keepstatic 1
+     2	
+     3	# MLGO AOT support for LLVM MLGO (Ahead-of-Time compilation)
+     4	# TODO: switch back to a project_config-controlled macro after MLGO is enabled
+     5	# for all required arches.
+     6	# %%bcond_with mlgo
+     7	%ifarch armv7l aarch64 x86_64
+     8	%bcond_without mlgo
+     9	%endif
+    10	
+    11	%if %{defined _toolchain}
+    12	%define _toolchain_override clang
+    13	%define llvm_release_build 0
+    14	%else
+    15	%define llvm_release_build 1
+    16	%endif
+    17	
+    18	%define llvm_version 22
+    19	
+    20	%define sdk_install_prefix /home/owner/share/tmp/sdk_tools/lldb
+    21	%define sdk_bin_dir %{sdk_install_prefix}/bin
+    22	%define sdk_lib_dir %{sdk_install_prefix}/%{_lib}
+    23	
+    24	%if 0%{llvm_release_build}
+    25	# Disable debug packages building
+    26	%define debug_package %{nil}
+    27	%define __debug_install_post %{_rpmconfigdir}/find-debuginfo.sh %{?_find_debuginfo_opts} %{?_find_debuginfo_strip_opts} %{?_find_debuginfo_ko_strip_opts} "%{_builddir}/%{?buildsubdir}"\
+    28		rm -rf "%{buildroot}/usr/lib/debug"\
+    29		rm -rf "%{buildroot}/usr/src/debug"
+    30	%endif
+    31	
+    32	Name:      llvm
+    33	Summary:   The LLVM Project is a collection of modular and reusable compiler and toolchain technologies
+    34	Version:   22.1.8
+    35	Release:   1
+    36	Group:     Development/Toolchain
+    37	License:   NCSA
+    38	Source0:   %{name}-%{version}.tar.gz
+    39	Source1001: llvm.manifest
+    40	
+    41	# Bundled MLGO AOT assets for the inliner and regalloc models.
+    42	# These override build-time AOT compilation, avoiding the need for TensorFlow
+    43	# Python in GBS.
+    44	Source1002: mlgo_arm_model.tar.gz
+    45	Source1003: mlgo_aarch_model.tar.gz
+    46	Source1004: mlgo_x86_model.tar.gz
+    47	
+    48	%{!?mlgo_build_jobs: %define mlgo_build_jobs 6}
+    49	%{!?mlgo_verify_configure_only: %define mlgo_verify_configure_only 0}
+    50	
+    51	BuildRequires: cmake
+    52	BuildRequires: python3
+    53	BuildRequires: python3-devel
+    54	BuildRequires: patchelf
+    55	BuildRequires: binutils-devel
+    56	BuildRequires: libxml2-devel
+    57	%if 0%{llvm_release_build}
+    58	BuildRequires: sed
+    59	%endif
+    60	BuildRequires: ninja
+    61	
+    62	
+    63	Requires: libllvm = %{version}-%{release}
+    64	
+    65	%description
+    66	LLVM is a compiler infrastructure designed for compile-time, link-time, runtime,
+    67	and idle-time optimization of programs from arbitrary programming languages.
+    68	LLVM is written in C++ and has been developed since 2000 at the University of
+    69	Illinois and Apple. It currently supports compilation of C and C++ programs,
+    70	using front-ends derived from GCC 4.0.1. A new front-end for the C family of
+    71	languages is in development. The compiler infrastructure
+    72	includes mirror sets of programming tools as well as libraries with equivalent
+    73	functionality.
+    74	
+    75	%package devel
+    76	Summary: Libraries and Header Files for LLVM %{version}
+    77	Requires: %{name} = %{version}
+    78	
+    79	%description devel
+    80	This package contains library and header files needed to develop
+    81	new native programs that use the LLVM infrastructure.
+    82	
+    83	%package static-devel
+    84	Summary: Static libraries for LLVM
+    85	Requires: %{name} = %{version}
+    86	
+    87	%description static-devel
+    88	This package contains static libraries needed to develop new
+    89	native programs that use the LLVM infrastructure.
+    90	
+    91	%package -n libllvm
+    92	Summary: LLVM shared libraries
+    93	
+    94	%description -n libllvm
+    95	Shared libraries for the LLVM compiler infrastructure.
+    96	
+    97	%package -n clang
+    98	Summary: Clang %{version} (C Language family frontend for LLVM)
+    99	License: NCSA
+   100	Requires: llvm = %{version}-%{release}
+   101	Provides: libclang.so.%{version}
+   102	
+   103	%description -n clang
+   104	A new front-end for the C family of languages is in development.
+   105	
+   106	%package -n clang-devel
+   107	Summary: Clang %{version} Development Library
+   108	Requires: clang = %{version}-%{release}
+   109	
+   110	%description -n clang-devel
+   111	This package contains the clang (C language) frontend for LLVM.
+   112	(development files)
+   113	
+   114	%package -n lldb
+   115	Summary: LLDB
+   116	License: NCSA
+   117	
+   118	%description -n lldb
+   119	LLDB is a next generation, high-performance debugger. It is built as a set
+   120	of reusable components which highly leverage existing libraries in the
+   121	larger LLVM Project, such as the Clang expression parser and LLVM
+   122	disassembler.
+   123	
+   124	%package -n lldb-devel
+   125	Summary: Development header files for LLDB
+   126	Requires: lldb = %{version}-%{release}
+   127	
+   128	%description -n lldb-devel
+   129	The package contains header files for the LLDB debugger.
+   130	
+   131	%package -n compiler-rt
+   132	Summary: Compiler runtime libraries
+   133	
+   134	%description -n compiler-rt
+   135	Compiler runtime libraries
+   136	
+   137	%package -n libomp
+   138	Summary:    OpenMP runtime
+   139	
+   140	%description -n libomp
+   141	OpenMP runtime.
+   142	
+   143	%package -n libomp-devel
+   144	Summary:    Development files for the OpenMP runtime
+   145	
+   146	%description -n libomp-devel
+   147	Development files for the OpenMP runtime.
+   148	
+   149	%package -n python-clang
+   150	Summary: Python bindings to parts of the Clang library
+   151	
+   152	%description -n python-clang
+   153	Python bindings to parts of the Clang library
+   154	
+   155	%prep
+   156	%setup -q
+   157	%if %{with mlgo}
+   158	mkdir -p mlgo_verify_assets
+   159	%ifarch armv7l
+   160	tar -C mlgo_verify_assets -xzf %{SOURCE1002}
+   161	%endif
+   162	%ifarch aarch64
+   163	tar -C mlgo_verify_assets -xzf %{SOURCE1003}
+   164	%endif
+   165	%ifarch x86_64
+   166	tar -C mlgo_verify_assets -xzf %{SOURCE1004}
+   167	%endif
+   168	%endif
+   169	
+   170	%build
+   171	%if 0%{llvm_release_build}
+   172	# Not to build debug info
+   173	RELCFLAGS=$(echo $CFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\|dwarf-[[:digit:]]\)\?* *g')
+   174	export CFLAGS=${RELCFLAGS}
+   175	RELCXXFLAGS=$(echo $CXXFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\|dwarf-[[:digit:]]\)\?* *g')
+   176	export CXXFLAGS=${RELCXXFLAGS}
+   177	RELFFLAGS=$(echo $FFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\)|dwarf-[[:digit:]]\\?* *g')
+   178	export FFLAGS=${RELFFLAGS}
+   179	%endif
+   180	
+   181	cp %{SOURCE1001} .
+   182	%{?asan:%gcc_unforce_options}
+   183	
+   184	%ifarch armv7l
+   185	export QEMU_RESERVED_VA=0x100000000
+   186	%endif
+   187	
+   188	# Set up MLGO AOT model paths from bundled verify assets
+   189	%if %{with mlgo}
+   190	MLGO_AOT_DIR="$PWD/mlgo_verify_assets"
+   191	MLGO_BUILD_DIR="$PWD/build"
+   192	MLGO_RUNTIME_OBJECTS="${MLGO_AOT_DIR}/xla_runtime_objects/xla_compiled_cpu_function.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/cpu_function_runtime.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/custom_call_status.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/executable_run_options.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/runtime_single_threaded_matmul_f32.cc.o"
+   193	MLGO_REQUIRED_RUNTIME_OBJECTS="xla_compiled_cpu_function.cc.o cpu_function_runtime.cc.o custom_call_status.cc.o executable_run_options.cc.o runtime_single_threaded_matmul_f32.cc.o"
+   194	%endif
+   195	
+   196	mkdir -p build
+   197	cd build
+   198	cmake \
+   199	    -G Ninja \
+   200	    -DTIZEN=1 \
+   201	    -DCMAKE_C_COMPILER=%__cc \
+   202	    -DCMAKE_CXX_COMPILER=%__cxx \
+   203	    -DLLVM_HOST_TRIPLE=%{_host} \
+   204	    -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+   205	    -DLLVM_TARGET_TRIPLE_ENV=%{_host} \
+   206	    -DCMAKE_ASM_FLAGS="$CFLAGS" \
+   207	    -DCMAKE_C_FLAGS="$CFLAGS" \
+   208	    -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
+   209	%if %{defined _toolchain}
+   210	    -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections" \
+   211	    -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections" \
+   212	    -DLLVM_USE_LINKER=lld \
+   213	%endif
+   214	    -DLLVM_ENABLE_ASSERTIONS=No \
+   215	    -DLLVM_ENABLE_RTTI=ON \
+   216	%ifarch x86_64 i686
+   217	    -DCMAKE_BUILD_TYPE=Release \
+   218	    -DLLVM_TARGETS_TO_BUILD='X86;ARM;AArch64;BPF' \
+   219	%endif
+   220	%ifarch armv7l
+   221	    -DCMAKE_BUILD_TYPE=MinSizeRel \
+   222	    -DLLVM_TARGETS_TO_BUILD='ARM;BPF' \
+   223	    -DLLVM_TARGET_ARCH="ARM" \
+   224	%endif
+   225	%ifarch aarch64
+   226	    -DCMAKE_BUILD_TYPE=Release \
+   227	    -DLLVM_TARGETS_TO_BUILD='AArch64;BPF' \
+   228	    -DLLVM_TARGET_ARCH="AArch64" \
+   229	%endif
+   230	%ifarch riscv64
+   231	    -DCMAKE_BUILD_TYPE=Release \
+   232	    -DLLVM_TARGETS_TO_BUILD='RISCV;BPF' \
+   233	%endif
+   234	    -DCLANG_ENABLE_ARCMT=OFF \
+   235	    -DLLVM_BUILD_LLVM_DYLIB=ON \
+   236	    -DCLANG_BUILD_CLANG_DYLIB=ON \
+   237	%if %{defined _toolchain}
+   238	    -DLLVM_LINK_LLVM_DYLIB=ON \
+   239	    -DCLANG_LINK_CLANG_DYLIB=ON \
+   240	%endif
+   241	    -DLLVM_ENABLE_PROJECTS="clang;lldb;clang-tools-extra;lld;compiler-rt;openmp" \
+   242	    -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
+   243	    -DLLVM_BUILD_EXAMPLES=OFF \
+   244	    -DLLVM_INCLUDE_EXAMPLES=OFF \
+   245	    -DLLVM_BUILD_TESTS=OFF \
+   246	    -DLLVM_INCLUDE_TESTS=OFF \
+   247	    -DLLVM_ENABLE_DOXYGEN=OFF \
+   248	    -DLLVM_BUILD_DOCS=OFF \
+   249	    -DLLVM_INCLUDE_DOCS=OFF \
+   250	    -DLLVM_OPTIMIZED_TABLEGEN=ON \
+   251	    -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+   252	    -DLLVM_LIBDIR_SUFFIX=`echo %{_lib} | sed s/lib//g` \
+   253	    -DCLANG_RESOURCE_DIR="../%{_lib}/clang/%{llvm_version}" \
+   254	    -DLLVM_BINUTILS_INCDIR=/usr/include \
+   255	    -DLLVM_PARALLEL_COMPILE_JOBS=6 \
+   256	    -DLLVM_PARALLEL_LINK_JOBS=2 \
+   257	%if %{with mlgo}
+   258	%ifarch armv7l aarch64 x86_64
+   259	    -DTENSORFLOW_AOT_PATH="${MLGO_AOT_DIR}/mlgo_sysroot" \
+   260	    -DLLVM_MLGO_EXPORT_TF_XLA_RUNTIME=OFF \
+   261	    -DLLVM_MLGO_EMBED_TF_XLA_RUNTIME_OBJECTS="${MLGO_RUNTIME_OBJECTS}" \
+   262	    -DLLVM_OVERRIDE_MODEL_HEADER_INLINERSIZEMODEL="${MLGO_AOT_DIR}/InlinerSizeModel.h" \
+   263	    -DLLVM_OVERRIDE_MODEL_OBJECT_INLINERSIZEMODEL="${MLGO_AOT_DIR}/InlinerSizeModel.o" \
+   264	    -DLLVM_OVERRIDE_MODEL_HEADER_REGALLOCEVICTMODEL="${MLGO_AOT_DIR}/RegAllocEvictModel.h" \
+   265	    -DLLVM_OVERRIDE_MODEL_OBJECT_REGALLOCEVICTMODEL="${MLGO_AOT_DIR}/RegAllocEvictModel.o" \
+   266	%else
+   267	    -DLLVM_INLINER_MODEL_PATH=none \
+   268	    -DLLVM_RAEVICT_MODEL_PATH=none \
+   269	%endif
+   270	%else
+   271	    -DLLVM_INLINER_MODEL_PATH=none \
+   272	    -DLLVM_RAEVICT_MODEL_PATH=none \
+   273	%endif
+   274	    ../llvm
+   275	
+   276	%if 0%{mlgo_verify_configure_only}
+   277	  # ---- configure-only probe: guard against §0 traps; check sentinels, GBS exit code non-0 is expected ----
+   278	  # Note: %%build does not guarantee set -e, so each assertion explicitly uses '|| { ...; exit 1; }'
+   279	  # Assertion 0: MLGO_BUILD_DIR is correct (fail immediately with clear error if wrong)
+   280	  test -f CMakeCache.txt || \
+   281	    { echo "FATAL: MLGO_BUILD_DIR wrong (CMakeCache.txt not found in $(pwd))"; exit 1; }
+   282	%if %{with mlgo}
+   283	  # Assertion 1: override actually took effect (COPYONLY artifacts exist from configure stage)
+   284	  test -f lib/Analysis/InlinerSizeModel.h || \
+   285	    { echo "FATAL: Missing InlinerSizeModel.h (override not effective, likely trap 1: silent fallback to none)"; exit 1; }
+   286	  test -f lib/Analysis/InlinerSizeModel.o || \
+   287	    { echo "FATAL: Missing InlinerSizeModel.o (override not effective)"; exit 1; }
+   288	  test -f lib/CodeGen/RegAllocEvictModel.h || \
+   289	    { echo "FATAL: Missing RegAllocEvictModel.h(regalloc override not effective)"; exit 1; }
+   290	  test -f lib/CodeGen/RegAllocEvictModel.o || \
+   291	    { echo "FATAL: Missing RegAllocEvictModel.o(regalloc override not effective)"; exit 1; }
+   292	  for mlgo_runtime_object in ${MLGO_REQUIRED_RUNTIME_OBJECTS}; do
+   293	    test -f "${MLGO_AOT_DIR}/xla_runtime_objects/${mlgo_runtime_object}" || \
+   294	        { echo "FATAL: missing MLGO runtime object: ${mlgo_runtime_object}"; exit 1; }
+   295	  done
+   296	  # Assertion 1b: bundled objects must match the target arch.
+   297	%ifarch armv7l
+   298	  MLGO_EXPECT_MACHINE="ARM"
+   299	%endif
+   300	%ifarch aarch64
+   301	  MLGO_EXPECT_MACHINE="AArch64"
+   302	%endif
+   303	%ifarch x86_64
+   304	  MLGO_EXPECT_MACHINE="X86-64"
+   305	%endif
+   306	  for mlgo_obj in lib/Analysis/InlinerSizeModel.o lib/CodeGen/RegAllocEvictModel.o; do
+   307	    readelf -h "${mlgo_obj}" | grep -q "Machine:.*${MLGO_EXPECT_MACHINE}" || \
+   308	      { echo "FATAL: ${mlgo_obj} arch mismatch (expected ${MLGO_EXPECT_MACHINE})"; exit 1; }
+   309	  done
+   310	  for mlgo_runtime_object in ${MLGO_REQUIRED_RUNTIME_OBJECTS}; do
+   311	    mlgo_obj="${MLGO_AOT_DIR}/xla_runtime_objects/${mlgo_runtime_object}"
+   312	    readelf -h "${mlgo_obj}" | grep -q "Machine:.*${MLGO_EXPECT_MACHINE}" || \
+   313	      { echo "FATAL: ${mlgo_obj} arch mismatch (expected ${MLGO_EXPECT_MACHINE})"; exit 1; }
+   314	  done
+   315	  # Assertion 2: did not fall into autogenerate mock. Use && short-circuit: file missing => FATAL, don't let '! grep' pass
+   316	  test -f CMakeCache.txt && \
+   317	    ! grep -qE 'LLVM_INLINER_MODEL_PATH(:[^=]+)?=autogenerate' CMakeCache.txt || \
+   318	    { echo "FATAL: Fell into autogenerate mock or CMakeCache missing (trap 2)"; exit 1; }
+   319	  test -f CMakeCache.txt && \
+   320	    ! grep -qE 'LLVM_RAEVICT_MODEL_PATH(:[^=]+)?=autogenerate' CMakeCache.txt || \
+   321	    { echo "FATAL: regalloc fell into autogenerate mock"; exit 1; }
+   322	  # Assertion 3: MLGO runtime is embedded and tf_xla_runtime is not exported.
+   323	  grep -q '^LLVM_MLGO_EXPORT_TF_XLA_RUNTIME:BOOL=OFF$' "${MLGO_BUILD_DIR}/CMakeCache.txt" || \
+   324	    { echo "FATAL: MLGO TensorFlow runtime export is not disabled"; exit 1; }
+   325	  for mlgo_runtime_object in ${MLGO_REQUIRED_RUNTIME_OBJECTS}; do
+   326	    grep -q "xla_runtime_objects/${mlgo_runtime_object}" "${MLGO_BUILD_DIR}/CMakeCache.txt" || \
+   327	      { echo "FATAL: MLGO runtime object is not embedded: ${mlgo_runtime_object}"; exit 1; }
+   328	  done
+   329	  cmake --build . --target tf_xla_runtime || \
+   330	    { echo "FATAL: tf_xla_runtime build failed"; exit 1; }
+   331	  MLGO_PROBE_ROOT="$PWD/mlgo_probe_root"
+   332	  rm -rf "${MLGO_PROBE_ROOT}"
+   333	  mkdir -p "${MLGO_PROBE_ROOT}"
+   334	  DESTDIR="${MLGO_PROBE_ROOT}" cmake --install . \
+   335	    --prefix /usr --component tf_xla_runtime --verbose
+   336	  ! find "${MLGO_PROBE_ROOT}" -name libtf_xla_runtime.a | grep -q . || \
+   337	    { echo "FATAL: tf_xla_runtime archive should not be installed"; exit 1; }
+   338	%endif
+   339	  echo MLGO_VERIFY_CONFIGURE_PASS
+   340	  exit 86
+   341	%endif
+   342	
+   343	# Full build using ninja (already in build/ directory after cd build)
+   344	ninja -j %{mlgo_build_jobs}
+   345	
+   346	%install
+   347	cd build
+   348	cmake -DCMAKE_INSTALL_PREFIX=%{buildroot}/usr -P cmake_install.cmake
+   349	ln -sf %{_prefix}/bin/clang++ %{buildroot}%{_prefix}/bin/clang++-%{llvm_version}
+   350	
+   351	ln -sf clang %{buildroot}%{_prefix}/bin/%{_host}-clang
+   352	ln -sf clang++ %{buildroot}%{_prefix}/bin/%{_host}-clang++
+   353	# Use host triple and resource dir by default via <lang>.cfg
+   354	cat >> %{buildroot}/%{_prefix}/bin/clang.cfg << EOF
+   355	-target %{_host}
+   356	-resource-dir %{_prefix}/%{_lib}/clang/%{llvm_version}
+   357	EOF
+   358	ln -sf clang.cfg %{buildroot}/%{_prefix}/bin/clang++.cfg
+   359	
+   360	# copy lldb for sdk
+   361	mkdir -p %{buildroot}%{sdk_bin_dir}
+   362	mkdir -p %{buildroot}%{sdk_lib_dir}
+   363	
+   364	mv %{buildroot}%{_prefix}/bin/lldb %{buildroot}%{sdk_bin_dir}
+   365	mv %{buildroot}%{_prefix}/bin/lldb-argdumper %{buildroot}%{sdk_bin_dir}
+   366	mv %{buildroot}%{_prefix}/bin/lldb-server %{buildroot}%{sdk_bin_dir}
+   367	
+   368	ln -sf %{sdk_bin_dir}/lldb %{buildroot}%{_prefix}/bin/
+   369	
+   370	cp -P %{buildroot}%{_libdir}/liblldb.so* %{buildroot}%{sdk_lib_dir}/
+   371	
+   372	# Install the clang python bits
+   373	mkdir -p %{buildroot}%{python3_sitelib}
+   374	cp -a ../clang/bindings/python/clang %{buildroot}%{python3_sitelib}/
+   375	
+   376	rm -rf %{buildroot}%{_libdir}/debug/*
+   377	rm -rf %{buildroot}/usr/lib/libear/*
+   378	rm -rf %{buildroot}/usr/lib/libscanbuild/*
+   379	
+   380	%post -n clang -p /sbin/ldconfig
+   381	%postun -n clang -p /sbin/ldconfig
+   382	
+   383	%post -n lldb
+   384	echo "plugin load /usr/share/dotnet.tizen/netcoreapp/SOS/libsosplugin.so" > /root/.lldbinit
+   385	
+   386	%files
+   387	%manifest %{name}.manifest
+   388	%defattr(-,root,root,-)
+   389	%{_prefix}/bin/analyze-build
+   390	%{_prefix}/bin/bugpoint
+   391	%{_prefix}/bin/clang-linker-wrapper
+   392	%{_prefix}/bin/clang-offload-packager
+   393	%{_prefix}/bin/clang-repl
+   394	%{_prefix}/bin/intercept-build
+   395	%{_prefix}/bin/llc
+   396	%{_prefix}/bin/lld
+   397	%{_prefix}/bin/ld.lld
+   398	%{_prefix}/bin/ld64.lld
+   399	%{_prefix}/bin/lld-link
+   400	%{_prefix}/bin/wasm-ld
+   401	%{_prefix}/bin/lli
+   402	%{_prefix}/bin/llvm-ar
+   403	%{_prefix}/bin/llvm-as
+   404	%{_prefix}/bin/llvm-bcanalyzer
+   405	%{_prefix}/bin/llvm-bitcode-strip
+   406	%{_prefix}/bin/llvm-c-test
+   407	%{_prefix}/bin/llvm-cat
+   408	%{_prefix}/bin/llvm-cgdata
+   409	%{_prefix}/bin/llvm-ctxprof-util
+   410	%{_prefix}/bin/llvm-config
+   411	%{_prefix}/bin/llvm-cov
+   412	%{_prefix}/bin/llvm-cvtres
+   413	%{_prefix}/bin/llvm-cxxdump
+   414	%{_prefix}/bin/llvm-cxxfilt
+   415	%{_prefix}/bin/llvm-debuginfo-analyzer
+   416	%{_prefix}/bin/llvm-debuginfod
+   417	%{_prefix}/bin/llvm-debuginfod-find
+   418	%{_prefix}/bin/llvm-diff
+   419	%{_prefix}/bin/llvm-dis
+   420	%{_prefix}/bin/llvm-dlltool
+   421	%{_prefix}/bin/llvm-dwarfdump
+   422	%{_prefix}/bin/llvm-dwarfutil
+   423	%{_prefix}/bin/llvm-dwp
+   424	%{_prefix}/bin/llvm-extract
+   425	%{_prefix}/bin/llvm-gsymutil
+   426	%{_prefix}/bin/llvm-lib
+   427	%{_prefix}/bin/llvm-libtool-darwin
+   428	%{_prefix}/bin/llvm-link
+   429	%{_prefix}/bin/llvm-lto
+   430	%{_prefix}/bin/llvm-lto2
+   431	%{_prefix}/bin/llvm-mc
+   432	%{_prefix}/bin/llvm-ml
+   433	%{_prefix}/bin/llvm-ml64
+   434	%{_prefix}/bin/llvm-modextract
+   435	%{_prefix}/bin/llvm-mt
+   436	%{_prefix}/bin/llvm-nm
+   437	%{_prefix}/bin/llvm-objdump
+   438	%{_prefix}/bin/llvm-opt-report
+   439	%{_prefix}/bin/llvm-otool
+   440	%{_prefix}/bin/llvm-remarkutil
+   441	%{_prefix}/bin/llvm-pdbutil
+   442	%{_prefix}/bin/llvm-profdata
+   443	%{_prefix}/bin/llvm-profgen
+   444	%{_prefix}/bin/llvm-ranlib
+   445	%{_prefix}/bin/llvm-readelf
+   446	%{_prefix}/bin/llvm-readobj
+   447	%{_prefix}/bin/llvm-readtapi
+   448	%{_prefix}/bin/llvm-rtdyld
+   449	%{_prefix}/bin/llvm-sim
+   450	%{_prefix}/bin/llvm-size
+   451	%{_prefix}/bin/llvm-split
+   452	%{_prefix}/bin/llvm-stress
+   453	%{_prefix}/bin/llvm-strings
+   454	%{_prefix}/bin/llvm-symbolizer
+   455	%{_prefix}/bin/llvm-tblgen
+   456	%{_prefix}/bin/llvm-tli-checker
+   457	%{_prefix}/bin/llvm-windres
+   458	%{_prefix}/bin/llvm-xray
+   459	%{_prefix}/bin/offload-arch
+   460	%{_prefix}/bin/opt
+   461	%{_prefix}/bin/run-clang-tidy
+   462	%{_prefix}/bin/sancov
+   463	%{_prefix}/bin/sanstats
+   464	%{_prefix}/bin/scan-build
+   465	%{_prefix}/bin/scan-build-py
+   466	%{_prefix}/bin/scan-view
+   467	%{_prefix}/bin/verify-uselistorder
+   468	%{_prefix}/bin/diagtool
+   469	%{_prefix}/bin/dsymutil
+   470	%{_prefix}/bin/hmaptool
+   471	%{_prefix}/bin/lldb-dap
+   472	%{_prefix}/bin/lldb-instr
+   473	%{_prefix}/bin/llvm-addr2line
+   474	%{_prefix}/bin/llvm-cfi-verify
+   475	%{_prefix}/bin/llvm-cxxmap
+   476	%{_prefix}/bin/llvm-exegesis
+   477	%{_prefix}/bin/llvm-ifs
+   478	%{_prefix}/bin/llvm-install-name-tool
+   479	%{_prefix}/bin/llvm-jitlink
+   480	%{_prefix}/bin/llvm-lipo
+   481	%{_prefix}/bin/llvm-mca
+   482	%{_prefix}/bin/llvm-objcopy
+   483	%{_prefix}/bin/llvm-rc
+   484	%{_prefix}/bin/llvm-reduce
+   485	%{_prefix}/bin/llvm-strip
+   486	%{_prefix}/bin/llvm-undname
+   487	%{_prefix}/bin/pp-trace
+   488	%{_prefix}/bin/reduce-chunk-list
+   489	%{_prefix}/bin/llvm-cas
+   490	%{_prefix}/bin/llvm-ir2vec
+   491	%{_prefix}/bin/llvm-offload-binary
+   492	%{_prefix}/bin/llvm-offload-wrapper
+   493	%{_prefix}/bin/yaml2macho-core
+   494	
+   495	%files devel
+   496	%manifest %{name}.manifest
+   497	%defattr(-,root,root,-)
+   498	%{_prefix}/include/lld/*
+   499	%{_prefix}/include/llvm/*
+   500	%{_prefix}/include/llvm-c/*
+   501	%{_prefix}/share/*
+   502	%{_libdir}/cmake/lld/*
+   503	%{_libdir}/cmake/llvm/*
+   504	%{_libdir}/libLTO*.so*
+   505	%{_libdir}/LLVMgold.so
+   506	%{_libdir}/libRemarks.so*
+   507	%{_prefix}/bin/amdgpu-arch
+   508	%{_prefix}/bin/nvptx-arch
+   509	
+   510	%files static-devel
+   511	%manifest %{name}.manifest
+   512	%defattr(-,root,root,-)
+   513	%{_libdir}/lib*.a
+   514	
+   515	%files -n libllvm
+   516	%manifest %{name}.manifest
+   517	%defattr(-,root,root,-)
+   518	%{_libdir}/libLLVM*.so*
+   519	
+   520	%files -n clang
+   521	%manifest %{name}.manifest
+   522	%defattr(-,root,root,-)
+   523	%{_prefix}/bin/clang
+   524	%{_prefix}/bin/clang++
+   525	%{_prefix}/bin/%{_host}-clang
+   526	%{_prefix}/bin/%{_host}-clang++
+   527	%{_prefix}/bin/clang-%{llvm_version}
+   528	%{_prefix}/bin/clang++-%{llvm_version}
+   529	%{_prefix}/bin/clang-apply-replacements
+   530	%{_prefix}/bin/clang-change-namespace
+   531	%{_prefix}/bin/clang-check
+   532	%{_prefix}/bin/clang-cl
+   533	%{_prefix}/bin/clang-cpp
+   534	%{_prefix}/bin/clang-doc
+   535	%{_prefix}/bin/clang-extdef-mapping
+   536	%{_prefix}/bin/clang-move
+   537	%{_prefix}/bin/clang-refactor
+   538	%{_prefix}/bin/clang-scan-deps
+   539	%{_prefix}/bin/clang-format
+   540	%{_prefix}/bin/clang-include-cleaner
+   541	%{_prefix}/bin/clang-include-fixer
+   542	%{_prefix}/bin/clang-offload-bundler
+   543	%{_prefix}/bin/clang-query
+   544	%{_prefix}/bin/clang-sycl-linker
+   545	%{_prefix}/bin/clang-reorder-fields
+   546	%{_prefix}/bin/clang-tidy
+   547	%{_prefix}/bin/clang-installapi
+   548	%{_prefix}/bin/clang-nvlink-wrapper
+   549	%{_prefix}/bin/clangd
+   550	%{_prefix}/bin/git-clang-format
+   551	%{_prefix}/bin/find-all-symbols
+   552	%{_prefix}/bin/modularize
+   553	%{_libdir}/clang/%{llvm_version}/include/*
+   554	%{_libdir}/libclang*.so*
+   555	%{_libdir}/cmake/clang/*
+   556	%{_prefix}/libexec/analyze-c++
+   557	%{_prefix}/libexec/analyze-cc
+   558	%{_prefix}/libexec/c++-analyzer
+   559	%{_prefix}/libexec/ccc-analyzer
+   560	%{_prefix}/libexec/intercept-c++
+   561	%{_prefix}/libexec/intercept-cc
+   562	%{_prefix}/bin/clang.cfg
+   563	%{_prefix}/bin/clang++.cfg
+   564	
+   565	%files -n clang-devel
+   566	%manifest %{name}.manifest
+   567	%defattr(-,root,root,-)
+   568	%{_prefix}/bin/clang-tblgen
+   569	%{_prefix}/include/clang/*
+   570	%{_prefix}/include/clang-c/*
+   571	%{_prefix}/include/clang-tidy/*
+   572	
+   573	%files -n lldb
+   574	%manifest %{name}.manifest
+   575	%defattr(-,root,root,-)
+   576	%{sdk_bin_dir}/lldb
+   577	%{_prefix}/bin/lldb
+   578	%{sdk_bin_dir}/lldb-argdumper
+   579	%{sdk_bin_dir}/lldb-server
+   580	%{sdk_lib_dir}/liblldb*.so*
+   581	%{_prefix}/bin/lldb-mcp
+   582	
+   583	%files -n lldb-devel
+   584	%manifest %{name}.manifest
+   585	%defattr(-,root,root,-)
+   586	%{_prefix}/include/lldb/*
+   587	%{_libdir}/liblldb*.so*
+   588	%{_prefix}/bin/lldb-tblgen
+   589	
+   590	%files -n compiler-rt
+   591	%manifest %{name}.manifest
+   592	%defattr(-,root,root,-)
+   593	%{_libdir}/clang/%{llvm_version}/include/sanitizer/*
+   594	%{_libdir}/clang/%{llvm_version}/*
+   595	
+   596	%files -n libomp
+   597	%{_libdir}/libomp.so
+   598	%ifnarch %arm
+   599	%{_libdir}/libompd.so
+   600	%{_libdir}/libarcher.so
+   601	%endif
+   602	
+   603	%files -n libomp-devel
+   604	%ifnarch %arm
+   605	%{_libdir}/libarcher_static.a
+   606	%endif
+   607	%{_libdir}/cmake/openmp/FindOpenMPTarget.cmake
+   608	
+   609	%files -n python-clang
+   610	%{python3_sitelib}/clang
