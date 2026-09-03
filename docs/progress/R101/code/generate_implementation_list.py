@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+import csv
+import subprocess
+import sys
+from pathlib import Path
+
+
+PACKAGES = {
+    "abseil-cpp": {
+        "repo": "platform/upstream/abseil-cpp",
+        "snapshot": "9c39c516dca54c786ddc5da45a5a15acf41ef75e",
+        "spec": "packaging/abseil-cpp.spec",
+        "change": "增加 libc++-devel/libc++abi-devel BuildRequires；在 %build 后、%{cmake} 前追加仅作用于 C++/链接的标准库 flags。",
+    },
+    "bcc-tools": {
+        "repo": "platform/upstream/bcc",
+        "snapshot": "97128ee3dbccd2851cfa94dc723edb2abcbefc1d",
+        "spec": "packaging/bcc-tools.spec",
+        "change": "增加两个 devel BuildRequires；在 %build 后、LLVM_VERSION_MAJOR 探测和 cmake 前导出 CXXFLAGS/LDFLAGS。",
+    },
+    "boost": {
+        "repo": "platform/upstream/boost",
+        "snapshot": "58b70f335aec5641540dbe04dfd56fad5af43658",
+        "spec": "packaging/boost.spec",
+        "change": "增加两个 devel BuildRequires；把 boost-devel 的 libstdc++-devel Requires 改为 libc++-devel；在现有 arm flags 后扩展 CXXFLAGS，并把 libc++ 链接 flags 合入现有 LDFLAGS；b2 已显式消费两变量。",
+    },
+    "bpftrace": {
+        "repo": "platform/upstream/bpftrace",
+        "snapshot": "30e51cd665360f85b665308dc13ba27df0c5f739",
+        "spec": "packaging/bpftrace.spec",
+        "change": "增加两个 devel BuildRequires；在 sanitizer unforce 之后、创建 build 目录之前导出 CXXFLAGS/LDFLAGS，再进入 cmake。",
+    },
+    "icu": {
+        "repo": "platform/upstream/icu",
+        "snapshot": "e4a4d7411b0f288581cf020a176b5dddbb504ae7",
+        "spec": "packaging/icu.spec",
+        "change": "增加两个 devel BuildRequires；在既有 CXXFLAGS export 上追加 -stdlib=libc++，并在 configure 前导出 libc++abi 链接 flags。",
+    },
+    "jsoncpp": {
+        "repo": "platform/upstream/jsoncpp",
+        "snapshot": "21c9dcd2bc8f51f8bfe5173b49780dc707eef9f9",
+        "spec": "packaging/jsoncpp.spec",
+        "change": "增加两个 devel BuildRequires；在 %build 后、build 子目录与 %cmake 前导出 CXXFLAGS/LDFLAGS。",
+    },
+    "libsigc++": {
+        "repo": "platform/upstream/libsigc++",
+        "snapshot": "5f177f7c98ea29833989b5d0d6a79fece9701545",
+        "spec": "packaging/libsigc++.spec",
+        "change": "增加两个 devel BuildRequires；在 %build 后、%meson 前导出 CXXFLAGS/LDFLAGS；Meson 从环境初始化编译与链接参数。",
+    },
+    "llvm": {
+        "repo": "platform/upstream/llvm",
+        "snapshot": "08a64b6eb95ed74339f1d862a6c22a2f93fa78f9",
+        "spec": "packaging/llvm.spec",
+        "change": "增加两个 devel BuildRequires；在 release flags 规范化后追加 CXXFLAGS/LDFLAGS；同时把该 LDFLAGS 合入显式 CMAKE_SHARED_LINKER_FLAGS 与 CMAKE_EXE_LINKER_FLAGS，避免显式 -D 覆盖环境初始化值。不要修改 libcxx-runtimes.spec。",
+    },
+    "pcre": {
+        "repo": "platform/upstream/pcre",
+        "snapshot": "feba6a19627f5d6e74d551ef2fc8b33af0547780",
+        "spec": "packaging/pcre.spec",
+        "change": "增加两个 devel BuildRequires；把 pcre-devel 的 libstdc++-devel Requires 改为 libc++-devel；在既有 CFLAGS export 后、autoreconf/configure 前导出 CXXFLAGS/LDFLAGS。",
+    },
+    "taglib": {
+        "repo": "platform/upstream/taglib",
+        "snapshot": "4e7de646d897ed5a92111799058b21705a3bd34c",
+        "spec": "packaging/taglib.spec",
+        "change": "增加两个 devel BuildRequires；在 %build 后、版本计算和 %cmake 前导出 CXXFLAGS/LDFLAGS。",
+    },
+}
+
+COMMON_FLAGS = (
+    'CXXFLAGS="${CXXFLAGS} -stdlib=libc++"；'
+    'LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"'
+)
+VERIFY = (
+    "三架构构建日志确认 clang++ 22.1.8 且编译/链接命令含目标 flags；"
+    "逐个 C++ ELF 用 readelf -d 确认直接 NEEDED 含 libc++.so.1/libc++abi.so.1、"
+    "不含 libstdc++.so.6，并用 readelf/nm 确认无 GLIBCXX 引用；"
+    "重跑 Unified→Base 与 Base 内部精确符号边及包自带测试/代表性 smoke test。"
+)
+
+if len(sys.argv) != 4:
+    raise SystemExit("usage: generate_implementation_list.py REPO_ROOT OUTPUT_TSV OUTPUT_MD")
+repo_root, output_tsv, output_md = map(Path, sys.argv[1:])
+rows = []
+for name, data in PACKAGES.items():
+    repo = repo_root / name
+    current = subprocess.check_output(
+        ["git", "rev-parse", "refs/remotes/origin/tizen_base"], cwd=repo, text=True
+    ).strip()
+    spec_text = subprocess.check_output(
+        ["git", "show", f"refs/remotes/origin/tizen_base:{data['spec']}"],
+        cwd=repo,
+        text=True,
+    )
+    build_line = next(
+        index for index, line in enumerate(spec_text.splitlines(), 1) if line == "%build"
+    )
+    rows.append(
+        {
+            "源码包": name,
+            "仓库": data["repo"],
+            "R100快照revision": data["snapshot"],
+            "2026-09-03观测到的tizen_base_HEAD": current,
+            "spec路径": data["spec"],
+            "当前spec中build行": str(build_line),
+            "建议改法": data["change"] + " 通用 flags：" + COMMON_FLAGS,
+            "验证": VERIFY,
+        }
+    )
+
+fields = list(rows[0])
+output_tsv.parent.mkdir(parents=True, exist_ok=True)
+with open(output_tsv, "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(
+        f, delimiter="\t", fieldnames=fields, lineterminator="\n"
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+
+with open(output_md, "w", encoding="utf-8") as f:
+    f.write("# 10 个 NEED_LIBCXX 包的实施清单\n\n")
+    f.write(
+        "以下仅是后续实施输入，本任务未修改 spec、未执行构建。"
+        "`R100快照revision` 是判定证据锚点；另一列是 2026-09-03 实际读取的分支 HEAD。\n\n"
+    )
+    f.write("## 共同行为\n\n")
+    f.write("每个包建议显式声明 `BuildRequires: libc++-devel` 与 "
+            "`BuildRequires: libc++abi-devel`，并只对 C++/链接添加：\n\n")
+    f.write("```sh\nexport CXXFLAGS=\"${CXXFLAGS} -stdlib=libc++\"\n")
+    f.write("export LDFLAGS=\"${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed\"\n```\n\n")
+    f.write("| " + " | ".join(fields) + " |\n")
+    f.write("|" + "---|" * len(fields) + "\n")
+    for row in rows:
+        f.write("| " + " | ".join(row[k].replace("|", "\\|") for k in fields) + " |\n")
+    f.write("\n## 构建次序检查点\n\n")
+    f.write(
+        "`libcxx-runtimes` 必须先产出并发布四个 runtime/devel 包；随后构建 `llvm`；"
+        "`bcc-tools` 与 `bpftrace` 在新 LLVM 之后构建。其余库可在新 runtime/devel 可解析后构建。"
+        "仅有 project_config 的 `Support:` 不能证明 QuickBuild 会自动建立该 source 调度边，"
+        "实施前需检查任务图或采用 R84 记录的两阶段方式。\n"
+    )
+
+print(f"implementation_rows={len(rows)}")
+for row in rows:
+    print(
+        f"{row['源码包']}\t{row['spec路径']}:{row['当前spec中build行']}\t"
+        f"{row['2026-09-03观测到的tizen_base_HEAD']}"
+    )

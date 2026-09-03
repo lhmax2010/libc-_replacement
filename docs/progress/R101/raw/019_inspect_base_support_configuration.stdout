@@ -1,0 +1,550 @@
+--- codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/project_config
++++ codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/project_config
+@@ -288,6 +288,7 @@
+ Support: which  elfutils
+ Support: update-alternatives
+ Support: libstdc++-devel
++Support: libc++-devel libc++abi-devel
+ Support: cpp
+ Support: libatomic
+ Support: libgomp
+@@ -296,7 +297,9 @@
+ Support: app-rootstrap-checker
+ 
+ Keep: libstdc++-devel
++Keep: libc++-devel libc++abi-devel
+ Keep: cpp gcc libstdc++
++Keep: libc++ libc++abi
+ Keep: pam
+ Keep: binutils cpp  libmagic-data file findutils gawk gcc  gcc-c++
+ Keep: gdbm gzip libada libunwind  glibc-devel libpcre xz-lzma-compat
+R84_ORDERING
+# QuickBuild 构建顺序判定
+
+## 结论
+
+仅凭 `Support: libc++-devel libc++abi-devel`，**不能确认 QuickBuild 会先构建
+`libcxx-runtimes` 再构建消费者；不得依赖它实现自动排序**。当前环境无法读取
+QuickBuild 服务端调度器版本、任务图或 buildroot 求解日志，平台实际行为记为
+`NOT_OBSERVED`。
+
+本机可核验的 OBS build core 提供了反向证据：
+
+- `/usr/lib/build/Build.pm` 的 `get_build`（第 513–561 行）把 `required` 和
+  `support` 都加入实际构建使用的包集合；
+- 同文件 `get_deps` 上方注释明确说它返回“会影响其他包构建”的包集合，且是
+  “get_build reduced by support packages”（第 616 行）；第 641–647 行又把
+  `support` 从结果中过滤掉。
+
+这说明在本机实现里，`Support:` 表示“放进 buildroot”，不是 source package
+之间的可靠调度边。`gbs 2.0.8 qbbuild --help` 只列出 Full/Partial、包清单和
+snapshot 等参数，没有声明 `Support:` 的平台调度语义。本机 build core 文件
+也不属于已安装 RPM，无法据此确认 QuickBuild 服务端采用同一版本；所以这里只
+作保守执行依据，不把它写成已观测到的服务端事实。
+
+## 建议的两阶段执行
+
+1. 第一阶段使用**尚未加入本次 `Support/Keep` 行的 bootstrap 配置**：先构建
+   sandbox LLVM/Clang，再构建 `libcxx-runtimes.spec`，并把各架构生成的
+   `libc++`、`libc++-devel`、`libc++abi`、`libc++abi-devel` 发布进第二阶段
+   能看到的仓库/snapshot。`libcxx-runtimes.spec` 明确
+   `BuildRequires: clang = 22.1.8`，所以 LLVM/Clang 在前。
+2. 第二阶段应用本任务的两份 project_config 补丁，再启动其余包的全量构建。
+   每个 buildroot 此时才能解析并安装刚发布的两个 devel 包。
+
+第一阶段不能直接依赖已打 Base 补丁的配置。该配置既把两个 devel 包放入
+`Support:`，又在 `Keep:` 中保留 libc++/libc++abi 四个包；按本机
+`get_build` 的逻辑，构建 provider 自己时存在要求其尚未生成子包的自举风险。
+若 QuickBuild 有经过验证的 bootstrap 例外或显式阶段依赖，可把“两轮”做成
+一次平台编排中的两个阶段；在取得证据前，不应假设它存在。
+
+## 人工确认检查点
+
+QuickBuild 平台侧至少核对以下各项：
+
+1. 包清单/任务图是否把第二份 `libcxx-runtimes.spec` 识别为独立 source
+   package，而不是只构建 `llvm.spec`；
+2. 任务图是否存在 `llvm -> libcxx-runtimes -> consumers` 的显式边；
+3. provider 成功后，四个二进制包是否已发布到消费者所用的同一
+   repository/snapshot；
+4. 代表性消费者启动前，buildroot 求解日志中是否显示
+   `libc++-devel-22.1.8-*` 和 `libc++abi-devel-22.1.8-*` 的准确 NEVRA 与仓库
+   来源；
+5. 是否出现 `nothing provides libc++-devel`、`unresolvable`，或选择了旧
+   NEVRA；
+6. 消费者的 `/usr/include/c++/v1` 是否来自新 `libc++-devel`，并包含层 C
+   头文件防护；
+7. 若平台声称单轮自动排序，保存任务图和至少一个消费者“等待 provider 发布
+   后才启动”的时间线证据。
+
+以上任一关键项不可见或不成立时，使用两阶段方案。
+SPEC_BUILD_CONTEXTS
+===== progress/R101/inputs/source_git/abseil-cpp/packaging/abseil-cpp.spec =====
+%build
+mkdir -p cmake/build
+cd cmake/build
+%{cmake} -DABSL_USE_GOOGLETEST_HEAD=OFF ../..
+make %{?_smp_mflags}
+
+%install
+===== progress/R101/inputs/source_git/bcc-tools/packaging/bcc-tools.spec =====
+%build
+#DREVISION - number which will be put at back of the package name if repo isn't available
+LLVM_VERSION_MAJOR=$(llvm-config --version | cut -d. -f1)
+LLVM_SHARED_FLAG=
+if [ "${LLVM_VERSION_MAJOR}" -ge 22 ]; then
+    LLVM_SHARED_FLAG="-DENABLE_LLVM_SHARED=ON"
+fi
+cmake -DCMAKE_INSTALL_PREFIX=/usr -DINSTALL_CPP_EXAMPLES=ON ${LLVM_SHARED_FLAG} -DREVISION="%{version}" -DCMAKE_USE_LIBBPF_PACKAGE:BOOL=TRUE .
+make %{?jobs:-j%jobs}
+
+%install
+===== progress/R101/inputs/source_git/boost/packaging/boost.spec =====
+%build
+CC="%{__cc}"
+%ifarch %arm
+CFLAGS="${CFLAGS} -Wp,-D_FILE_OFFSET_BITS=64"
+CXXFLAGS="${CXXFLAGS} -Wp,-D_FILE_OFFSET_BITS=64"
+%endif
+find . -type f -exec chmod u+w {} +
+
+# Create shared build instructions
+cat << \EOF >.build
+# Now build it
+J_P=%{jobs}
+J_G=$(getconf _NPROCESSORS_ONLN)
+JOBS=${JOBS-$J_P}
+[ $J_G -gt 64 ] && J_G=64
+
+if test -z "$JOBS"; then
+  JOBS=$J_G
+else
+  test 1 -gt "$JOBS" && JOBS=1
+fi
+
+%if %{disable_long_double}
+export LONG_DOUBLE_FLAGS="--disable-long-double"
+%endif
+BJAM_CONFIG="-d2 -j$JOBS -sICU_PATH=%{_prefix}"
+PYTHON_VERSION=$(python3 -c 'import sys; pyVer=sys.version.split(" ")[0].split(".");print("{0}.{1}".format(pyVer[0], pyVer[1]))')
+PYTHON_FLAGS=" --with-python-root=/usr/lib/python${PYTHON_VERSION} --with-python-version=${PYTHON_VERSION}"
+export REGEX_FLAGS="--with-icu"
+export EXPAT_INCLUDE=/usr/include EXPAT_LIBPATH=%{_libdir}
+export PYTHON_FLAGS
+LIBRARIES_FLAGS=--with-libraries=all
+
+%if !%{build_context}
+# coroutine/coroutine2 depend on context
+LIBRARIES_FLAGS="${LIBRARIES_FLAGS} --without-libraries=context,coroutine"
+%endif
+
+%if !%{build_fiber}
+LIBRARIES_FLAGS="${LIBRARIES_FLAGS} --without-libraries=fiber"
+%endif
+
+EOF
+
+touch user-config.jam
+
+# Read shared build instructions
+. ./.build
+
+%if %build_mpi
+# Set PATH, MANPATH and LD_LIBRARY_PATH for mpi
+. /var/mpi-selector/data/$(rpm --qf "%{NAME}-%{VERSION}" -q openmpi).sh
+%endif
+
+# use supplied bootstrap.sh instead of mucking with old bjam
+# see also: https://svn.boost.org/trac/boost/ticket/9304
+./bootstrap.sh $LIBRARIES_FLAGS \
+    --prefix=%{_prefix} --exec-prefix=%{_bindir} \
+    --libdir=%{_libdir} --includedir=%{_includedir} \
+    --with-toolset=${CC##*-}
+
+# add specific wishes in user-config.jam
+%if %build_docs
+cat << EOF >user-config.jam
+using xsltproc ;
+
+using boostbook
+    : /usr/share/xml/docbook/stylesheet/nwalsh/current
+    : /usr/share/xml/docbook/schema/dtd/4.2
+    ;
+
+using doxygen ;
+EOF
+%endif
+
+%if %build_mpi
+cat << EOF >>user-config.jam
+using mpi ;
+EOF
+%endif
+
+cat << EOF >>user-config.jam
+
+using python
+    : ${PYTHON_VERSION}
+    : /usr/bin/python3
+    : %{_includedir}/python${PYTHON_VERSION}
+    :
+    :
+    ;
+
+EOF
+
+# perform the compilation
+./b2 %{?_smp_mflags} --prefix=%{_prefix} --libdir=%{_libdir} \
+    --user-config=./user-config.jam ${CFLAGS:+cflags="$CFLAGS"} \
+    ${CXXFLAGS:+cxxflags="$CXXFLAGS"} ${LDFLAGS:+linkflags="$LDFLAGS"} \
+    target-os=unix
+
+
+%if %build_docs
+cd doc
+../b2 --user-config=../user-config.jam --v2 man
+%endif
+
+%if 0%{?run_tests}
+BOOST_LIBS="chrono,program_options,thread,system,filesystem,date_time,regex,serialization,iostreams,random,test"
+install -m 0755 %{SOURCE1003} ./
+echo "RUN run_test.sh"
+./run_test.sh %{version} $BOOST_LIBS %{testlogfile} || exit 0
+%endif
+
+%install
+===== progress/R101/inputs/source_git/bpftrace/packaging/bpftrace.spec =====
+%build
+%{?asan:/usr/bin/gcc-unforce-options}
+%{?ubsan:/usr/bin/gcc-unforce-options}
+
+mkdir build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -DBUILD_TESTING=OFF -DSTATIC_LINKING=OFF \
+         -DCMAKE_SKIP_RPATH:BOOL=ON -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix}
+%make_build
+cd ..
+
+%install
+===== progress/R101/inputs/source_git/icu/packaging/icu.spec =====
+%build
+export CFLAGS="$CFLAGS -D_TIZEN_FEATURE_ -fPIC"
+export CXXFLAGS="$CXXFLAGS -D_TIZEN_FEATURE_ -fPIC"
+export LINKFLAGS=" -pie"
+export LANG=C.UTF-8
+
+cd source
+%{configure} --enable-static=no \
+            --enable-renaming=no \
+            --enable-shared \
+            --enable-plugins=yes \
+            --enable-samples=no \
+%ifarch armv7hl
+            --with-data-packaging=archive
+%else
+            --with-data-packaging=library
+%endif
+%{__make} %{?_smp_mflags}
+
+%check
+#    pushd source
+#    %__make check || exit 0
+#    popd
+
+%install
+===== progress/R101/inputs/source_git/jsoncpp/packaging/jsoncpp.spec =====
+%build
+mkdir build
+pushd build
+%cmake -DJSONCPP_WITH_TESTS=OFF \
+       -DJSONCPP_WITH_POST_BUILD_UNITTEST=OFF \
+       -DBUILD_SHARED_LIBS=ON \
+       -DBUILD_STATIC_LIBS=OFF \
+       ..
+
+%__make %{?_smp_mflags}
+popd
+
+# Build the doc
+# python doxybuild.py --doxygen %{_bindir}/doxygen
+
+#%check
+# Tests are run automatically in the build section
+# ctest -V %{?_smp_mflags}
+
+%install
+===== progress/R101/inputs/source_git/libsigc++/packaging/libsigc++.spec =====
+%build
+%meson \
+    -Dmaintainer-mode=true \
+    -Dbuild-deprecated-api=true \
+    -Dbuild-documentation=false \
+    -Dbuild-examples=false \
+    -Dbuild-tests=false \
+    -Dbenchmark=false \
+    -Dwarning_level=1
+
+%meson_build
+
+%install
+===== progress/R101/inputs/source_git/llvm/packaging/libcxx-runtimes.spec =====
+%build
+mkdir -p build
+cd build
+
+cmake -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=%{__cc} \
+  -DCMAKE_CXX_COMPILER=%{__cxx} \
+  -DCMAKE_ASM_COMPILER=%{__cc} \
+  -DCMAKE_C_COMPILER_TARGET=%{_host} \
+  -DCMAKE_CXX_COMPILER_TARGET=%{_host} \
+  -DCMAKE_ASM_COMPILER_TARGET=%{_host} \
+  -DCMAKE_C_FLAGS="$CFLAGS --rtlib=libgcc" \
+  -DCMAKE_CXX_FLAGS="$CXXFLAGS --rtlib=libgcc" \
+  -DCMAKE_ASM_FLAGS="$CFLAGS" \
+  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--version-script=%{SOURCE1} -Wl,-z,now --rtlib=libgcc" \
+  -DCMAKE_EXE_LINKER_FLAGS="--rtlib=libgcc" \
+  -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+  -DCMAKE_INSTALL_LIBDIR=%{_lib} \
+  -DLIBCXX_INSTALL_LIBRARY_DIR=%{_lib} \
+  -DLIBCXXABI_INSTALL_LIBRARY_DIR=%{_lib} \
+  -DLLVM_ENABLE_RUNTIMES="libcxxabi;libcxx" \
+  -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+  -DLLVM_INCLUDE_TESTS=OFF \
+  -DLIBCXX_ENABLE_SHARED=ON \
+  -DLIBCXX_ENABLE_STATIC=OFF \
+  -DLIBCXX_INSTALL_SHARED_LIBRARY=ON \
+  -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF \
+  -DLIBCXX_CXX_ABI=libcxxabi \
+  -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF \
+  -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=ON \
+  -DLIBCXX_USE_COMPILER_RT=OFF \
+  -DLIBCXXABI_ENABLE_SHARED=ON \
+  -DLIBCXXABI_ENABLE_STATIC=OFF \
+  -DLIBCXXABI_INSTALL_SHARED_LIBRARY=ON \
+  -DLIBCXXABI_INSTALL_STATIC_LIBRARY=OFF \
+  -DLIBCXXABI_USE_COMPILER_RT=OFF \
+  -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
+  -DLIBCXXABI_ENABLE_STATIC_UNWINDER=OFF \
+  -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=OFF \
+  -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=OFF \
+  -DLIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS=ON \
+  -DLIBCXX_INCLUDE_TESTS=OFF \
+  -DLIBCXXABI_INCLUDE_TESTS=OFF \
+  -DLIBCXX_INCLUDE_BENCHMARKS=OFF \
+  ../runtimes
+
+cmake --build . --target cxxabi cxx cxx_experimental %{?_smp_mflags}
+
+%install
+===== progress/R101/inputs/source_git/llvm/packaging/llvm.spec =====
+%build
+%if 0%{llvm_release_build}
+# Not to build debug info
+RELCFLAGS=$(echo $CFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\|dwarf-[[:digit:]]\)\?* *g')
+export CFLAGS=${RELCFLAGS}
+RELCXXFLAGS=$(echo $CXXFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\|dwarf-[[:digit:]]\)\?* *g')
+export CXXFLAGS=${RELCXXFLAGS}
+RELFFLAGS=$(echo $FFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\)|dwarf-[[:digit:]]\\?* *g')
+export FFLAGS=${RELFFLAGS}
+%endif
+
+cp %{SOURCE1001} .
+%{?asan:%gcc_unforce_options}
+
+%ifarch armv7l
+export QEMU_RESERVED_VA=0x100000000
+%endif
+
+# Set up MLGO AOT model paths from bundled verify assets
+%if %{with mlgo}
+MLGO_AOT_DIR="$PWD/mlgo_verify_assets"
+MLGO_BUILD_DIR="$PWD/build"
+MLGO_RUNTIME_OBJECTS="${MLGO_AOT_DIR}/xla_runtime_objects/xla_compiled_cpu_function.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/cpu_function_runtime.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/custom_call_status.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/executable_run_options.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/runtime_single_threaded_matmul_f32.cc.o"
+MLGO_REQUIRED_RUNTIME_OBJECTS="xla_compiled_cpu_function.cc.o cpu_function_runtime.cc.o custom_call_status.cc.o executable_run_options.cc.o runtime_single_threaded_matmul_f32.cc.o"
+%endif
+
+mkdir -p build
+cd build
+cmake \
+    -G Ninja \
+    -DTIZEN=1 \
+    -DCMAKE_C_COMPILER=%__cc \
+    -DCMAKE_CXX_COMPILER=%__cxx \
+    -DLLVM_HOST_TRIPLE=%{_host} \
+    -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+    -DLLVM_TARGET_TRIPLE_ENV=%{_host} \
+    -DCMAKE_ASM_FLAGS="$CFLAGS" \
+    -DCMAKE_C_FLAGS="$CFLAGS" \
+    -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
+%if %{defined _toolchain}
+    -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections" \
+    -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections" \
+    -DLLVM_USE_LINKER=lld \
+%endif
+    -DLLVM_ENABLE_ASSERTIONS=No \
+    -DLLVM_ENABLE_RTTI=ON \
+%ifarch x86_64 i686
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLVM_TARGETS_TO_BUILD='X86;ARM;AArch64;BPF' \
+%endif
+%ifarch armv7l
+    -DCMAKE_BUILD_TYPE=MinSizeRel \
+    -DLLVM_TARGETS_TO_BUILD='ARM;BPF' \
+    -DLLVM_TARGET_ARCH="ARM" \
+%endif
+%ifarch aarch64
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLVM_TARGETS_TO_BUILD='AArch64;BPF' \
+    -DLLVM_TARGET_ARCH="AArch64" \
+%endif
+%ifarch riscv64
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLVM_TARGETS_TO_BUILD='RISCV;BPF' \
+%endif
+    -DCLANG_ENABLE_ARCMT=OFF \
+    -DLLVM_BUILD_LLVM_DYLIB=ON \
+    -DCLANG_BUILD_CLANG_DYLIB=ON \
+%if %{defined _toolchain}
+    -DLLVM_LINK_LLVM_DYLIB=ON \
+    -DCLANG_LINK_CLANG_DYLIB=ON \
+%endif
+    -DLLVM_ENABLE_PROJECTS="clang;lldb;clang-tools-extra;lld;compiler-rt;openmp" \
+    -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
+    -DLLVM_BUILD_EXAMPLES=OFF \
+    -DLLVM_INCLUDE_EXAMPLES=OFF \
+    -DLLVM_BUILD_TESTS=OFF \
+    -DLLVM_INCLUDE_TESTS=OFF \
+    -DLLVM_ENABLE_DOXYGEN=OFF \
+    -DLLVM_BUILD_DOCS=OFF \
+    -DLLVM_INCLUDE_DOCS=OFF \
+    -DLLVM_OPTIMIZED_TABLEGEN=ON \
+    -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+    -DLLVM_LIBDIR_SUFFIX=`echo %{_lib} | sed s/lib//g` \
+    -DCLANG_RESOURCE_DIR="../%{_lib}/clang/%{llvm_version}" \
+    -DLLVM_BINUTILS_INCDIR=/usr/include \
+    -DLLVM_PARALLEL_COMPILE_JOBS=6 \
+    -DLLVM_PARALLEL_LINK_JOBS=2 \
+%if %{with mlgo}
+%ifarch armv7l aarch64 x86_64
+    -DTENSORFLOW_AOT_PATH="${MLGO_AOT_DIR}/mlgo_sysroot" \
+    -DLLVM_MLGO_EXPORT_TF_XLA_RUNTIME=OFF \
+    -DLLVM_MLGO_EMBED_TF_XLA_RUNTIME_OBJECTS="${MLGO_RUNTIME_OBJECTS}" \
+    -DLLVM_OVERRIDE_MODEL_HEADER_INLINERSIZEMODEL="${MLGO_AOT_DIR}/InlinerSizeModel.h" \
+    -DLLVM_OVERRIDE_MODEL_OBJECT_INLINERSIZEMODEL="${MLGO_AOT_DIR}/InlinerSizeModel.o" \
+    -DLLVM_OVERRIDE_MODEL_HEADER_REGALLOCEVICTMODEL="${MLGO_AOT_DIR}/RegAllocEvictModel.h" \
+    -DLLVM_OVERRIDE_MODEL_OBJECT_REGALLOCEVICTMODEL="${MLGO_AOT_DIR}/RegAllocEvictModel.o" \
+%else
+    -DLLVM_INLINER_MODEL_PATH=none \
+    -DLLVM_RAEVICT_MODEL_PATH=none \
+%endif
+%else
+    -DLLVM_INLINER_MODEL_PATH=none \
+    -DLLVM_RAEVICT_MODEL_PATH=none \
+%endif
+    ../llvm
+
+%if 0%{mlgo_verify_configure_only}
+  # ---- configure-only probe: guard against §0 traps; check sentinels, GBS exit code non-0 is expected ----
+  # Note: %%build does not guarantee set -e, so each assertion explicitly uses '|| { ...; exit 1; }'
+  # Assertion 0: MLGO_BUILD_DIR is correct (fail immediately with clear error if wrong)
+  test -f CMakeCache.txt || \
+    { echo "FATAL: MLGO_BUILD_DIR wrong (CMakeCache.txt not found in $(pwd))"; exit 1; }
+%if %{with mlgo}
+  # Assertion 1: override actually took effect (COPYONLY artifacts exist from configure stage)
+  test -f lib/Analysis/InlinerSizeModel.h || \
+    { echo "FATAL: Missing InlinerSizeModel.h (override not effective, likely trap 1: silent fallback to none)"; exit 1; }
+  test -f lib/Analysis/InlinerSizeModel.o || \
+    { echo "FATAL: Missing InlinerSizeModel.o (override not effective)"; exit 1; }
+  test -f lib/CodeGen/RegAllocEvictModel.h || \
+    { echo "FATAL: Missing RegAllocEvictModel.h(regalloc override not effective)"; exit 1; }
+  test -f lib/CodeGen/RegAllocEvictModel.o || \
+    { echo "FATAL: Missing RegAllocEvictModel.o(regalloc override not effective)"; exit 1; }
+  for mlgo_runtime_object in ${MLGO_REQUIRED_RUNTIME_OBJECTS}; do
+    test -f "${MLGO_AOT_DIR}/xla_runtime_objects/${mlgo_runtime_object}" || \
+        { echo "FATAL: missing MLGO runtime object: ${mlgo_runtime_object}"; exit 1; }
+  done
+  # Assertion 1b: bundled objects must match the target arch.
+%ifarch armv7l
+  MLGO_EXPECT_MACHINE="ARM"
+%endif
+%ifarch aarch64
+  MLGO_EXPECT_MACHINE="AArch64"
+%endif
+%ifarch x86_64
+  MLGO_EXPECT_MACHINE="X86-64"
+%endif
+  for mlgo_obj in lib/Analysis/InlinerSizeModel.o lib/CodeGen/RegAllocEvictModel.o; do
+    readelf -h "${mlgo_obj}" | grep -q "Machine:.*${MLGO_EXPECT_MACHINE}" || \
+      { echo "FATAL: ${mlgo_obj} arch mismatch (expected ${MLGO_EXPECT_MACHINE})"; exit 1; }
+  done
+  for mlgo_runtime_object in ${MLGO_REQUIRED_RUNTIME_OBJECTS}; do
+    mlgo_obj="${MLGO_AOT_DIR}/xla_runtime_objects/${mlgo_runtime_object}"
+    readelf -h "${mlgo_obj}" | grep -q "Machine:.*${MLGO_EXPECT_MACHINE}" || \
+      { echo "FATAL: ${mlgo_obj} arch mismatch (expected ${MLGO_EXPECT_MACHINE})"; exit 1; }
+  done
+  # Assertion 2: did not fall into autogenerate mock. Use && short-circuit: file missing => FATAL, don't let '! grep' pass
+  test -f CMakeCache.txt && \
+    ! grep -qE 'LLVM_INLINER_MODEL_PATH(:[^=]+)?=autogenerate' CMakeCache.txt || \
+    { echo "FATAL: Fell into autogenerate mock or CMakeCache missing (trap 2)"; exit 1; }
+  test -f CMakeCache.txt && \
+    ! grep -qE 'LLVM_RAEVICT_MODEL_PATH(:[^=]+)?=autogenerate' CMakeCache.txt || \
+    { echo "FATAL: regalloc fell into autogenerate mock"; exit 1; }
+  # Assertion 3: MLGO runtime is embedded and tf_xla_runtime is not exported.
+  grep -q '^LLVM_MLGO_EXPORT_TF_XLA_RUNTIME:BOOL=OFF$' "${MLGO_BUILD_DIR}/CMakeCache.txt" || \
+    { echo "FATAL: MLGO TensorFlow runtime export is not disabled"; exit 1; }
+  for mlgo_runtime_object in ${MLGO_REQUIRED_RUNTIME_OBJECTS}; do
+    grep -q "xla_runtime_objects/${mlgo_runtime_object}" "${MLGO_BUILD_DIR}/CMakeCache.txt" || \
+      { echo "FATAL: MLGO runtime object is not embedded: ${mlgo_runtime_object}"; exit 1; }
+  done
+  cmake --build . --target tf_xla_runtime || \
+    { echo "FATAL: tf_xla_runtime build failed"; exit 1; }
+  MLGO_PROBE_ROOT="$PWD/mlgo_probe_root"
+  rm -rf "${MLGO_PROBE_ROOT}"
+  mkdir -p "${MLGO_PROBE_ROOT}"
+  DESTDIR="${MLGO_PROBE_ROOT}" cmake --install . \
+    --prefix /usr --component tf_xla_runtime --verbose
+  ! find "${MLGO_PROBE_ROOT}" -name libtf_xla_runtime.a | grep -q . || \
+    { echo "FATAL: tf_xla_runtime archive should not be installed"; exit 1; }
+%endif
+  echo MLGO_VERIFY_CONFIGURE_PASS
+  exit 86
+%endif
+
+# Full build using ninja (already in build/ directory after cd build)
+ninja -j %{mlgo_build_jobs}
+
+%install
+===== progress/R101/inputs/source_git/pcre/packaging/pcre.spec =====
+%build
+export CFLAGS="${CFLAGS} -fPIC"
+
+# Available JIT archs see sljit/sljitConfig.h
+autoreconf -fiv
+%configure \
+%ifarch %ix86 x86_64 %arm ppc ppc64 mips
+	    --enable-jit \
+%endif
+	    --enable-static \
+	    --with-link-size=2 \
+	    --with-match-limit=10000000 \
+	    --enable-newline-is-lf \
+	    --enable-utf8 \
+        --enable-unicode-properties
+make %{?_smp_mflags}
+
+
+# %check
+# export LANG=POSIX
+# make check || exit 0
+
+%install
+===== progress/R101/inputs/source_git/taglib/packaging/taglib.spec =====
+%build
+MAJORVER=`echo %{version} | awk 'BEGIN {FS="."}{print $1}'`
+%cmake . -DFULLVER=%{version} -DMAJORVER=${MAJORVER} -DVISIBILITY_HIDDEN=On
+
+make %{?jobs:-j%jobs}
+
+%install
