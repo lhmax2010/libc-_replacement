@@ -1,0 +1,374 @@
+docs/progress/R100/code/estimate_static_rpms.py
+docs/progress/R100/code/find_static_and_header_carriers.py
+docs/progress/R100/code/prepare_static_rpm_manifest.py
+docs/progress/R100/code/prepare_undetermined_binary_manifest.py
+docs/progress/R100/code/scan_static_archives.py
+progress/R100/code/estimate_static_rpms.py
+progress/R100/code/find_static_and_header_carriers.py
+progress/R100/code/prepare_static_rpm_manifest.py
+progress/R100/code/prepare_undetermined_binary_manifest.py
+progress/R100/code/scan_static_archives.py
+FILE progress/R100/code/estimate_static_rpms.py
+#!/usr/bin/env python3
+import csv
+
+with open("progress/R98/tables/base_binary_records.tsv", newline="", encoding="utf-8") as handle:
+    binaries = {r["checksum"]: r for r in csv.DictReader(handle, delimiter="\t")}
+with open("progress/R100/tables/base_filelist_cpp_carriers.tsv", newline="", encoding="utf-8") as handle:
+    rows = [r for r in csv.DictReader(handle, delimiter="\t")
+            if int(r["static_archive_count"]) > 0]
+print(f"rpm_records={len(rows)} bytes={sum(int(binaries[r['rpm_sha256']]['package_size']) for r in rows)}")
+for row in sorted(rows, key=lambda r: int(binaries[r["rpm_sha256"]]["package_size"]), reverse=True)[:30]:
+    binary = binaries[row["rpm_sha256"]]
+    print(binary["package_size"], row["source_name"], row["binary_name"], row["arch"], row["location"], sep="\t")
+FILE progress/R100/code/find_static_and_header_carriers.py
+#!/usr/bin/env python3
+"""Map Base Toolchain static archives and explicit C++ headers to source RPMs."""
+
+import csv
+import gzip
+import xml.etree.ElementTree as ET
+from collections import defaultdict
+from pathlib import Path
+
+RECORDS = Path("progress/R98/tables/base_binary_records.tsv")
+FILELISTS = Path("progress/R98/inputs/llvm_base_packages_filelists.xml.gz")
+OUTPUT = Path("progress/R100/tables/base_filelist_cpp_carriers.tsv")
+
+by_checksum = {}
+source_name_by_srpm = {}
+with RECORDS.open(newline="", encoding="utf-8") as handle:
+    for row in csv.DictReader(handle, delimiter="\t"):
+        by_checksum[row["checksum"]] = row
+        srpm = row["sourcerpm"]
+        # Longest matching source name is reconstructed from exact source table later.
+        source_name_by_srpm.setdefault(srpm, "")
+
+source_table = Path("progress/R98/tables/base_source_records.tsv")
+with source_table.open(newline="", encoding="utf-8") as handle:
+    for row in csv.DictReader(handle, delimiter="\t"):
+        exact = f'{row["name"]}-{row["version"]}-{row["release"]}.src.rpm'
+        source_name_by_srpm[exact] = row["name"]
+
+observed = defaultdict(lambda: {"archives": [], "headers": []})
+with gzip.open(FILELISTS, "rb") as handle:
+    for _event, elem in ET.iterparse(handle, events=("end",)):
+        if not elem.tag.endswith("package"):
+            continue
+        checksum = elem.attrib.get("pkgid", "")
+        row = by_checksum.get(checksum)
+        if row:
+            key = (row["sourcerpm"], row["name"], row["arch"], row["checksum"], row["location"])
+            for child in elem:
+                if not child.tag.endswith("file") or not child.text:
+                    continue
+                path = child.text
+                lower = path.lower()
+                if lower.endswith(".a"):
+                    observed[key]["archives"].append(path)
+                if (lower.endswith((".hpp", ".hxx", ".hh", ".ipp", ".tcc"))
+                        or "/include/c++/" in lower):
+                    observed[key]["headers"].append(path)
+        elem.clear()
+
+OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+fields = ["source_name", "sourcerpm", "binary_name", "arch", "rpm_sha256", "location",
+          "static_archive_count", "cpp_header_count", "static_archive_examples", "cpp_header_examples"]
+with OUTPUT.open("w", newline="", encoding="utf-8") as handle:
+    writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
+    writer.writeheader()
+    for key in sorted(observed):
+        srpm, binary, arch, checksum, location = key
+        archives = sorted(observed[key]["archives"])
+        headers = sorted(observed[key]["headers"])
+        if not archives and not headers:
+            continue
+        writer.writerow({
+            "source_name": source_name_by_srpm.get(srpm) or "NOT_AVAILABLE",
+            "sourcerpm": srpm,
+            "binary_name": binary,
+            "arch": arch,
+            "rpm_sha256": checksum,
+            "location": location,
+            "static_archive_count": len(archives),
+            "cpp_header_count": len(headers),
+            "static_archive_examples": ";".join(archives[:20]) or "NONE",
+            "cpp_header_examples": ";".join(headers[:20]) or "NONE",
+        })
+
+rows = list(csv.DictReader(OUTPUT.open(newline="", encoding="utf-8"), delimiter="\t"))
+archive_sources = {r["source_name"] for r in rows if int(r["static_archive_count"]) > 0}
+header_sources = {r["source_name"] for r in rows if int(r["cpp_header_count"]) > 0}
+print(f"carrier_rows={len(rows)} static_archive_sources={len(archive_sources)} cpp_header_sources={len(header_sources)}")
+FILE progress/R100/code/prepare_static_rpm_manifest.py
+#!/usr/bin/env python3
+"""Prepare exact Base Toolchain RPM manifest for packages containing .a files."""
+
+import csv
+import sys
+from pathlib import Path
+
+csv.field_size_limit(sys.maxsize)
+
+
+def read(path):
+    with Path(path).open(newline="", encoding="utf-8") as stream:
+        return list(csv.DictReader(stream, delimiter="\t"))
+
+
+records = {row["checksum"]: row for row in read("progress/R98/tables/base_binary_records.tsv")}
+carrier_rows = [
+    row for row in read("progress/R100/tables/base_filelist_cpp_carriers.tsv")
+    if int(row["static_archive_count"]) > 0
+]
+rows = []
+for carrier in carrier_rows:
+    row = records[carrier["rpm_sha256"]]
+    rows.append({
+        "repo_id": "base", "kind": "binary", "name": row["name"],
+        "arch": row["arch"], "epoch": row["epoch"], "version": row["version"],
+        "release": row["release"], "sourcerpm": row["sourcerpm"],
+        "location": row["location"], "checksum_type": "sha256",
+        "checksum": row["checksum"], "package_size": row["package_size"],
+        "build_time": "NOT_AVAILABLE",
+    })
+fields = list(rows[0])
+out = Path("progress/R100/tables/static_rpm_manifest.tsv")
+with out.open("w", newline="", encoding="utf-8") as stream:
+    writer = csv.DictWriter(stream, fields, delimiter="\t", lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(sorted(rows, key=lambda row: (row["name"], row["arch"])))
+print(f"manifest_rows={len(rows)}")
+print(f"bytes={sum(int(row['package_size']) for row in rows)}")
+FILE progress/R100/code/scan_static_archives.py
+#!/usr/bin/env python3
+"""Extract static archives and classify whether they contain C++ ABI symbols."""
+
+import csv
+import hashlib
+import os
+import shlex
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+csv.field_size_limit(sys.maxsize)
+status_path, extract_root, output_path, ledger_path = map(Path, sys.argv[1:5])
+jobs = int(sys.argv[5])
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            value.update(block)
+    return value.hexdigest()
+
+
+def scan(index_row):
+    index, row = index_row
+    rpm = Path(row["target"]).resolve()
+    out = (extract_root / row["checksum"]).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    commands = []
+    if row["result"] != "PASS" or digest(rpm) != row["checksum"]:
+        return index, row, [], commands, "RPM_NOT_VERIFIED"
+    extract = f"rpm2cpio {shlex.quote(str(rpm))} | cpio -idm --quiet -- '*.a'"
+    run = subprocess.run(["bash", "-o", "pipefail", "-c", extract], cwd=out,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    commands.append((str(out), extract, run.returncode, run.stderr))
+    if run.returncode:
+        return index, row, [], commands, "EXTRACT_FAILED"
+    archive_rows = []
+    for archive in sorted(out.rglob("*.a")):
+        # Only externally visible definitions can form an archive/consumer ABI
+        # boundary.  This excludes Clang-generated local fortify wrappers.
+        command = ["nm", "-g", "-A", "--defined-only", str(archive)]
+        probe = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        commands.append((os.getcwd(), shlex.join(command), probe.returncode, probe.stderr))
+        candidates = sorted({
+            word for line in probe.stdout.splitlines() for word in line.split()
+            if word.startswith("_Z")
+        })
+        mangled = []
+        if candidates:
+            demangle = subprocess.run(
+                ["c++filt"], input="\n".join(candidates) + "\n",
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            commands.append((os.getcwd(), "c++filt <candidate-symbols>", demangle.returncode,
+                             demangle.stderr))
+            decoded = demangle.stdout.splitlines()
+            mangled = [symbol for symbol, text in zip(candidates, decoded) if text != symbol]
+        archive_rows.append({
+            "archive_path": "/" + str(archive.relative_to(out)),
+            "nm_exit_code": str(probe.returncode),
+            "cpp_mangled_symbol": "YES" if mangled else "NO",
+            "cpp_symbol_count": str(len(mangled)),
+            "cpp_symbol_examples": ";".join(mangled[:20]) or "NONE",
+        })
+    return index, row, archive_rows, commands, "PASS"
+
+
+with status_path.open(newline="", encoding="utf-8") as stream:
+    input_rows = list(csv.DictReader(stream, delimiter="\t"))
+extract_root.mkdir(parents=True, exist_ok=True)
+results = []
+ledgers = []
+with ThreadPoolExecutor(max_workers=jobs) as pool:
+    futures = [pool.submit(scan, item) for item in enumerate(input_rows, 1)]
+    for complete, future in enumerate(as_completed(futures), 1):
+        index, package, archives, commands, result = future.result()
+        for archive in archives:
+            results.append({
+                "source_name": package["sourcerpm"], "binary_name": package["name"],
+                "arch": package["arch"], "rpm_sha256": package["checksum"],
+                **archive, "scan_result": result,
+            })
+        if not archives:
+            results.append({
+                "source_name": package["sourcerpm"], "binary_name": package["name"],
+                "arch": package["arch"], "rpm_sha256": package["checksum"],
+                "archive_path": "NONE", "nm_exit_code": "NOT_RUN",
+                "cpp_mangled_symbol": "NOT_OBSERVED", "cpp_symbol_count": "0",
+                "cpp_symbol_examples": "NONE", "scan_result": result,
+            })
+        ledgers.append((index, commands))
+        if complete % 20 == 0 or complete == len(input_rows):
+            print(f"PROGRESS={complete}/{len(input_rows)}", flush=True)
+
+fields = ["source_name", "binary_name", "arch", "rpm_sha256", "archive_path",
+          "nm_exit_code", "cpp_mangled_symbol", "cpp_symbol_count",
+          "cpp_symbol_examples", "scan_result"]
+with output_path.open("w", newline="", encoding="utf-8") as stream:
+    writer = csv.DictWriter(stream, fields, delimiter="\t", lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(sorted(results, key=lambda row: tuple(row[key] for key in fields[:5])))
+with ledger_path.open("w", encoding="utf-8") as stream:
+    for index, commands in sorted(ledgers):
+        for sub, (cwd, command, rc, stderr) in enumerate(commands, 1):
+            stream.write(f"LABEL=package_{index:03d}_{sub:03d}\nPWD={cwd}\nCOMMAND={command}\n")
+            if stderr:
+                stream.write("STDERR=" + stderr.replace("\n", "\\n") + "\n")
+            stream.write(f"EXIT_CODE={rc}\n\n")
+print(f"archive_rows={len(results)}")
+print(f"cpp_archive_rows={sum(row['cpp_mangled_symbol'] == 'YES' for row in results)}")
+if any(row["scan_result"] != "PASS" for row in results):
+    raise SystemExit(1)
+FILE progress/R100/code/scan_static_archives.py
+#!/usr/bin/env python3
+"""Extract static archives and classify whether they contain C++ ABI symbols."""
+
+import csv
+import hashlib
+import os
+import shlex
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+csv.field_size_limit(sys.maxsize)
+status_path, extract_root, output_path, ledger_path = map(Path, sys.argv[1:5])
+jobs = int(sys.argv[5])
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            value.update(block)
+    return value.hexdigest()
+
+
+def scan(index_row):
+    index, row = index_row
+    rpm = Path(row["target"]).resolve()
+    out = (extract_root / row["checksum"]).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    commands = []
+    if row["result"] != "PASS" or digest(rpm) != row["checksum"]:
+        return index, row, [], commands, "RPM_NOT_VERIFIED"
+    extract = f"rpm2cpio {shlex.quote(str(rpm))} | cpio -idm --quiet -- '*.a'"
+    run = subprocess.run(["bash", "-o", "pipefail", "-c", extract], cwd=out,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    commands.append((str(out), extract, run.returncode, run.stderr))
+    if run.returncode:
+        return index, row, [], commands, "EXTRACT_FAILED"
+    archive_rows = []
+    for archive in sorted(out.rglob("*.a")):
+        # Only externally visible definitions can form an archive/consumer ABI
+        # boundary.  This excludes Clang-generated local fortify wrappers.
+        command = ["nm", "-g", "-A", "--defined-only", str(archive)]
+        probe = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        commands.append((os.getcwd(), shlex.join(command), probe.returncode, probe.stderr))
+        candidates = sorted({
+            word for line in probe.stdout.splitlines() for word in line.split()
+            if word.startswith("_Z")
+        })
+        mangled = []
+        if candidates:
+            demangle = subprocess.run(
+                ["c++filt"], input="\n".join(candidates) + "\n",
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            commands.append((os.getcwd(), "c++filt <candidate-symbols>", demangle.returncode,
+                             demangle.stderr))
+            decoded = demangle.stdout.splitlines()
+            mangled = [symbol for symbol, text in zip(candidates, decoded) if text != symbol]
+        archive_rows.append({
+            "archive_path": "/" + str(archive.relative_to(out)),
+            "nm_exit_code": str(probe.returncode),
+            "cpp_mangled_symbol": "YES" if mangled else "NO",
+            "cpp_symbol_count": str(len(mangled)),
+            "cpp_symbol_examples": ";".join(mangled[:20]) or "NONE",
+        })
+    return index, row, archive_rows, commands, "PASS"
+
+
+with status_path.open(newline="", encoding="utf-8") as stream:
+    input_rows = list(csv.DictReader(stream, delimiter="\t"))
+extract_root.mkdir(parents=True, exist_ok=True)
+results = []
+ledgers = []
+with ThreadPoolExecutor(max_workers=jobs) as pool:
+    futures = [pool.submit(scan, item) for item in enumerate(input_rows, 1)]
+    for complete, future in enumerate(as_completed(futures), 1):
+        index, package, archives, commands, result = future.result()
+        for archive in archives:
+            results.append({
+                "source_name": package["sourcerpm"], "binary_name": package["name"],
+                "arch": package["arch"], "rpm_sha256": package["checksum"],
+                **archive, "scan_result": result,
+            })
+        if not archives:
+            results.append({
+                "source_name": package["sourcerpm"], "binary_name": package["name"],
+                "arch": package["arch"], "rpm_sha256": package["checksum"],
+                "archive_path": "NONE", "nm_exit_code": "NOT_RUN",
+                "cpp_mangled_symbol": "NOT_OBSERVED", "cpp_symbol_count": "0",
+                "cpp_symbol_examples": "NONE", "scan_result": result,
+            })
+        ledgers.append((index, commands))
+        if complete % 20 == 0 or complete == len(input_rows):
+            print(f"PROGRESS={complete}/{len(input_rows)}", flush=True)
+
+fields = ["source_name", "binary_name", "arch", "rpm_sha256", "archive_path",
+          "nm_exit_code", "cpp_mangled_symbol", "cpp_symbol_count",
+          "cpp_symbol_examples", "scan_result"]
+with output_path.open("w", newline="", encoding="utf-8") as stream:
+    writer = csv.DictWriter(stream, fields, delimiter="\t", lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(sorted(results, key=lambda row: tuple(row[key] for key in fields[:5])))
+with ledger_path.open("w", encoding="utf-8") as stream:
+    for index, commands in sorted(ledgers):
+        for sub, (cwd, command, rc, stderr) in enumerate(commands, 1):
+            stream.write(f"LABEL=package_{index:03d}_{sub:03d}\nPWD={cwd}\nCOMMAND={command}\n")
+            if stderr:
+                stream.write("STDERR=" + stderr.replace("\n", "\\n") + "\n")
+            stream.write(f"EXIT_CODE={rc}\n\n")
+print(f"archive_rows={len(results)}")
+print(f"cpp_archive_rows={sum(row['cpp_mangled_symbol'] == 'YES' for row in results)}")
+if any(row["scan_result"] != "PASS" for row in results):
+    raise SystemExit(1)
