@@ -1,0 +1,168 @@
+path	sha256	line_start	line_end	excerpt
+codes/llvm/libcxx/src/condition_variable.cpp	60f9ac564007c3b0b2e6d667fc5d72990f6ba79eed6d199600930a86291a0be5	29	63	"29: void condition_variable::notify_one() noexcept { __libcpp_condvar_signal(&__cv_); }
+30: 
+31: void condition_variable::notify_all() noexcept { __libcpp_condvar_broadcast(&__cv_); }
+32: 
+33: void condition_variable::wait(unique_lock<mutex>& lk) noexcept {
+34:   if (!lk.owns_lock())
+35:     std::__throw_system_error(EPERM, ""condition_variable::wait: mutex not locked"");
+36:   int ec = __libcpp_condvar_wait(&__cv_, lk.mutex()->native_handle());
+37:   if (ec)
+38:     std::__throw_system_error(ec, ""condition_variable wait failed"");
+39: }
+40: 
+41: void condition_variable::__do_timed_wait(unique_lock<mutex>& lk,
+42:                                          chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) noexcept {
+43:   using namespace chrono;
+44:   if (!lk.owns_lock())
+45:     std::__throw_system_error(EPERM, ""condition_variable::timed wait: mutex not locked"");
+46:   nanoseconds d = tp.time_since_epoch();
+47:   if (d > nanoseconds(0x59682F000000E941))
+48:     d = nanoseconds(0x59682F000000E941);
+49:   __libcpp_timespec_t ts;
+50:   seconds s = duration_cast<seconds>(d);
+51:   typedef decltype(ts.tv_sec) ts_sec;
+52:   constexpr ts_sec ts_sec_max = numeric_limits<ts_sec>::max();
+53:   if (s.count() < ts_sec_max) {
+54:     ts.tv_sec  = static_cast<ts_sec>(s.count());
+55:     ts.tv_nsec = static_cast<decltype(ts.tv_nsec)>((d - s).count());
+56:   } else {
+57:     ts.tv_sec  = ts_sec_max;
+58:     ts.tv_nsec = giga::num - 1;
+59:   }
+60:   int ec = __libcpp_condvar_timedwait(&__cv_, lk.mutex()->native_handle(), &ts);
+61:   if (ec != 0 && ec != ETIMEDOUT)
+62:     std::__throw_system_error(ec, ""condition_variable timed_wait failed"");
+63: }"
+/home/toolchain/development/libc++_replacement/tmp/R72/glibc-2.40/nptl/pthread_cond_wait.c	55ce6de06fc59642cae8a82c63c683fb39856fdcf5a6cbc5b3940ba8cabc7e25	350	370	"350:    effectively completes initialization.
+351: 
+352: 
+353:    Limitations:
+354:    * This condvar isn't designed to allow for more than
+355:      __PTHREAD_COND_MAX_GROUP_SIZE * (1 << 31) calls to __pthread_cond_wait.
+356:    * More than __PTHREAD_COND_MAX_GROUP_SIZE concurrent waiters are not
+357:      supported.
+358:    * Beyond what is allowed as errors by POSIX or documented, we can also
+359:      return the following errors:
+360:      * EPERM if MUTEX is a recursive mutex and the caller doesn't own it.
+361:      * EOWNERDEAD or ENOTRECOVERABLE when using robust mutexes.  Unlike
+362:        for other errors, this can happen when we re-acquire the mutex; this
+363:        isn't allowed by POSIX (which requires all errors to virtually happen
+364:        before we release the mutex or change the condvar state), but there's
+365:        nothing we can do really.
+366:      * When using PTHREAD_MUTEX_PP_* mutexes, we can also return all errors
+367:        returned by __pthread_tpp_change_priority.  We will already have
+368:        released the mutex in such cases, so the caller cannot expect to own
+369:        MUTEX.
+370: "
+/home/toolchain/development/libc++_replacement/tmp/R72/glibc-2.40/nptl/pthread_cond_wait.c	55ce6de06fc59642cae8a82c63c683fb39856fdcf5a6cbc5b3940ba8cabc7e25	379	425	"379: __pthread_cond_wait_common (pthread_cond_t *cond, pthread_mutex_t *mutex,
+380:     clockid_t clockid, const struct __timespec64 *abstime)
+381: {
+382:   const int maxspin = 0;
+383:   int err;
+384:   int result = 0;
+385: 
+386:   LIBC_PROBE (cond_wait, 2, cond, mutex);
+387: 
+388:   /* clockid will already have been checked by
+389:      __pthread_cond_clockwait or pthread_condattr_setclock, or we
+390:      don't use it if abstime is NULL, so we don't need to check it
+391:      here. */
+392: 
+393:   /* Acquire a position (SEQ) in the waiter sequence (WSEQ).  We use an
+394:      atomic operation because signals and broadcasts may update the group
+395:      switch without acquiring the mutex.  We do not need release MO here
+396:      because we do not need to establish any happens-before relation with
+397:      signalers (see __pthread_cond_signal); modification order alone
+398:      establishes a total order of waiters/signals.  We do need acquire MO
+399:      to synchronize with group reinitialization in
+400:      __condvar_quiesce_and_switch_g1.  */
+401:   uint64_t wseq = __condvar_fetch_add_wseq_acquire (cond, 2);
+402:   /* Find our group's index.  We always go into what was G2 when we acquired
+403:      our position.  */
+404:   unsigned int g = wseq & 1;
+405:   uint64_t seq = wseq >> 1;
+406: 
+407:   /* Increase the waiter reference count.  Relaxed MO is sufficient because
+408:      we only need to synchronize when decrementing the reference count.  */
+409:   unsigned int flags = atomic_fetch_add_relaxed (&cond->__data.__wrefs, 8);
+410:   int private = __condvar_get_private (flags);
+411: 
+412:   /* Now that we are registered as a waiter, we can release the mutex.
+413:      Waiting on the condvar must be atomic with releasing the mutex, so if
+414:      the mutex is used to establish a happens-before relation with any
+415:      signaler, the waiter must be visible to the latter; thus, we release the
+416:      mutex after registering as waiter.
+417:      If releasing the mutex fails, we just cancel our registration as a
+418:      waiter and confirm that we have woken up.  */
+419:   err = __pthread_mutex_unlock_usercnt (mutex, 0);
+420:   if (__glibc_unlikely (err != 0))
+421:     {
+422:       __condvar_cancel_waiting (cond, seq, g, private);
+423:       __condvar_confirm_wakeup (cond, private);
+424:       return err;
+425:     }"
+/home/toolchain/development/libc++_replacement/tmp/R72/glibc-2.40/nptl/pthread_cond_wait.c	55ce6de06fc59642cae8a82c63c683fb39856fdcf5a6cbc5b3940ba8cabc7e25	600	610	"600:   /* Confirm that we have been woken.  We do that before acquiring the mutex
+601:      to allow for execution of pthread_cond_destroy while having acquired the
+602:      mutex.  */
+603:   __condvar_confirm_wakeup (cond, private);
+604: 
+605:   /* Woken up; now re-acquire the mutex.  If this doesn't fail, return RESULT,
+606:      which is set to ETIMEDOUT if a timeout occurred, or zero otherwise.  */
+607:   err = __pthread_mutex_cond_lock (mutex);
+608:   /* XXX Abort on errors that are disallowed by POSIX?  */
+609:   return (err != 0) ? err : result;
+610: }"
+/home/toolchain/development/libc++_replacement/tmp/R72/glibc-2.40/nptl/pthread_cond_wait.c	55ce6de06fc59642cae8a82c63c683fb39856fdcf5a6cbc5b3940ba8cabc7e25	630	682	"630: ___pthread_cond_timedwait64 (pthread_cond_t *cond, pthread_mutex_t *mutex,
+631: 			     const struct __timespec64 *abstime)
+632: {
+633:   /* Check parameter validity.  This should also tell the compiler that
+634:      it can assume that abstime is not NULL.  */
+635:   if (! valid_nanoseconds (abstime->tv_nsec))
+636:     return EINVAL;
+637: 
+638:   /* Relaxed MO is suffice because clock ID bit is only modified
+639:      in condition creation.  */
+640:   unsigned int flags = atomic_load_relaxed (&cond->__data.__wrefs);
+641:   clockid_t clockid = (flags & __PTHREAD_COND_CLOCK_MONOTONIC_MASK)
+642:                     ? CLOCK_MONOTONIC : CLOCK_REALTIME;
+643:   return __pthread_cond_wait_common (cond, mutex, clockid, abstime);
+644: }
+645: 
+646: #if __TIMESIZE == 64
+647: strong_alias (___pthread_cond_timedwait64, ___pthread_cond_timedwait)
+648: #else
+649: strong_alias (___pthread_cond_timedwait64, __pthread_cond_timedwait64)
+650: libc_hidden_def (__pthread_cond_timedwait64)
+651: 
+652: int
+653: ___pthread_cond_timedwait (pthread_cond_t *cond, pthread_mutex_t *mutex,
+654: 			    const struct timespec *abstime)
+655: {
+656:   struct __timespec64 ts64 = valid_timespec_to_timespec64 (*abstime);
+657: 
+658:   return __pthread_cond_timedwait64 (cond, mutex, &ts64);
+659: }
+660: #endif /* __TIMESIZE == 64 */
+661: versioned_symbol (libc, ___pthread_cond_timedwait,
+662: 		  pthread_cond_timedwait, GLIBC_2_3_2);
+663: libc_hidden_ver (___pthread_cond_timedwait, __pthread_cond_timedwait)
+664: #ifndef SHARED
+665: strong_alias (___pthread_cond_timedwait, __pthread_cond_timedwait)
+666: #endif
+667: 
+668: /* See __pthread_cond_wait_common.  */
+669: int
+670: ___pthread_cond_clockwait64 (pthread_cond_t *cond, pthread_mutex_t *mutex,
+671: 			      clockid_t clockid,
+672: 			      const struct __timespec64 *abstime)
+673: {
+674:   /* Check parameter validity.  This should also tell the compiler that
+675:      it can assume that abstime is not NULL.  */
+676:   if (! valid_nanoseconds (abstime->tv_nsec))
+677:     return EINVAL;
+678: 
+679:   if (!futex_abstimed_supported_clockid (clockid))
+680:     return EINVAL;
+681: 
+682:   return __pthread_cond_wait_common (cond, mutex, clockid, abstime);"
