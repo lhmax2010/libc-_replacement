@@ -1,0 +1,157 @@
+            for row in grouped[package]:
+                nature = row.get("row_nature", row.get("rethrow_kind", ""))
+                stream.write(
+                    f"| `{md(row[instance_field])}` | `{md(row['file'])}:{row['line']}` | "
+                    f"`{md(row['actual_code_line'])}` | {md(row['context'])} | `{md(nature)}` |\n"
+                )
+            stream.write("\n")
+
+
+def main():
+    _, reported, original_strict = read_original_rows()
+    identities, current = current_rows()
+
+    original_rethrow = [row for row in original_strict if row["rethrow_kind"] != "NO_RETHROW_OBSERVED"]
+    current_rethrow = [row for row in current if row["rethrow_kind"] != "NO_RETHROW_OBSERVED"]
+
+    assert len(reported) == 50
+    assert Counter(row["row_nature"] for row in reported) == {
+        "ACTUAL_CATCH_CLAUSE": 46,
+        "NON_CLAUSE_TOKEN_LINE": 4,
+    }
+    assert len(original_strict) == 175
+    assert Counter(row["rethrow_kind"] for row in original_strict) == {
+        "LITERAL_THROW": 46,
+        "LIBSTDCXX_RETHROW_MACRO": 126,
+        "NO_RETHROW_OBSERVED": 3,
+    }
+    assert len(original_rethrow) == 172
+
+    # De-duplicate source-RPM variants of the same package by logical path,
+    # line and exact clause/rethrow form. This intentionally retains separate
+    # paths for architecture-specific embedded archives.
+    def logical_key(row):
+        return (
+            row["package_name"], row["file"], row["line"], row["clause_text"], row["rethrow_kind"]
+        )
+
+    original_unique = {logical_key(row): row for row in original_rethrow}
+    assert len(original_unique) == 104
+    assert len(current_rethrow) == 140
+
+    reported_fields = [
+        "source_rpm", "package_name", "file", "line", "actual_code_line",
+        "context", "row_nature", "r32_status",
+    ]
+    site_fields = [
+        "source_instance", "package_name", "file", "line", "actual_code_line",
+        "clause_text", "context", "rethrow_kind", "source_kind",
+    ]
+    write_tsv(TABLES / "reported_50_audit.tsv", reported, reported_fields)
+    write_tsv(TABLES / "strict_clause_sites_original.tsv", original_strict, site_fields)
+    write_tsv(TABLES / "strict_rethrow_sites_original.tsv", original_rethrow, site_fields)
+    write_tsv(TABLES / "current_rethrow_sites.tsv", current_rethrow, site_fields)
+    write_tsv(TABLES / "current_source_identity.tsv", identities, list(identities[0]))
+
+    packages = sorted(set(row["package_name"] for row in original_strict) | set(CURRENT))
+    summary = []
+    for package in packages:
+        original_instances = {row["source_instance"] for row in original_strict if row["package_name"] == package}
+        original_rows = [row for row in original_strict if row["package_name"] == package]
+        original_protective = [row for row in original_rethrow if row["package_name"] == package]
+        original_unique_n = len({logical_key(row) for row in original_protective})
+        current_package = [row for row in current_rethrow if row["package_name"] == package]
+        summary.append(
+            {
+                "package_name": package,
+                "r32_source_rpm_instances": str(len(original_instances)),
+                "reported_50_rows": str(sum(1 for row in reported if row["package_name"] == package)),
+                "reported_rows_that_are_clauses": str(sum(1 for row in reported if row["package_name"] == package and row["row_nature"] == "ACTUAL_CATCH_CLAUSE")),
+                "strict_clause_occurrences_r32": str(len(original_rows)),
+                "strict_rethrow_occurrences_r32": str(len(original_protective)),
+                "strict_rethrow_unique_package_path_r32": str(original_unique_n),
+                "current_head_rethrow_occurrences": str(len(current_package)) if package in CURRENT else "NOT_OBSERVED",
+            }
+        )
+    summary_fields = list(summary[0])
+    write_tsv(TABLES / "package_summary.tsv", summary, summary_fields)
+
+    duplicate_groups = defaultdict(list)
+    for row in original_rethrow:
+        duplicate_groups[logical_key(row)].append(row["source_instance"])
+    dedup_rows = []
+    for key, instances in sorted(duplicate_groups.items()):
+        if len(instances) > 1:
+            dedup_rows.append(
+                {
+                    "package_name": key[0],
+                    "file": key[1],
+                    "line": key[2],
+                    "rethrow_kind": key[4],
+                    "source_rpm_instances": ";".join(sorted(instances)),
+                    "multiplicity": str(len(instances)),
+                }
+            )
+    write_tsv(
+        TABLES / "source_instance_duplicates.tsv",
+        dedup_rows,
+        ["package_name", "file", "line", "rethrow_kind", "source_rpm_instances", "multiplicity"],
+    )
+    assert len(dedup_rows) == 68
+
+    write_grouped_markdown(
+        OUT / "REPORTED_50_AUDIT.md",
+        "历史“50 个处理位置”的逐行核对",
+        "“历史 50 行”按当时表中 `CONFIRMED_RETHROW` 且非文档路径筛出。"
+        "下表逐行保留源码 RPM、包内路径、行号和代码原文；核对结果明确标出该行"
+        "是否真的是强制展开 catch 子句。这里的“位置”以源码 RPM 实例、文件和行号共同标识。",
+        reported,
+        "source_rpm",
+    )
+    write_grouped_markdown(
+        OUT / "STRICT_RETHROW_SITE_LIST.md",
+        "强制展开识别并继续传播的严格站点清单",
+        "严格站点必须是源码中的 `catch`/`__catch` 子句，捕获 "
+        "`abi::__forced_unwind` 或 `__cxxabiv1::__forced_unwind`，并在该 handler 中通过 "
+        "`throw;` 或 libstdc++ 的 `__throw_exception_again` 继续传播。下表使用历史冻结"
+        "源码 RPM 实例，因此同一 Git 内容若作为两个源码 RPM 出现，会各列一遍。",
+        original_rethrow,
+        "source_instance",
+    )
+    write_grouped_markdown(
+        OUT / "CURRENT_RETHROW_SITE_LIST.md",
+        "当前开发分支中的强制展开识别与传播站点",
+        "本表只复核历史阳性包名集合的当前开发分支；Git 跟踪文本与明确列出的"
+        "MLGO/TensorFlow 嵌套源码资产均参与。它用于核对已有站点漂移，不能证明"
+        "平台其他源码包没有新增站点。",
+        current_rethrow,
+        "source_instance",
+    )
+
+    metrics = [
+        ("r32_forced_token_rows", 157),
+        ("historical_reported_rows", len(reported)),
+        ("historical_reported_actual_clauses", 46),
+        ("historical_reported_non_clause_token_lines", 4),
+        ("strict_clause_occurrences_r32", len(original_strict)),
+        ("strict_literal_rethrow_occurrences_r32", 46),
+        ("strict_libstdcxx_macro_rethrow_occurrences_r32", 126),
+        ("strict_no_rethrow_occurrences_r32", 3),
+        ("strict_rethrow_occurrences_r32", len(original_rethrow)),
+        ("strict_rethrow_unique_package_path_r32", len(original_unique)),
+        ("current_reported_package_set_rethrow_occurrences", len(current_rethrow)),
+    ]
+    with (TABLES / "audit_metrics.tsv").open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+        writer.writerow(["metric", "value"])
+        writer.writerows(metrics)
+
+    print("reported_50=50 actual_clause_rows=46 non_clause_rows=4")
+    print("strict_r32_clauses=175 literal_rethrow=46 macro_rethrow=126 no_rethrow=3")
+    print("strict_r32_rethrow=172 unique_package_path=104")
+    print(f"current_positive_package_set_rethrow={len(current_rethrow)}")
+    print("current_by_package=" + ";".join(f"{k}={v}" for k, v in sorted(Counter(row['package_name'] for row in current_rethrow).items())))
+
+
+if __name__ == "__main__":
+    main()

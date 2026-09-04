@@ -1,0 +1,337 @@
+$ sed -n ... [read-only review of generator, method and counts]
+#!/usr/bin/env python3
+import csv
+import hashlib
+import io
+import json
+import re
+import subprocess
+import tarfile
+from collections import Counter, defaultdict
+from pathlib import Path
+
+
+ROOT = Path("/home/toolchain/development/libc++_replacement")
+R32_TABLE = ROOT / "docs/progress/R32/tables/forced_unwind_guard_locations.tsv"
+R32_CORPUS = ROOT / "tmp/corpus/extracted"
+OUT = ROOT / "docs/progress/R110"
+TABLES = OUT / "tables"
+WORK = ROOT / "progress/R110/context_sources"
+
+CLAUSE_RX = re.compile(
+    r"(?P<clause>(?:\bcatch|\b__catch)\s*\(\s*(?:const\s+)?"
+    r"(?:abi|__cxxabiv1)\s*::\s*__forced_unwind\s*(?:const\s*)?&\s*\))",
+    re.MULTILINE,
+)
+NEXT_CATCH_RX = re.compile(r"(?:\bcatch|\b__catch)\s*\(")
+LITERAL_RETHROW_RX = re.compile(r"\bthrow\s*;")
+MACRO_RETHROW_RX = re.compile(r"\b__throw_exception_again\s*;")
+
+CURRENT = {
+    "boost": {
+        "repo": ROOT / "codes/R104/boost",
+        "url": "git://review.tizen.org/git/platform/upstream/boost",
+        "branch": "tizen_base",
+        "commit": "69203710b8582c489f420ef53a769cc6077c250b",
+        "archives": [],
+    },
+    "gcc": {
+        "repo": ROOT / "codes/gcc",
+        "url": "git://review.tizen.org/git/platform/upstream/gcc",
+        "branch": "tizen_base",
+        "commit": "49c5060508ce8a6ed6beca375233688a6bdd9140",
+        "archives": [],
+    },
+    "key-manager": {
+        "repo": ROOT / "progress/R110/current_git/key-manager",
+        "url": "git://review.tizen.org/git/platform/core/security/key-manager",
+        "branch": "tizen",
+        "commit": "5be2dc74baede39694fd10d8f72b95f759e799ba",
+        "archives": [],
+    },
+    "libcynara-commons": {
+        "repo": ROOT / "progress/R110/current_git/libcynara-commons",
+        "url": "git://review.tizen.org/git/platform/core/security/libcynara-commons",
+        "branch": "tizen",
+        "commit": "1ee5fcdd9529e5b2260b1c365c28a5c56b3adbc1",
+        "archives": [],
+    },
+    "llvm": {
+        "repo": ROOT / "codes/R104/llvm",
+        "url": "git://review.tizen.org/git/platform/upstream/llvm",
+        "branch": "tizen_base",
+        "commit": "2d23367d74afbf2bb1e9e4013fce072b3a154109",
+        "archives": [
+            "packaging/mlgo_arm_model.tar.gz",
+            "packaging/mlgo_aarch_model.tar.gz",
+            "packaging/mlgo_x86_model.tar.gz",
+        ],
+    },
+    "security-manager": {
+        "repo": ROOT / "progress/R110/current_git/security-manager",
+        "url": "git://review.tizen.org/git/platform/core/security/security-manager",
+        "branch": "tizen",
+        "commit": "90010ec2417fd8ee3c7c71ffbf929b219481bc21",
+        "archives": [],
+    },
+    "tensorflow2": {
+        "repo": ROOT / "codes/R104/tensorflow2",
+        "url": "git://review.tizen.org/git/platform/upstream/tensorflow2",
+        "branch": "accepted/tizen_base_toolchain",
+        "commit": "1cdba73549f741720f11dd53da1bb516b03763a2",
+        "archives": ["packaging/tensorflow2-aot.tar.gz"],
+    },
+    "webauthn": {
+        "repo": ROOT / "progress/R110/current_git/webauthn",
+        "url": "git://review.tizen.org/git/platform/core/security/webauthn",
+        "branch": "tizen",
+        "commit": "88d99a5d655c644cbd384f8e15cca337d1a00b21",
+        "archives": [],
+    },
+}
+
+MAIN_ARCHIVE_ROOTS = {
+    "boost_1_83_0.tar.bz2": "boost_1.83.0",
+    "gcc-14.2.0.tar.bz2": "gcc-14.2.0",
+    "key-manager-0.1.90.tar.gz": "key-manager-0.1.90",
+    "cynara-0.26.0.tar.gz": "cynara-0.26.0",
+    "security-manager-2.4.0.tar.gz": "security-manager-2.4.0",
+    "webauthn-1.0.13.tar.gz": "webauthn-1.0.13",
+    "dali2-csharp-binder-2.5.26.tar.xz": "dali2-csharp-binder-2.5.26",
+}
+
+
+def run(args, cwd=None, text=True):
+    cp = subprocess.run(args, cwd=cwd, capture_output=True, text=text)
+    if cp.returncode != 0:
+        raise RuntimeError(f"command failed rc={cp.returncode}: {args!r}\n{cp.stderr}")
+    return cp.stdout
+
+
+def original_display_path(raw_path):
+    parts = raw_path.split("/")
+    assert parts[0] == "unpacked" and len(parts) >= 3, raw_path
+    archive = parts[1]
+    rest = parts[2:]
+    if archive in MAIN_ARCHIVE_ROOTS:
+        assert rest[0] == MAIN_ARCHIVE_ROOTS[archive], (archive, rest[0])
+        return "/".join(rest[1:])
+    return f"packaging/{archive}!/" + "/".join(rest)
+
+
+def source_line(text, line):
+    value = text.splitlines()[line - 1]
+    return value.replace("\t", "\\t")
+
+
+def rethrow_kind(text, match):
+    start = text.find("{", match.end())
+    if start < 0:
+        segment = text[match.end():match.end() + 8000]
+    else:
+        depth = 0
+        state = "code"
+        end = min(len(text), start + 50000)
+        pos = start
+        while pos < end:
+            ch = text[pos]
+            nxt = text[pos + 1] if pos + 1 < end else ""
+            if state == "code":
+                if ch == '"':
+                    state = "string"
+                elif ch == "'":
+                    state = "char"
+                elif ch == "/" and nxt == "/":
+                    state = "line_comment"
+                    pos += 1
+                elif ch == "/" and nxt == "*":
+                    state = "block_comment"
+                    pos += 1
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        pos += 1
+                        break
+            elif state in {"string", "char"}:
+                if ch == "\\":
+                    pos += 1
+                elif (state == "string" and ch == '"') or (state == "char" and ch == "'"):
+                    state = "code"
+            elif state == "line_comment":
+                if ch == "\n":
+                    state = "code"
+            elif state == "block_comment" and ch == "*" and nxt == "/":
+                state = "code"
+                pos += 1
+            pos += 1
+        segment = text[start:pos]
+    if LITERAL_RETHROW_RX.search(segment):
+        return "LITERAL_THROW"
+    if MACRO_RETHROW_RX.search(segment):
+        return "LIBSTDCXX_RETHROW_MACRO"
+    return "NO_RETHROW_OBSERVED"
+
+
+def macro_context(lines, line):
+    idx = line - 1
+    for pos in range(idx, max(-1, idx - 80), -1):
+        match = re.match(r"\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)", lines[pos])
+        if match:
+            if all(lines[n].rstrip().endswith("\\") for n in range(pos, idx)):
+                return f"macro {match.group(1)} (line {pos + 1})"
+            break
+        if pos < idx and not lines[pos].rstrip().endswith("\\"):
+            break
+    return ""
+
+
+_ctags_cache = {}
+
+
+def context_for(text, label, line):
+    key = hashlib.sha256((label + "\0" + text).encode("utf-8", "replace")).hexdigest()
+    if key not in _ctags_cache:
+        suffix = Path(label.split("!/")[-1]).suffix or ".hpp"
+        WORK.mkdir(parents=True, exist_ok=True)
+        temp = WORK / f"{key}{suffix}"
+        temp.write_text(text, encoding="utf-8")
+        cp = subprocess.run(
+            [
+                "ctags",
+                "--output-format=json",
+                "--fields=+nKsS",
+                "--c++-kinds=f",
+                "--language-force=C++",
+                "-o",
+                "-",
+                str(temp),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        tags = []
+        if cp.returncode == 0:
+            for raw in cp.stdout.splitlines():
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("_type") == "tag" and isinstance(obj.get("line"), int):
+                    tags.append(obj)
+        _ctags_cache[key] = tags
+    lines = text.splitlines()
+    macro = macro_context(lines, line)
+    if macro:
+        return macro
+    eligible = [tag for tag in _ctags_cache[key] if tag["line"] <= line]
+    if not eligible:
+        return "NOT_OBSERVED"
+    tag = max(eligible, key=lambda item: item["line"])
+    scope = tag.get("scope", "")
+    name = tag.get("name", "")
+    signature = tag.get("signature", "")
+    if name.startswith("__anon"):
+        outer = [item for item in eligible if not item.get("name", "").startswith("__anon")]
+        outer_text = ""
+        if outer:
+            enclosing = max(outer, key=lambda item: item["line"])
+            outer_name = "::".join(filter(None, [enclosing.get("scope", ""), enclosing.get("name", "")]))
+            outer_text = f" in {outer_name}{enclosing.get('signature', '')}"
+        return f"lambda (line {tag['line']}){outer_text}"
+    qualified = "::".join(filter(None, [scope, name]))
+    return f"{qualified}{signature} (line {tag['line']})"
+
+
+def scan_text(package, source_instance, path, text, source_kind):
+    rows = []
+    for match in CLAUSE_RX.finditer(text):
+        line = text.count("\n", 0, match.start()) + 1
+        clause = " ".join(match.group("clause").split())
+        rows.append(
+            {
+                "source_instance": source_instance,
+                "package_name": package,
+                "file": path,
+                "line": str(line),
+                "actual_code_line": source_line(text, line).strip(),
+                "clause_text": clause,
+                "context": context_for(text, f"{source_instance}:{path}", line),
+                "rethrow_kind": rethrow_kind(text, match),
+# 检索方法与边界
+
+## 原始方法
+
+原始输入为 R32 复用的 T1 已解包语料：372 个候选源码 RPM 中 371 个
+`EXTRACTED_OK`，本轮扫描分母为 371。输入身份由以下冻结 SHA256 约束：
+
+| 输入 | SHA256 |
+|---|---|
+| `progress/T1/extraction_results.tsv` | `5498c430baecd81e689a44d8266d5597a92779680105ede0c320f9b1ea013031` |
+| `progress/T1/corpus_hits.tsv` | `cd2a91832f5a548b4e762c9cc42c4349c50d4f82e559058760f1cf6f83a6c7c2` |
+| `progress/T1/scan_status.tsv` | `5c15fe0097f5dc6b37a755ce25cb6d01846050fa653a4ca5fe8e74803ed85723` |
+
+R32 使用每包一个 `rg --threads 1`、4 个包级 worker，匹配
+`abi::__forced_unwind`/`__cxxabiv1::__forced_unwind` token 以及其他风险标记。
+源码、测试、示例和构建文件均保留，文档不参加包分类。原始代码位于
+`docs/progress/R32/tools/scan_impact.py`，原表为
+`docs/progress/R32/tables/forced_unwind_guard_locations.tsv`。
+
+原 `guard_status()` 从 token 行向前 3 行、向后最多 15 行取窗口，在下一处
+catch 前查找裸 `throw;`。它没有先证明“当前 token 行本身就是 catch 子句”，
+也不认识 `__throw_exception_again`，因此造成四个误计和大量漏计。
+
+## 本轮严格复核
+
+严格表达式允许空白和换行，覆盖：
+
+- `catch (abi::__forced_unwind&)`；
+- `catch (const __cxxabiv1::__forced_unwind&)`；
+- `catch (abi::__forced_unwind const&)`；
+- libstdc++ 的 `__catch(__cxxabiv1::__forced_unwind&)`。
+
+随后解析 handler 的平衡花括号，分别识别裸 `throw;` 和
+`__throw_exception_again;`。原始阳性相关源码 RPM 的所有文本文件均参与，
+不再按扩展名过滤，所以能覆盖无扩展名标准库头文件。每个输出位置又回到实际
+源码取行，并用 Universal Ctags 给出最近函数/模板/lambda 上下文；不能安全识别
+的上下文应标 `NOT_OBSERVED`，本次最终表没有这种行。
+
+当前复核使用 `tables/current_source_identity.tsv` 中八个仓库的明确 HEAD；普通
+Git 文本通过 `git grep -I` 找 token 后逐 blob 解析，LLVM 的三个 MLGO 模型包和
+TensorFlow AOT 包则逐 tar member 检查。没有用当前工作区的未提交内容替代指定
+commit。
+
+## 已知盲区
+
+- 表达式要求能在预处理前源码中看见 `catch`/`__catch`、目标类型名和引用符号。
+  若类型通过别名隐藏、catch 由多层 token-pasting 宏生成，可能漏掉。
+- 当前没有运行预处理器，因此条件编译失活分支也会被计入；表中是源码出现次数，
+  不是某个架构最终编译实例数。
+- 同一头文件复制进多个架构资产时按不同包内路径分别计数；源码 RPM Release
+  变体则另给去重口径。改变这两条会改变总数。
+- 本轮未把当前平台所有源码包重新冻结；当前 140 只覆盖历史阳性八包，无法发现
+  其他包后来新增的站点。
+- handler 中通过项目自定义函数间接重抛、而非 `throw;` 或
+  `__throw_exception_again` 的写法，语法子句仍会列入 175 表，但传播行为会记为
+  `NO_RETHROW_OBSERVED`；要证明间接传播需另做调用图分析。
+
+    12 docs/progress/R110/tables/audit_metrics.tsv
+   141 docs/progress/R110/tables/current_rethrow_sites.tsv
+     9 docs/progress/R110/tables/current_source_identity.tsv
+    10 docs/progress/R110/tables/package_summary.tsv
+    51 docs/progress/R110/tables/reported_50_audit.tsv
+    69 docs/progress/R110/tables/source_instance_duplicates.tsv
+   176 docs/progress/R110/tables/strict_clause_sites_original.tsv
+   173 docs/progress/R110/tables/strict_rethrow_sites_original.tsv
+   184 docs/progress/R110/CURRENT_RETHROW_SITE_LIST.md
+    74 docs/progress/R110/FOR_HQ_SUMMARY.md
+    57 docs/progress/R110/METHOD_AND_LIMITS.md
+    18 docs/progress/R110/README.md
+    17 docs/progress/R110/RECOVERED_TECHNICAL_ERRORS.md
+   116 docs/progress/R110/REPORT.md
+    94 docs/progress/R110/REPORTED_50_AUDIT.md
+   216 docs/progress/R110/STRICT_RETHROW_SITE_LIST.md
+  1417 total
+
+[exit_code] 0

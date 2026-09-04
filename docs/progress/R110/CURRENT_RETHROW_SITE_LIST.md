@@ -1,0 +1,183 @@
+# 当前开发分支中的强制展开识别与传播站点
+
+本表只复核历史阳性包名集合的当前开发分支；Git 跟踪文本与明确列出的MLGO/TensorFlow 嵌套源码资产均参与。它用于核对已有站点漂移，不能证明平台其他源码包没有新增站点。
+
+## `boost`
+
+| 源码实例 | 文件与行号 | 实际代码原文 | 所在函数或上下文 | 核对结果 |
+|---|---|---|---|---|
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine/detail/pull_coroutine_object.hpp:120` | `catch ( abi::__forced_unwind const&)` | boost::coroutines::detail::pull_coroutine_object::run() (line 105) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine/detail/pull_coroutine_object.hpp:207` | `catch ( abi::__forced_unwind const&)` | boost::coroutines::detail::pull_coroutine_object::run() (line 192) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine/detail/pull_coroutine_object.hpp:294` | `catch ( abi::__forced_unwind const&)` | boost::coroutines::detail::pull_coroutine_object::run() (line 279) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine/detail/push_coroutine_object.hpp:132` | `catch ( abi::__forced_unwind const&)` | boost::coroutines::detail::push_coroutine_object::run(R * result) (line 117) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine/detail/push_coroutine_object.hpp:219` | `catch ( abi::__forced_unwind const&)` | boost::coroutines::detail::push_coroutine_object::run(R * result) (line 204) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine/detail/push_coroutine_object.hpp:306` | `catch ( abi::__forced_unwind const&)` | boost::coroutines::detail::push_coroutine_object::run() (line 291) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine2/detail/pull_control_block_cc.ipp:63` | `} catch ( abi::__forced_unwind const&) {` | lambda (line 50) in boost::coroutines2::detail::pull_coroutine::control_block::control_block(context::preallocated palloc,StackAllocator && salloc,Fn && fn) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine2/detail/pull_control_block_cc.ipp:92` | `} catch ( abi::__forced_unwind const&) {` | lambda (line 50) in boost::coroutines2::detail::pull_coroutine::control_block::control_block(context::preallocated palloc,StackAllocator && salloc,Fn && fn) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine2/detail/pull_control_block_cc.ipp:219` | `} catch ( abi::__forced_unwind const&) {` | lambda (line 206) in boost::coroutines2::detail::pull_coroutine::control_block::control_block(context::preallocated palloc,StackAllocator && salloc,Fn && fn) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine2/detail/pull_control_block_cc.ipp:248` | `} catch ( abi::__forced_unwind const&) {` | lambda (line 206) in boost::coroutines2::detail::pull_coroutine::control_block::control_block(context::preallocated palloc,StackAllocator && salloc,Fn && fn) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine2/detail/pull_control_block_cc.ipp:351` | `} catch ( abi::__forced_unwind const&) {` | lambda (line 338) in boost::coroutines2::detail::pull_coroutine::control_block::control_block(context::preallocated palloc,StackAllocator && salloc,Fn && fn) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine2/detail/pull_control_block_cc.ipp:380` | `} catch ( abi::__forced_unwind const&) {` | lambda (line 338) in boost::coroutines2::detail::pull_coroutine::control_block::control_block(context::preallocated palloc,StackAllocator && salloc,Fn && fn) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine2/detail/push_control_block_cc.ipp:63` | `} catch ( abi::__forced_unwind const&) {` | lambda (line 49) in boost::coroutines2::detail::push_coroutine::control_block::control_block(context::preallocated palloc,StackAllocator && salloc,Fn && fn) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine2/detail/push_control_block_cc.ipp:94` | `} catch ( abi::__forced_unwind const&) {` | lambda (line 49) in boost::coroutines2::detail::push_coroutine::control_block::control_block(context::preallocated palloc,StackAllocator && salloc,Fn && fn) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine2/detail/push_control_block_cc.ipp:194` | `} catch ( abi::__forced_unwind const&) {` | lambda (line 180) in boost::coroutines2::detail::push_coroutine::control_block::control_block(context::preallocated palloc,StackAllocator && salloc,Fn && fn) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine2/detail/push_control_block_cc.ipp:225` | `} catch ( abi::__forced_unwind const&) {` | lambda (line 180) in boost::coroutines2::detail::push_coroutine::control_block::control_block(context::preallocated palloc,StackAllocator && salloc,Fn && fn) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine2/detail/push_control_block_cc.ipp:312` | `} catch ( abi::__forced_unwind const&) {` | lambda (line 298) in boost::coroutines2::detail::push_coroutine::control_block::control_block(context::preallocated palloc,StackAllocator && salloc,Fn && fn) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/coroutine2/detail/push_control_block_cc.ipp:343` | `} catch ( abi::__forced_unwind const&) {` | lambda (line 298) in boost::coroutines2::detail::push_coroutine::control_block::control_block(context::preallocated palloc,StackAllocator && salloc,Fn && fn) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/fiber/condition_variable.hpp:78` | `} catch ( abi::__forced_unwind const&) {` | boost::fibers::condition_variable_any::wait(LockType & lt) (line 66) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/fiber/condition_variable.hpp:110` | `} catch ( abi::__forced_unwind const&) {` | boost::fibers::condition_variable_any::wait_until(LockType & lt,std::chrono::time_point<Clock,Duration> const & timeout_time_) (line 94) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/fiber/future/detail/task_object.hpp:68` | `} catch ( abi::__forced_unwind const&) {` | boost::fibers::detail::task_object::run(Args &&...args) (line 56) | `LITERAL_THROW` |
+| `69203710b8582c489f420ef53a769cc6077c250b` | `boost/fiber/future/detail/task_object.hpp:142` | `} catch ( abi::__forced_unwind const&) {` | boost::fibers::detail::task_object::run(Args &&...args) (line 131) | `LITERAL_THROW` |
+
+## `gcc`
+
+| 源码实例 | 文件与行号 | 实际代码原文 | 所在函数或上下文 | 核对结果 |
+|---|---|---|---|---|
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `gcc/testsuite/g++.dg/abi/forced.C:14` | `catch (abi::__forced_unwind &)` | main() (line 8) | `LITERAL_THROW` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/basic_string.tcc:390` | `\tcatch (const __cxxabiv1::__forced_unwind&)` | std::basic_string::reserve() (line 365) | `LITERAL_THROW` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/basic_string.tcc:884` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::operator >>(basic_istream<_CharT,_Traits> & __in,basic_string<_CharT,_Traits,_Alloc> & __str) (line 835) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/basic_string.tcc:948` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::getline(basic_istream<_CharT,_Traits> & __in,basic_string<_CharT,_Traits,_Alloc> & __str,_CharT __delim) (line 907) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/cow_string.h:3733` | `\tcatch (const __cxxabiv1::__forced_unwind&)` | std::basic_string::reserve() (line 3722) | `LITERAL_THROW` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:75` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::sentry::sentry(basic_istream<_CharT,_Traits> & __in,bool __noskip) (line 47) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:113` | `\t    __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::_M_extract(_ValueT & __v) (line 97) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:163` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::operator >>(short & __n) (line 129) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:213` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::operator >>(int & __n) (line 179) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:243` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::operator >>(__streambuf_type * __sbout) (line 229) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:279` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::get(void) (line 261) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:316` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::get(char_type & __c) (line 297) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:359` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::get(char_type * __s,streamsize __n,char_type __delim) (line 334) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:414` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::get(__streambuf_type & __sb,char_type __delim) (line 381) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:467` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::getline(char_type * __s,streamsize __n,char_type __delim) (line 432) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:509` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::ignore(void) (line 492) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:579` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::ignore(streamsize __n) (line 525) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:656` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::ignore(streamsize __n,int_type __delim) (line 595) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:686` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::peek(void) (line 672) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:715` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::read(char_type * __s,streamsize __n) (line 702) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:747` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::readsome(char_type * __s,streamsize __n) (line 731) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:782` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::putback(char_type __c) (line 763) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:817` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::unget(void) (line 798) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:853` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::sync(void) (line 833) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:883` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::tellg(void) (line 869) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:920` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::seekg(pos_type __pos) (line 897) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:959` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::seekg(off_type __off,ios_base::seekdir __dir) (line 936) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:992` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::operator >>(basic_istream<_CharT,_Traits> & __in,_CharT & __c) (line 975) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:1053` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::__istream_extract(basic_istream<_CharT,_Traits> & __in,_CharT * __s,streamsize __num) (line 1007) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/istream.tcc:1102` | `\t  __catch (const __cxxabiv1::__forced_unwind&)` | std::ws(basic_istream<_CharT,_Traits> & __in) (line 1070) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/ostream.tcc:81` | `\t    __catch(__cxxabiv1::__forced_unwind&)` | std::basic_ostream::_M_insert(_ValueT __v) (line 64) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/ostream.tcc:136` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_ostream::operator <<(__streambuf_type * __sbin) (line 125) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/ostream.tcc:172` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_ostream::put(char_type __c) (line 154) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/ostream.tcc:206` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_ostream::write(const _CharT * __s,streamsize __n) (line 188) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/ostream.tcc:240` | `\t      __catch(__cxxabiv1::__forced_unwind&)` | std::basic_ostream::flush() (line 222) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/ostream.tcc:331` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::operator <<(basic_ostream<_CharT,_Traits> & __out,const char * __s) (line 307) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/bits/ostream_insert.h:107` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::__ostream_insert(basic_ostream<_CharT,_Traits> & __out,const _CharT * __s,streamsize __n) (line 79) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/experimental/executor:1734` | `\t__catch(__cxxabiv1::__forced_unwind&)` | std::experimental::net::v1::__use_future_ch::operator ()(_Args &&...__args) (line 1728) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/experimental/executor:1794` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::experimental::net::v1::__use_future_ex::dispatch(_Fn && __fn) (line 1788) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/experimental/executor:1812` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::experimental::net::v1::__use_future_ex::post(_Fn && __fn) (line 1806) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/experimental/executor:1830` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::experimental::net::v1::__use_future_ex::defer(_Fn && __fn) (line 1824) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/ext/vstring.tcc:605` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::operator >>(basic_istream<_CharT,_Traits> & __in,__gnu_cxx::__versa_string<_CharT,_Traits,_Alloc,_Base> & __str) (line 554) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/ext/vstring.tcc:681` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::getline(basic_istream<_CharT,_Traits> & __in,__gnu_cxx::__versa_string<_CharT,_Traits,_Alloc,_Base> & __str,_CharT __delim) (line 629) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/std/bitset:1662` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::operator >>::_Buffer::~_Buffer() (line 1609) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/std/condition_variable:268` | `\t      __catch(const __cxxabiv1::__forced_unwind&)` | std::condition_variable_any::_Unlock::~_Unlock() (line 262) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/std/future:1418` | `\t__catch(const __cxxabiv1::__forced_unwind&)` | std::__future_base::_Task_setter::operator ()() const (line 1412) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/std/future:1441` | `\t__catch(const __cxxabiv1::__forced_unwind&)` | std::__future_base::_Task_setter::operator ()() const (line 1435) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/std/future:1783` | `\t__catch (const __cxxabiv1::__forced_unwind&)` | std::__future_base::_Async_state_impl::_M_run() (line 1777) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/std/iomanip:286` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::operator >>(basic_istream<_CharT,_Traits> & __is,_Get_money<_MoneyT> __f) (line 271) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/std/iomanip:334` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::operator <<(basic_ostream<_CharT,_Traits> & __os,_Put_money<_MoneyT> __f) (line 318) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/std/iomanip:389` | `__catch(__cxxabiv1::__forced_unwind&)` | std::operator <<(basic_ostream<_CharT,_Traits> & __os,_Put_time<_CharT> __f) (line 370) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/std/iomanip:443` | `__catch(__cxxabiv1::__forced_unwind&)` | std::operator >>(basic_istream<_CharT,_Traits> & __is,_Get_time<_CharT> __f) (line 425) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/std/ostream:896` | `\t__catch(const __cxxabiv1::__forced_unwind&)` | std::vprint_nonunicode(ostream & __os,string_view __fmt,format_args __args) (line 883) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/std/ostream:951` | `\t    __catch(const __cxxabiv1::__forced_unwind&)` | std::vprint_unicode(ostream & __os,string_view __fmt,format_args __args) (line 907) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/std/ostream:969` | `\t__catch(const __cxxabiv1::__forced_unwind&)` | std::vprint_unicode(ostream & __os,string_view __fmt,format_args __args) (line 907) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/include/tr2/dynamic_bitset.tcc:255` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::tr2::operator >>(std::basic_istream<_CharT,_Traits> & __is,dynamic_bitset<_WordT,_Alloc> & __x) (line 207) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/src/c++98/compatibility.cc:124` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::ignore(streamsize __n) (line 61) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/src/c++98/compatibility.cc:203` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::ignore(streamsize __n) (line 141) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/src/c++98/istream-string.cc:100` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::operator >>(basic_istream<char> & __in,basic_string<char> & __str) (line 43) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/src/c++98/istream-string.cc:184` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::getline(basic_istream<char> & __in,basic_string<char> & __str,char __delim) (line 122) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/src/c++98/istream-string.cc:269` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::getline(basic_istream<wchar_t> & __in,basic_string<wchar_t> & __str,wchar_t __delim) (line 207) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/src/c++98/istream.cc:91` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::getline(char_type * __s,streamsize __n,char_type __delim) (line 38) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/src/c++98/istream.cc:203` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::ignore(streamsize __n,int_type __delim) (line 113) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/src/c++98/istream.cc:282` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::__istream_extract(istream & __in,char * __s,streamsize __num) (line 217) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/src/c++98/istream.cc:353` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::getline(char_type * __s,streamsize __n,char_type __delim) (line 300) | `LIBSTDCXX_RETHROW_MACRO` |
+| `49c5060508ce8a6ed6beca375233688a6bdd9140` | `libstdc++-v3/src/c++98/istream.cc:456` | `\t  __catch(__cxxabiv1::__forced_unwind&)` | std::basic_istream::ignore(streamsize __n,int_type __delim) (line 375) | `LIBSTDCXX_RETHROW_MACRO` |
+
+## `key-manager`
+
+| 源码实例 | 文件与行号 | 实际代码原文 | 所在函数或上下文 | 核对结果 |
+|---|---|---|---|---|
+| `5be2dc74baede39694fd10d8f72b95f759e799ba` | `src/manager/client-async/client-manager-async.cpp:321` | `\t} catch (const abi::__forced_unwind &) {` | CKM::ManagerAsync::tryCatchHelper(Observer & observer,const std::function<void ()> & func) (line 307) | `LITERAL_THROW` |
+| `5be2dc74baede39694fd10d8f72b95f759e799ba` | `src/manager/client-capi/ckmc-manager.cpp:1376` | `\t} catch (const abi::__forced_unwind &) {` | ckmc_cipher_free(ckmc_cipher_ctx_h context) (line 1364) | `LITERAL_THROW` |
+| `5be2dc74baede39694fd10d8f72b95f759e799ba` | `src/manager/client/client-common.cpp:327` | `\t} catch (const abi::__forced_unwind &) {` | CKM::try_catch(const std::function<int ()> & func) (line 308) | `LITERAL_THROW` |
+| `5be2dc74baede39694fd10d8f72b95f759e799ba` | `src/manager/client/client-common.cpp:349` | `\t} catch (const abi::__forced_unwind &) {` | CKM::try_catch_enclosure(const std::function<int ()> & func) (line 337) | `LITERAL_THROW` |
+| `5be2dc74baede39694fd10d8f72b95f759e799ba` | `unit-tests/test_client-common.cpp:54` | `} catch (const abi::__forced_unwind& ) {` | lambda (line 51) in __anon40c46cea0111::test_forced_unwind_throw(ConvertingFunction func) | `LITERAL_THROW` |
+
+## `libcynara-commons`
+
+| 源码实例 | 文件与行号 | 实际代码原文 | 所在函数或上下文 | 核对结果 |
+|---|---|---|---|---|
+| `1ee5fcdd9529e5b2260b1c365c28a5c56b3adbc1` | `src/common/exceptions/TryCatch.h:65` | `} catch (const abi::__forced_unwind &) {` | Cynara::tryCatch(F && f) (line 47) | `LITERAL_THROW` |
+
+## `llvm`
+
+| 源码实例 | 文件与行号 | 实际代码原文 | 所在函数或上下文 | 核对结果 |
+|---|---|---|---|---|
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/__ostream/basic_ostream.h:218` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_ostream::sentry::~sentry() (line 210) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/future:897` | `} catch (const __cxxabiv1::__forced_unwind&) {` | __deferred_assoc_state::__execute() (line 891) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/future:931` | `} catch (const __cxxabiv1::__forced_unwind&) {` | __deferred_assoc_state::__execute() (line 924) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/future:965` | `} catch (const __cxxabiv1::__forced_unwind&) {` | __async_assoc_state::__execute() (line 958) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/future:1011` | `} catch (const __cxxabiv1::__forced_unwind&) {` | __async_assoc_state::__execute() (line 1004) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/future:1794` | `} catch (const __cxxabiv1::__forced_unwind&) {` | packaged_task::operator ()(_ArgTypes...__args) (line 1784) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/future:1813` | `} catch (const __cxxabiv1::__forced_unwind&) {` | packaged_task::make_ready_at_thread_exit(_ArgTypes...__args) (line 1803) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/future:1898` | `} catch (const __cxxabiv1::__forced_unwind&) {` | packaged_task::operator ()(_ArgTypes...__args) (line 1887) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/future:1918` | `} catch (const __cxxabiv1::__forced_unwind&) {` | packaged_task::make_ready_at_thread_exit(_ArgTypes...__args) (line 1907) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/future:2003` | `} catch (const __cxxabiv1::__forced_unwind&) {` | async(launch __policy,_Fp && __f,_Args &&...__args) (line 1989) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:378` | `} catch (const __cxxabiv1::__forced_unwind&) {` | __input_arithmetic(basic_istream<_CharT,_Traits> & __is,_Tp & __n) (line 367) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:473` | `} catch (const __cxxabiv1::__forced_unwind&) {` | __input_arithmetic_with_numeric_limits(basic_istream<_CharT,_Traits> & __is,_Tp & __n) (line 452) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:528` | `} catch (const __cxxabiv1::__forced_unwind&) {` | __input_c_string(basic_istream<_CharT,_Traits> & __is,_CharT * __p,size_t __n) (line 502) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:607` | `} catch (const __cxxabiv1::__forced_unwind&) {` | operator >>(basic_istream<_CharT,_Traits> & __is,_CharT & __c) (line 594) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:661` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::operator >>(basic_streambuf<char_type,traits_type> * __sb) (line 638) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:702` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::get() (line 687) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:743` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::get(char_type * __s,streamsize __n,char_type __dlm) (line 718) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:797` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::get(basic_streambuf<char_type,traits_type> & __sb,char_type __dlm) (line 774) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:844` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::getline(char_type * __s,streamsize __n,char_type __dlm) (line 815) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:906` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::ignore(streamsize __n,int_type __dlm) (line 874) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:937` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::peek() (line 924) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:967` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::read(char_type * __s,streamsize __n) (line 955) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:1010` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::readsome(char_type * __s,streamsize __n) (line 987) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:1042` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::putback(char_type __c) (line 1030) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:1074` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::unget() (line 1062) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:1110` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::sync() (line 1094) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:1138` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::tellg() (line 1128) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:1167` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::seekg(pos_type __pos) (line 1156) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:1196` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_istream::seekg(off_type __off,ios_base::seekdir __dir) (line 1185) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:1233` | `} catch (const __cxxabiv1::__forced_unwind&) {` | ws(basic_istream<_CharT,_Traits> & __is) (line 1214) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:1343` | `} catch (const __cxxabiv1::__forced_unwind&) {` | operator >>(basic_istream<_CharT,_Traits> & __is,basic_string<_CharT,_Traits,_Allocator> & __str) (line 1306) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:1420` | `} catch (const __cxxabiv1::__forced_unwind&) {` | lambda (line 1386) in getline(basic_istream<_CharT,_Traits> & __is,basic_string<_CharT,_Traits,_Allocator> & __str,_CharT __dlm) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/istream:1485` | `} catch (const __cxxabiv1::__forced_unwind&) {` | operator >>(basic_istream<_CharT,_Traits> & __is,bitset<_Size> & __x) (line 1456) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/include/string:3467` | `} catch (const __cxxabiv1::__forced_unwind&) {` | basic_string::shrink_to_fit() (line 3430) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/src/ios.cpp:368` | `} catch (const __cxxabiv1::__forced_unwind&) {` | ios_base::__set_badbit_and_consider_rethrow() (line 363) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `libcxx/src/ios.cpp:382` | `} catch (const __cxxabiv1::__forced_unwind&) {` | ios_base::__set_failbit_and_consider_rethrow() (line 377) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `packaging/mlgo_aarch_model.tar.gz!/mlgo_sysroot/include/external/pybind11/_virtual_includes/pybind11/pybind11/pybind11.h:989` | `} catch (abi::__forced_unwind &) {` | cpp_function::dispatcher(PyObject * self,PyObject * args_in,PyObject * kwargs_in) (line 669) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `packaging/mlgo_aarch_model.tar.gz!/mlgo_sysroot/include/external/pybind11/include/pybind11/pybind11.h:989` | `} catch (abi::__forced_unwind &) {` | cpp_function::dispatcher(PyObject * self,PyObject * args_in,PyObject * kwargs_in) (line 669) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `packaging/mlgo_arm_model.tar.gz!/mlgo_sysroot/include/external/pybind11/_virtual_includes/pybind11/pybind11/pybind11.h:989` | `} catch (abi::__forced_unwind &) {` | cpp_function::dispatcher(PyObject * self,PyObject * args_in,PyObject * kwargs_in) (line 669) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `packaging/mlgo_arm_model.tar.gz!/mlgo_sysroot/include/external/pybind11/include/pybind11/pybind11.h:989` | `} catch (abi::__forced_unwind &) {` | cpp_function::dispatcher(PyObject * self,PyObject * args_in,PyObject * kwargs_in) (line 669) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `packaging/mlgo_x86_model.tar.gz!/mlgo_sysroot/include/external/pybind11/_virtual_includes/pybind11/pybind11/pybind11.h:989` | `} catch (abi::__forced_unwind &) {` | cpp_function::dispatcher(PyObject * self,PyObject * args_in,PyObject * kwargs_in) (line 669) | `LITERAL_THROW` |
+| `2d23367d74afbf2bb1e9e4013fce072b3a154109` | `packaging/mlgo_x86_model.tar.gz!/mlgo_sysroot/include/external/pybind11/include/pybind11/pybind11.h:989` | `} catch (abi::__forced_unwind &) {` | cpp_function::dispatcher(PyObject * self,PyObject * args_in,PyObject * kwargs_in) (line 669) | `LITERAL_THROW` |
+
+## `security-manager`
+
+| 源码实例 | 文件与行号 | 实际代码原文 | 所在函数或上下文 | 核对结果 |
+|---|---|---|---|---|
+| `90010ec2417fd8ee3c7c71ffbf929b219481bc21` | `src/common/include/utils.h:71` | `} catch (abi::__forced_unwind &) {` | SecurityManager::try_catch(F && f) (line 68) | `LITERAL_THROW` |
+
+## `tensorflow2`
+
+| 源码实例 | 文件与行号 | 实际代码原文 | 所在函数或上下文 | 核对结果 |
+|---|---|---|---|---|
+| `1cdba73549f741720f11dd53da1bb516b03763a2` | `packaging/tensorflow2-aot.tar.gz!/include/external/pybind11/_virtual_includes/pybind11/pybind11/pybind11.h:989` | `} catch (abi::__forced_unwind &) {` | cpp_function::dispatcher(PyObject * self,PyObject * args_in,PyObject * kwargs_in) (line 669) | `LITERAL_THROW` |
+| `1cdba73549f741720f11dd53da1bb516b03763a2` | `packaging/tensorflow2-aot.tar.gz!/include/external/pybind11/include/pybind11/pybind11.h:989` | `} catch (abi::__forced_unwind &) {` | cpp_function::dispatcher(PyObject * self,PyObject * args_in,PyObject * kwargs_in) (line 669) | `LITERAL_THROW` |
+
+## `webauthn`
+
+| 源码实例 | 文件与行号 | 实际代码原文 | 所在函数或上下文 | 核对结果 |
+|---|---|---|---|---|
+| `88d99a5d655c644cbd384f8e15cca337d1a00b21` | `srcs/common/utils.h:42` | `} catch (abi::__forced_unwind &) {` | WA::try_catch(F && f) (line 39) | `LITERAL_THROW` |
