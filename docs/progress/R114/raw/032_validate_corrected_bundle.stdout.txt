@@ -1,0 +1,9 @@
+package_rows=254
+package_decisions=requires_adaptation:11,does_not_require_adaptation:237,currently_cannot_be_adapted:6
+implementation_status=completed:8,paused:3,not_applicable:243
+attachment_50_rows=50 actual_catch=46 non_clause=4
+attachment_172_rows=172 logical_sites=104 literal_throw=46 macro_rethrow=126
+r113_required_replacements=PASS
+r113_old_phrases_absent=PASS
+internal_markers=0
+english_table_chinese_cells=0
