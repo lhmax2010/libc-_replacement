@@ -1,0 +1,505 @@
+# R98：LLVM Toolchain 过渡态中的 GCC 构建例外与依赖拓扑
+
+## 1. 结论先行
+
+本轮按人工更正后的范围完成。状态为：
+
+`ANALYSIS_COMPLETE_FOR_REVISED_SCOPE / POST_MIGRATION_RUNTIME_IDENTITY_PENDING`
+
+1. 当前可取得的 LLVM Toolchain 成对快照并不是迁移后镜像，而是
+   **Clang 编译 + libstdc++** 的过渡态。Unified 中有 311 个产生 C++
+   runtime 依赖的源码包直接依赖 `libstdc++.so.6`，直接依赖
+   `libc++.so`/`libc++abi.so` 的为 0。
+2. 对两个项目三架构的 3,848 条成功构建日志逐条读取实际导出的
+   `CC/CXX`；瞬时超时全部重试成功，最终无 `NOT_AVAILABLE`。实际选择
+   GCC 的是 **11 个源码包**，其余 3,817 条记录选择 Clang。
+3. 11 个 GCC 包是：Base 的 `gcc`、`gcc-aarch64`、`gcc-armv7hl`、
+   `gcc-armv7l`、`gcc-riscv64`、`glibc`；Unified 的 `lapack`、
+   `nntrainer`、`onnxruntime`、`openblas`、`yaca`。这 11 个包的精确
+   spec 均含 `%define _toolchain_override gcc`，与构建日志相互印证。
+4. 其中产生直接 C++ runtime 依赖 ELF 的源码包有 4 个：`gcc`、
+   `nntrainer`、`onnxruntime`、`yaca`。`lapack`/`openblas` 的可见
+   运行期边为 C/Fortran 接口，不能仅因其由 GCC 构建就归为 C++ 边。
+5. 稳定的非系统共享库拓扑共 30 个源码对、417 条实际 ELF 边：
+   - 已证明传递/解析布局敏感标准库类型：2 个源码对；
+   - 有 C++ ABI 耦合但布局传递未证明：2 个源码对；
+   - 仅 C 接口符号交集：24 个源码对；
+   - 无符号交集：2 个源码对。
+6. **不能从当前快照回答“迁移后两侧实际使用哪套标准库”**。所以
+   `nntrainer` 和 `yaca` 相关 C++ 边是否成为最终混合运行时边记为
+   `UNABLE_TO_DETERMINE_UNTIL_POST_MIGRATION_RUNTIME_IDENTITY`，没有据配置
+   预期冒充构建事实。
+7. 本任务没有修改配置或平台源码，没有实施迁移，没有推送 Gerrit，
+   也没有给出处置建议或优先级。
+
+## 2. 输入身份
+
+### 2.1 最终采用的成对输入
+
+- Base：
+  `https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/`
+- Unified：
+  `https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/`
+
+选择理由：这是线上最后一组有明确派生关系、且 Unified 同时提供六个设备
+镜像清单的完整成对输入。发现的另一个候选
+`tizen-base-toolchain_20260901.103155` 只有 Base 项目，没有对应的新
+Unified 快照或镜像，不能与旧 Unified 拼接做依赖及镜像归属判定。
+
+候选发现、派生关系及线上目录证据见：
+
+- `raw/020_list_current_toolchain_snapshots.*`
+- `raw/021_inspect_current_reference_and_candidate.*`
+- `raw/022_inspect_new_base_snapshot.*`
+
+### 2.2 数据规模与校验
+
+| 数据集 | binary RPM 记录 | source RPM 记录 | 去重源码名 |
+| --- | ---: | ---: | ---: |
+| Base Toolchain | 1,705 | 292 | 254 |
+| Unified Toolchain | 9,607 | 1,061 | 1,061 |
+
+六个镜像为 headed/headless/boot 的 armv7l 与 aarch64 组合，清单合计
+4,393 行。repomd 中引用的 primary/filelists/source-primary 均按声明的
+SHA256 校验通过，见 `raw/010_fetch_llvm_snapshot_metadata.*` 和
+`raw/060_validate_analysis_coverage.*`。
+
+本轮进一步下载了：
+
+- 104 个边界分析所需的精确 binary RPM，共 626,687,028 字节；
+- 6 个精确 source RPM，共 428,753,894 字节；
+- 两组均 100% 下载与 SHA256 校验通过；104 个 binary RPM 100% 解包，
+  ELF 分析失败 0，符号边未解析 0。
+
+### 2.3 当前快照的适用边界
+
+当前快照可以证明：
+
+- 哪些构建记录实际选择 GCC 或 Clang；
+- 当前包依赖与构建依赖拓扑；
+- 当前 ELF 之间实际存在的 C/C++ 符号交集；
+- 当前六个镜像的精确包归属。
+
+当前快照不能证明：
+
+- 全量迁移后每个 ELF 实际链接 libc++ 还是 libstdc++；
+- 迁移后 C++ 符号能否链接、会否改变或被隐藏；
+- 迁移后最终镜像中哪些拓扑成为真正的混合运行时边。
+
+## 3. GCC 构建包的判定
+
+### 3.1 判定方法
+
+判定没有使用包名或经验：
+
+1. 配置事实：Base Toolchain 的 `project_config:133-149` 定义默认工具链
+   为 Clang，只有 spec 定义 `_toolchain_override` 才会改变 `%{__cc}` /
+   `%{__cxx}`；实际代码见 `raw/023_locate_toolchain_override_mechanism.*`。
+2. 实际构据：抓取全部成功构建日志前 2 MiB，提取 `%build` 实际导出的
+   `+ export CC=... CXX=...`。3,848/3,848 条均命中；44 次瞬时网络超时
+   经原 URL 重试后全部补齐。
+3. spec 交叉验证：对 6 个包下载精确 source RPM 后取 spec；GCC 家族
+   使用工作区已有 Git 对象中的精确 VCS 提交
+   `3d5dd5bec16591dbf3277df37fb43e9cc5b890de`。11 份 spec 均明确写有
+   `_toolchain_override gcc`。
+4. ELF `.comment`/producer：对已下载的 GCC 包边界 ELF 检查 `.comment`。
+   只有部分 `gcc` 产物保留 GCC marker；其余多数已剥离 `.comment`。
+   未下载独立 debuginfo，因此 producer 为 `NOT_OBSERVED`。该阴性没有被
+   用来否定日志与 spec 的阳性证据。
+
+完整逐记录证据为 `tables/buildlog_compiler_evidence.tsv`；spec 原文在
+`inputs/specs/`；`.comment` 结果为 `tables/gcc_elf_comment_evidence.tsv`。
+
+### 3.2 spec 的明确覆盖点
+
+| 源码包 | 精确 spec 行 | 原文性质 |
+| --- | ---: | --- |
+| gcc | 30 | `Always build gcc with gcc compiler` 后定义 override |
+| gcc-aarch64 / gcc-armv7hl / gcc-armv7l / gcc-riscv64 | 33 | 同上 |
+| glibc | 36 | 注明使用 GCC extensions，定义 override |
+| lapack | 16 | 定义 override |
+| nntrainer | 18 | `Support only gcc compiler` 后定义 override |
+| onnxruntime | 36 | 定义 override |
+| openblas | 128 | `%prep` 中定义 override |
+| yaca | 23 | 定义 override |
+
+完整输出见 `raw/049_confirm_spec_overrides.*`。
+
+### 3.3 决策用包表
+
+完整表：`tables/gcc_package_decision_table.tsv`。下表中的“进入镜像”按
+该源码包实际产生的 binary 子包精确关联，不等同于主包同名项。
+
+| 源码包 | 项目 | GCC 架构 | C++ runtime ELF | 直接链接 libstdc++ | 进入六镜像 | 稳定非系统 C++ 边 | “必须处置”事实值 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| gcc | Base | aarch64/armv7l/x86_64 | 是 | 是 | 是，运行时子包 | 无，所测为 zlib C 边 | 当前可见边：否 |
+| gcc-aarch64 | Base | armv7l/x86_64 | 否 | 否 | 否 | 无 | 当前可见边：否 |
+| gcc-armv7hl | Base | 三架构 | 否 | 否 | 否 | 无 | 当前可见边：否 |
+| gcc-armv7l | Base | aarch64/x86_64 | 否 | 否 | 否 | 无 | 当前可见边：否 |
+| gcc-riscv64 | Base | 三架构 | 否 | 否 | 否 | 无 | 当前可见边：否 |
+| glibc | Base | 三架构 | 否 | 否 | 是 | 无；可见边为 C 或无交集 | 当前可见边：否 |
+| lapack | Unified | 三架构 | 否 | 否 | 否 | 无；suitesparse 为 C/Fortran 符号 | 当前可见边：否 |
+| nntrainer | Unified | 三架构 | 是 | 是 | 是 | 2 个布局敏感、1 个 C++ 未证明 | **迁移后身份未产出，无法判定** |
+| onnxruntime | Unified | 三架构 | 是 | 是 | 否 | nnstreamer 为 C 接口 | 当前可见边：否 |
+| openblas | Unified | 三架构 | 否 | 否 | 是 | 4 对均为 C/Fortran 接口 | 当前可见边：否 |
+| yaca | Unified | 三架构 | 是（仅 tests 命中） | 是 | 是（yaca 主包） | 对 boost-test 有 C++ 耦合，布局未证明 | **迁移后身份未产出，无法判定** |
+
+这里的“当前可见边：否”只描述已经解析的符号边，不等于建议“不处理”，
+也不覆盖尚未构建的迁移后新边。
+
+### 3.4 任务书点名工具的核对
+
+`bcc-tools`、`bpftrace`、`gdb`、`llvm`（含 lldb 所在源码）、`elfutils`、
+`binutils`、`openfst` 在本快照的实际构建日志中均选择 Clang，不是 GCC
+例外。除 `bpftrace` 只存在 armv7l/aarch64 构建记录外，其余均覆盖三架构。
+精确 CC 值见 `tables/requested_tool_compiler_checks.tsv`。
+
+## 4. 依赖拓扑
+
+### 4.1 构建期依赖
+
+精确 source `BuildRequires` 到 GCC 包 binary provides 的匹配产生 173 条
+记录、110 个去重 consumer 源码身份。完整清单：
+`tables/gcc_inbound_build_dependencies.tsv`。
+
+| GCC provider 源码 | 构建期 consumer 数 | 主要 requirement |
+| --- | ---: | --- |
+| gcc | 95 | gcc/gcc-c++/libgcc/libstdc++-devel 等 |
+| gcc-aarch64 | 1 | gcc-aarch64 |
+| glibc | 19 | glibc-devel/static/locale 等 |
+| lapack | 4 | blas-devel/lapack-devel |
+| nntrainer | 4 | capi-ml-training/pkgconfig(nntrainer) 等 |
+| onnxruntime | 1 | onnxruntime-devel |
+| openblas | 5 | openblas-devel |
+| yaca | 2 | yaca/yaca-devel |
+
+其余三个 cross-GCC 源码在本次精确 capability 匹配中没有独立 consumer
+记录。这些是构建期依赖，不构成同一进程内对象跨界。
+
+### 4.2 运行期边的口径
+
+完整 RPM capability 匹配原始结果有 51,060 条，绝大部分是 libc、
+libstdc++、libgcc_s 及同一 SONAME 的多个版本 capability。该完整表以
+压缩形式保存为 `tables/gcc_runtime_dependency_edges.tsv.gz`。
+
+为测量“不随换标准库而消失的拓扑”，符号分析排除了以下基础运行时
+SONAME：加载器、libc/libm/libdl/librt/libpthread、libgcc_s、libstdc++、
+sanitizer、Fortran/OpenMP runtime 等；没有删除原始表。armv7l/aarch64
+剩余 168 条精确 RPM 边，聚合为 30 个源码对，并对每个 DT_NEEDED consumer
+ELF 与唯一 provider ELF 做 `UND ∩ DEF`。
+
+结果：417 条实际 ELF 边，未解析 0，分析失败 0。
+
+### 4.3 逐类结果
+
+完整逐对表：`tables/gcc_runtime_source_pair_classification.tsv`；完整逐 ELF
+符号：`symbol_edges/actual_cross_elf_edge_evidence.tsv`。
+
+#### 已证明涉及布局敏感标准库类型（2 对）
+
+1. `webapi-plugins → nntrainer`：20 条 ELF 边，实际交集包含
+   `std::__cxx11::basic_string<...>` 的构造、移动、append、reserve、析构等；
+   consumer 为多个 `libtizen_ml.so`，provider 为 `libcapi-nntrainer.so` /
+   `libnntrainer.so`。
+2. `nntrainer → gtest`：84 条 ELF 边、65 个 C++ 交集符号；包括
+   `testing::internal::MakeAndRegisterTestInfo(std::__cxx11::basic_string<...>, ...)`
+   及多项接受/返回标准字符串的 gtest API。命中集中在
+   `nntrainer-applications` 测试程序。
+
+这里“已证明”来自实际符号参数或实际标准库成员调用的跨 DSO 解析，不是
+因为“看到 C++ 文件名”。当前两侧都仍用 libstdc++；迁移后是否仍形成
+同一解析关系必须重测。
+
+#### 有 C++ ABI 耦合、布局传递未证明（2 对）
+
+1. `nntrainer → opencv`：实际调用 `cv::Mat` 构造/析构、`Mat::zeros`、
+   `cv::warpAffine` 等。存在 C++ ABI 耦合，但现有动态符号不能证明或排除
+   其内部是否跨界传递标准库布局。
+2. `yaca-tests → boost-test`：28 个 Boost.Test C++ 符号，包括
+   `boost::function<void()>`、`lazy_ostream`、`basic_cstring` 等。没有据
+   “未出现显式 std”推断安全，按任务要求保留在布局未证明档。
+
+#### 仅 C 接口符号交集（24 对）
+
+包括 `nnstreamer → onnxruntime`、`training-engine-nntrainer → nntrainer`、
+OpenBLAS/LAPACK 的 Open3D/numpy/suitesparse consumers、GCC 工具到 zlib、
+glibc 的 libresolv/libthread_db 等，以及 nntrainer 到 dlog/glib/iniparser/
+nnstreamer/CAPI 等。判定依据是实际 `UND ∩ DEF` 只有非 `_Z` 符号；其类别
+名称严格是“仅 C 接口符号交集”，没有扩写成“全面安全”。
+
+#### 无符号交集（2 对）
+
+`ot-br-posix → glibc` 与 `perl → glibc` 的相关 DT_NEEDED 候选中没有
+consumer UND 与 provider DEF 的交集，故记 `NO_SYMBOL_INTERSECTION`。
+
+### 4.4 反方向与动态加载
+
+30 个源码对按方向各 15 对：
+
+- 非 GCC consumer 依赖 GCC provider：12 个 C-only、2 个无交集、
+  1 个布局敏感；
+
+T1_FETCH
+FILE=progress/T1/01_fetch_base-standard_repomd.log
+$ curl --fail --show-error --location --dump-header headers --output repomd.xml https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/repodata/repomd.xml
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100  3558  100  3558    0     0   3357      0  0:00:01  0:00:01 --:--:--  3359
+EXIT_CODE=0
+FILE=progress/T1/02_fetch_base-standard_primary.log
+$ curl exact primary metadata https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/repodata/675f63fd03d2895a73b292a2a8fc4eb2a8b19772eeb8dc940620bb9209ed6372-primary.xml.gz
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100  342k  100  342k    0     0   223k      0  0:00:01  0:00:01 --:--:--  223k
+CURL_EXIT_CODE=0
+EXPECTED_SHA256=675f63fd03d2895a73b292a2a8fc4eb2a8b19772eeb8dc940620bb9209ed6372
+ACTUAL_SHA256=675f63fd03d2895a73b292a2a8fc4eb2a8b19772eeb8dc940620bb9209ed6372
+SHA_ASSERT_EXIT_CODE=0
+FILE=progress/T1/03_parse_primary.log
+$ python3 progress/T1/parse_primary.py
+binary_dependent_rows=2132
+unique_source_packages=372
+binary_rows_missing_sourcerpm=0
+EXIT_CODE=0
+
+R98_RAW_URLS
+docs/progress/R98/REPORT.md:40:  `https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/`
+docs/progress/R98/REPORT.md:46:`tizen-base-toolchain_20260901.103155` 只有 Base 项目，没有对应的新
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:1:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/repomd.xml	progress/R98/inputs/llvm_base_packages_repomd.xml	3558	c4aed7545c6326ba913a228a5dfbefd78e61c54279042a25333d707f41bf9848
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:2:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed-primary.xml.gz	progress/R98/inputs/llvm_base_packages_primary.xml.gz	347621	ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:3:REPOMD_CHECK	progress/R98/inputs/llvm_base_packages_primary.xml.gz	sha256	PASS
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:4:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6-filelists.xml.gz	progress/R98/inputs/llvm_base_packages_filelists.xml.gz	2174561	3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:5:REPOMD_CHECK	progress/R98/inputs/llvm_base_packages_filelists.xml.gz	sha256	PASS
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:6:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/source/repodata/repomd.xml	progress/R98/inputs/llvm_base_source_repomd.xml	3544	6ff36eee5ef673c169327b6c7d8b7172e4b8b29357bc75d39d3535e90602f6f3
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:7:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/source/repodata/eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53-primary.xml.gz	progress/R98/inputs/llvm_base_source_primary.xml.gz	81487	eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:8:REPOMD_CHECK	progress/R98/inputs/llvm_base_source_primary.xml.gz	sha256	PASS
+docs/progress/R98/history/INITIAL_INPUT_GATE.md:7:1. `Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647` +
+docs/progress/R98/history/INITIAL_INPUT_GATE.md:17:2. `Tizen-Base-Toolchain/tizen-base-toolchain_20260901.103155`
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:1:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/repomd.xml	progress/R98/inputs/llvm_base_packages_repomd.xml	3558	c4aed7545c6326ba913a228a5dfbefd78e61c54279042a25333d707f41bf9848
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:2:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed-primary.xml.gz	progress/R98/inputs/llvm_base_packages_primary.xml.gz	347621	ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:3:REPOMD_CHECK	progress/R98/inputs/llvm_base_packages_primary.xml.gz	sha256	PASS
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:4:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6-filelists.xml.gz	progress/R98/inputs/llvm_base_packages_filelists.xml.gz	2174561	3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:5:REPOMD_CHECK	progress/R98/inputs/llvm_base_packages_filelists.xml.gz	sha256	PASS
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:6:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/source/repodata/repomd.xml	progress/R98/inputs/llvm_base_source_repomd.xml	3544	6ff36eee5ef673c169327b6c7d8b7172e4b8b29357bc75d39d3535e90602f6f3
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:7:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/source/repodata/eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53-primary.xml.gz	progress/R98/inputs/llvm_base_source_primary.xml.gz	81487	eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.stdout:8:REPOMD_CHECK	progress/R98/inputs/llvm_base_source_primary.xml.gz	sha256	PASS
+docs/progress/R98/raw/013_inspect_buildlog_directory_format.command.txt:1:bash -lc set\ -euo\ pipefail\;\ for\ url\ in\ https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/\ https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/builddata/buildlogs/standard/armv7l/succeeded/\;\ do\ printf\ \"URL=%s\\n\"\ \"\$url\"\;\ curl\ -fsSL\ --connect-timeout\ 20\ --max-time\ 120\ \"\$url\"\ -o\ /tmp/r98_buildlog_index\;\ wc\ -c\ /tmp/r98_buildlog_index\;\ sed\ -n\ \"1\,35p\"\ /tmp/r98_buildlog_index\;\ printf\ \"BUILDLOG_LINKS=\"\;\ rg\ -o\ \"href=\\\"\[\^\\\"\]+\\.buildlog\\.txt\\\"\"\ /tmp/r98_buildlog_index\ \|\ wc\ -l\;\ done 
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.command.txt:1:bash -lc for\ d\ in\ codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain\ codes/qb/TIZEN/Tizen/Tizen-Unified-Toolchain\;\ do\ printf\ \"DIR=%s\\n\"\ \"\$d\"\;\ for\ f\ in\ candidate_snapshot\ snapshot_info\ project_meta\;\ do\ printf\ \"FILE=%s\\n\"\ \"\$d/\$f\"\;\ sed\ -n\ \"1\,240p\"\ \"\$d/\$f\"\;\ done\;\ done\;\ for\ project\ in\ Tizen-Base-Toolchain\ Tizen-Unified-Toolchain\;\ do\ printf\ \"REMOTE_REFERENCE=%s\\n\"\ \"\$project\"\;\ curl\ --fail\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 120\ \"https://download.tizen.org/snapshots/TIZEN/Tizen/\$project/reference/\"\ \|\ sed\ -n\ \"1\,160p\"\;\ done 
+docs/progress/R98/raw/060_validate_analysis_coverage.stdout:8:c4aed7545c6326ba913a228a5dfbefd78e61c54279042a25333d707f41bf9848  progress/R98/inputs/llvm_base_packages_repomd.xml
+docs/progress/R98/raw/060_validate_analysis_coverage.stdout:9:6ff36eee5ef673c169327b6c7d8b7172e4b8b29357bc75d39d3535e90602f6f3  progress/R98/inputs/llvm_base_source_repomd.xml
+docs/progress/R98/raw/060_validate_analysis_coverage.stdout:12:ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed  progress/R98/inputs/llvm_base_packages_primary.xml.gz
+docs/progress/R98/raw/060_validate_analysis_coverage.stdout:13:eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53  progress/R98/inputs/llvm_base_source_primary.xml.gz
+docs/progress/R98/raw/060_validate_analysis_coverage.stdout:16:3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6  progress/R98/inputs/llvm_base_packages_filelists.xml.gz
+docs/progress/R98/raw/011_parse_llvm_metadata.command.txt:1:bash -lc set\ -euo\ pipefail\;\ mkdir\ -p\ progress/R98/parser_inputs\ progress/R98/tables\;\ ln\ -sfn\ ../inputs/llvm_base_packages_primary.xml.gz\ progress/R98/parser_inputs/base_packages_primary.xml.gz\;\ ln\ -sfn\ ../inputs/llvm_base_source_primary.xml.gz\ progress/R98/parser_inputs/base_source_primary.xml.gz\;\ ln\ -sfn\ ../inputs/llvm_unified_packages_primary.xml.gz\ progress/R98/parser_inputs/unified_packages_primary.xml.gz\;\ ln\ -sfn\ ../inputs/llvm_unified_source_primary.xml.gz\ progress/R98/parser_inputs/unified_source_primary.xml.gz\;\ python3\ progress/R95/code/analyze_repo_metadata.py\ --inputs\ progress/R98/parser_inputs\ --output\ progress/R98/tables\;\ printf\ \"TABLE_HASHES\\n\"\;\ sha256sum\ progress/R98/tables/\*.tsv\;\ printf\ \"GCC_R95_COUNTS\\n\"\;\ wc\ -l\ docs/progress/R95/tables/base_binary_records.tsv\ docs/progress/R95/tables/base_source_records.tsv\;\ printf\ \"LLVM_IMAGE_ROWS\\n\"\;\ wc\ -l\ progress/R98/inputs/image_packages/\*.packages 
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:1:ROOT=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:2:200	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:4:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/</title></head>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:6:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:11:200	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:13:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/</title></head>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:15:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:19:200	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:21:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/</title></head>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:23:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:28:200	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:30:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/</title></head>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:32:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:37:404	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/images/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:38:404	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/images/standard/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:39:200	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:41:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/</title></head>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:43:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:37:  <latest target="tizen-base-toolchain_20260828.101647" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/"/>
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:38:  <reference target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/"/>
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:39:  <base target="tizen-base-toolchain_20260602.073651" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:50:  <reference project="Tizen-Base-Toolchain" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260813.050338"/>
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:80:  <project name="platform/upstream/curl" path="platform/upstream/curl" revision="78dbc7d58b6be059ac32b49d5b21e655abea5d76"/>
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:521:  <base target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:1292:  <project name="platform/upstream/python-pycurl" path="platform/upstream/python-pycurl" revision="9398dfd1837fa03e6aafbf03149b7bf14ec2d5d7"/>
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:1333:  <project name="platform/upstream/python3-pycurl" path="platform/upstream/python3-pycurl" revision="65f47861a5fd306a323d43a1c43c87b9dbc582b7"/>
+docs/progress/R98/raw/020_list_current_toolchain_snapshots.command.txt:1:bash -lc for\ project\ in\ Tizen-Base-Toolchain\ Tizen-Unified-Toolchain\;\ do\ printf\ \"PROJECT=%s\\n\"\ \"\$project\"\;\ curl\ --fail\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 120\ \"https://download.tizen.org/snapshots/TIZEN/Tizen/\$project/\"\ \|\ rg\ -o\ \"\(tizen-base-toolchain\|tizen-unified-toolchain\)_\[0-9\]\{8\}\\.\[0-9\]\{6\}/\"\ \|\ sort\ -u\ \|\ tail\ -n\ 30\;\ printf\ \"REFERENCE_LOCATION\\n\"\;\ curl\ --fail\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 120\ -D\ -\ -o\ /dev/null\ \"https://download.tizen.org/snapshots/TIZEN/Tizen/\$project/reference/\"\ \|\ sed\ -n\ \"1\,40p\"\;\ done 
+docs/progress/R98/raw/052_identify_sources_without_buildlogs_retry.stdout:34:NO_LOG	unified	python3-pycurl	binary_outputs=python3-pycurl
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:1:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/repomd.xml	progress/R98/inputs/llvm_base_packages_repomd.xml	3558	c4aed7545c6326ba913a228a5dfbefd78e61c54279042a25333d707f41bf9848
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:2:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed-primary.xml.gz	progress/R98/inputs/llvm_base_packages_primary.xml.gz	347621	ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:3:REPOMD_CHECK	progress/R98/inputs/llvm_base_packages_primary.xml.gz	sha256	PASS
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:4:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6-filelists.xml.gz	progress/R98/inputs/llvm_base_packages_filelists.xml.gz	2174561	3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:5:REPOMD_CHECK	progress/R98/inputs/llvm_base_packages_filelists.xml.gz	sha256	PASS
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:6:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/source/repodata/repomd.xml	progress/R98/inputs/llvm_base_source_repomd.xml	3544	6ff36eee5ef673c169327b6c7d8b7172e4b8b29357bc75d39d3535e90602f6f3
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:7:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/source/repodata/eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53-primary.xml.gz	progress/R98/inputs/llvm_base_source_primary.xml.gz	81487	eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:8:REPOMD_CHECK	progress/R98/inputs/llvm_base_source_primary.xml.gz	sha256	PASS
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.command.txt:1:python3 progress/R98/code/fetch_snapshot_metadata.py --base https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647 --unified https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247 --output progress/R98/inputs 
+docs/progress/R98/raw/008_fetch_llvm_snapshot_metadata.stdout:1:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/repomd.xml	progress/R98/inputs/llvm_base_packages_repomd.xml	3558	c4aed7545c6326ba913a228a5dfbefd78e61c54279042a25333d707f41bf9848
+docs/progress/R98/raw/008_fetch_llvm_snapshot_metadata.stdout:2:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed-primary.xml.gz	progress/R98/inputs/llvm_base_packages_primary.xml.gz	347621	ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed
+docs/progress/R98/raw/008_fetch_llvm_snapshot_metadata.stdout:3:REPOMD_CHECK	progress/R98/inputs/llvm_base_packages_primary.xml.gz	sha256	PASS
+docs/progress/R98/raw/008_fetch_llvm_snapshot_metadata.stdout:4:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6-filelists.xml.gz	progress/R98/inputs/llvm_base_packages_filelists.xml.gz	2174561	3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6
+docs/progress/R98/raw/008_fetch_llvm_snapshot_metadata.stdout:5:REPOMD_CHECK	progress/R98/inputs/llvm_base_packages_filelists.xml.gz	sha256	PASS
+docs/progress/R98/raw/008_fetch_llvm_snapshot_metadata.stdout:6:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/source/repodata/repomd.xml	progress/R98/inputs/llvm_base_source_repomd.xml	3544	6ff36eee5ef673c169327b6c7d8b7172e4b8b29357bc75d39d3535e90602f6f3
+docs/progress/R98/raw/008_fetch_llvm_snapshot_metadata.stdout:7:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/source/repodata/eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53-primary.xml.gz	progress/R98/inputs/llvm_base_source_primary.xml.gz	81487	eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53
+docs/progress/R98/raw/008_fetch_llvm_snapshot_metadata.stdout:8:REPOMD_CHECK	progress/R98/inputs/llvm_base_source_primary.xml.gz	sha256	PASS
+docs/progress/R98/raw/010_fetch_llvm_snapshot_metadata_final.command.txt:1:python3 progress/R98/code/fetch_snapshot_metadata.py --base https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647 --unified https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247 --output progress/R98/inputs 
+docs/progress/R98/raw/013_inspect_buildlog_directory_format.stdout:1:URL=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/
+docs/progress/R98/raw/013_inspect_buildlog_directory_format.stdout:4:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/</title></head>
+docs/progress/R98/raw/013_inspect_buildlog_directory_format.stdout:6:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:1:base	armv7l	acl	NOT_AVAILABLE	NOT_AVAILABLE	NOT_AVAILABLE	URLError: <urlopen error timed out>	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/acl.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:2:base	x86_64	autoconf213	NOT_AVAILABLE	NOT_AVAILABLE	NOT_AVAILABLE	URLError: <urlopen error timed out>	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/x86_64/succeeded/autoconf213.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:3:base	aarch64	gcc	GCC	aarch64-tizen-linux-gnu-gcc	aarch64-tizen-linux-gnu-g++	+ export CC=aarch64-tizen-linux-gnu-gcc CXX=aarch64-tizen-linux-gnu-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/aarch64/succeeded/gcc.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:4:base	armv7l	gcc	GCC	armv7l-tizen-linux-gnueabi-gcc	armv7l-tizen-linux-gnueabi-g++	+ export CC=armv7l-tizen-linux-gnueabi-gcc CXX=armv7l-tizen-linux-gnueabi-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/gcc.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:5:base	x86_64	gcc	GCC	x86_64-tizen-linux-gnu-gcc	x86_64-tizen-linux-gnu-g++	+ export CC=x86_64-tizen-linux-gnu-gcc CXX=x86_64-tizen-linux-gnu-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/x86_64/succeeded/gcc.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:6:base	armv7l	gcc-aarch64	GCC	armv7l-tizen-linux-gnueabi-gcc	armv7l-tizen-linux-gnueabi-g++	+ export CC=armv7l-tizen-linux-gnueabi-gcc CXX=armv7l-tizen-linux-gnueabi-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/gcc-aarch64.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:7:base	x86_64	gcc-aarch64	GCC	x86_64-tizen-linux-gnu-gcc	x86_64-tizen-linux-gnu-g++	+ export CC=x86_64-tizen-linux-gnu-gcc CXX=x86_64-tizen-linux-gnu-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/x86_64/succeeded/gcc-aarch64.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:8:base	aarch64	gcc-armv7hl	GCC	aarch64-tizen-linux-gnu-gcc	aarch64-tizen-linux-gnu-g++	+ export CC=aarch64-tizen-linux-gnu-gcc CXX=aarch64-tizen-linux-gnu-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/aarch64/succeeded/gcc-armv7hl.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:9:base	armv7l	gcc-armv7hl	GCC	armv7l-tizen-linux-gnueabi-gcc	armv7l-tizen-linux-gnueabi-g++	+ export CC=armv7l-tizen-linux-gnueabi-gcc CXX=armv7l-tizen-linux-gnueabi-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/gcc-armv7hl.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:10:base	x86_64	gcc-armv7hl	GCC	x86_64-tizen-linux-gnu-gcc	x86_64-tizen-linux-gnu-g++	+ export CC=x86_64-tizen-linux-gnu-gcc CXX=x86_64-tizen-linux-gnu-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/x86_64/succeeded/gcc-armv7hl.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:11:base	aarch64	gcc-armv7l	GCC	aarch64-tizen-linux-gnu-gcc	aarch64-tizen-linux-gnu-g++	+ export CC=aarch64-tizen-linux-gnu-gcc CXX=aarch64-tizen-linux-gnu-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/aarch64/succeeded/gcc-armv7l.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:12:base	x86_64	gcc-armv7l	GCC	x86_64-tizen-linux-gnu-gcc	x86_64-tizen-linux-gnu-g++	+ export CC=x86_64-tizen-linux-gnu-gcc CXX=x86_64-tizen-linux-gnu-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/x86_64/succeeded/gcc-armv7l.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:13:base	aarch64	gcc-riscv64	GCC	aarch64-tizen-linux-gnu-gcc	aarch64-tizen-linux-gnu-g++	+ export CC=aarch64-tizen-linux-gnu-gcc CXX=aarch64-tizen-linux-gnu-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/aarch64/succeeded/gcc-riscv64.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:14:base	armv7l	gcc-riscv64	GCC	armv7l-tizen-linux-gnueabi-gcc	armv7l-tizen-linux-gnueabi-g++	+ export CC=armv7l-tizen-linux-gnueabi-gcc CXX=armv7l-tizen-linux-gnueabi-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/gcc-riscv64.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:15:base	x86_64	gcc-riscv64	GCC	x86_64-tizen-linux-gnu-gcc	x86_64-tizen-linux-gnu-g++	+ export CC=x86_64-tizen-linux-gnu-gcc CXX=x86_64-tizen-linux-gnu-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/x86_64/succeeded/gcc-riscv64.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:16:base	aarch64	glibc	GCC	aarch64-tizen-linux-gnu-gcc	aarch64-tizen-linux-gnu-g++	+ export CC=aarch64-tizen-linux-gnu-gcc CXX=aarch64-tizen-linux-gnu-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/aarch64/succeeded/glibc.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:17:base	armv7l	glibc	GCC	armv7l-tizen-linux-gnueabi-gcc	armv7l-tizen-linux-gnueabi-g++	+ export CC=armv7l-tizen-linux-gnueabi-gcc CXX=armv7l-tizen-linux-gnueabi-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/glibc.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:18:base	x86_64	glibc	GCC	x86_64-tizen-linux-gnu-gcc	x86_64-tizen-linux-gnu-g++	+ export CC=x86_64-tizen-linux-gnu-gcc CXX=x86_64-tizen-linux-gnu-g++	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/x86_64/succeeded/glibc.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:19:base	armv7l	libsndfile	NOT_AVAILABLE	NOT_AVAILABLE	NOT_AVAILABLE	URLError: <urlopen error timed out>	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/libsndfile.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:20:base	x86_64	perl-Test-Pod-Coverage	NOT_AVAILABLE	NOT_AVAILABLE	NOT_AVAILABLE	URLError: <urlopen error timed out>	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/x86_64/succeeded/perl-Test-Pod-Coverage.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:21:base	x86_64	popt	NOT_AVAILABLE	NOT_AVAILABLE	NOT_AVAILABLE	URLError: <urlopen error timed out>	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/x86_64/succeeded/popt.buildlog.txt
+docs/progress/R98/raw/025_inspect_gcc_and_unavailable_rows.stdout:22:base	armv7l	python3-pip	NOT_AVAILABLE	NOT_AVAILABLE	NOT_AVAILABLE	URLError: <urlopen error timed out>	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/python3-pip.buildlog.txt
+docs/progress/R98/raw/022_inspect_new_base_snapshot.command.txt:1:bash -lc base=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260901.103155\;\ for\ path\ in\ build.xml\ repos/standard/packages/repodata/repomd.xml\ builddata/buildlogs/standard/armv7l/succeeded/\ images/standard/\;\ do\ printf\ \"URL=%s/%s\\n\"\ \"\$base\"\ \"\$path\"\;\ curl\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 120\ -w\ \"HTTP=%\{http_code\}\ SIZE=%\{size_download\}\ EXIT_CURL=%\{exitcode\}\\n\"\ \"\$base/\$path\"\ \|\ sed\ -n\ \"1\,100p\"\;\ done 
+docs/progress/R98/raw/055_resolve_dlopen_candidates_in_repo.command.txt:1:bash -lc for\ f\ in\ progress/R98/inputs/llvm_base_packages_filelists.xml.gz\ progress/R98/inputs/llvm_unified_packages_filelists.xml.gz\;\ do\ printf\ \"FILE=%s\\n\"\ \"\$f\"\;\ zgrep\ -E\ \"libonnxruntime_providers_\(cann\|cuda\|cuda_ut\|dnnl\|migraphx\|openvino\|rocm\|shared\|tensorrt\)\\.so\|/libnntrainer\\.so\"\ \"\$f\"\ \|\ sed\ -n\ \"1\,240p\"\;\ printf\ \"PIPESTATUS=%s\,%s\\n\"\ \"\$\{PIPESTATUS\[0\]\}\"\ \"\$\{PIPESTATUS\[1\]\}\"\;\ done 
+docs/progress/R98/raw/008_fetch_llvm_snapshot_metadata.command.txt:1:python3 progress/R98/code/fetch_snapshot_metadata.py --base https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647 --unified https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247 --output progress/R98/inputs 
+docs/progress/R98/raw/022_inspect_new_base_snapshot.command.txt:1:bash -lc base=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260901.103155\;\ for\ path\ in\ build.xml\ repos/standard/packages/repodata/repomd.xml\ builddata/buildlogs/standard/armv7l/succeeded/\ images/standard/\;\ do\ printf\ \"URL=%s/%s\\n\"\ \"\$base\"\ \"\$path\"\;\ curl\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 120\ -w\ \"HTTP=%\{http_code\}\ SIZE=%\{size_download\}\ EXIT_CURL=%\{exitcode\}\\n\"\ \"\$base/\$path\"\ \|\ sed\ -n\ \"1\,100p\"\;\ done 
+docs/progress/R98/raw/012_quantify_source_and_log_inputs.stdout:42:Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647	aarch64	href="succeeded/";
+docs/progress/R98/raw/012_quantify_source_and_log_inputs.stdout:43:Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647	armv7l	href="succeeded/";
+docs/progress/R98/raw/012_quantify_source_and_log_inputs.stdout:44:Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647	x86_64	href="succeeded/";
+docs/progress/R98/raw/066_inspect_staged_r98.stdout:23:A  docs/progress/R98/inputs/repodata/llvm_base_packages_repomd.xml
+docs/progress/R98/raw/066_inspect_staged_r98.stdout:24:A  docs/progress/R98/inputs/repodata/llvm_base_source_repomd.xml
+docs/progress/R98/raw/066_inspect_staged_r98.stdout:371: .../inputs/repodata/llvm_base_packages_repomd.xml  |    63 +
+docs/progress/R98/raw/066_inspect_staged_r98.stdout:372: .../inputs/repodata/llvm_base_source_repomd.xml    |    63 +
+docs/progress/R98/raw/012_quantify_source_and_log_inputs.command.txt:1:bash -lc $'set -euo pipefail; python3 - <<"PY"\nimport csv\nfrom pathlib import Path\nfor name in ("base_source_records.tsv","unified_source_records.tsv"):\n p=Path("progress/R98/tables")/name\n rows=list(csv.DictReader(p.open(),delimiter="\\t"))\n print(name,"records",len(rows),"names",len({r["name"] for r in rows}),"bytes",sum(int(r["package_size"] or 0) for r in rows))\n print("largest")\n for r in sorted(rows,key=lambda x:int(x["package_size"] or 0),reverse=True)[:10]: print(r["name"],r["package_size"],r["location"])\nPY\nprintf "LOCAL_SOURCE_ROOT_CANDIDATES\\n"; find codes -mindepth 2 -maxdepth 4 -type d \\( -name packaging -o -name .git \\) -print | sed -n "1,200p"; printf "BUILDLOG_INDEX_COUNTS\\n"; for project in Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647 Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247; do for arch in aarch64 armv7l x86_64; do url="https://download.tizen.org/snapshots/TIZEN/Tizen/$project/builddata/buildlogs/standard/$arch/"; html=$(curl -fsSL --connect-timeout 20 --max-time 120 "$url"); printf "%s\\t%s\\t" "$project" "$arch"; printf "%s" "$html" | rg -o "href=\\"(succeeded|failed)/\\"" | sort -u | tr "\\n" ";"; printf "\\n"; done; done' 
+docs/progress/R98/raw/013_inspect_buildlog_directory_format.command.txt:1:bash -lc set\ -euo\ pipefail\;\ for\ url\ in\ https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/\ https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/builddata/buildlogs/standard/armv7l/succeeded/\;\ do\ printf\ \"URL=%s\\n\"\ \"\$url\"\;\ curl\ -fsSL\ --connect-timeout\ 20\ --max-time\ 120\ \"\$url\"\ -o\ /tmp/r98_buildlog_index\;\ wc\ -c\ /tmp/r98_buildlog_index\;\ sed\ -n\ \"1\,35p\"\ /tmp/r98_buildlog_index\;\ printf\ \"BUILDLOG_LINKS=\"\;\ rg\ -o\ \"href=\\\"\[\^\\\"\]+\\.buildlog\\.txt\\\"\"\ /tmp/r98_buildlog_index\ \|\ wc\ -l\;\ done 
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.command.txt:1:bash -lc for\ d\ in\ codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain\ codes/qb/TIZEN/Tizen/Tizen-Unified-Toolchain\;\ do\ printf\ \"DIR=%s\\n\"\ \"\$d\"\;\ for\ f\ in\ candidate_snapshot\ snapshot_info\ project_meta\;\ do\ printf\ \"FILE=%s\\n\"\ \"\$d/\$f\"\;\ sed\ -n\ \"1\,240p\"\ \"\$d/\$f\"\;\ done\;\ done\;\ for\ project\ in\ Tizen-Base-Toolchain\ Tizen-Unified-Toolchain\;\ do\ printf\ \"REMOTE_REFERENCE=%s\\n\"\ \"\$project\"\;\ curl\ --fail\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 120\ \"https://download.tizen.org/snapshots/TIZEN/Tizen/\$project/reference/\"\ \|\ sed\ -n\ \"1\,160p\"\;\ done 
+docs/progress/R98/raw/060_validate_analysis_coverage.stdout:8:c4aed7545c6326ba913a228a5dfbefd78e61c54279042a25333d707f41bf9848  progress/R98/inputs/llvm_base_packages_repomd.xml
+docs/progress/R98/raw/060_validate_analysis_coverage.stdout:9:6ff36eee5ef673c169327b6c7d8b7172e4b8b29357bc75d39d3535e90602f6f3  progress/R98/inputs/llvm_base_source_repomd.xml
+docs/progress/R98/raw/060_validate_analysis_coverage.stdout:12:ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed  progress/R98/inputs/llvm_base_packages_primary.xml.gz
+docs/progress/R98/raw/060_validate_analysis_coverage.stdout:13:eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53  progress/R98/inputs/llvm_base_source_primary.xml.gz
+docs/progress/R98/raw/060_validate_analysis_coverage.stdout:16:3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6  progress/R98/inputs/llvm_base_packages_filelists.xml.gz
+docs/progress/R98/raw/011_parse_llvm_metadata.command.txt:1:bash -lc set\ -euo\ pipefail\;\ mkdir\ -p\ progress/R98/parser_inputs\ progress/R98/tables\;\ ln\ -sfn\ ../inputs/llvm_base_packages_primary.xml.gz\ progress/R98/parser_inputs/base_packages_primary.xml.gz\;\ ln\ -sfn\ ../inputs/llvm_base_source_primary.xml.gz\ progress/R98/parser_inputs/base_source_primary.xml.gz\;\ ln\ -sfn\ ../inputs/llvm_unified_packages_primary.xml.gz\ progress/R98/parser_inputs/unified_packages_primary.xml.gz\;\ ln\ -sfn\ ../inputs/llvm_unified_source_primary.xml.gz\ progress/R98/parser_inputs/unified_source_primary.xml.gz\;\ python3\ progress/R95/code/analyze_repo_metadata.py\ --inputs\ progress/R98/parser_inputs\ --output\ progress/R98/tables\;\ printf\ \"TABLE_HASHES\\n\"\;\ sha256sum\ progress/R98/tables/\*.tsv\;\ printf\ \"GCC_R95_COUNTS\\n\"\;\ wc\ -l\ docs/progress/R95/tables/base_binary_records.tsv\ docs/progress/R95/tables/base_source_records.tsv\;\ printf\ \"LLVM_IMAGE_ROWS\\n\"\;\ wc\ -l\ progress/R98/inputs/image_packages/\*.packages 
+docs/progress/R98/raw/055_resolve_dlopen_candidates_in_repo.command.txt:1:bash -lc for\ f\ in\ progress/R98/inputs/llvm_base_packages_filelists.xml.gz\ progress/R98/inputs/llvm_unified_packages_filelists.xml.gz\;\ do\ printf\ \"FILE=%s\\n\"\ \"\$f\"\;\ zgrep\ -E\ \"libonnxruntime_providers_\(cann\|cuda\|cuda_ut\|dnnl\|migraphx\|openvino\|rocm\|shared\|tensorrt\)\\.so\|/libnntrainer\\.so\"\ \"\$f\"\ \|\ sed\ -n\ \"1\,240p\"\;\ printf\ \"PIPESTATUS=%s\,%s\\n\"\ \"\$\{PIPESTATUS\[0\]\}\"\ \"\$\{PIPESTATUS\[1\]\}\"\;\ done 
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:37:  <latest target="tizen-base-toolchain_20260828.101647" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/"/>
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:38:  <reference target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/"/>
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:39:  <base target="tizen-base-toolchain_20260602.073651" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:50:  <reference project="Tizen-Base-Toolchain" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260813.050338"/>
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:80:  <project name="platform/upstream/curl" path="platform/upstream/curl" revision="78dbc7d58b6be059ac32b49d5b21e655abea5d76"/>
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:521:  <base target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:1292:  <project name="platform/upstream/python-pycurl" path="platform/upstream/python-pycurl" revision="9398dfd1837fa03e6aafbf03149b7bf14ec2d5d7"/>
+docs/progress/R98/raw/004_inspect_toolchain_project_identity_retry.stdout:1333:  <project name="platform/upstream/python3-pycurl" path="platform/upstream/python3-pycurl" revision="65f47861a5fd306a323d43a1c43c87b9dbc582b7"/>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:1:ROOT=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:2:200	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:4:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/</title></head>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:6:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:11:200	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:13:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/</title></head>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:15:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:19:200	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:21:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/</title></head>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:23:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:28:200	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:30:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/</title></head>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:32:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:37:404	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/images/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:38:404	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/images/standard/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:39:200	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:41:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/</title></head>
+docs/progress/R98/raw/006_probe_candidate_snapshot_layout.stdout:43:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/020_list_current_toolchain_snapshots.command.txt:1:bash -lc for\ project\ in\ Tizen-Base-Toolchain\ Tizen-Unified-Toolchain\;\ do\ printf\ \"PROJECT=%s\\n\"\ \"\$project\"\;\ curl\ --fail\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 120\ \"https://download.tizen.org/snapshots/TIZEN/Tizen/\$project/\"\ \|\ rg\ -o\ \"\(tizen-base-toolchain\|tizen-unified-toolchain\)_\[0-9\]\{8\}\\.\[0-9\]\{6\}/\"\ \|\ sort\ -u\ \|\ tail\ -n\ 30\;\ printf\ \"REFERENCE_LOCATION\\n\"\;\ curl\ --fail\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 120\ -D\ -\ -o\ /dev/null\ \"https://download.tizen.org/snapshots/TIZEN/Tizen/\$project/reference/\"\ \|\ sed\ -n\ \"1\,40p\"\;\ done 
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:1:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/repomd.xml	progress/R98/inputs/llvm_base_packages_repomd.xml	3558	c4aed7545c6326ba913a228a5dfbefd78e61c54279042a25333d707f41bf9848
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:2:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed-primary.xml.gz	progress/R98/inputs/llvm_base_packages_primary.xml.gz	347621	ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:3:REPOMD_CHECK	progress/R98/inputs/llvm_base_packages_primary.xml.gz	sha256	PASS
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:4:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/packages/repodata/3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6-filelists.xml.gz	progress/R98/inputs/llvm_base_packages_filelists.xml.gz	2174561	3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:5:REPOMD_CHECK	progress/R98/inputs/llvm_base_packages_filelists.xml.gz	sha256	PASS
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:6:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/source/repodata/repomd.xml	progress/R98/inputs/llvm_base_source_repomd.xml	3544	6ff36eee5ef673c169327b6c7d8b7172e4b8b29357bc75d39d3535e90602f6f3
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:7:FETCH	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/repos/standard/source/repodata/eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53-primary.xml.gz	progress/R98/inputs/llvm_base_source_primary.xml.gz	81487	eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53
+docs/progress/R98/raw/009_fetch_llvm_snapshot_metadata_retry.stdout:8:REPOMD_CHECK	progress/R98/inputs/llvm_base_source_primary.xml.gz	sha256	PASS
+docs/progress/R98/raw/012_quantify_source_and_log_inputs.stdout:42:Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647	aarch64	href="succeeded/";
+docs/progress/R98/raw/012_quantify_source_and_log_inputs.stdout:43:Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647	armv7l	href="succeeded/";
+docs/progress/R98/raw/012_quantify_source_and_log_inputs.stdout:44:Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647	x86_64	href="succeeded/";
+docs/progress/R98/raw/012_quantify_source_and_log_inputs.command.txt:1:bash -lc $'set -euo pipefail; python3 - <<"PY"\nimport csv\nfrom pathlib import Path\nfor name in ("base_source_records.tsv","unified_source_records.tsv"):\n p=Path("progress/R98/tables")/name\n rows=list(csv.DictReader(p.open(),delimiter="\\t"))\n print(name,"records",len(rows),"names",len({r["name"] for r in rows}),"bytes",sum(int(r["package_size"] or 0) for r in rows))\n print("largest")\n for r in sorted(rows,key=lambda x:int(x["package_size"] or 0),reverse=True)[:10]: print(r["name"],r["package_size"],r["location"])\nPY\nprintf "LOCAL_SOURCE_ROOT_CANDIDATES\\n"; find codes -mindepth 2 -maxdepth 4 -type d \\( -name packaging -o -name .git \\) -print | sed -n "1,200p"; printf "BUILDLOG_INDEX_COUNTS\\n"; for project in Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647 Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247; do for arch in aarch64 armv7l x86_64; do url="https://download.tizen.org/snapshots/TIZEN/Tizen/$project/builddata/buildlogs/standard/$arch/"; html=$(curl -fsSL --connect-timeout 20 --max-time 120 "$url"); printf "%s\\t%s\\t" "$project" "$arch"; printf "%s" "$html" | rg -o "href=\\"(succeeded|failed)/\\"" | sort -u | tr "\\n" ";"; printf "\\n"; done; done' 
+docs/progress/R98/raw/008_fetch_llvm_snapshot_metadata.command.txt:1:python3 progress/R98/code/fetch_snapshot_metadata.py --base https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647 --unified https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247 --output progress/R98/inputs 
+docs/progress/R98/raw/052_identify_sources_without_buildlogs_retry.stdout:34:NO_LOG	unified	python3-pycurl	binary_outputs=python3-pycurl
+docs/progress/R98/raw/013_inspect_buildlog_directory_format.stdout:1:URL=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/
+docs/progress/R98/raw/013_inspect_buildlog_directory_format.stdout:4:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/</title></head>
+docs/progress/R98/raw/013_inspect_buildlog_directory_format.stdout:6:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/armv7l/succeeded/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:6:  <candidate target="tizen-base-toolchain_20260602.073651" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:7:  <candidate target="tizen-base-toolchain_20260812.104941" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:8:  <candidate target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:9:  <candidate target="tizen-base-toolchain_20260827.125318" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:10:  <candidate target="tizen-base-toolchain_20260828.101647" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:12:  <base_candidate target="tizen-base-toolchain_20260602.073651" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:13:  <base_candidate target="tizen-base-toolchain_20260812.104941" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:14:  <base_candidate target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:15:  <base_candidate target="tizen-base-toolchain_20260827.125318" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:16:  <base_candidate target="tizen-base-toolchain_20260828.101647" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:20:  <latest target="tizen-base-toolchain_20260828.101647" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/"/>
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:21:  <reference target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/"/>
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:22:  <base target="tizen-base-toolchain_20260602.073651" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:62:  <base_candidate target="tizen-base-toolchain_20260602.073651" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:63:  <base_candidate target="tizen-base-toolchain_20260812.104941" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:64:  <base_candidate target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:65:  <base_candidate target="tizen-base-toolchain_20260827.125318" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:66:  <base_candidate target="tizen-base-toolchain_20260828.101647" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/021_inspect_current_reference_and_candidate.stdout:72:  <base target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/022_inspect_new_base_snapshot.stdout:1:URL=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260901.103155/build.xml
+docs/progress/R98/raw/022_inspect_new_base_snapshot.stdout:4:  <id>tizen-base-toolchain_20260901.103155</id>
+docs/progress/R98/raw/022_inspect_new_base_snapshot.stdout:5:  <base_id url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">tizen-base-toolchain_20260828.101647</base_id>
+docs/progress/R98/raw/022_inspect_new_base_snapshot.stdout:22:URL=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260901.103155/repos/standard/packages/repodata/repomd.xml
+docs/progress/R98/raw/022_inspect_new_base_snapshot.stdout:87:URL=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260901.103155/builddata/buildlogs/standard/armv7l/succeeded/
+docs/progress/R98/raw/022_inspect_new_base_snapshot.stdout:89:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260901.103155/builddata/buildlogs/standard/armv7l/succeeded/</title></head>
+docs/progress/R98/raw/022_inspect_new_base_snapshot.stdout:91:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260901.103155/builddata/buildlogs/standard/armv7l/succeeded/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/022_inspect_new_base_snapshot.stdout:123:<a href="curl.buildlog.txt">curl.buildlog.txt</a>                                  01-Sep-2026 22:57              168413
+docs/progress/R98/raw/022_inspect_new_base_snapshot.stdout:188:URL=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260901.103155/images/standard/
+docs/progress/R98/raw/020_list_current_toolchain_snapshots.stdout:2:tizen-base-toolchain_20260813.050338/
+docs/progress/R98/raw/020_list_current_toolchain_snapshots.stdout:3:tizen-base-toolchain_20260827.125318/
+docs/progress/R98/raw/020_list_current_toolchain_snapshots.stdout:4:tizen-base-toolchain_20260828.101647/
+docs/progress/R98/raw/020_list_current_toolchain_snapshots.stdout:5:tizen-base-toolchain_20260901.103155/
+docs/progress/R98/raw/UNLOGGED_RECOVERY_COMMANDS.md:8:sed -n '1,120p' progress/R98/inputs/unified_images_standard_index.html; for image in tizen-boot-aarch64-rpi tizen-boot-armv7l-rpi tizen-headed-aarch64 tizen-headed-armv7l tizen-headless-aarch64 tizen-headless-armv7l; do url="https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/images/standard/$image/"; printf '%s ' "$image"; curl -fsSL --connect-timeout 20 --max-time 120 "$url" | sed -n '1,40p' | rg -o 'href="[^"]+"' | tr '\n' ' '; echo; done
+docs/progress/R98/raw/005_extract_candidate_snapshot_ids.stdout:2:3:  <latest target="tizen-base-toolchain_20260828.101647" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/"/>
+docs/progress/R98/raw/005_extract_candidate_snapshot_ids.stdout:3:4:  <reference target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/"/>
+docs/progress/R98/raw/005_extract_candidate_snapshot_ids.stdout:4:5:  <base target="tizen-base-toolchain_20260602.073651" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/005_extract_candidate_snapshot_ids.stdout:14:5:  <base target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/005_extract_candidate_snapshot_ids.stdout:21:docs/progress/R85/REPORT.md:tizen-base-toolchain_20260828.101647
+docs/progress/R98/raw/055_resolve_dlopen_candidates_in_repo.stdout:1:FILE=progress/R98/inputs/llvm_base_packages_filelists.xml.gz
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:24:docs/progress/R91/raw/029_unified_succeeded_candidates.command.txt:1:bash -lc set\ -o\ pipefail\;\ base=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/builddata/buildlogs/standard\;\ for\ arch\ in\ armv7l\ aarch64\ x86_64\;\ do\ echo\ \"###\ \$arch\"\;\ curl\ --fail\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 120\ \"\$base/\$arch/succeeded/\"\ \|\ rg\ -i\ \"\(tensorflow2\|libcxx\|llvm\|cmake\|jsoncpp\|boost\|tinyxml\).\*buildlog\"\ \|\ sed\ -n\ \"1\,100p\"\;\ done 
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:29:docs/progress/R91/raw/030_unified_actual_macro_expansion.command.txt:1:bash -lc set\ -o\ pipefail\;\ base=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/builddata/buildlogs/standard\;\ for\ arch\ in\ armv7l\ aarch64\ x86_64\;\ do\ echo\ \"###\ \$arch\"\;\ curl\ --fail\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 120\ \"\$base/\$arch/succeeded/gccmakedep.buildlog.txt\"\ \|\ rg\ -n\ -e\ \"export\ \(AR\|CC\)=\|\(\^\|\[+\ \]\)\(CC\|CXX\)=\|checking\ whether\ the\ C\ compiler\ works\|checking\ for\ .\*clang\|clang\ version\|clang\ -\|clang\$\"\;\ done 
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:69:docs/progress/R91/raw/026_unified_snapshot_buildlog_index.command.txt:1:curl --fail --location --silent --show-error --connect-timeout 20 --max-time 120 https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/builddata/buildlogs/ 
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:73:docs/progress/R91/raw/027_unified_arch_buildlog_candidates.command.txt:1:bash -lc set\ -o\ pipefail\;\ base=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/builddata/buildlogs/standard\;\ for\ arch\ in\ armv7l\ aarch64\ x86_64\;\ do\ echo\ \"###\ \$arch\"\;\ curl\ --fail\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 120\ \"\$base/\$arch/\"\ \|\ rg\ -i\ \"\(tensorflow2\|libcxx\|llvm\|cmake\|jsoncpp\|boost\).\*buildlog\"\ \|\ sed\ -n\ \"1\,80p\"\;\ done 
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:80:docs/progress/R91/raw/031_collect_stage1_exact_excerpts.stdout:139:     5	  <base target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:223:docs/progress/R91/raw/028_unified_arm_buildlog_index_sample.command.txt:1:curl --fail --location --silent --show-error --connect-timeout 20 --max-time 120 https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/builddata/buildlogs/standard/armv7l/ 
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:376:docs/progress/R91/raw/005_inspect_project_inheritance.stdout:38:     5	  <reference project="Tizen-Base-Toolchain" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260813.050338"/>
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:378:docs/progress/R91/raw/005_inspect_project_inheritance.stdout:286:     3	  <latest target="tizen-base-toolchain_20260828.101647" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/"/>
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:379:docs/progress/R91/raw/005_inspect_project_inheritance.stdout:287:     4	  <reference target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/"/>
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:380:docs/progress/R91/raw/005_inspect_project_inheritance.stdout:288:     5	  <base target="tizen-base-toolchain_20260602.073651" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:389:docs/progress/R91/raw/005_inspect_project_inheritance.stdout:1402:     5	  <base target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:697:docs/progress/R29/commands/036b_consumer_repo_ready.log:2:COMMAND=bash -lc set\ -e\;\ curl\ -sS\ http://127.0.0.1:18834/repodata/repomd.xml\ \|\ sha256sum\;\ sha256sum\ tmp/R29/consumerrepo/repodata/repomd.xml\;\ zgrep\ -a\ -F\ \"libc++.so.1\(LLVM_22\)\(64bit\)\"\ tmp/R29/consumerrepo/repodata/\*primary.xml.gz 
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:701:docs/progress/R91/raw/007_unified_meta_and_config_edges.stdout:113:     5	  <base target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:729:docs/progress/R91/raw/025_inspect_r85_download_method.stdout:1:curl --fail --location --silent --show-error --connect-timeout 20 --max-time 120 https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/ 
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:730:docs/progress/R91/raw/025_inspect_r85_download_method.stdout:2:curl --fail --location --silent --show-error --connect-timeout 20 --max-time 120 https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/ 
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:731:docs/progress/R91/raw/025_inspect_r85_download_method.stdout:3:bash -lc set\ -o\ pipefail\;\ base=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard\;\ for\ arch\ in\ aarch64\ armv7l\ x86_64\;\ do\ printf\ \"ARCH=%s\\n\"\ \"\$arch\"\;\ curl\ --fail\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 180\ \"\$base/\$arch/\"\ \|\ rg\ -i\ \"libc\(%2B\|xx\)\|libcxx-runtimes\|\>libc\\\\+\\\\+\"\ \|\|\ true\;\ done 
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:732:docs/progress/R91/raw/025_inspect_r85_download_method.stdout:5:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/</title></head>
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:733:docs/progress/R91/raw/025_inspect_r85_download_method.stdout:7:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:734:docs/progress/R91/raw/025_inspect_r85_download_method.stdout:12:<head><title>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/</title></head>
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:735:docs/progress/R91/raw/025_inspect_r85_download_method.stdout:14:<h1>Index of /snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/builddata/buildlogs/standard/</h1><hr><pre><a href="../">../</a>
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:760:docs/progress/R91/raw/006_project_relationship_extract.stdout:25:codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/snapshot_info:4:  <reference target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/"/>
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:761:docs/progress/R91/raw/006_project_relationship_extract.stdout:26:codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/snapshot_info:5:  <base target="tizen-base-toolchain_20260602.073651" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:767:docs/progress/R91/raw/006_project_relationship_extract.stdout:32:codes/qb/TIZEN/Tizen/Tizen-Unified-Toolchain/snapshot_info:5:  <base target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/">
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1044:progress/R91/raw/029_unified_succeeded_candidates.command.txt:1:bash -lc set\ -o\ pipefail\;\ base=https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/builddata/buildlogs/standard\;\ for\ arch\ in\ armv7l\ aarch64\ x86_64\;\ do\ echo\ \"###\ \$arch\"\;\ curl\ --fail\ --location\ --silent\ --show-error\ --connect-timeout\ 20\ --max-time\ 120\ \"\$base/\$arch/succeeded/\"\ \|\ rg\ -i\ \"\(tensorflow2\|libcxx\|llvm\|cmake\|jsoncpp\|boost\|tinyxml\).\*buildlog\"\ \|\ sed\ -n\ \"1\,100p\"\;\ done 
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1069:codes/qb/TIZEN/Tizen/Tizen-Base/candidate_snapshot:8:  <base_candidate target="tizen-base-toolchain_20260602.073651" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1070:codes/qb/TIZEN/Tizen/Tizen-Base/candidate_snapshot:9:  <base_candidate target="tizen-base-toolchain_20260812.104941" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1071:codes/qb/TIZEN/Tizen/Tizen-Base/candidate_snapshot:10:  <base_candidate target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1072:codes/qb/TIZEN/Tizen/Tizen-Base/candidate_snapshot:11:  <base_candidate target="tizen-base-toolchain_20260827.125318" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1073:codes/qb/TIZEN/Tizen/Tizen-Base/candidate_snapshot:12:  <base_candidate target="tizen-base-toolchain_20260828.101647" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1109:codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/candidate_snapshot:4:  <candidate target="tizen-base-toolchain_20260602.073651" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1110:codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/candidate_snapshot:5:  <candidate target="tizen-base-toolchain_20260812.104941" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1111:codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/candidate_snapshot:6:  <candidate target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1112:codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/candidate_snapshot:7:  <candidate target="tizen-base-toolchain_20260827.125318" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1113:codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/candidate_snapshot:8:  <candidate target="tizen-base-toolchain_20260828.101647" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1115:codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/candidate_snapshot:10:  <base_candidate target="tizen-base-toolchain_20260602.073651" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1116:codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/candidate_snapshot:11:  <base_candidate target="tizen-base-toolchain_20260812.104941" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
+docs/progress/R98/raw/019_inspect_llvm_configuration_sources.stdout:1117:codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/candidate_snapshot:12:  <base_candidate target="tizen-base-toolchain_20260813.050338" url="http://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/" />
