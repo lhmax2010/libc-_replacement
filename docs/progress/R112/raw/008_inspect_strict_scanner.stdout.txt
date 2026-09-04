@@ -1,0 +1,318 @@
+20:CLAUSE_RX = re.compile(
+26:LITERAL_RETHROW_RX = re.compile(r"\bthrow\s*;")
+27:MACRO_RETHROW_RX = re.compile(r"\b__throw_exception_again\s*;")
+169:    if LITERAL_RETHROW_RX.search(segment):
+171:    if MACRO_RETHROW_RX.search(segment):
+172:        return "LIBSTDCXX_RETHROW_MACRO"
+173:    return "NO_RETHROW_OBSERVED"
+246:def scan_text(package, source_instance, path, text, source_kind):
+248:    for match in CLAUSE_RX.finditer(text):
+287:        if row["guard_status"] == "CONFIRMED_RETHROW" and row["scope"] != "DOC"
+298:        is_clause = bool(CLAUSE_RX.search(raw_actual))
+307:                "row_nature": "ACTUAL_CATCH_CLAUSE" if is_clause else "NON_CLAUSE_TOKEN_LINE",
+315:        if CLAUSE_RX.search(row["source_text"]):
+334:                scan_text(
+379:            rows.extend(scan_text(package, commit, path, text, "CURRENT_GIT_TRACKED_TEXT"))
+402:                    rows.extend(scan_text(package, commit, display, text, "CURRENT_EMBEDDED_ARCHIVE_TEXT"))
+443:    original_rethrow = [row for row in original_strict if row["rethrow_kind"] != "NO_RETHROW_OBSERVED"]
+444:    current_rethrow = [row for row in current if row["rethrow_kind"] != "NO_RETHROW_OBSERVED"]
+448:        "ACTUAL_CATCH_CLAUSE": 46,
+449:        "NON_CLAUSE_TOKEN_LINE": 4,
+454:        "LIBSTDCXX_RETHROW_MACRO": 126,
+455:        "NO_RETHROW_OBSERVED": 3,
+498:                "reported_rows_that_are_clauses": str(sum(1 for row in reported if row["package_name"] == package and row["row_nature"] == "ACTUAL_CATCH_CLAUSE")),
+534:        "“历史 50 行”按当时表中 `CONFIRMED_RETHROW` 且非文档路径筛出。"
+541:        OUT / "STRICT_RETHROW_SITE_LIST.md",
+551:        OUT / "CURRENT_RETHROW_SITE_LIST.md",
+561:        "STRICT_RETHROW_SITE_LIST.md",
+562:        "CURRENT_RETHROW_SITE_LIST.md",
+#!/usr/bin/env python3
+import csv
+import hashlib
+import io
+import json
+import re
+import subprocess
+import tarfile
+from collections import Counter, defaultdict
+from pathlib import Path
+
+
+ROOT = Path("/home/toolchain/development/libc++_replacement")
+R32_TABLE = ROOT / "docs/progress/R32/tables/forced_unwind_guard_locations.tsv"
+R32_CORPUS = ROOT / "tmp/corpus/extracted"
+OUT = ROOT / "docs/progress/R110"
+TABLES = OUT / "tables"
+WORK = ROOT / "progress/R110/context_sources"
+
+CLAUSE_RX = re.compile(
+    r"(?P<clause>(?:\bcatch|\b__catch)\s*\(\s*(?:const\s+)?"
+    r"(?:abi|__cxxabiv1)\s*::\s*__forced_unwind\s*(?:const\s*)?&\s*\))",
+    re.MULTILINE,
+)
+NEXT_CATCH_RX = re.compile(r"(?:\bcatch|\b__catch)\s*\(")
+LITERAL_RETHROW_RX = re.compile(r"\bthrow\s*;")
+MACRO_RETHROW_RX = re.compile(r"\b__throw_exception_again\s*;")
+
+CURRENT = {
+    "boost": {
+        "repo": ROOT / "codes/R104/boost",
+        "url": "git://review.tizen.org/git/platform/upstream/boost",
+        "branch": "tizen_base",
+        "commit": "69203710b8582c489f420ef53a769cc6077c250b",
+        "archives": [],
+    },
+    "gcc": {
+        "repo": ROOT / "codes/gcc",
+        "url": "git://review.tizen.org/git/platform/upstream/gcc",
+        "branch": "tizen_base",
+        "commit": "49c5060508ce8a6ed6beca375233688a6bdd9140",
+        "archives": [],
+    },
+    "key-manager": {
+        "repo": ROOT / "progress/R110/current_git/key-manager",
+        "url": "git://review.tizen.org/git/platform/core/security/key-manager",
+        "branch": "tizen",
+        "commit": "5be2dc74baede39694fd10d8f72b95f759e799ba",
+        "archives": [],
+    },
+    "libcynara-commons": {
+        "repo": ROOT / "progress/R110/current_git/libcynara-commons",
+        "url": "git://review.tizen.org/git/platform/core/security/libcynara-commons",
+        "branch": "tizen",
+        "commit": "1ee5fcdd9529e5b2260b1c365c28a5c56b3adbc1",
+        "archives": [],
+    },
+    "llvm": {
+        "repo": ROOT / "codes/R104/llvm",
+        "url": "git://review.tizen.org/git/platform/upstream/llvm",
+        "branch": "tizen_base",
+        "commit": "2d23367d74afbf2bb1e9e4013fce072b3a154109",
+        "archives": [
+            "packaging/mlgo_arm_model.tar.gz",
+            "packaging/mlgo_aarch_model.tar.gz",
+            "packaging/mlgo_x86_model.tar.gz",
+        ],
+    },
+    "security-manager": {
+        "repo": ROOT / "progress/R110/current_git/security-manager",
+        "url": "git://review.tizen.org/git/platform/core/security/security-manager",
+        "branch": "tizen",
+        "commit": "90010ec2417fd8ee3c7c71ffbf929b219481bc21",
+        "archives": [],
+    },
+    "tensorflow2": {
+        "repo": ROOT / "codes/R104/tensorflow2",
+        "url": "git://review.tizen.org/git/platform/upstream/tensorflow2",
+        "branch": "accepted/tizen_base_toolchain",
+        "commit": "1cdba73549f741720f11dd53da1bb516b03763a2",
+        "archives": ["packaging/tensorflow2-aot.tar.gz"],
+    },
+    "webauthn": {
+        "repo": ROOT / "progress/R110/current_git/webauthn",
+        "url": "git://review.tizen.org/git/platform/core/security/webauthn",
+        "branch": "tizen",
+        "commit": "88d99a5d655c644cbd384f8e15cca337d1a00b21",
+        "archives": [],
+    },
+}
+
+MAIN_ARCHIVE_ROOTS = {
+    "boost_1_83_0.tar.bz2": "boost_1.83.0",
+    "gcc-14.2.0.tar.bz2": "gcc-14.2.0",
+    "key-manager-0.1.90.tar.gz": "key-manager-0.1.90",
+    "cynara-0.26.0.tar.gz": "cynara-0.26.0",
+    "security-manager-2.4.0.tar.gz": "security-manager-2.4.0",
+    "webauthn-1.0.13.tar.gz": "webauthn-1.0.13",
+    "dali2-csharp-binder-2.5.26.tar.xz": "dali2-csharp-binder-2.5.26",
+}
+
+
+def run(args, cwd=None, text=True):
+    cp = subprocess.run(args, cwd=cwd, capture_output=True, text=text)
+    if cp.returncode != 0:
+        raise RuntimeError(f"command failed rc={cp.returncode}: {args!r}\n{cp.stderr}")
+    return cp.stdout
+
+
+def original_display_path(raw_path):
+    parts = raw_path.split("/")
+    assert parts[0] == "unpacked" and len(parts) >= 3, raw_path
+    archive = parts[1]
+    rest = parts[2:]
+    if archive in MAIN_ARCHIVE_ROOTS:
+        assert rest[0] == MAIN_ARCHIVE_ROOTS[archive], (archive, rest[0])
+        return "/".join(rest[1:])
+    return f"packaging/{archive}!/" + "/".join(rest)
+
+
+def source_line(text, line):
+    value = text.splitlines()[line - 1]
+    return value.replace("\t", "\\t")
+
+
+def rethrow_kind(text, match):
+    start = text.find("{", match.end())
+    if start < 0:
+        segment = text[match.end():match.end() + 8000]
+    else:
+        depth = 0
+        state = "code"
+        end = min(len(text), start + 50000)
+        pos = start
+        while pos < end:
+            ch = text[pos]
+            nxt = text[pos + 1] if pos + 1 < end else ""
+            if state == "code":
+                if ch == '"':
+                    state = "string"
+                elif ch == "'":
+                    state = "char"
+                elif ch == "/" and nxt == "/":
+                    state = "line_comment"
+                    pos += 1
+                elif ch == "/" and nxt == "*":
+                    state = "block_comment"
+                    pos += 1
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        pos += 1
+                        break
+            elif state in {"string", "char"}:
+                if ch == "\\":
+                    pos += 1
+                elif (state == "string" and ch == '"') or (state == "char" and ch == "'"):
+                    state = "code"
+            elif state == "line_comment":
+                if ch == "\n":
+                    state = "code"
+            elif state == "block_comment" and ch == "*" and nxt == "/":
+                state = "code"
+                pos += 1
+            pos += 1
+        segment = text[start:pos]
+    if LITERAL_RETHROW_RX.search(segment):
+        return "LITERAL_THROW"
+    if MACRO_RETHROW_RX.search(segment):
+        return "LIBSTDCXX_RETHROW_MACRO"
+    return "NO_RETHROW_OBSERVED"
+
+
+def macro_context(lines, line):
+    idx = line - 1
+    for pos in range(idx, max(-1, idx - 80), -1):
+        match = re.match(r"\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)", lines[pos])
+        if match:
+            if all(lines[n].rstrip().endswith("\\") for n in range(pos, idx)):
+                return f"macro {match.group(1)} (line {pos + 1})"
+            break
+        if pos < idx and not lines[pos].rstrip().endswith("\\"):
+            break
+    return ""
+
+
+_ctags_cache = {}
+
+
+def context_for(text, label, line):
+    key = hashlib.sha256((label + "\0" + text).encode("utf-8", "replace")).hexdigest()
+    if key not in _ctags_cache:
+        suffix = Path(label.split("!/")[-1]).suffix or ".hpp"
+        WORK.mkdir(parents=True, exist_ok=True)
+        temp = WORK / f"{key}{suffix}"
+        temp.write_text(text, encoding="utf-8")
+        cp = subprocess.run(
+            [
+                "ctags",
+                "--output-format=json",
+                "--fields=+nKsS",
+                "--c++-kinds=f",
+                "--language-force=C++",
+                "-o",
+                "-",
+                str(temp),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        tags = []
+        if cp.returncode == 0:
+            for raw in cp.stdout.splitlines():
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("_type") == "tag" and isinstance(obj.get("line"), int):
+                    tags.append(obj)
+        _ctags_cache[key] = tags
+    lines = text.splitlines()
+    macro = macro_context(lines, line)
+    if macro:
+        return macro
+    eligible = [tag for tag in _ctags_cache[key] if tag["line"] <= line]
+    if not eligible:
+        return "NOT_OBSERVED"
+    tag = max(eligible, key=lambda item: item["line"])
+    scope = tag.get("scope", "")
+    name = tag.get("name", "")
+    signature = tag.get("signature", "")
+    if name.startswith("__anon"):
+        outer = [item for item in eligible if not item.get("name", "").startswith("__anon")]
+        outer_text = ""
+        if outer:
+            enclosing = max(outer, key=lambda item: item["line"])
+            outer_name = "::".join(filter(None, [enclosing.get("scope", ""), enclosing.get("name", "")]))
+            outer_text = f" in {outer_name}{enclosing.get('signature', '')}"
+        return f"lambda (line {tag['line']}){outer_text}"
+    qualified = "::".join(filter(None, [scope, name]))
+    return f"{qualified}{signature} (line {tag['line']})"
+
+
+def scan_text(package, source_instance, path, text, source_kind):
+    rows = []
+    for match in CLAUSE_RX.finditer(text):
+        line = text.count("\n", 0, match.start()) + 1
+        clause = " ".join(match.group("clause").split())
+        rows.append(
+            {
+                "source_instance": source_instance,
+                "package_name": package,
+                "file": path,
+                "line": str(line),
+                "actual_code_line": source_line(text, line).strip(),
+                "clause_text": clause,
+                "context": context_for(text, f"{source_instance}:{path}", line),
+                "rethrow_kind": rethrow_kind(text, match),
+                "source_kind": source_kind,
+            }
+        )
+    return rows
+
+
+def r32_scope(raw_path):
+    value = raw_path.lower().replace("\\", "/")
+    parts = value.split("/")
+    if any(item in parts for item in ("test", "tests", "testing", "unittest", "unittests")) or re.search(r"(^|/)(test|tests?)[_.-]", value):
+        return "TEST"
+    if any(item in parts for item in ("doc", "docs", "documentation")) or value.endswith((".md", ".rst", ".txt")):
+        return "DOC"
+    if any(item in parts for item in ("example", "examples", "sample", "samples")):
+        return "EXAMPLE"
+    if value.endswith((".spec", ".cmake")) or Path(value).name in ("meson.build", "configure.ac", "makefile"):
+        return "BUILD"
+    return "PRODUCTION_LIKE"
+
+
+def read_original_rows():
+    with R32_TABLE.open(encoding="utf-8", newline="") as stream:
+        locations = list(csv.DictReader(stream, delimiter="\t"))
+
+    reported = [
+        row for row in locations
+        if row["guard_status"] == "CONFIRMED_RETHROW" and row["scope"] != "DOC"
+    ]
+    assert len(reported) == 50
+

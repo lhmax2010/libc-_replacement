@@ -1,0 +1,279 @@
+# 检索方法与边界
+
+## 原始方法
+
+原始输入为 R32 复用的 T1 已解包语料：372 个候选源码 RPM 中 371 个
+`EXTRACTED_OK`，本轮扫描分母为 371。输入身份由以下冻结 SHA256 约束：
+
+| 输入 | SHA256 |
+|---|---|
+| `progress/T1/extraction_results.tsv` | `5498c430baecd81e689a44d8266d5597a92779680105ede0c320f9b1ea013031` |
+| `progress/T1/corpus_hits.tsv` | `cd2a91832f5a548b4e762c9cc42c4349c50d4f82e559058760f1cf6f83a6c7c2` |
+| `progress/T1/scan_status.tsv` | `5c15fe0097f5dc6b37a755ce25cb6d01846050fa653a4ca5fe8e74803ed85723` |
+
+R32 使用每包一个 `rg --threads 1`、4 个包级 worker，匹配
+`abi::__forced_unwind`/`__cxxabiv1::__forced_unwind` token 以及其他风险标记。
+源码、测试、示例和构建文件均保留，文档不参加包分类。原始代码位于
+`docs/progress/R32/tools/scan_impact.py`，原表为
+`docs/progress/R32/tables/forced_unwind_guard_locations.tsv`。
+
+原 `guard_status()` 从 token 行向前 3 行、向后最多 15 行取窗口，在下一处
+catch 前查找裸 `throw;`。它没有先证明“当前 token 行本身就是 catch 子句”，
+也不认识 `__throw_exception_again`，因此造成四个误计和大量漏计。
+
+## 本轮严格复核
+
+严格表达式允许空白和换行，覆盖：
+
+- `catch (abi::__forced_unwind&)`；
+- `catch (const __cxxabiv1::__forced_unwind&)`；
+- `catch (abi::__forced_unwind const&)`；
+- libstdc++ 的 `__catch(__cxxabiv1::__forced_unwind&)`。
+
+随后解析 handler 的平衡花括号，分别识别裸 `throw;` 和
+`__throw_exception_again;`。原始阳性相关源码 RPM 的所有文本文件均参与，
+不再按扩展名过滤，所以能覆盖无扩展名标准库头文件。每个输出位置又回到实际
+源码取行，并用 Universal Ctags 给出最近函数/模板/lambda 上下文；不能安全识别
+的上下文应标 `NOT_OBSERVED`，本次最终表没有这种行。
+
+当前复核使用 `tables/current_source_identity.tsv` 中八个仓库的明确 HEAD；普通
+Git 文本通过 `git grep -I` 找 token 后逐 blob 解析，LLVM 的三个 MLGO 模型包和
+TensorFlow AOT 包则逐 tar member 检查。没有用当前工作区的未提交内容替代指定
+commit。
+
+## 已知盲区
+
+- 表达式要求能在预处理前源码中看见 `catch`/`__catch`、目标类型名和引用符号。
+  若类型通过别名隐藏、catch 由多层 token-pasting 宏生成，可能漏掉。
+- 当前没有运行预处理器，因此条件编译失活分支也会被计入；表中是源码出现次数，
+  不是某个架构最终编译实例数。
+- 同一头文件复制进多个架构资产时按不同包内路径分别计数；源码 RPM Release
+  变体则另给去重口径。改变这两条会改变总数。
+- 本轮未把当前平台所有源码包重新冻结；当前 140 只覆盖历史阳性八包，无法发现
+  其他包后来新增的站点。
+- handler 中通过项目自定义函数间接重抛、而非 `throw;` 或
+  `__throw_exception_again` 的写法，语法子句仍会列入 175 表，但传播行为会记为
+  `NO_RETHROW_OBSERVED`；要证明间接传播需另做调用图分析。
+#!/usr/bin/env python3
+import csv
+import hashlib
+import os
+import re
+import subprocess
+import sys
+from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+OUT = ROOT / "progress/R32/tables"
+CORPUS = ROOT / "tmp/corpus/extracted"
+SRPMS = ROOT / "tmp/corpus/srpms"
+
+ARCHIVE_GLOBS = [
+    "!*.tar", "!*.tar.gz", "!*.tgz", "!*.tar.bz2", "!*.tbz2",
+    "!*.tar.xz", "!*.txz", "!*.tar.zst", "!*.zip", "!*.7z",
+    "!*.rar", "!*.gz", "!*.bz2", "!*.xz", "!*.zst", "!*.rpm",
+    "!*.src.rpm", "!*.deb", "!*.jar", "!*.apk", "!*.iso",
+]
+
+CODE_GLOBS = [
+    "*.c", "*.C", "*.cc", "*.cpp", "*.cxx", "*.h", "*.H", "*.hh",
+    "*.hpp", "*.hxx", "*.ipp", "*.tcc", "*.inc", "*.inl", "*.m",
+    "*.mm", "*.cu", "*.cl", "*.rs", "*.go", "*.py", "*.sh",
+    "*.bash", "*.pl", "*.rb", "*.java", "*.js", "*.ts", "*.cs",
+    "*.vala", "*.vapi", "*.idl", "*.def", "*.S", "*.s", "*.asm",
+    "*.cmake", "*.mk", "*.am", "*.ac", "*.spec", "*.gyp", "*.gypi",
+    "*.gn", "*.ninja", "*.bazel", "*.bzl", "*.pro", "*.pri", "*.txt",
+    "*.md", "*.rst", "Makefile*", "CMakeLists.txt", "meson.build",
+    "meson_options.txt", "SConstruct", "SConscript", "configure*",
+]
+
+RX = re.compile(
+    r"catch\s*\(\s*\.\s*\.\s*\.\s*\)|"
+    r"(?:__cxxabiv1|abi)\s*::\s*__forced_unwind|"
+    r"pthread_cancel|pthread_create|pthread_setcancelstate|pthread_testcancel|"
+    r"std\s*::\s*thread"
+)
+CATCH = re.compile(r"catch\s*\(\s*\.\s*\.\s*\.\s*\)")
+FORCED = re.compile(r"(?:__cxxabiv1|abi)\s*::\s*__forced_unwind")
+MARKERS = {
+    "pthread_cancel": re.compile(r"\bpthread_cancel\b"),
+    "pthread_create": re.compile(r"\bpthread_create\b"),
+    "pthread_setcancelstate": re.compile(r"\bpthread_setcancelstate\b"),
+    "pthread_testcancel": re.compile(r"\bpthread_testcancel\b"),
+    "std::thread": re.compile(r"\bstd\s*::\s*thread\b"),
+}
+
+
+def sha(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def scope(rel):
+    p = rel.lower().replace("\\", "/")
+    parts = p.split("/")
+    if any(x in parts for x in ("test", "tests", "testing", "unittest", "unittests")) or re.search(r"(^|/)(test|tests?)[_.-]", p):
+        return "TEST"
+    if any(x in parts for x in ("doc", "docs", "documentation")) or p.endswith((".md", ".rst", ".txt")):
+        return "DOC"
+    if any(x in parts for x in ("example", "examples", "sample", "samples")):
+        return "EXAMPLE"
+    if p.endswith((".spec", ".cmake")) or os.path.basename(p) in ("meson.build", "configure.ac", "makefile"):
+        return "BUILD"
+    return "PRODUCTION_LIKE"
+
+
+def read_lines(path):
+    try:
+        return path.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+
+
+def macro_for(lines, idx):
+    # idx is zero based. A catch token in a continued #define belongs to the
+    # nearest preceding #define while every intervening previous line ends '\\'.
+    j = idx
+    while j >= 0 and idx - j <= 50:
+        m = re.match(r"\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)", lines[j])
+        if m:
+            if all(lines[k].rstrip().endswith("\\") for k in range(j, idx)):
+                return m.group(1)
+            return ""
+        if j < idx and not lines[j].rstrip().endswith("\\"):
+            break
+        j -= 1
+    return ""
+
+
+def guard_status(lines, idx):
+    lo = max(0, idx - 3)
+    hi = min(len(lines), idx + 15)
+    text = "\n".join(lines[lo:hi])
+    if not FORCED.search(text):
+        return "NOT_FORCED_CATCH"
+    # Locate the forced catch line and bound the body at the next catch.
+    start = None
+    for n in range(lo, hi):
+        if FORCED.search(lines[n]):
+            start = n
+            break
+    if start is None:
+        return "UNDETERMINED"
+    end = min(len(lines), start + 16)
+    for n in range(start + 1, end):
+        if re.search(r"\bcatch\s*\(", lines[n]):
+            end = n
+            break
+    body = "\n".join(lines[start:end])
+    return "CONFIRMED_RETHROW" if re.search(r"\bthrow\s*;", body) else "FORCED_CATCH_NO_RETHROW"
+
+
+def rpm_name(srpm):
+    p = SRPMS / srpm
+    cp = subprocess.run(["rpm", "-qp", "--qf", "%{NAME}", str(p)], text=True, capture_output=True)
+    return cp.stdout.strip() if cp.returncode == 0 else "NOT_AVAILABLE"
+
+
+def run_rg(root):
+    cmd = ["rg", "--threads", "1", "--json", "--line-number", "--hidden", "--no-ignore", "--pcre2", "-e", RX.pattern]
+    for g in CODE_GLOBS:
+        cmd += ["-g", g]
+    cmd += [str(root)]
+    cp = subprocess.run(cmd, text=True, capture_output=True)
+    if cp.returncode not in (0, 1):
+        raise RuntimeError(f"rg failed rc={cp.returncode}: {cp.stderr}")
+    rows = []
+    for raw in cp.stdout.splitlines():
+        import json
+        obj = json.loads(raw)
+        if obj.get("type") != "match":
+            continue
+        d = obj["data"]
+        path = Path(d["path"]["text"])
+        rows.append((path, int(d["line_number"]), d["lines"]["text"].rstrip("\n")))
+    return rows
+
+
+def write_tsv(name, header, rows):
+    OUT.mkdir(parents=True, exist_ok=True)
+    with open(OUT / name, "w", newline="") as f:
+        w = csv.writer(f, delimiter="\t", lineterminator="\n")
+# 强制展开识别子句统计口径说明
+
+这里的“识别子句”按源码语法定义为捕获
+`abi::__forced_unwind` 或 `__cxxabiv1::__forced_unwind` 的
+`catch`/`__catch` 子句；“传播站点”还要求 handler 通过裸 `throw;` 或
+libstdc++ 的 `__throw_exception_again` 宏继续传播。站点以源码实例、包内相对
+路径和行号共同标识。
+
+## “50”最初怎样得出
+
+原数字来自一轮 371 个已成功解包源码 RPM 的词法扫描。扫描器先找
+`abi::__forced_unwind`/`__cxxabiv1::__forced_unwind` token，再把 token
+所在行附近 16 行内、下一处 catch 之前出现裸 `throw;` 的行标为
+`CONFIRMED_RETHROW`。从原表筛选该状态且排除文档路径，得到 50 行，分布于
+10 个源码 RPM 实例、8 个去重包名。
+
+逐行回看源码后，确认这个 50 **不是 50 个严格意义上的 catch 子句**：
+
+- 46 行确实是 catch 子句；
+- 4 行是 `key-manager` handler 内日志字符串
+  `"abi::__forced_unwind caught..."`，因为紧邻真实 catch 和 `throw;` 而被启发式
+  误标；
+- libstdc++ 用 `__throw_exception_again` 表示重抛，原判定只认裸 `throw;`，因此
+  漏掉 126 个实际传播子句；
+- 原文件后缀白名单没有包含 `future`、`ostream`、`condition_variable` 等无扩展名
+  C++ 头文件，这也是宏重抛漏项的一部分。
+
+所以，“50 processing distinct sites”准确地说是“旧启发式筛出的 50 个 token
+行”，不能称为 50 个独立识别子句。完整 50 行及四个误计行见
+`REPORTED_50_AUDIT.md`。
+
+## 按语法和传播行为重新计数
+
+对原始冻结源码实例进行无扩展名限制的文本复核，结果为：
+
+| 口径 | 数量 | 说明 |
+|---|---:|---|
+| 所有识别 catch 子句 | 175 | 11 个源码 RPM 实例、9 个去重包名；含 3 个不重抛的 Dali 子句 |
+| 继续传播的识别子句 | 172 | 46 个裸 `throw;`，126 个 `__throw_exception_again` |
+| 按包名、路径、行号和子句形态去除重复源码 RPM 变体 | 104 | 10 个源码 RPM 实例归并为 8 个包名；保留不同资产路径 |
+
+`dali2-csharp-binder` 有 3 个语法上明确的识别子句，但 handler 返回而不重抛；
+因此它属于“存在识别子句”，不属于“正确继续传播”。
+
+## 为什么是 10 个源码 RPM、8 个包名
+
+两个软件各有两个源码 RPM Release 变体，而每对变体来自同一 Git revision：
+
+- `gcc-14.2.0-1.12.src.rpm` 与 `gcc-14.2.0-1.14.src.rpm` 均来自
+  `3d5dd5bec16591dbf3277df37fb43e9cc5b890de`；
+- `tensorflow2-2.18.0-1.2.src.rpm` 与 `tensorflow2-2.18.0-1.3.src.rpm` 均来自
+  `1cdba73549f741720f11dd53da1bb516b03763a2`。
+
+因此源码 RPM 实例数为 10，按软件包名归并后为 8。旧 50 行中，这两对重复实例
+贡献 5 个重复行，按旧表自身去重后恰为 45；这也是早期资料中 45 与 50 并存的
+来源。它们并非两个互相独立的软件实现。
+
+## 当前复核
+
+对上述八个历史阳性包的当前开发分支重新扫描，得到 140 个“识别并继续传播”
+站点：Boost 22、GCC 66、key-manager 5、libcynara-commons 1、LLVM 42、
+security-manager 1、tensorflow2 2、webauthn 1。
+
+与原始源码按包名/逻辑路径去重后的 104 处相比，净增 36 处，全部位于 LLVM：
+当前 `tizen_base` 已包含 libc++ 的强制展开防护，新增 34 个头文件本地 handler
+和 2 个 `ios.cpp` 汇聚 handler；原有三架构 MLGO 资产中的 6 个 pybind11 副本
+仍在。这里的 36 个 handler 对应更早分析中的 50 个 libc++ catch-all 处理位置：
+其中 34 个需本地 handler，另 16 个调用点汇聚到 2 个 out-of-line handler，
+所以“处理位置 50”不等于“新增 typed catch 子句 50”。
+
+这次当前复核只覆盖历史已知阳性的八个包，用于核对站点漂移；没有对当前平台
+全部源码包重新冻结和扫描，因此“其他包是否新出现识别子句”为
+`NOT_OBSERVED`，不能把 140 表述为当前全平台总数。

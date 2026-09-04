@@ -1,0 +1,91 @@
+    if any(item in parts for item in ("test", "tests", "testing", "unittest", "unittests")) or re.search(r"(^|/)(test|tests?)[_.-]", value):
+        return "TEST"
+    if any(item in parts for item in ("doc", "docs", "documentation")) or value.endswith((".md", ".rst", ".txt")):
+        return "DOC"
+    if any(item in parts for item in ("example", "examples", "sample", "samples")):
+        return "EXAMPLE"
+    if value.endswith((".spec", ".cmake")) or Path(value).name in ("meson.build", "configure.ac", "makefile"):
+        return "BUILD"
+    return "PRODUCTION_LIKE"
+
+
+def read_original_rows():
+    with R32_TABLE.open(encoding="utf-8", newline="") as stream:
+        locations = list(csv.DictReader(stream, delimiter="\t"))
+
+    reported = [
+        row for row in locations
+        if row["guard_status"] == "CONFIRMED_RETHROW" and row["scope"] != "DOC"
+    ]
+    assert len(reported) == 50
+
+    reported_audit = []
+    for row in reported:
+        actual_path = R32_CORPUS / row["source_rpm"] / row["file"]
+        text = actual_path.read_text(encoding="utf-8", errors="replace")
+        raw_actual = text.splitlines()[int(row["line"]) - 1]
+        actual = raw_actual.replace("\t", "\\t")
+        assert raw_actual.strip() == row["source_text"].strip(), (actual_path, row["line"])
+        is_clause = bool(CLAUSE_RX.search(raw_actual))
+        reported_audit.append(
+            {
+                "source_rpm": row["source_rpm"],
+                "package_name": row["package_name"],
+                "file": original_display_path(row["file"]),
+                "line": row["line"],
+                "actual_code_line": actual.strip(),
+                "context": context_for(text, f"original:{row['source_rpm']}:{row['file']}", int(row["line"])),
+                "row_nature": "ACTUAL_CATCH_CLAUSE" if is_clause else "NON_CLAUSE_TOKEN_LINE",
+                "r32_status": row["guard_status"],
+            }
+        )
+
+    strict = []
+    source_packages = {}
+    for row in locations:
+        if CLAUSE_RX.search(row["source_text"]):
+            source_packages[row["source_rpm"]] = row["package_name"]
+    assert len(source_packages) == 11
+    for source_rpm, package in sorted(source_packages.items()):
+        source_root = R32_CORPUS / source_rpm
+        cp = subprocess.run(
+            ["rg", "-l", "-I", "--hidden", "--no-ignore", "--fixed-strings", "__forced_unwind", str(source_root)],
+            capture_output=True,
+            text=True,
+        )
+        if cp.returncode not in (0, 1):
+            raise RuntimeError(f"rg failed for {source_rpm}: {cp.stderr}")
+        for raw in cp.stdout.splitlines():
+            actual_path = Path(raw)
+            relative = str(actual_path.relative_to(source_root))
+            if r32_scope(relative) == "DOC":
+                continue
+            text = actual_path.read_text(encoding="utf-8", errors="replace")
+            strict.extend(
+                scan_text(
+                    package,
+                    source_rpm,
+                    original_display_path(relative),
+                    text,
+                    "R32_FROZEN_SOURCE_RPM_COMPREHENSIVE_TEXT_RESCAN",
+                )
+            )
+    strict.sort(key=lambda row: (row["source_instance"], row["file"], int(row["line"])))
+    return locations, reported_audit, strict
+
+
+def git_blob(repo, commit, path):
+    return run(["git", "show", f"{commit}:{path}"], cwd=repo)
+
+
+def current_rows():
+    identities = []
+    rows = []
+    for package, info in CURRENT.items():
+        repo = info["repo"]
+        commit = info["commit"]
+        observed = run(["git", "rev-parse", commit], cwd=repo).strip()
+        assert observed == commit
+        identities.append(
+            {
+                "package_name": package,
