@@ -1,0 +1,77 @@
+#!/bin/bash
+# Resource-controlled full gbs build verification of the MLGO packages.
+#
+#   ./verify-gbs.sh [armv7l] [aarch64] [x86_64]     (default: all three, sequential)
+#
+# Resource policy (protects the host from OOM/CPU starvation):
+#   - ninja parallelism derived from MemAvailable at launch (~3 GB per job),
+#     clamped to [2, 6]; qemu arches (armv7l/aarch64) get one job fewer.
+#   - the whole build runs in a systemd user scope with MemoryHigh/MemoryMax
+#     caps and a CPUQuota that always leaves 4 cores for the rest of the host;
+#     falls back to plain `nice` if no systemd user session is available.
+#   - refuses to start below 6 GB MemAvailable.
+set -euo pipefail
+
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$TOOLS_DIR")"
+LLVM_DIR="$ROOT/llvm"
+GBS_CONF="$ROOT/gbs.conf"
+LOG_DIR="$TOOLS_DIR/build/logs"
+mkdir -p "$LOG_DIR"
+
+ARCHES=("$@")
+[ ${#ARCHES[@]} -eq 0 ] && ARCHES=(x86_64 aarch64 armv7l)
+
+test -f "$GBS_CONF" || { echo "FATAL: $GBS_CONF not found"; exit 1; }
+test -f "$LLVM_DIR/packaging/llvm.spec" || { echo "FATAL: llvm.spec not found"; exit 1; }
+
+# ---- resource policy -------------------------------------------------------
+avail_kb=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
+avail_gb=$((avail_kb / 1024 / 1024))
+total_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo)
+ncpu=$(nproc)
+
+if [ "$avail_gb" -lt 6 ]; then
+    echo "FATAL: only ${avail_gb} GB available memory — refusing to start a build."
+    echo "       Free up memory (check other running builds) and retry."
+    exit 1
+fi
+
+JOBS=$(( avail_gb / 3 )); [ "$JOBS" -lt 2 ] && JOBS=2; [ "$JOBS" -gt 6 ] && JOBS=6
+# Hard memory caps for the build scope: leave >=3 GB headroom for the host.
+mem_max_gb=$(( avail_gb - 3 )); [ "$mem_max_gb" -lt 4 ] && mem_max_gb=4
+mem_high_gb=$(( mem_max_gb - 1 ))
+cpu_quota=$(( (ncpu - 4) * 100 )); [ "$cpu_quota" -lt 400 ] && cpu_quota=400
+
+RUNNER=(nice -n 10)
+if systemd-run --user --scope -q true 2>/dev/null; then
+    RUNNER=(systemd-run --user --scope -q
+            -p "MemoryHigh=${mem_high_gb}G" -p "MemoryMax=${mem_max_gb}G"
+            -p "CPUQuota=${cpu_quota}%"
+            nice -n 10)
+    echo "resource caps: MemoryHigh=${mem_high_gb}G MemoryMax=${mem_max_gb}G CPUQuota=${cpu_quota}% jobs(base)=$JOBS"
+else
+    echo "WARNING: no systemd user session; falling back to nice only. jobs(base)=$JOBS"
+fi
+
+# ---- sequential per-arch builds -------------------------------------------
+overall=0
+for arch in "${ARCHES[@]}"; do
+    jobs=$JOBS
+    case "$arch" in armv7l|aarch64) jobs=$(( JOBS > 2 ? JOBS - 1 : 2 )) ;; esac
+    log="$LOG_DIR/gbs-$arch-$(date +%Y%m%d-%H%M%S).log"
+    echo
+    echo "=== gbs build -A $arch (ninja -j $jobs) → $log ==="
+    start=$(date +%s)
+    if (cd "$LLVM_DIR" && "${RUNNER[@]}" \
+            gbs -c "$GBS_CONF" build -A "$arch" --include-all \
+                --define "mlgo_build_jobs $jobs" ) >"$log" 2>&1; then
+        echo "=== $arch PASS ($(( ($(date +%s) - start) / 60 )) min) ==="
+        grep -E "generated RPM packages|\.rpm$" "$log" | tail -5 || true
+    else
+        overall=1
+        echo "=== $arch FAIL — last lines of $log: ==="
+        tail -25 "$log"
+    fi
+done
+exit $overall

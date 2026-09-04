@@ -1,0 +1,71 @@
+#!/bin/bash
+# One-time buildroot preparation for the chroot-only MLGO pipeline (needs sudo).
+#
+#   ./setup-chroot.sh --chroot <buildroot> [--rpm <tensorflow2-aot-*.x86_64.rpm>]
+#
+# Ensures the x86_64 buildroot can produce MLGO packages for all three arches:
+#   1. cross-enabled tensorflow2-aot RPM installed (model AOT, all LLVM backends)
+#   2. clang + binutils present (runtime cross-compile; the Tizen x86_64 clang
+#      carries the X86;ARM;AArch64 backends)
+#   3. armv7l / aarch64 Tizen header sysroots staged at /opt/mlgo-sysroots
+#      (fetched on the host from the Tizen Base repo — the only step that may
+#      need network; build/sysroot-cache/ ships pre-seeded copies)
+#   4. /proc mounted
+set -euo pipefail
+
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TIZEN_BASE_REPO="${TIZEN_BASE_REPO:-https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages}"
+CHROOT="" RPM=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --chroot) CHROOT="$2"; shift 2 ;;
+        --rpm)    RPM="$2"; shift 2 ;;
+        *) echo "unknown arg: $1"; exit 1 ;;
+    esac
+done
+test -n "$CHROOT" || { echo "usage: $0 --chroot <buildroot> [--rpm <rpm>]"; exit 1; }
+CHROOT="$(cd "$CHROOT" && pwd)"
+test -d "$CHROOT/usr" || { echo "FATAL: not a buildroot: $CHROOT"; exit 1; }
+
+echo "=== 1/4 tensorflow2-aot (cross-enabled) ==="
+if [ ! -x "$CHROOT/opt/tensorflow-aot/bin/saved_model_cli" ]; then
+    test -n "$RPM" && test -f "$RPM" || { echo "FATAL: tensorflow-aot not present in the buildroot; pass the cross-enabled RPM via --rpm"; exit 1; }
+    sudo cp "$RPM" "$CHROOT/tmp/"
+    sudo chroot "$CHROOT" rpm -Uvh --force --nodeps "/tmp/$(basename "$RPM")"
+    sudo rm -f "$CHROOT/tmp/$(basename "$RPM")"
+fi
+echo "tensorflow-aot OK"
+
+echo "=== 2/4 toolchain in buildroot ==="
+for t in /usr/bin/clang /usr/bin/clang++ /usr/bin/ar; do
+    test -e "$CHROOT$t" || { echo "FATAL: buildroot is missing $t (use a buildroot that ships clang, e.g. one created by a tensorflow2 or llvm build)"; exit 1; }
+done
+echo "clang/ar OK"
+
+echo "=== 3/4 target header sysroots ==="
+CACHE="$TOOLS_DIR/build/sysroot-cache"
+NEED=()
+for arch in armv7l aarch64; do
+    [ -e "$CHROOT/opt/mlgo-sysroots/$arch/usr/include/stdio.h" ] || NEED+=("$arch")
+done
+if [ ${#NEED[@]} -gt 0 ]; then
+    mkdir -p "$CACHE"
+    for arch in "${NEED[@]}"; do
+        [ -e "$CACHE/$arch/usr/include/stdio.h" ] || \
+            python3 "$TOOLS_DIR/fetch_sysroot.py" --repo-url "$TIZEN_BASE_REPO" \
+                    --dest "$CACHE" --arch "$arch"
+        sudo mkdir -p "$CHROOT/opt/mlgo-sysroots"
+        sudo cp -r "$CACHE/$arch" "$CHROOT/opt/mlgo-sysroots/$arch"
+    done
+fi
+echo "sysroots OK"
+
+echo "=== 4/4 /proc mount + backend self-check ==="
+[ -e "$CHROOT/proc/self" ] || sudo mount -t proc proc "$CHROOT/proc"
+sudo chroot "$CHROOT" /usr/bin/clang --print-targets | grep -qi "aarch64" \
+    || { echo "FATAL: the buildroot's clang has no AArch64 backend"; exit 1; }
+sudo chroot "$CHROOT" /usr/bin/clang --print-targets | grep -qiw "arm" \
+    || { echo "FATAL: the buildroot's clang has no ARM backend"; exit 1; }
+echo
+echo "buildroot ready: $CHROOT"
+echo "next: ./mlgo-pack --chroot $CHROOT --model <model> --type inliner"

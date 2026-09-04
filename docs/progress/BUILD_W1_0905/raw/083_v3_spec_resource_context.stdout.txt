@@ -1,0 +1,90 @@
+# TensorFlow AOT toolchain for LLVM MLGO.
+# Master spec, parameterized by %%{aot_arch} (gcc.spec-style): editing this
+# file is the only maintenance point; run pre_checkin.sh afterwards to
+# regenerate the derived per-arch specs (currently
+# tensorflow2-aot-aarch64.spec, two predefine lines + this file verbatim).
+# Every variant emits the same tensorflow2-aot binary package, so llvm's
+# BuildRequires never changes. ExclusiveArch makes plain `gbs build -A
+# <arch>` (no --spec) pick the right variant automatically.
+%{!?aot_arch: %define aot_arch x86_64}
+%define aot_prefix /opt/tensorflow-aot
+%define py_ver 3.12
+%if "%{aot_arch}" == "aarch64"
+%define py_platform aarch64-unknown-linux-gnu
+%else
+%define py_platform x86_64-unknown-linux-gnu
+%endif
+%{!?aot_build_jobs: %define aot_build_jobs 4}
+
+Name:           tensorflow2-aot-%{aot_arch}
+Summary:        TensorFlow AOT toolchain (saved_model_cli) for LLVM MLGO, %{aot_arch}
+Version:        2.18.0
+Release:        1
+Group:          Development/Toolchain
+License:        Apache-2.0
+Source0:        %{name}-%{version}.tar.gz
+Source1001:     tensorflow2.manifest
+# Large sources are shipped as fresh gzip streams split into <=88MB chunks and re-assembled
+# with cat at prep/build time: no git object may exceed ~90MB or constrained
+# build-farm clones OOM in unpack-objects. Chunk order = lexical suffix order.
+%if "%{aot_arch}" == "aarch64"
+Source3030:     bazel-6.5.0-linux-arm64.gz.part00
+Source3031:     bazel-6.5.0-linux-arm64.gz.part01
+%else
+Source3000:     bazel-6.5.0-linux-x86_64
+%endif
+Source3010:     bazel-repo-cache.tgz.part00
+Source3011:     bazel-repo-cache.tgz.part01
+Source3012:     bazel-repo-cache.tgz.part02
+Source3013:     bazel-repo-cache.tgz.part03
+Source3014:     bazel-repo-cache.tgz.part04
+Source3015:     bazel-repo-cache.tgz.part05
+Source3016:     bazel-repo-cache.tgz.part06
+Source3017:     bazel-repo-cache.tgz.part07
+Source3018:     bazel-repo-cache.tgz.part08
+Source3019:     bazel-repo-cache.tgz.part09
+Source3020:     bazel-repo-cache.tgz.part10
+# Runtime-only pypi deps of saved_model_cli not present in bazel's pip repos
+# (flatbuffers, astor, google-pasta), pinned from requirements_lock_3_12.txt.
+Source3003:     aot-extra-wheels.tar
+# Local PyPI mirror of everything in requirements_lock_3_12.txt: rules_python's
+# whl_library resolves requirements by running pip, which bypasses the bazel
+# repository cache; PIP_NO_INDEX/PIP_FIND_LINKS point pip here instead.
+%if "%{aot_arch}" == "aarch64"
+Source3050:     pip-mirror-aarch64.tgz.part00
+Source3051:     pip-mirror-aarch64.tgz.part01
+%else
+Source3040:     pip-mirror-x86_64.tgz.part00
+Source3041:     pip-mirror-x86_64.tgz.part01
+%endif
+
+ExclusiveArch:  %{aot_arch}
+# The bundled hermetic python and TF wheel carry their own shared objects;
+# do not let rpm derive requires/provides from them.
+AutoReqProv:    no
+
+BuildRequires:  zip
+BuildRequires:  unzip
+# For bazel repository rules (llvm_configure etc.); the built product uses
+# its own hermetic CPython, not this one.
+BuildRequires:  python3
+# Build TF with gcc: the buildroot's clang 22 rejects upb's pre-C23 offsetof
+# usage under -Werror; gcc matches the host-validated configuration.
+BuildRequires:  gcc
+BuildRequires:  gcc-c++
+BuildRequires:  which
+BuildRequires:  findutils
+BuildRequires:  patchelf
+
+%global debug_package %{nil}
+# GBS passes --define "_build_create_debug 1", which makes find-debuginfo
+# populate /usr/lib/debug even though no debuginfo subpackage exists to own
+# the result — rpm then aborts on "Installed (but unpackaged) file(s)".
+# This is a build-time-only toolchain; skip debuginfo extraction entirely.
+%global __debug_install_post %{nil}
+
+%description
+Build wrapper for the %{aot_arch} tensorflow2-aot package; see the
+tensorflow2-aot subpackage.
+
+%package -n tensorflow2-aot

@@ -1,0 +1,131 @@
+# mlgo-pack (chroot edition) — MLGO model pre-generation, fully GBS-based
+
+Pre-compiles MLGO inliner/regalloc models (TF SavedModel zip / tar.gz /
+directory) into the tar.gz packages that `llvm.spec` consumes directly, so the
+GBS build of LLVM never needs TensorFlow.
+
+This directory ships **no compilers of its own** (~75 MB, mostly a pre-seeded
+sysroot cache). Everything heavy runs inside one **x86_64 GBS buildroot**:
+
+| Step                    | Tool used, inside the buildroot                                   |
+|-------------------------|-------------------------------------------------------------------|
+| Model AOT (all 3 arches)| `/opt/tensorflow-aot/bin/saved_model_cli` from the cross-enabled tensorflow2-aot RPM |
+| XLA runtime compile     | The buildroot's own clang (Tizen x86_64 clang carries the X86;ARM;AArch64 backends) |
+| Static archive          | The buildroot's binutils `ar`                                     |
+
+One x86_64 buildroot produces the packages for **all three arches**
+(armv7l / aarch64 / x86_64). A sibling, self-contained variant that needs no
+GBS infrastructure lives in `../tools/` (portable edition, ~2 GB).
+
+## Prerequisites
+
+- Host: `python3` (stdlib only), `sudo`, `tar`, binutils (`nm`, `readelf`).
+- A GBS setup with an x86_64 buildroot that ships clang — any buildroot
+  created by a `tensorflow2` or `llvm` gbs build qualifies, e.g.
+  `<GBS-ROOT>/local/BUILD-ROOTS/scratch.x86_64.0`.
+- The **cross-enabled** tensorflow2-aot RPM (its spec must carry
+  `--define=with_cross_compiler_support=true`, see `../mlgo-tf-aot-cross.diff`;
+  the older x86-only RPM can only AOT for x86_64).
+
+## Operation
+
+### 1. Prepare the buildroot (one-time, needs sudo)
+
+```bash
+BR=/path/to/GBS-ROOT/local/BUILD-ROOTS/scratch.x86_64.0
+./setup-chroot.sh --chroot $BR --rpm /path/to/tensorflow2-aot-2.18.0-1.x86_64.rpm
+```
+
+This installs the RPM into the buildroot (skipped if already present), checks
+clang/ar, stages the armv7l/aarch64 header sysroots into
+`<buildroot>/opt/mlgo-sysroots/` (from `build/sysroot-cache/`, no network
+needed; set `TIZEN_BASE_REPO=` to refetch from a different repo), mounts
+`/proc` if missing, and self-checks that clang has the ARM and AArch64
+backends.
+
+### 2. Package a model (the frequent operation)
+
+```bash
+./mlgo-pack --chroot $BR --model inliner_model.zip  --type inliner
+./mlgo-pack --chroot $BR --model regalloc_model.zip --type regalloc
+```
+
+Input may be a zip, tar.gz, or directory; the tool locates `saved_model.pb`
+automatically (nested dirs and `__MACOSX` junk are handled). Each run produces
+`mlgo_<type>_<arch>.tar.gz` for the selected arches (default: all three) in
+`../llvm/packaging/` (override with `--out`). Updating one model never touches
+the other model's packages or the runtime packages.
+
+### 3. Rebuild the runtime packages (rare — only on a TF upgrade)
+
+```bash
+./mlgo-pack --chroot $BR --make-runtime
+```
+
+Cross-compiles the 34 XLA runtime sources (taken from the RPM inside the
+buildroot) for each arch and produces `mlgo_runtime_<arch>.tar.gz`.
+
+### 4. Verification
+
+Every run performs static checks automatically: ELF machine type per arch,
+the armv7l softfp ABI gate (hard-float is rejected), canonical entry symbol
+`_xla_<Model>_llvm_<Model>` with header/object consistency, and presence of
+the five runtime objects `llvm.spec` embeds.
+
+After packaging, a full `gbs build` verification of the LLVM package runs
+automatically (`verify-gbs.sh`, sequential per arch, resource-capped: job
+count derived from available memory, systemd MemoryHigh/MemoryMax + CPUQuota,
+refuses to start below 6 GB free). Pass `--no-verify` to skip it and run
+`./verify-gbs.sh <arch>...` separately later. Build logs are kept under
+`build/logs/`.
+
+### Useful variants
+
+```bash
+./mlgo-pack --chroot $BR --model X.zip --type inliner --arch armv7l   # one arch only
+./mlgo-pack --chroot $BR --model X.zip --type inliner --out /tmp/pkgs # custom output dir
+```
+
+## Outputs
+
+Nine packages total, named exactly as `llvm.spec` Source1002–1010 expects:
+
+- `mlgo_runtime_<arch>.tar.gz` — five precompiled XLA runtime objects (embedded
+  by the spec), `mlgo_sysroot/` (TF include tree + stub CMakeLists +
+  `libtf_xla_runtime_prebuilt.a`), LICENSE
+- `mlgo_inliner_<arch>.tar.gz` — `InlinerSizeModel.h/.o`
+- `mlgo_regalloc_<arch>.tar.gz` — `RegAllocEvictModel.h/.o`
+
+Each package carries a `MANIFEST-<kind>.json` with the model sha256, TF and
+clang versions, target triple, generation time, and
+`tf_source=team-rpm(chroot:...)` for provenance.
+
+## Troubleshooting
+
+- **"has no /opt/tensorflow-aot/..."** — run step 1; the RPM is not installed
+  in that buildroot.
+- **"No available targets are compatible with triple ..."** — the installed
+  RPM is the old x86-only build; install the cross-enabled one (step 1 with
+  `--rpm`).
+- **"missing the ... sysroot"** — run step 1; the header sysroots are not
+  staged.
+- **TF aborts with `Check failed: -1 != path_length`** — `/proc` is not
+  mounted in the buildroot; rerun step 1 (or
+  `sudo mount -t proc proc $BR/proc`).
+- A gbs build may recreate/clean buildroots; if the buildroot was wiped,
+  simply rerun step 1.
+
+## Mechanism notes
+
+- Model AOT copies the model to `<buildroot>/tmp/mlgo-aot/` and runs
+  `saved_model_cli aot_compile_cpu` with a bare `--output_prefix` from inside
+  that directory, keeping entry symbols canonical (no absolute paths leak into
+  symbol names). `--tag_set serve --signature_def_key action`, cpp_class
+  `llvm::<Model>` — identical to upstream LLVM's TensorFlowCompile.cmake usage.
+- Runtime compile flags: `-O3 -fPIC -std=c++17`; armv7l uses
+  `-march=armv7-a -mfloat-abi=softfp -mfpu=neon -mtune=cortex-a8 -mthumb`
+  (matches the Tizen buildroot ABI), aarch64 adds `-DEIGEN_NEON_GEBP_NR=4`
+  (TF upstream requirement for the Eigen convolution kernels).
+- Tizen ships libstdc++ headers inside the GCC install dir
+  (`usr/lib{,64}/gcc/<triple>/<ver>/include/c++`); the tool passes them to
+  clang explicitly via `-isystem`.

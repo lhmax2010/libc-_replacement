@@ -1,0 +1,440 @@
+#!/usr/bin/env python3
+"""mlgo-pack (chroot edition): AOT pre-generation of MLGO model packages for
+Tizen LLVM, running everything heavy inside an x86_64 GBS buildroot.
+
+Nothing is bundled here — the compilers all come from the GBS environment:
+  model AOT        -> /opt/tensorflow-aot/bin/saved_model_cli (cross-enabled
+                      tensorflow2-aot RPM, all LLVM backends)
+  runtime compile  -> the buildroot's clang (Tizen x86_64 clang carries the
+                      X86;ARM;AArch64 backends) + staged target sysroots
+  archives         -> the buildroot's binutils ar
+
+One x86_64 buildroot produces the packages for all three arches:
+
+  mlgo_inliner_<arch>.tar.gz   InlinerSizeModel.h/.o
+  mlgo_regalloc_<arch>.tar.gz  RegAllocEvictModel.h/.o
+  mlgo_runtime_<arch>.tar.gz   xla_runtime_objects/*.cc.o, mlgo_sysroot/
+
+Host needs only: python3 (stdlib), sudo, tar, binutils (nm/readelf).
+Prepare the buildroot once with ./setup-chroot.sh, then:
+
+  ./mlgo-pack --chroot <buildroot> --model X.zip --type inliner
+  ./mlgo-pack --chroot <buildroot> --make-runtime
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+TOOLS_DIR = Path(__file__).resolve().parent
+BUILD_DIR = TOOLS_DIR / "build"
+TEMPLATES = TOOLS_DIR / "templates"
+DEFAULT_OUT = TOOLS_DIR.parent / "llvm/packaging"
+
+# Paths inside the buildroot (established by the tensorflow2-aot RPM and
+# setup-chroot.sh).
+CHROOT_TF_AOT = "/opt/tensorflow-aot"
+CHROOT_TF_PKG = f"{CHROOT_TF_AOT}/lib/python3.12/site-packages/tensorflow"
+CHROOT_SMC = f"{CHROOT_TF_AOT}/bin/saved_model_cli"
+CHROOT_SYSROOTS = "/opt/mlgo-sysroots"
+CHROOT_STAGE = "tmp/mlgo-aot"
+
+ARCHES = {
+    "armv7l": {
+        "triple": "armv7l-tizen-linux-gnueabi",
+        "cflags": ["-march=armv7-a", "-mfloat-abi=softfp", "-mfpu=neon",
+                   "-mtune=cortex-a8", "-mthumb"],
+        "elf_machine": "ARM",
+    },
+    "aarch64": {
+        "triple": "aarch64-tizen-linux-gnu",
+        # TF upstream forces GEBP nr=4 on arm64; the eigen_spatial_convolutions
+        # custom pack kernels static-assert on it (default is 8 on aarch64).
+        "cflags": ["-DEIGEN_NEON_GEBP_NR=4"],
+        "elf_machine": "AArch64",
+    },
+    "x86_64": {
+        "triple": "x86_64-tizen-linux-gnu",
+        "cflags": [],
+        "elf_machine": "Advanced Micro Devices X86-64",
+    },
+}
+
+MODELS = {
+    "inliner": {"fname": "InlinerSizeModel", "cpp_class": "llvm::InlinerSizeModel"},
+    "regalloc": {"fname": "RegAllocEvictModel", "cpp_class": "llvm::RegAllocEvictModel"},
+}
+
+# The five objects llvm.spec embeds via LLVM_MLGO_EMBED_TF_XLA_RUNTIME_OBJECTS.
+EMBED_OBJECTS = [
+    "xla_compiled_cpu_function.cc.o",
+    "cpu_function_runtime.cc.o",
+    "custom_call_status.cc.o",
+    "executable_run_options.cc.o",
+    "runtime_single_threaded_matmul_f32.cc.o",
+]
+
+# -O3 matches the legacy artifacts (CMake Release), keeping EABI attribute
+# parity with the packages already validated in GBS.
+RUNTIME_CXXFLAGS = [
+    "-O3", "-fPIC", "-std=c++17",
+    "-ftemplate-backtrace-limit=0",
+    "-Wno-ignored-attributes", "-Wno-deprecated-copy",
+    "-Wno-cast-qual", "-Wno-sign-compare",
+]
+
+
+def die(msg: str) -> None:
+    sys.exit(f"FATAL: {msg}")
+
+
+def run(cmd, **kw):
+    r = subprocess.run([str(c) for c in cmd], **kw)
+    if r.returncode:
+        die(f"command failed ({r.returncode}): {' '.join(str(c) for c in cmd)}")
+    return r
+
+
+def in_chroot(chroot: Path, p: Path) -> str:
+    """Host path under the buildroot -> the path processes see inside it."""
+    return "/" + str(p.relative_to(chroot))
+
+
+def tool_versions(chroot: Path) -> dict:
+    tf_ver = "unknown"
+    meta = sorted((chroot / CHROOT_TF_PKG.lstrip("/")).parent
+                  .glob("tensorflow-*.dist-info/METADATA"))
+    if meta:
+        for line in meta[-1].read_text().splitlines():
+            if line.startswith("Version:"):
+                tf_ver = line.split(":", 1)[1].strip()
+    clang = subprocess.run(
+        ["sudo", "chroot", chroot, "/usr/bin/clang", "--version"],
+        capture_output=True, text=True).stdout.splitlines()
+    return {"tensorflow": tf_ver,
+            "tf_source": f"team-rpm(chroot:{chroot.name})",
+            "clang": clang[0].strip() if clang else "unknown"}
+
+
+# ---------------------------------------------------------------- model input
+
+def sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sha256_input(p: Path) -> str:
+    if p.is_file():
+        return sha256_file(p)
+    h = hashlib.sha256()
+    for f in sorted(x for x in p.rglob("*") if x.is_file()):
+        h.update(str(f.relative_to(p)).encode())
+        h.update(sha256_file(f).encode())
+    return h.hexdigest()
+
+
+def locate_saved_model(root: Path) -> Path:
+    hits = [p.parent for p in root.rglob("saved_model.pb")
+            if "__MACOSX" not in p.parts and not p.name.startswith("._")]
+    if not hits:
+        die(f"no saved_model.pb found under {root}")
+    hits.sort(key=lambda p: len(p.parts))
+    return hits[0]
+
+
+def extract_model(src: Path, workdir: Path) -> Path:
+    if src.is_dir():
+        return locate_saved_model(src)
+    dest = workdir / "model_input"
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    name = src.name.lower()
+    if name.endswith(".zip"):
+        with zipfile.ZipFile(src) as z:
+            z.extractall(dest)
+    elif name.endswith((".tar.gz", ".tgz", ".tar")):
+        with tarfile.open(src) as t:
+            t.extractall(dest)
+    else:
+        die(f"unsupported model input format: {src}")
+    return locate_saved_model(dest)
+
+
+# -------------------------------------------------------------- static checks
+
+def readelf(args, path: Path) -> str:
+    return subprocess.run(["readelf", *args, str(path)],
+                          capture_output=True, text=True).stdout
+
+
+def check_object(path: Path, arch: str) -> None:
+    header = readelf(["-h"], path)
+    want = ARCHES[arch]["elf_machine"]
+    if "Machine:" not in header or want not in header:
+        die(f"{path.name}: ELF machine mismatch (want {want})")
+    if arch == "armv7l":
+        attrs = readelf(["-A"], path)
+        if "Tag_ABI_VFP_args" in attrs:
+            die(f"{path.name}: hard-float ABI detected — Tizen armv7l needs softfp")
+        if "Tag_CPU_arch: v7" not in attrs:
+            die(f"{path.name}: not ARMv7 code")
+
+
+def defined_symbols(path: Path) -> set:
+    out = subprocess.run(["nm", "--defined-only", str(path)],
+                         capture_output=True, text=True).stdout
+    return {line.split()[-1] for line in out.splitlines()
+            if line.strip() and "$" not in line.split()[-1]}
+
+
+# ------------------------------------------------------------- chroot helpers
+
+def chroot_precheck(chroot: Path) -> None:
+    if not (chroot / CHROOT_SMC.lstrip("/")).exists():
+        die(f"{chroot} has no {CHROOT_SMC}\n"
+            "       Run ./setup-chroot.sh --chroot <buildroot> --rpm <cross-enabled RPM> first")
+    if not (chroot / "usr/bin/clang").exists():
+        die(f"{chroot} has no clang — use a buildroot that ships clang "
+            "(e.g. one created by a tensorflow2 or llvm build)")
+    if not (chroot / "proc/self").exists():
+        print(f"[chroot] mounting /proc in {chroot}")
+        run(["sudo", "mount", "-t", "proc", "proc", chroot / "proc"])
+
+
+def fetch_back(chroot: Path, src_in_stage: Path, outdir: Path) -> None:
+    run(["sudo", "cp", src_in_stage, outdir])
+    run(["sudo", "chown", f"{os.getuid()}:{os.getgid()}",
+         outdir / src_in_stage.name])
+
+
+# ------------------------------------------------------------------- AOT step
+
+def aot_compile(chroot: Path, model_dir: Path, mtype: str, arch: str,
+                outdir: Path) -> tuple:
+    cfg, m = ARCHES[arch], MODELS[mtype]
+    outdir.mkdir(parents=True, exist_ok=True)
+    for stale in outdir.iterdir():
+        stale.unlink()
+    print(f"[{arch}/{mtype}] AOT compiling for {cfg['triple']} (chroot) ...")
+    stage = chroot / CHROOT_STAGE
+    run(["sudo", "rm", "-rf", stage])
+    run(["sudo", "mkdir", "-p", stage / "out"])
+    run(["sudo", "cp", "-r", model_dir, stage / "model"])
+    run(["sudo", "chroot", chroot, "/bin/sh", "-c",
+         f"cd /{CHROOT_STAGE}/out && TF_CPP_MIN_LOG_LEVEL=3 {CHROOT_SMC} "
+         "aot_compile_cpu --multithreading false "
+         f"--dir /{CHROOT_STAGE}/model --tag_set serve "
+         f"--signature_def_key action --output_prefix {m['fname']} "
+         f"--cpp_class {m['cpp_class']} --target_triple {cfg['triple']}"])
+    for suffix in (".h", ".o", "_metadata.o", "_makefile.inc"):
+        src = stage / "out" / f"{m['fname']}{suffix}"
+        if suffix in (".h", ".o") or src.exists():
+            fetch_back(chroot, src, outdir)
+    run(["sudo", "rm", "-rf", stage])
+
+    hdr, obj = outdir / f"{m['fname']}.h", outdir / f"{m['fname']}.o"
+    meta = outdir / f"{m['fname']}_metadata.o"
+    for f in (hdr, obj):
+        if not f.exists():
+            die(f"AOT did not produce {f.name}")
+    check_object(obj, arch)
+    entry = f"_xla_{m['fname']}_llvm_{m['fname']}"
+    if entry not in defined_symbols(obj):
+        die(f"{obj.name}: expected entry symbol {entry} not found")
+    if entry not in hdr.read_text():
+        die(f"{hdr.name}: header/object entry symbol mismatch")
+    if meta.exists() and defined_symbols(meta):
+        die(f"{meta.name} unexpectedly defines symbols — refusing to drop it")
+    print(f"[{arch}/{mtype}] OK: {obj.name} ({obj.stat().st_size} bytes), entry {entry}")
+    return hdr, obj
+
+
+# -------------------------------------------------------------- runtime build
+
+def build_runtime(chroot: Path, arch: str) -> Path:
+    cfg = ARCHES[arch]
+    src_root = chroot / CHROOT_TF_PKG.lstrip("/") / "xla_aot_runtime_src"
+    sysroot_host = chroot / CHROOT_SYSROOTS.lstrip("/") / arch
+    if arch != "x86_64" and not (sysroot_host / "usr/include/stdio.h").exists():
+        die(f"buildroot is missing the {arch} sysroot ({CHROOT_SYSROOTS}/{arch}) — "
+            "run ./setup-chroot.sh first")
+
+    # Target C++ headers: staged Tizen sysroot for cross arches; the buildroot
+    # itself is the x86_64 sysroot.
+    if arch == "x86_64":
+        sysroot_flag, cxx_inc = [], []
+    else:
+        sysroot_in = f"{CHROOT_SYSROOTS}/{arch}"
+        sysroot_flag = [f"--sysroot={sysroot_in}"]
+        bases = sorted(sysroot_host.glob("usr/lib*/gcc/*/*/include/c++"))
+        if not bases:
+            die(f"no libstdc++ headers found in the {arch} sysroot")
+        base = bases[-1]
+        cxx_inc = ["-isystem", in_chroot(chroot, base)]
+        for sub in sorted(base.glob("*-tizen-linux-*")) + [base / "backward"]:
+            if sub.is_dir():
+                cxx_inc += ["-isystem", in_chroot(chroot, sub)]
+
+    sources = sorted(src_root.rglob("*.cc"))
+    if not sources:
+        die(f"{CHROOT_TF_PKG}/xla_aot_runtime_src in the buildroot is empty")
+    objdir = BUILD_DIR / "runtime" / arch
+    if objdir.exists():
+        shutil.rmtree(objdir)
+    objdir.mkdir(parents=True)
+
+    stage_in = f"/tmp/mlgo-rt-{arch}"
+    flags = " ".join([f"--target={cfg['triple']}", *sysroot_flag,
+                      *cfg["cflags"], *cxx_inc, *RUNTIME_CXXFLAGS,
+                      "-I", f"{CHROOT_TF_PKG}/include"])
+    lines = ["#!/bin/sh", "set -e", f"rm -rf {stage_in}", f"mkdir -p {stage_in}"]
+    for src in sources:
+        src_in = in_chroot(chroot, src)
+        lines.append(f"clang++ {flags} -c {src_in} -o {stage_in}/{src.name}.o")
+    lines.append(f"cd {stage_in} && ar rcs libtf_xla_runtime_prebuilt.a *.cc.o")
+    script = BUILD_DIR / f"rt-build-{arch}.sh"
+    script.write_text("\n".join(lines) + "\n")
+
+    print(f"[{arch}] cross-compiling {len(sources)} runtime sources in chroot ...")
+    run(["sudo", "cp", script, chroot / "tmp/rt-build.sh"])
+    run(["sudo", "chroot", chroot, "/bin/sh", "/tmp/rt-build.sh"])
+    for name in sorted(p.name + ".o" for p in sources):
+        fetch_back(chroot, chroot / stage_in.lstrip("/") / name, objdir)
+        check_object(objdir / name, arch)
+    fetch_back(chroot, chroot / stage_in.lstrip("/") / "libtf_xla_runtime_prebuilt.a", objdir)
+    run(["sudo", "chroot", chroot, "/bin/rm", "-rf", stage_in, "/tmp/rt-build.sh"])
+
+    for obj_name in EMBED_OBJECTS:
+        if not (objdir / obj_name).exists():
+            die(f"embed object {obj_name} missing from runtime build")
+    print(f"[{arch}] runtime archive: {len(sources)} objects")
+    return objdir
+
+
+# ----------------------------------------------------------------- packaging
+
+def write_tar(out_path: Path, entries: list) -> None:
+    tmp = out_path.with_suffix(".tmp")
+    with tarfile.open(tmp, "w:gz") as tar:
+        for src, arcname in entries:
+            tar.add(src, arcname=arcname)
+    tmp.rename(out_path)
+    print(f"wrote {out_path} ({out_path.stat().st_size // 1024} KB)")
+
+
+def manifest(kind: str, arch: str, extra: dict, workdir: Path,
+             chroot: Path) -> Path:
+    data = {
+        "package": f"mlgo_{kind}_{arch}",
+        "arch": arch,
+        "triple": ARCHES[arch]["triple"],
+        "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        **tool_versions(chroot), **extra,
+    }
+    p = workdir / f"MANIFEST-{kind}.json"
+    p.write_text(json.dumps(data, indent=2) + "\n")
+    return p
+
+
+def make_model_pkg(mtype: str, arch: str, hdr: Path, obj: Path,
+                   model_info: dict, outdir: Path, chroot: Path) -> None:
+    mf = manifest(mtype, arch, model_info, hdr.parent, chroot)
+    write_tar(outdir / f"mlgo_{mtype}_{arch}.tar.gz", [
+        (hdr, f"./{hdr.name}"),
+        (obj, f"./{obj.name}"),
+        (mf, f"./{mf.name}"),
+    ])
+
+
+def make_runtime_pkg(arch: str, objdir: Path, outdir: Path,
+                     chroot: Path) -> None:
+    stage = BUILD_DIR / "runtime" / f"{arch}-stage"
+    if stage.exists():
+        shutil.rmtree(stage)
+    rt_src = stage / "mlgo_sysroot/xla_aot_runtime_src"
+    rt_src.mkdir(parents=True)
+    shutil.copy(TEMPLATES / "xla_aot_runtime_src.CMakeLists.txt", rt_src / "CMakeLists.txt")
+    shutil.copy(objdir / "libtf_xla_runtime_prebuilt.a", rt_src)
+    mf = manifest("runtime", arch,
+                  {"objects": len(list(objdir.glob("*.cc.o")))}, stage, chroot)
+
+    tf_include = chroot / CHROOT_TF_PKG.lstrip("/") / "include"
+    entries = [(objdir / n, f"./xla_runtime_objects/{n}") for n in EMBED_OBJECTS]
+    entries += [
+        (tf_include, "./mlgo_sysroot/include"),
+        (rt_src, "./mlgo_sysroot/xla_aot_runtime_src"),
+        (TEMPLATES / "LICENSE.ml-compiler-opt", "./LICENSE.ml-compiler-opt"),
+        (mf, f"./{mf.name}"),
+    ]
+    write_tar(outdir / f"mlgo_runtime_{arch}.tar.gz", entries)
+
+
+# ---------------------------------------------------------------------- main
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--chroot", type=Path, required=True,
+                    help="x86_64 GBS buildroot prepared by ./setup-chroot.sh")
+    ap.add_argument("--model", help="SavedModel input: zip / tar.gz / directory")
+    ap.add_argument("--type", choices=sorted(MODELS), dest="mtype",
+                    help="which model the input is")
+    ap.add_argument("--make-runtime", action="store_true",
+                    help="(re)build the mlgo_runtime_<arch> packages")
+    ap.add_argument("--arch", default="all",
+                    help="comma-separated: armv7l,aarch64,x86_64 or 'all' (default)")
+    ap.add_argument("--out", type=Path, default=DEFAULT_OUT,
+                    help=f"output dir (default: {DEFAULT_OUT})")
+    ap.add_argument("--no-verify", action="store_true",
+                    help="skip the automatic gbs build verification")
+    args = ap.parse_args()
+
+    if not args.make_runtime and not (args.model and args.mtype):
+        ap.error("either --model + --type, or --make-runtime is required")
+    if args.model and not args.mtype:
+        ap.error("--model requires --type")
+    arches = list(ARCHES) if args.arch == "all" else args.arch.split(",")
+    for a in arches:
+        if a not in ARCHES:
+            ap.error(f"unknown arch {a}")
+    args.chroot = args.chroot.resolve()
+    chroot_precheck(args.chroot)
+    args.out.mkdir(parents=True, exist_ok=True)
+    BUILD_DIR.mkdir(exist_ok=True)
+
+    if args.make_runtime:
+        for arch in arches:
+            objdir = build_runtime(args.chroot, arch)
+            make_runtime_pkg(arch, objdir, args.out, args.chroot)
+
+    if args.model:
+        src = Path(args.model).resolve()
+        if not src.exists():
+            die(f"model input not found: {src}")
+        model_dir = extract_model(src, BUILD_DIR)
+        info = {"model_input": src.name, "model_sha256": sha256_input(src)}
+        print(f"model dir: {model_dir}")
+        for arch in arches:
+            workdir = BUILD_DIR / "models" / args.mtype / arch
+            hdr, obj = aot_compile(args.chroot, model_dir, args.mtype, arch, workdir)
+            make_model_pkg(args.mtype, arch, hdr, obj, info, args.out, args.chroot)
+
+    if not args.no_verify:
+        print("\nstarting gbs build verification (use --no-verify to skip) ...")
+        run([TOOLS_DIR / "verify-gbs.sh", *arches])
+
+
+if __name__ == "__main__":
+    main()

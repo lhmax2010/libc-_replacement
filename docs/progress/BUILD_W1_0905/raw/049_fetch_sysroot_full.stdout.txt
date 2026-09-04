@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Fetch per-arch Tizen header sysroots for cross-compiling the XLA AOT runtime.
+
+Downloads a small set of header RPMs (glibc-devel, linux-glibc-devel,
+libstdc++-devel, ...) from the Tizen Base repo and extracts them into
+toolbox/sysroots/<arch>/. Only headers are needed: the runtime objects are
+compiled with -c and never linked locally.
+"""
+
+import argparse
+import gzip
+import io
+import subprocess
+import sys
+import urllib.request
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+NS = {
+    "c": "http://linux.duke.edu/metadata/common",
+    "repo": "http://linux.duke.edu/metadata/repo",
+}
+
+# Header providers required to compile the XLA AOT runtime sources.
+# Per name: list of acceptable package names, first match in repo wins.
+WANTED = [
+    ["glibc-devel"],
+    ["linux-glibc-devel"],
+    ["libstdc++-devel", "gcc-c++", "gcc"],
+    ["libstdc++"],
+]
+
+# Files that must exist after extraction, else the sysroot is unusable.
+SANITY_FILES = [
+    "usr/include/stdio.h",
+    "usr/include/linux/limits.h",
+]
+SANITY_GLOBS = [
+    # Tizen ships libstdc++ headers inside the GCC install dir, not /usr/include.
+    "usr/lib*/gcc/*/*/include/c++/cstdint",
+]
+
+
+def http_get(url: str) -> bytes:
+    with urllib.request.urlopen(url, timeout=120) as r:
+        return r.read()
+
+
+def load_primary(repo_url: str) -> ET.Element:
+    repomd = ET.fromstring(http_get(f"{repo_url}/repodata/repomd.xml"))
+    href = None
+    for data in repomd.findall("repo:data", NS):
+        if data.get("type") == "primary":
+            href = data.find("repo:location", NS).get("href")
+    if not href:
+        sys.exit("FATAL: no primary metadata in repomd.xml")
+    raw = http_get(f"{repo_url}/{href}")
+    if href.endswith(".gz"):
+        raw = gzip.decompress(raw)
+    return ET.fromstring(raw)
+
+
+def index_packages(primary: ET.Element, arch: str):
+    """name -> (location href, version string) for the target arch."""
+    out = {}
+    for pkg in primary.findall("c:package", NS):
+        if pkg.find("c:arch", NS).text != arch:
+            continue
+        name = pkg.find("c:name", NS).text
+        loc = pkg.find("c:location", NS).get("href")
+        ver = pkg.find("c:version", NS)
+        out[name] = (loc, f"{ver.get('ver')}-{ver.get('rel')}")
+    return out
+
+
+def extract_rpm(rpm_path: Path, dest: Path) -> None:
+    p1 = subprocess.Popen(["rpm2cpio", str(rpm_path)], stdout=subprocess.PIPE)
+    p2 = subprocess.run(
+        ["cpio", "-idmu", "--quiet"],
+        stdin=p1.stdout, cwd=dest, stderr=subprocess.DEVNULL,
+    )
+    p1.wait()
+    if p1.returncode or p2.returncode:
+        sys.exit(f"FATAL: failed to extract {rpm_path}")
+
+
+def fetch_arch(repo_url: str, arch: str, dest: Path) -> None:
+    print(f"[{arch}] loading repo metadata ...")
+    packages = index_packages(load_primary(repo_url), arch)
+    dest.mkdir(parents=True, exist_ok=True)
+    rpm_cache = dest.parent / f".rpms-{arch}"
+    rpm_cache.mkdir(exist_ok=True)
+
+    for candidates in WANTED:
+        picked = next((c for c in candidates if c in packages), None)
+        if not picked:
+            sys.exit(f"FATAL: [{arch}] none of {candidates} found in repo")
+        loc, ver = packages[picked]
+        rpm_path = rpm_cache / Path(loc).name
+        if not rpm_path.exists():
+            print(f"[{arch}] downloading {picked}-{ver}")
+            rpm_path.write_bytes(http_get(f"{repo_url}/{loc}"))
+        extract_rpm(rpm_path, dest)
+        print(f"[{arch}] extracted {picked}-{ver}")
+
+    for f in SANITY_FILES:
+        if not (dest / f).exists():
+            sys.exit(f"FATAL: [{arch}] sysroot missing {f}")
+    for g in SANITY_GLOBS:
+        if not list(dest.glob(g)):
+            sys.exit(f"FATAL: [{arch}] sysroot missing {g}")
+    print(f"[{arch}] sysroot OK: {dest}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--repo-url", required=True, help="Tizen Base repo (dir containing repodata/)")
+    ap.add_argument("--arch", action="append", required=True, choices=["armv7l", "aarch64", "x86_64"])
+    ap.add_argument("--dest", required=True, help="sysroots root dir; per-arch subdir is created")
+    args = ap.parse_args()
+    for arch in args.arch:
+        fetch_arch(args.repo_url.rstrip("/"), arch, Path(args.dest) / arch)
+
+
+if __name__ == "__main__":
+    main()
