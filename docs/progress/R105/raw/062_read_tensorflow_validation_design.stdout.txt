@@ -1,0 +1,260 @@
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-20-需要 libc++ 的声明和 flags 全部放在：
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-21-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-22-```spec
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-23-%if 0%{?build_with_libcxx}
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-24-...
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-25-%endif
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-26-```
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-27-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:28:`tensorflow2` 还要同时满足其既有 `%{USE_CLANG} == "ON"`，防止该包的
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-29-armv7hl GCC 特例误入 libc++ 路径。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-30-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-31-这个判据的依据不是编译器名称猜测：
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-32-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-33-1. `Tizen-Base-Toolchain/project_config:133-139` 定义 `_toolchain`，默认值
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-34-   是 `clang`，并由它展开 `__cc`/`__cxx`；包内
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-35-   `_toolchain_override gcc` 会使 `toolchain_is clang` 返回假。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-36-2. 工作区全部 project_config 的实查结果中，只有
+--
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-93-### bcc-tools
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-94-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-95-- 位置：`packaging/bcc-tools.spec`，BuildRequires 区；`%build:58` 后、
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-96-  `LLVM_VERSION_MAJOR` 与 `cmake:72` 前。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-97-- 改法：条件加入依赖并在 CMake 前导出共同 flags；不改
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-98-  `ENABLE_LLVM_SHARED` 选择。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-99-- GCC/非迁移：条件为假，原 `gcc >= 3.4` BuildRequires 和构建命令均保留，
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-100-  GCC 命令不出现 `-stdlib=libc++`。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:101:- 验证：检查 `libbcc.so.*`、`libbcc_bpf.so*`；对 `libbcc.a` 等静态归档检查
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:102:  `std::__1`/GLIBCXX 符号，并链接代表性 consumer。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-103-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-104-### boost
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-105-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-106-- 位置：`packaging/boost.spec`，BuildRequires/`boost-devel` Requires；
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-107-  `%build:429` 中现有 arm flags 之后，B2 `:524-527` 之前。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-108-- 改法：条件加入两个构建依赖；条件切换 devel 依赖；把 `-stdlib=libc++`
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-109-  合入 `CXXFLAGS`，把 libc++/ABI 参数合入现有 `LDFLAGS`。B2 已在
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-110-  `:525-526` 显式把这两个变量传作 `cxxflags=`/`linkflags=`，无需修改
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-111-  Boost 源码或 Jam 规则；`--with-toolset=${CC##*-}` 仍由现有工具链选择。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-112-- GCC/非迁移：条件为假，`libstdc++-devel` Requires 和 B2 参数保持当前值。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-113-- 验证：逐个检查所有 `libboost_*.so.*`，并编译/运行 filesystem、thread、
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:114:  exception、iostreams 的代表性 consumer；验证头文件实例化同样使用
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-115-  `std::__1`。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-116-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-117-### bpftrace
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-118-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-119-- 位置：`packaging/bpftrace.spec`，BuildRequires 区；`%build:67` 中 sanitizer
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-120-  `gcc-unforce-options` 之后、`mkdir build:71` 之前。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-121-- 改法：在 unforce 操作之后条件导出共同 flags，避免该脚本把新 flags 清掉；
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-122-  其余 CMake 参数不变。
+--
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-136-  test；确认 C API 仍可被非 C++ caller 使用。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-137-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-138-### jsoncpp
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-139-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-140-- 位置：`packaging/jsoncpp.spec`，BuildRequires 区；`%build:35` 后、
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-141-  `%cmake:38` 前。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-142-- 改法：条件加入依赖并导出共同 flags，其余 JSONCPP 选项不变。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-143-- GCC/非迁移：条件为假，配置与产物选择保持现状。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:144:- 验证：检查 `libjsoncpp.so.*`，编译/运行 parse/write C++ consumer。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-145-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-146-### libsigc++
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-147-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-148-- 位置：`packaging/libsigc++.spec`，BuildRequires 区；`%build:39` 后、
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-149-  `%meson:40` 前。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-150-- 改法：条件加入依赖并在 Meson setup 前导出共同 flags；Meson 会从首次
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-151-  configure 的环境初始化编译和链接参数。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-152-- GCC/非迁移：条件为假，Meson 参数和现有构建保持不变。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:153:- 验证：检查 `libsigc-2.0.so.*`，编译/运行 signal/slot C++ consumer。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-154-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-155-### llvm
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-156-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-157-- 位置：只改 `packaging/llvm.spec`，不改 `libcxx-runtimes.spec`。有效条件定义
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-158-  放在当前 `_toolchain_override clang` 块之后；依赖放 BuildRequires 区；
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-159-  CMake 参数在 `:198-256`。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-160-- 改法：真分支传 `-DLLVM_ENABLE_LIBCXX=ON`，复用 LLVM 自身
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-161-  `HandleLLVMStdlib.cmake`：它会先实测 compiler/linker 是否支持
+--
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-185-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-186-- 位置：`packaging/taglib.spec`，BuildRequires 区；`%build:28` 后、
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-187-  `%cmake:30` 前。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-188-- 改法：条件加入依赖并导出共同 flags。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-189-- GCC/非迁移：条件为假，现有 CMake 构建保持不变。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-190-- 验证：检查 C++ `libtag.so.*` 与 C wrapper `libtag_c.so.*`；分别跑 C++/C
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-191-  读取标签 smoke test。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-192-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:193:### tensorflow2
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-194-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:195:- 位置：`packaging/tensorflow2.spec`。在 `USE_CLANG` 架构选择完成后定义
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-196-  有效条件；条件加入 devel 依赖；在 `%build:162-170` 的 Clang 分支把
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-197-  `-stdlib=libc++` 加入 `CLANG_CXXFLAGS`，并设置共同 LDFLAGS。两次 CMake
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-198-  configure（TFLite 与 AOT）都继承该环境；GCC `USE_CLANG OFF` 分支不改。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-199-- GCC/非迁移：需要同时满足 `USE_CLANG ON`、`_toolchain` 存在、
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-200-  `toolchain_is clang`；任一不满足均不加入 libc++ 参数。尤其 armv7hl 的
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-201-  `USE_CLANG OFF` 路径保持原样。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:202:- 静态归档验证：`.a` 没有 `DT_NEEDED`，不能套用动态库判据。先对
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:203:  `libtensorflow2-lite.a` 与 `libtf_xla_runtime.a` 的每个成员做符号扫描，
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-204-  要求迁移 C++ 符号呈 `std::__1`，不得残留 `std::__cxx11`/`GLIBCXX_*`；再用
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:205:  代表性 consumer 实际链接，确认最终 ELF 依赖 `libc++.so.1`、不依赖
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-206-  `libstdc++.so.6`。最后重建 `inference-engine-tflite`、`nnstreamer`、
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:207:  `nntrainer` 并复跑 R103 的精确归档成员归属检查。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-208-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-209-## 4. LLVM、BCC、bpftrace 的协调要求
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-210-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-211-R101 的实际符号边表中有：`bcc-tools → llvm` 584 个 C++ 符号、
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-212-`bpftrace → llvm` 201 个 C++ 符号，均被判为布局敏感；LLVM 自身不同子包间
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-213-另有 17,589 个布局敏感符号。三者不能独立混用新旧运行时。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-214-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-215-顺序应为：先提供已验证的 `libcxx-runtimes`，再构建并发布迁移后的 LLVM，
+--
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-220-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-221-## 5. 实施阶段的统一验证矩阵
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-222-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-223-每包、每个 `armv7l`/`aarch64`/`x86_64` 都执行：
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-224-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-225-1. **libc++ 格**：Base Toolchain 默认 Clang，确认实际 compiler/version、
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-226-   完整命令含目标 flags、构建成功；动态 C++ ELF 必须直接或按已声明方式
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-227-   依赖 `libc++.so.1`，不得依赖 `libstdc++.so.6`；检查 `GLIBCXX_*` 与
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:228:   `std::__cxx11` 残留。静态归档按 TensorFlow/BCC 所述另验。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-229-2. **GCC 格**：同一 spec 令 `_toolchain_override gcc` 生效，实际完整构建；
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-230-   日志中 `-stdlib=libc++`/`-lc++abi` 必须为零，产物依赖与未改基线一致。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-231-3. **非迁移格**：在不定义 `_toolchain` 的配置中至少完成 spec 展开与实际
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-232-   构建抽检，证明条件块消失；所有包在最终提交前保存展开后的 spec 对照。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-233-4. **运行时补丁前置门禁**：构建根中的 `libc++-devel` 先执行 R85 五处头文件
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-234-   检查，libc++/libc++abi 再检查层 A/B/C 库内证据。11 包不会修改这些文件；
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-235-   包级验证不会被误写成重新验证四补丁本身。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-236-5. **功能**：执行各包自测（若打包禁用则记录）和上节所列 smoke test；再次
+--
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-244-1. 是否接受把“`_toolchain` 已定义且实际为 clang”作为本轮 Base Toolchain
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-245-   的 libc++ 启用判据；还是要求新增显式 `_with_libcxx` 开关并另改
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-246-   project_config。本文建议前者，理由见第 1 节。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-247-2. 是否接受 LLVM 使用其原生 `LLVM_ENABLE_LIBCXX=ON`，同时仅补强制
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-248-   `libc++abi` 链接，而不是像普通 CMake 包一样只依赖环境 CXXFLAGS。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-249-3. 是否接受按 `libcxx-runtimes → llvm → bcc-tools → bpftrace` 的有序构建集
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-250-   验证；当前材料不能证明 QuickBuild 会仅凭 BuildRequires 自动形成全部
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-251-   源码构建顺序，执行前需人工确认任务图或分轮触发。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md:252:4. Unified 的 `tensorflow2@ea3f134d…` 明确留到 Unified 包集环节另做，不在
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-253-   本轮 Base 分支上追加第二个基线提交。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-254-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-255-## 7. 自行判断与未观察项
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-256-
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-257-- 自行判断：沿用 `_toolchain`/`toolchain_is`，是因为它是当前唯一同时表示
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-258-  “属于 Base Toolchain 项目”和“最终实际工具链”的已存在机制；没有把
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-259-  `BuildRequires: clang` 或包名当作编译器判据。
+docs/progress/R104/IMPLEMENTATION_DESIGN.md-260-- 自行判断：不删除既有 `gcc-c++` BuildRequires，避免把标准库迁移扩大成
+--
+docs/progress/R104/REPORT.md-2-
+docs/progress/R104/REPORT.md-3-结论：`PARTIAL`
+docs/progress/R104/REPORT.md-4-
+docs/progress/R104/REPORT.md-5-11 个包的代码身份、分支创建与改法设计已完成。经人工确认进入实施后，5 个
+docs/progress/R104/REPORT.md-6-独立包完成三架构 × libc++/GCC 六格验证并已推送；3 个独立包在验证中暴露
+docs/progress/R104/REPORT.md-7-决定性问题，均未提交、未推送；LLVM/MLGO 链及依赖它的两个包按要求一起
+docs/progress/R104/REPORT.md-8-暂停。没有推送正式分支，没有 force，没有修改平台源码。
+docs/progress/R104/REPORT.md-9-
+docs/progress/R104/REPORT.md:10:## 1. tensorflow2 分支和范围登记
+docs/progress/R104/REPORT.md-11-
+docs/progress/R104/REPORT.md-12-- Base Toolchain 基线：`1cdba73549f741720f11dd53da1bb516b03763a2`；已在该
+docs/progress/R104/REPORT.md-13-  revision 上创建既有目标 `sandbox/lhmax2025/libcxx-migration`，创建时只建
+docs/progress/R104/REPORT.md-14-  分支、无提交。
+docs/progress/R104/REPORT.md-15-- Unified Toolchain 的 `accepted/tizen_unified_toolchain` 为
+docs/progress/R104/REPORT.md-16-  `ea3f134d35fc64667c2eebd72992bbb3c8e0069d`。R103 已证明
+docs/progress/R104/REPORT.md-17-  `inference-engine-tflite`、`nnstreamer`、`nntrainer` 的现存消费产物实际
+docs/progress/R104/REPORT.md:18:  使用这一版本的静态归档。
+docs/progress/R104/REPORT.md-19-- Unified revision 未在本轮处理，是因为本轮配置决策与分支实施范围明确为
+docs/progress/R104/REPORT.md-20-  `Tizen-Base-Toolchain`，不是遗漏；应在 Unified 包集进入迁移实施时基于
+docs/progress/R104/REPORT.md-21-  `ea3f134d…` 或届时 manifest 的新钉住 revision 单独建分支、复核和验证。
+docs/progress/R104/REPORT.md-22-
+docs/progress/R104/REPORT.md-23-创建前后分支全量记录、仓库身份和最近三条提交分别见
+docs/progress/R104/REPORT.md-24-`TENSORFLOW_BRANCH_CHECK.md`、`TENSORFLOW_BRANCH_RESULT.md`、
+docs/progress/R104/REPORT.md-25-`GIT_INVENTORY.md` 与 `branch_ops/`。
+docs/progress/R104/REPORT.md-26-
+--
+docs/progress/R104/REPORT.md-64-
+docs/progress/R104/REPORT.md-65-三架构 libc++ 格全部完整构建成功，实际使用 Clang 22.1.8，编译/链接命令
+docs/progress/R104/REPORT.md-66-包含 `-stdlib=libc++` 与 `-lc++abi`；三架构 GCC 格也全部完整构建成功，
+docs/progress/R104/REPORT.md-67-实际使用 GCC 14.2.0、无 libc++ 参数，最终库依赖 `libstdc++.so.6`。
+docs/progress/R104/REPORT.md-68-
+docs/progress/R104/REPORT.md-69-但 libc++ 三格的唯一 ELF 均没有 `libc++.so.1` `DT_NEEDED`。其 C++ 对象没有
+docs/progress/R104/REPORT.md-70-留下需要 libc++ 动态定义的引用，链接器在 `--as-needed` 下移除了该依赖。
+docs/progress/R104/REPORT.md-71-这不能满足已确认的“产物依赖 libc++.so.1”判据，故未提交、未推送。不能为
+docs/progress/R104/REPORT.md:72:制造依赖而擅自加 `--no-as-needed -lc++`；是否允许以真实 consumer 的模板
+docs/progress/R104/REPORT.md-73-实例化和链接证据代替该判据，需要人工裁决。
+docs/progress/R104/REPORT.md-74-
+docs/progress/R104/REPORT.md-75-### 3.3 `boost`：已确认的 Boost.Build 改法未覆盖最终产物
+docs/progress/R104/REPORT.md-76-
+docs/progress/R104/REPORT.md-77-armv7l/libc++ 的首次 `b2` 收到了 libc++ 的 `cxxflags/linkflags`，并使用 Clang
+docs/progress/R104/REPORT.md-78-22；但 `%install` 再次执行不带这两组参数的 `b2 install`，重新构建进入 RPM
+docs/progress/R104/REPORT.md-79-的最终库。结果 39 个 ELF 中 36 个仍依赖 `libstdc++.so.6`，零个依赖
+docs/progress/R104/REPORT.md-80-`libc++.so.1`。armv7l/GCC 对照通过。
+docs/progress/R104/REPORT.md-81-
+docs/progress/R104/REPORT.md-82-失败机制已确定且不依赖架构，故为控制资源终止了已启动的 aarch64/libc++
+docs/progress/R104/REPORT.md-83-格，x86_64 未运行。该包未提交、未推送，也未擅自在第二次 `b2 install`
+docs/progress/R104/REPORT.md-84-追加参数。下一步需要先补充并确认 Boost.Build 的改法，再从六格重跑。
+docs/progress/R104/REPORT.md-85-
+docs/progress/R104/REPORT.md:86:### 3.4 `tensorflow2`：需要源码兼容处理，超出本轮授权
+docs/progress/R104/REPORT.md-87-
+docs/progress/R104/REPORT.md-88-armv7l/libc++ 完整构建实际使用 Clang 和 `-stdlib=libc++`。在 4,230 个 Ninja
+docs/progress/R104/REPORT.md-89-步骤的第 1,504 项，`tensorflow/lite/kernels/elementwise.cc` 的
+docs/progress/R104/REPORT.md-90-`std::abs<float>` / `std::abs<int32_t>` 无法匹配 `std::function<T(T)>`，报：
+docs/progress/R104/REPORT.md-91-
+docs/progress/R104/REPORT.md-92-```text
+docs/progress/R104/REPORT.md-93-error: no matching function for call to 'EvalImpl'
+docs/progress/R104/REPORT.md-94-note: candidate function template not viable: no overload of 'abs' matching
+docs/progress/R104/REPORT.md-95-      'std::function<float (float)>' for 3rd argument
+docs/progress/R104/REPORT.md-96-```
+docs/progress/R104/REPORT.md-97-
+docs/progress/R104/REPORT.md-98-这不是 flags 未生效，而是迁到 libc++ 后暴露的源码兼容问题。当前授权只允许
+docs/progress/R104/REPORT.md:99:spec 与必要构建配置，不允许改源码，故立即停止；其余五格、静态归档成员和
+docs/progress/R104/REPORT.md:100:真实 consumer 重链接均为 `NOT_OBSERVED`，未提交、未推送。
+docs/progress/R104/REPORT.md-101-
+docs/progress/R104/REPORT.md-102-另外，现有 spec 在本任务三个架构上把 `USE_CLANG` 固定为 ON，并在 CMake 中
+docs/progress/R104/REPORT.md-103-写死 `clang/clang++`。因此 `_toolchain_override gcc` 只会关闭 libc++ 注入，
+docs/progress/R104/REPORT.md-104-不会让包实际由 GCC 编译。这与“每包必须在 GCC 下实际跑”的字面要求存在
+docs/progress/R104/REPORT.md-105-冲突，即使先修复上述源码错误也需要人工明确验证口径。
+docs/progress/R104/REPORT.md-106-
+docs/progress/R104/REPORT.md-107-### 3.5 LLVM、bcc-tools、bpftrace
+docs/progress/R104/REPORT.md-108-
+--
+docs/progress/R104/REPORT.md-121-
+docs/progress/R104/REPORT.md-122-`llvm.spec` 的三份 `mlgo_{arm,aarch,x86}_model.tar.gz` 各含 12,782 个条目：
+docs/progress/R104/REPORT.md-123-MLGO 模型 `.h/.o`、5 个 TensorFlow/XLA runtime `.cc.o`、sysroot 和预编译
+docs/progress/R104/REPORT.md-124-archive。spec 在 `%prep` 解包，再把这些对象直接嵌入 LLVM；它们是源码包随附
+docs/progress/R104/REPORT.md-125-的预编译输入，不是当前 LLVM 构建生成。
+docs/progress/R104/REPORT.md-126-
+docs/progress/R104/REPORT.md-127-独立标记显示 runtime 对象由 Clang 21.1.1 编译，头文件属于 TensorFlow
+docs/progress/R104/REPORT.md-128-2.15.1。上游技术路径是 `tf_compile`/`saved_model_cli aot_compile_cpu`，但
+docs/progress/R104/REPORT.md:129:现有仓库和归档没有记录真实生成者、完整命令、输入 revision 或 CI 任务。
+docs/progress/R104/REPORT.md-130-因此“谁生成”与“内部还是第三方流程”均为 `NOT_AVAILABLE`。
+docs/progress/R104/REPORT.md-131-
+docs/progress/R104/REPORT.md-132-### 4.2 是否能重生成
+docs/progress/R104/REPORT.md-133-
+docs/progress/R104/REPORT.md-134-当前缺少 SavedModel、训练数据/导出物、训练/导出脚本、准确 TensorFlow
+docs/progress/R104/REPORT.md-135-2.15.1 源码与补丁、构建 flags 和 Clang 21.1.1 构建根，不能可靠重生成。
+docs/progress/R104/REPORT.md-136-若补齐这些输入，技术路径存在；模型与 runtime 对象含目标机器码，需要三架构
+docs/progress/R104/REPORT.md-137-分别生成。训练时间、算力和总成本因输入缺失记 `NOT_AVAILABLE`。
+--
+docs/progress/R104/REPORT.md-146-
+docs/progress/R104/REPORT.md-147-### 4.4 LLVM 三包暂留 libstdc++ 的后果
+docs/progress/R104/REPORT.md-148-
+docs/progress/R104/REPORT.md-149-三者一起保留 libstdc++，上述 17,589/584/201 个内部边仍处在同一 ABI，不会
+docs/progress/R104/REPORT.md-150-因只迁 LLVM 而立即断裂。但已经观测到 Unified 的 `rpi4-linux-kernel` 所产
+docs/progress/R104/REPORT.md-151-`perf`/`trace` 与 `libLLVM.so.22.1` 之间有 4 条 ELF 边、9 个去重 C++ 符号；
+docs/progress/R104/REPORT.md-152-它们有 C++ ABI 耦合，现有证据不能证明或排除布局传递。因此该状态可作为避免
+docs/progress/R104/REPORT.md-153-内部已知断裂的阶段性事实形态，但**没有证据支持其长期安全**，也不能把其余
+docs/progress/R104/REPORT.md:154:14 个仅有 BuildRequires 的 consumer 推断为同进程风险或安全。
+docs/progress/R104/REPORT.md-155-
+docs/progress/R104/REPORT.md-156-## 5. 内联命名空间阻断与同类资产
+docs/progress/R104/REPORT.md-157-
+docs/progress/R104/REPORT.md-158-libc++ 把标准库实体编码为 `std::__1`，libstdc++ 新 ABI 编码为
+docs/progress/R104/REPORT.md-159-`std::__cxx11`。当字符串等类型进入参数、返回值或成员函数签名时，Itanium
+docs/progress/R104/REPORT.md-160-mangled name 不同。LLVM 的预编译 XLA 对象提供 `std::__cxx11` 定义，迁移后
+docs/progress/R104/REPORT.md-161-LLVM 请求 `std::__1` 定义，链接器明确报未定义符号。这正是总部报告 4.2/
+docs/progress/R104/REPORT.md-162-6.2 所述类别的实际命中，不是“同名返回类型不编码”那种静默错读。
+docs/progress/R104/REPORT.md-163-
+docs/progress/R104/REPORT.md-164-已有证据的其他候选包括：`bpftrace` 的
+docs/progress/R104/REPORT.md:165:`prebuilt-static-bpftrace.tar.gz`、TensorFlow 的 AOT/静态归档路径，以及 R13
+docs/progress/R104/REPORT.md-166-登记的若干 vendor-prebuilt 载荷。对后者目前只证明了展开器风险或存在 C++，
+docs/progress/R104/REPORT.md-167-不能直接宣称存在标准库布局边。
+docs/progress/R104/REPORT.md-168-
+docs/progress/R104/REPORT.md-169-系统性方法是：对全量 SRPM 的所有 Source 按文件 magic 解包，枚举 ET_REL、
+docs/progress/R104/REPORT.md-170-ET_DYN 和 ar 成员（不依赖扩展名），记录 `.comment`/DWARF producer 和目标
+docs/progress/R104/REPORT.md-171-架构，分类 `std::__1`/`std::__cxx11`/`GLIBCXX_*`，再从 spec 与真实链接命令

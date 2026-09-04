@@ -1,0 +1,129 @@
+diff --git a/packaging/boost.spec b/packaging/boost.spec
+index eb35d61b0..14921c286 100644
+--- a/packaging/boost.spec
++++ b/packaging/boost.spec
+@@ -14,6 +14,12 @@
+ 
+ %define disable_long_double 0
+ 
++%if %{defined _toolchain}
++%if %{toolchain_is clang}
++%define build_with_libcxx 1
++%endif
++%endif
++
+ %define boost_libs1 boost-date-time boost-filesystem boost-graph boost-iostreams boost-math boost-test
+ %define boost_libs2 boost-program-options boost-python3 boost-serialization boost-system boost-thread
+ %define boost_libs3 boost-wave boost-url boost-regex boost-contract boost-random boost-chrono boost-locale
+@@ -76,6 +82,10 @@ BuildRequires:  libicu-devel
+ BuildRequires:  pkgconfig(python3)
+ BuildRequires:  xz
+ BuildRequires:  fdupes
++%if 0%{?build_with_libcxx}
++BuildRequires:  libc++-devel
++BuildRequires:  libc++abi-devel
++%endif
+ 
+ %define _docdir %{_datadir}/doc/packages/boost-%{version}
+ 
+@@ -101,7 +111,11 @@ see the boost-doc package.
+ Summary:        Development package for Boost C++
+ Group:          Development/Libraries/C and C++
+ Requires:       %{all_libs}
++%if 0%{?build_with_libcxx}
++Requires:       libc++-devel
++%else
+ Requires:       libstdc++-devel
++%endif
+ 
+ %description    devel
+ This package contains all that is needed to develop/compile
+@@ -460,6 +474,11 @@ export EXPAT_INCLUDE=/usr/include EXPAT_LIBPATH=%{_libdir}
+ export PYTHON_FLAGS
+ LIBRARIES_FLAGS=--with-libraries=all
+ 
++%if 0%{?build_with_libcxx}
++CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
++LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
++%endif
++
+ %if !%{build_context}
+ # coroutine/coroutine2 depend on context
+ LIBRARIES_FLAGS="${LIBRARIES_FLAGS} --without-libraries=context,coroutine"
+@@ -556,7 +575,9 @@ install -D -m 644 %{testlogfile} $RPM_BUILD_ROOT%{_datadir}/boosttestsuite.log
+ ./b2 install %{?_smp_mflags} \
+     --prefix=%{buildroot}%{_prefix} --exec-prefix=%{buildroot}%{_bindir} \
+     --libdir=%{buildroot}%{_libdir} --includedir=%{buildroot}%{_includedir} \
+-    --user-config=./user-config.jam target-os=unix
++    --user-config=./user-config.jam ${CFLAGS:+cflags="$CFLAGS"} \
++    ${CXXFLAGS:+cxxflags="$CXXFLAGS"} ${LDFLAGS:+linkflags="$LDFLAGS"} \
++    target-os=unix
+ 
+ # do not install the python module - as long as noone needs it, it requires more fixes
+ # see https://bugzilla.redhat.com/show_bug.cgi?id=801534 for details
+diff --git a/packaging/tensorflow2.spec b/packaging/tensorflow2.spec
+index b87d871f..dd2fb22a 100644
+--- a/packaging/tensorflow2.spec
++++ b/packaging/tensorflow2.spec
+@@ -46,6 +46,14 @@ Source3000:     tensorflow2-aot.tar.gz
+ %define USE_CLANG     "OFF"
+ %endif
+ 
++%if %{USE_CLANG} == "ON"
++%if %{defined _toolchain}
++%if %{toolchain_is clang}
++%define build_with_libcxx 1
++%endif
++%endif
++%endif
++
+ %if %{USE_CLANG} == "ON"
+ %ifarch armv7l
+ BuildRequires: python-accel-armv7l-cross-arm
+@@ -73,6 +81,10 @@ BuildRequires: clang
+ BuildRequires: cmake
+ BuildRequires: ninja
+ BuildRequires: python3
++%if 0%{?build_with_libcxx}
++BuildRequires: libc++-devel
++BuildRequires: libc++abi-devel
++%endif
+ 
+ %description
+ This is a standalone package of TensorFlow Lite.
+@@ -164,6 +176,10 @@ pushd build
+ CLANG_ASMFLAGS=" --target=%{host_triplet} "
+ CLANG_CFLAGS=" --target=%{host_triplet} "
+ CLANG_CXXFLAGS=" --target=%{host_triplet} "
++%if 0%{?build_with_libcxx}
++CLANG_CXXFLAGS="${CLANG_CXXFLAGS} -stdlib=libc++"
++export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
++%endif
+ 
+ export ASMFLAGS="${CLANG_ASMFLAGS}"
+ export CFLAGS="${CLANG_CFLAGS}"
+diff --git a/tensorflow/lite/kernels/elementwise.cc b/tensorflow/lite/kernels/elementwise.cc
+index 5552f125..aabf8a07 100644
+--- a/tensorflow/lite/kernels/elementwise.cc
++++ b/tensorflow/lite/kernels/elementwise.cc
+@@ -286,7 +286,8 @@ TfLiteStatus AbsEval(TfLiteContext* context, TfLiteNode* node) {
+   const TfLiteType type = input->type;
+   switch (type) {
+     case kTfLiteFloat32:
+-      return EvalImpl<float>(context, node, std::abs<float>, type);
++      return EvalImpl<float>(context, node,
++                             static_cast<float (*)(float)>(std::abs), type);
+     case kTfLiteInt8:
+       return AbsEvalQuantized<int8_t>(context, node, type);
+     case kTfLiteInt16:
+@@ -294,7 +295,9 @@ TfLiteStatus AbsEval(TfLiteContext* context, TfLiteNode* node) {
+                  ? AbsInt16EvalImpl(context, node, type)
+                  : AbsEvalQuantized<int16_t>(context, node, type);
+     case kTfLiteInt32:
+-      return EvalImpl<int32_t>(context, node, std::abs<int32_t>, type);
++      return EvalImpl<int32_t>(context, node,
++                               static_cast<int32_t (*)(int32_t)>(std::abs),
++                               type);
+     default:
+       TF_LITE_KERNEL_LOG(context, "Current data type %s is not supported.",
+                          TfLiteTypeGetName(type));

@@ -1,0 +1,343 @@
+===== boost build/install =====
+   420	
+   421	%description -n boost-nowide
+   422	Run-time support for Boost.Nowide.
+   423	
+   424	
+   425	%if 0%{?run_tests}
+   426	%package testresults
+   427	Summary: Results of test suite
+   428	
+   429	%description testresults
+   430	Restults of Boost test suite execution
+   431	%endif
+   432	
+   433	%prep
+   434	%setup -q -n %{name}_%{version}
+   435	cp %{SOURCE1001} .
+   436	%{__patch} -p1 < %{SOURCE1004}
+   437	#everything in the tarball has the executable flag set ...
+   438	find -type f ! \( -name \*.sh -o -name \*.py -o -name \*.pl \) -exec chmod -x {} +
+   439	
+   440	#stupid build machinery copies .orig files
+   441	find . -name \*.orig -exec rm {} +
+   442	
+   443	%build
+   444	CC="%{__cc}"
+   445	export LDFLAGS="-Wl,--as-needed ${LDFLAGS}"
+   446	%if 0%{?build_with_libcxx}
+   447	CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+   448	LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+   449	%endif
+   450	%ifarch %arm
+   451	CFLAGS="${CFLAGS} -Wp,-D_FILE_OFFSET_BITS=64"
+   452	CXXFLAGS="${CXXFLAGS} -Wp,-D_FILE_OFFSET_BITS=64"
+   453	%endif
+   454	find . -type f -exec chmod u+w {} +
+   455	
+   456	# Create shared build instructions
+   457	cat << \EOF >.build
+   458	# Now build it
+   459	J_P=%{jobs}
+   460	J_G=$(getconf _NPROCESSORS_ONLN)
+   461	JOBS=${JOBS-$J_P}
+   462	[ $J_G -gt 64 ] && J_G=64
+   463	
+   464	if test -z "$JOBS"; then
+   465	  JOBS=$J_G
+   466	else
+   467	  test 1 -gt "$JOBS" && JOBS=1
+   468	fi
+   469	
+   470	%if %{disable_long_double}
+   471	export LONG_DOUBLE_FLAGS="--disable-long-double"
+   472	%endif
+   473	BJAM_CONFIG="-d2 -j$JOBS -sICU_PATH=%{_prefix}"
+   474	PYTHON_VERSION=$(python3 -c 'import sys; pyVer=sys.version.split(" ")[0].split(".");print("{0}.{1}".format(pyVer[0], pyVer[1]))')
+   475	PYTHON_FLAGS=" --with-python-root=/usr/lib/python${PYTHON_VERSION} --with-python-version=${PYTHON_VERSION}"
+   476	export REGEX_FLAGS="--with-icu"
+   477	export EXPAT_INCLUDE=/usr/include EXPAT_LIBPATH=%{_libdir}
+   478	export PYTHON_FLAGS
+   479	LIBRARIES_FLAGS=--with-libraries=all
+   480	
+   481	%if !%{build_context}
+   482	# coroutine/coroutine2 depend on context
+   483	LIBRARIES_FLAGS="${LIBRARIES_FLAGS} --without-libraries=context,coroutine"
+   484	%endif
+   485	
+   486	%if !%{build_fiber}
+   487	LIBRARIES_FLAGS="${LIBRARIES_FLAGS} --without-libraries=fiber"
+   488	%endif
+   489	
+   490	EOF
+   491	
+   492	touch user-config.jam
+   493	
+   494	# Read shared build instructions
+   495	. ./.build
+   496	
+   497	%if %build_mpi
+   498	# Set PATH, MANPATH and LD_LIBRARY_PATH for mpi
+   499	. /var/mpi-selector/data/$(rpm --qf "%{NAME}-%{VERSION}" -q openmpi).sh
+   500	%endif
+   501	
+   502	# use supplied bootstrap.sh instead of mucking with old bjam
+   503	# see also: https://svn.boost.org/trac/boost/ticket/9304
+   504	./bootstrap.sh $LIBRARIES_FLAGS \
+   505	    --prefix=%{_prefix} --exec-prefix=%{_bindir} \
+   506	    --libdir=%{_libdir} --includedir=%{_includedir} \
+   507	    --with-toolset=${CC##*-}
+   508	
+   509	# add specific wishes in user-config.jam
+   510	%if %build_docs
+   511	cat << EOF >user-config.jam
+   512	using xsltproc ;
+   513	
+   514	using boostbook
+   515	    : /usr/share/xml/docbook/stylesheet/nwalsh/current
+   516	    : /usr/share/xml/docbook/schema/dtd/4.2
+   517	    ;
+   518	
+   519	using doxygen ;
+   520	EOF
+   521	%endif
+   522	
+   523	%if %build_mpi
+   524	cat << EOF >>user-config.jam
+   525	using mpi ;
+   526	EOF
+   527	%endif
+   528	
+   529	cat << EOF >>user-config.jam
+   530	
+   531	using python
+   532	    : ${PYTHON_VERSION}
+   533	    : /usr/bin/python3
+   534	    : %{_includedir}/python${PYTHON_VERSION}
+   535	    :
+   536	    :
+   537	    ;
+   538	
+   539	EOF
+   540	
+   541	# perform the compilation
+   542	./b2 %{?_smp_mflags} --prefix=%{_prefix} --libdir=%{_libdir} \
+   543	    --user-config=./user-config.jam ${CFLAGS:+cflags="$CFLAGS"} \
+   544	    ${CXXFLAGS:+cxxflags="$CXXFLAGS"} ${LDFLAGS:+linkflags="$LDFLAGS"} \
+   545	    target-os=unix
+   546	
+   547	
+   548	%if %build_docs
+   549	cd doc
+   550	../b2 --user-config=../user-config.jam --v2 man
+   551	%endif
+   552	
+   553	%if 0%{?run_tests}
+   554	BOOST_LIBS="chrono,program_options,thread,system,filesystem,date_time,regex,serialization,iostreams,random,test"
+   555	install -m 0755 %{SOURCE1003} ./
+   556	echo "RUN run_test.sh"
+   557	./run_test.sh %{version} $BOOST_LIBS %{testlogfile} || exit 0
+   558	%endif
+   559	
+   560	%install
+   561	
+   562	%if 0%{?run_tests}
+   563	install -D -m 644 %{testlogfile} $RPM_BUILD_ROOT%{_datadir}/boosttestsuite.log
+   564	%endif
+   565	
+   566	# Read shared build instructions
+   567	. ./.build
+   568	
+   569	%if %build_mpi
+   570	# Set PATH, MANPATH and LD_LIBRARY_PATH for mpi
+===== tensorflow elementwise =====
+   205	  const int64_t num_elements = NumElements(input);
+   206	  const T* in_data = GetTensorData<T>(input);
+   207	  T* out_data = GetTensorData<T>(output);
+   208	  for (int64_t i = 0; i < num_elements; ++i) {
+   209	    if (validate_input_func) {
+   210	      TF_LITE_ENSURE_OK(context, validate_input_func(in_data[i]));
+   211	    }
+   212	    out_data[i] = func(in_data[i]);
+   213	  }
+   214	  return kTfLiteOk;
+   215	}
+   216	
+   217	// Non-quantized evaluation of Abs op when input is int16.
+   218	inline TfLiteStatus AbsInt16EvalImpl(TfLiteContext* context, TfLiteNode* node,
+   219	                                     TfLiteType expected_type) {
+   220	  const TfLiteTensor* input;
+   221	  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+   222	  TfLiteTensor* output;
+   223	  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
+   224	  TF_LITE_ENSURE_TYPES_EQ(context, input->type, expected_type);
+   225	  const int64_t num_elements = NumElements(input);
+   226	  const int16_t* in_data = GetTensorData<int16_t>(input);
+   227	  int16_t* out_data = GetTensorData<int16_t>(output);
+   228	  for (int64_t i = 0; i < num_elements; ++i) {
+   229	    out_data[i] = static_cast<int16_t>(
+   230	        std::abs<int32_t>(static_cast<int32_t>(in_data[i])));
+   231	  }
+   232	  return kTfLiteOk;
+   233	}
+   234	
+   235	template <typename T>
+   236	inline TfLiteStatus EvalImpl(TfLiteContext* context, TfLiteNode* node,
+   237	                             std::function<T(T)> func,
+   238	                             TfLiteType expected_type) {
+   239	  return EvalImpl<T>(context, node, func, /*validate_input_func=*/nullptr,
+   240	                     expected_type);
+   241	}
+   242	
+   243	inline TfLiteStatus EvalNumeric(TfLiteContext* context, TfLiteNode* node,
+   244	                                float float_func(float)) {
+   245	  return EvalImpl<float>(context, node, float_func, kTfLiteFloat32);
+   246	}
+   247	
+   248	inline TfLiteStatus EvalLogical(TfLiteContext* context, TfLiteNode* node,
+   249	                                bool bool_func(bool)) {
+   250	  return EvalImpl<bool>(context, node, bool_func, kTfLiteBool);
+   251	}
+   252	
+   253	void* ElementWiseQuantizedInit(TfLiteContext* context, const char* buffer,
+   254	                               size_t length) {
+   255	  return new OpData();
+   256	}
+   257	
+   258	void ElementWiseQuantizedFree(TfLiteContext* context, void* buffer) {
+   259	  delete static_cast<OpData*>(buffer);
+   260	}
+   261	
+   262	template <typename T>
+   263	TfLiteStatus AbsEvalQuantized(TfLiteContext* context, TfLiteNode* node,
+   264	                              TfLiteType type) {
+   265	  const auto* op_data = static_cast<const OpData*>(node->user_data);
+   266	  const int kMin = std::numeric_limits<T>::min();
+   267	  const int kMax = std::numeric_limits<T>::max();
+   268	
+   269	  std::function<T(T)> func = [&](T i) {
+   270	    const int32_t value = std::abs(i - op_data->input_offset);
+   271	    if (!op_data->needs_rescale) {
+   272	      return static_cast<T>(
+   273	          std::min(std::max(value + op_data->output_offset, kMin), kMax));
+   274	    }
+   275	    const int32_t output = MultiplyByQuantizedMultiplier(
+   276	                               value, op_data->multiplier, op_data->shift) +
+   277	                           op_data->output_offset;
+   278	    return static_cast<T>(std::min(std::max(output, kMin), kMax));
+   279	  };
+   280	
+   281	  return EvalImpl<T>(context, node, func, type);
+   282	}
+   283	
+   284	TfLiteStatus AbsEval(TfLiteContext* context, TfLiteNode* node) {
+   285	  const TfLiteTensor* input = GetInput(context, node, 0);
+   286	  const TfLiteType type = input->type;
+   287	  switch (type) {
+   288	    case kTfLiteFloat32:
+   289	      return EvalImpl<float>(context, node, std::abs<float>, type);
+   290	    case kTfLiteInt8:
+   291	      return AbsEvalQuantized<int8_t>(context, node, type);
+   292	    case kTfLiteInt16:
+   293	      return input->quantization.type == kTfLiteNoQuantization
+   294	                 ? AbsInt16EvalImpl(context, node, type)
+   295	                 : AbsEvalQuantized<int16_t>(context, node, type);
+   296	    case kTfLiteInt32:
+   297	      return EvalImpl<int32_t>(context, node, std::abs<int32_t>, type);
+   298	    default:
+   299	      TF_LITE_KERNEL_LOG(context, "Current data type %s is not supported.",
+   300	                         TfLiteTypeGetName(type));
+   301	      return kTfLiteError;
+   302	  }
+   303	}
+   304	
+   305	TfLiteStatus SinEval(TfLiteContext* context, TfLiteNode* node) {
+   306	  return EvalNumeric(context, node, std::sin);
+   307	}
+   308	
+   309	TfLiteStatus CosEval(TfLiteContext* context, TfLiteNode* node) {
+   310	  return EvalNumeric(context, node, std::cos);
+===== complex support =====
+   115	    default: {
+   116	      TF_LITE_KERNEL_LOG(context,
+   117	                         "Unsupported input type, Imag op only supports "
+   118	                         "complex input, but got: %s",
+   119	                         TfLiteTypeGetName(input->type));
+   120	      return kTfLiteError;
+   121	    }
+   122	  }
+   123	
+   124	  return kTfLiteOk;
+   125	}
+   126	
+   127	TfLiteStatus EvalAbs(TfLiteContext* context, TfLiteNode* node) {
+   128	  const TfLiteTensor* input = GetInput(context, node, kInputTensor);
+   129	  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
+   130	
+   131	  switch (input->type) {
+   132	    case kTfLiteComplex64: {
+   133	      ExtractData<float>(
+   134	          input,
+   135	          static_cast<float (*)(const std::complex<float>&)>(std::abs<float>),
+   136	          output);
+   137	      break;
+   138	    }
+   139	    case kTfLiteComplex128: {
+   140	      ExtractData<double>(input,
+   141	                          static_cast<double (*)(const std::complex<double>&)>(
+   142	                              std::abs<double>),
+   143	                          output);
+   144	      break;
+   145	    }
+   146	    default: {
+   147	      TF_LITE_KERNEL_LOG(context,
+   148	                         "Unsupported input type, ComplexAbs op only supports "
+   149	                         "complex input, but got: %s",
+   150	                         TfLiteTypeGetName(input->type));
+   151	      return kTfLiteError;
+   152	    }
+   153	  }
+   154	
+   155	  return kTfLiteOk;
+===== R104 command/error evidence =====
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:414:[   52s] + export CC=armv7l-tizen-linux-gnueabi-clang CXX=armv7l-tizen-linux-gnueabi-clang++
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:416:[   52s] + CXX=armv7l-tizen-linux-gnueabi-clang++
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:419:[   52s] + export 'CXXFLAGS=-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g -stdlib=libc++'
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:420:[   52s] + CXXFLAGS='-Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g -stdlib=libc++'
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:421:[   52s] + export 'LDFLAGS=-Wl,-z,relro,--as-needed,-O1,--hash-style=gnu -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed'
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:422:[   52s] + LDFLAGS='-Wl,-z,relro,--as-needed,-O1,--hash-style=gnu -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed'
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:431:[   56s] C++ compiler for the host machine: armv7l-tizen-linux-gnueabi-clang++ (clang 22.1.8 "clang version 22.1.8")
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:432:[   56s] C++ linker for the host machine: armv7l-tizen-linux-gnueabi-clang++ ld.bfd 2.43
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:529:[   59s] [20/25] armv7l-tizen-linux-gnueabi-clang++ -Isigc++/libsigc-2.0.so.0.0.0.p -I. -I.. -fdiagnostics-color=always -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -Wall -Winvalid-pch -std=c++11 -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g -stdlib=libc++ -fPIC -MD -MQ sigc++/libsigc-2.0.so.0.0.0.p/meson-generated_.._adaptors_lambda_lambda.cc.o -MF sigc++/libsigc-2.0.so.0.0.0.p/meson-generated_.._adaptors_lambda_lambda.cc.o.d -o sigc++/libsigc-2.0.so.0.0.0.p/meson-generated_.._adaptors_lambda_lambda.cc.o -c sigc++/adaptors/lambda/lambda.cc
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:530:[   59s] [21/25] armv7l-tizen-linux-gnueabi-clang++ -Isigc++/libsigc-2.0.so.0.0.0.p -I. -I.. -fdiagnostics-color=always -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -Wall -Winvalid-pch -std=c++11 -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g -stdlib=libc++ -fPIC -MD -MQ sigc++/libsigc-2.0.so.0.0.0.p/functors_slot_base.cc.o -MF sigc++/libsigc-2.0.so.0.0.0.p/functors_slot_base.cc.o.d -o sigc++/libsigc-2.0.so.0.0.0.p/functors_slot_base.cc.o -c ../sigc++/functors/slot_base.cc
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:531:[   59s] [22/25] armv7l-tizen-linux-gnueabi-clang++ -Isigc++/libsigc-2.0.so.0.0.0.p -I. -I.. -fdiagnostics-color=always -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -Wall -Winvalid-pch -std=c++11 -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g -stdlib=libc++ -fPIC -MD -MQ sigc++/libsigc-2.0.so.0.0.0.p/trackable.cc.o -MF sigc++/libsigc-2.0.so.0.0.0.p/trackable.cc.o.d -o sigc++/libsigc-2.0.so.0.0.0.p/trackable.cc.o -c ../sigc++/trackable.cc
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:532:[   59s] [23/25] armv7l-tizen-linux-gnueabi-clang++ -Isigc++/libsigc-2.0.so.0.0.0.p -I. -I.. -fdiagnostics-color=always -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -Wall -Winvalid-pch -std=c++11 -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g -stdlib=libc++ -fPIC -MD -MQ sigc++/libsigc-2.0.so.0.0.0.p/connection.cc.o -MF sigc++/libsigc-2.0.so.0.0.0.p/connection.cc.o.d -o sigc++/libsigc-2.0.so.0.0.0.p/connection.cc.o -c ../sigc++/connection.cc
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:533:[   59s] [24/25] armv7l-tizen-linux-gnueabi-clang++ -Isigc++/libsigc-2.0.so.0.0.0.p -I. -I.. -fdiagnostics-color=always -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -Wall -Winvalid-pch -std=c++11 -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g -stdlib=libc++ -fPIC -MD -MQ sigc++/libsigc-2.0.so.0.0.0.p/signal_base.cc.o -MF sigc++/libsigc-2.0.so.0.0.0.p/signal_base.cc.o.d -o sigc++/libsigc-2.0.so.0.0.0.p/signal_base.cc.o -c ../sigc++/signal_base.cc
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:534:[   59s] [25/25] armv7l-tizen-linux-gnueabi-clang++  -o sigc++/libsigc-2.0.so.0.0.0 sigc++/libsigc-2.0.so.0.0.0.p/meson-generated_.._adaptors_lambda_lambda.cc.o sigc++/libsigc-2.0.so.0.0.0.p/connection.cc.o sigc++/libsigc-2.0.so.0.0.0.p/signal_base.cc.o sigc++/libsigc-2.0.so.0.0.0.p/trackable.cc.o sigc++/libsigc-2.0.so.0.0.0.p/functors_slot_base.cc.o -Wl,--as-needed -Wl,--no-undefined -shared -fPIC -Wl,-soname,libsigc-2.0.so.0 -Wl,-z,relro,--as-needed,-O1,--hash-style=gnu -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g -stdlib=libc++
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:547:[   59s] + export CC=armv7l-tizen-linux-gnueabi-clang CXX=armv7l-tizen-linux-gnueabi-clang++
+progress/R104/raw/239_build_libsigc_armv7l_libcxx_retry.stdout:549:[   59s] + CXX=armv7l-tizen-linux-gnueabi-clang++
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7408-[  646s] [1502/4230] /bin/clang++ -DCPUINFO_SUPPORTED_PLATFORM=1 -DEIGEN_MPL2_ONLY -DNOMINMAX=1 -DPTHREADPOOL_NO_DEPRECATED_API=1 -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/third_party/xla/third_party/tsl -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/third_party/xla -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/opencl_headers -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/vulkan_headers/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/opengl_headers/api -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/egl_headers/api -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/delegates/gpu/common -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/delegates/gpu/common/task -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/pthreadpool-xnnpack/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/fp16/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/fxdiv/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/kleidiai-xnnpack -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/cpuinfo-xnnpack -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/xnnpack/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0 -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/eigen -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/abseil-cpp -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/farmhash/src -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/flatbuffers/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/gemmlowp -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/ml_dtypes -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/ml_dtypes/ml_dtypes -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/ruy -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/cpuinfo/include --target=armv7l-tizen-linux-gnueabi  -stdlib=libc++ -O3 -DNDEBUG -std=gnu++17 -fPIC -DEIGEN_NEON_GEBP_NR=4 -DCL_DELEGATE_NO_GL -DEGL_NO_X11 -DTFLITE_KERNEL_USE_XNNPACK -DTFLITE_BUILD_WITH_XNNPACK_DELEGATE -DXNNPACK_DELEGATE_ENABLE_QS8 -DXNNPACK_DELEGATE_ENABLE_QU8 -DXNNPACK_DELEGATE_USE_LATEST_OPS -DXNNPACK_DELEGATE_ENABLE_SUBGRAPH_RESHAPING -DTFL_STATIC_LIBRARY_BUILD -Wno-deprecated-declarations -pthread -MD -MT CMakeFiles/tensorflow-lite.dir/kernels/dynamic_update_slice.cc.o -MF CMakeFiles/tensorflow-lite.dir/kernels/dynamic_update_slice.cc.o.d -o CMakeFiles/tensorflow-lite.dir/kernels/dynamic_update_slice.cc.o -c /home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/kernels/dynamic_update_slice.cc
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7409-[  646s] [1503/4230] /bin/clang++ -DCPUINFO_SUPPORTED_PLATFORM=1 -DEIGEN_MPL2_ONLY -DNOMINMAX=1 -DPTHREADPOOL_NO_DEPRECATED_API=1 -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/third_party/xla/third_party/tsl -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/third_party/xla -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/opencl_headers -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/vulkan_headers/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/opengl_headers/api -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/egl_headers/api -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/delegates/gpu/common -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/delegates/gpu/common/task -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/pthreadpool-xnnpack/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/fp16/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/fxdiv/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/kleidiai-xnnpack -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/cpuinfo-xnnpack -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/xnnpack/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0 -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/eigen -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/abseil-cpp -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/farmhash/src -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/flatbuffers/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/gemmlowp -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/ml_dtypes -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/ml_dtypes/ml_dtypes -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/ruy -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/cpuinfo/include --target=armv7l-tizen-linux-gnueabi  -stdlib=libc++ -O3 -DNDEBUG -std=gnu++17 -fPIC -DEIGEN_NEON_GEBP_NR=4 -DCL_DELEGATE_NO_GL -DEGL_NO_X11 -DTFLITE_KERNEL_USE_XNNPACK -DTFLITE_BUILD_WITH_XNNPACK_DELEGATE -DXNNPACK_DELEGATE_ENABLE_QS8 -DXNNPACK_DELEGATE_ENABLE_QU8 -DXNNPACK_DELEGATE_USE_LATEST_OPS -DXNNPACK_DELEGATE_ENABLE_SUBGRAPH_RESHAPING -DTFL_STATIC_LIBRARY_BUILD -Wno-deprecated-declarations -pthread -MD -MT CMakeFiles/tensorflow-lite.dir/kernels/embedding_lookup.cc.o -MF CMakeFiles/tensorflow-lite.dir/kernels/embedding_lookup.cc.o.d -o CMakeFiles/tensorflow-lite.dir/kernels/embedding_lookup.cc.o -c /home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/kernels/embedding_lookup.cc
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7410-[  647s] [1504/4230] /bin/clang++ -DCPUINFO_SUPPORTED_PLATFORM=1 -DEIGEN_MPL2_ONLY -DNOMINMAX=1 -DPTHREADPOOL_NO_DEPRECATED_API=1 -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/third_party/xla/third_party/tsl -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/third_party/xla -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/opencl_headers -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/vulkan_headers/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/opengl_headers/api -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/egl_headers/api -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/delegates/gpu/common -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/delegates/gpu/common/task -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/pthreadpool-xnnpack/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/fp16/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/fxdiv/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/kleidiai-xnnpack -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/cpuinfo-xnnpack -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/xnnpack/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0 -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/eigen -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/abseil-cpp -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/farmhash/src -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/flatbuffers/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/gemmlowp -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/ml_dtypes -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/ml_dtypes/ml_dtypes -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/ruy -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/cpuinfo/include --target=armv7l-tizen-linux-gnueabi  -stdlib=libc++ -O3 -DNDEBUG -std=gnu++17 -fPIC -DEIGEN_NEON_GEBP_NR=4 -DCL_DELEGATE_NO_GL -DEGL_NO_X11 -DTFLITE_KERNEL_USE_XNNPACK -DTFLITE_BUILD_WITH_XNNPACK_DELEGATE -DXNNPACK_DELEGATE_ENABLE_QS8 -DXNNPACK_DELEGATE_ENABLE_QU8 -DXNNPACK_DELEGATE_USE_LATEST_OPS -DXNNPACK_DELEGATE_ENABLE_SUBGRAPH_RESHAPING -DTFL_STATIC_LIBRARY_BUILD -Wno-deprecated-declarations -pthread -MD -MT CMakeFiles/tensorflow-lite.dir/kernels/elementwise.cc.o -MF CMakeFiles/tensorflow-lite.dir/kernels/elementwise.cc.o.d -o CMakeFiles/tensorflow-lite.dir/kernels/elementwise.cc.o -c /home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/kernels/elementwise.cc
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7411-[  647s] FAILED: [code=1] CMakeFiles/tensorflow-lite.dir/kernels/elementwise.cc.o 
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7412-[  647s] /bin/clang++ -DCPUINFO_SUPPORTED_PLATFORM=1 -DEIGEN_MPL2_ONLY -DNOMINMAX=1 -DPTHREADPOOL_NO_DEPRECATED_API=1 -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/third_party/xla/third_party/tsl -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/third_party/xla -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/opencl_headers -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/vulkan_headers/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/opengl_headers/api -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/egl_headers/api -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/delegates/gpu/common -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/delegates/gpu/common/task -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/pthreadpool-xnnpack/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/fp16/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/fxdiv/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/kleidiai-xnnpack -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/cpuinfo-xnnpack -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/xnnpack/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0 -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/eigen -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/abseil-cpp -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/farmhash/src -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/flatbuffers/include -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/gemmlowp -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/ml_dtypes -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/ml_dtypes/ml_dtypes -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/ruy -I/home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/build/cpuinfo/include --target=armv7l-tizen-linux-gnueabi  -stdlib=libc++ -O3 -DNDEBUG -std=gnu++17 -fPIC -DEIGEN_NEON_GEBP_NR=4 -DCL_DELEGATE_NO_GL -DEGL_NO_X11 -DTFLITE_KERNEL_USE_XNNPACK -DTFLITE_BUILD_WITH_XNNPACK_DELEGATE -DXNNPACK_DELEGATE_ENABLE_QS8 -DXNNPACK_DELEGATE_ENABLE_QU8 -DXNNPACK_DELEGATE_USE_LATEST_OPS -DXNNPACK_DELEGATE_ENABLE_SUBGRAPH_RESHAPING -DTFL_STATIC_LIBRARY_BUILD -Wno-deprecated-declarations -pthread -MD -MT CMakeFiles/tensorflow-lite.dir/kernels/elementwise.cc.o -MF CMakeFiles/tensorflow-lite.dir/kernels/elementwise.cc.o.d -o CMakeFiles/tensorflow-lite.dir/kernels/elementwise.cc.o -c /home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/kernels/elementwise.cc
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout:7413:[  647s] /home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/kernels/elementwise.cc:289:14: error: no matching function for call to 'EvalImpl'
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout:7414:[  647s]   289 |       return EvalImpl<float>(context, node, std::abs<float>, type);
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7415-[  647s]       |              ^~~~~~~~~~~~~~~
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7416-[  647s] /home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/kernels/elementwise.cc:236:21: note: candidate function template not viable: no overload of 'abs' matching 'std::function<float (float)>' for 3rd argument
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7417-[  647s]   236 | inline TfLiteStatus EvalImpl(TfLiteContext* context, TfLiteNode* node,
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7418-[  647s]       |                     ^
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7419-[  647s]   237 |                              std::function<T(T)> func,
+--
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7425-[  647s]       |                              ~~~~~~~~~~~~~~~~~~~~~~~~~
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7426-[  647s]   198 |                              std::function<TfLiteStatus(T)> validate_input_func,
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7427-[  647s]       |                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7428-[  647s]   199 |                              TfLiteType expected_type) {
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7429-[  647s]       |                              ~~~~~~~~~~~~~~~~~~~~~~~~
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout:7430:[  647s] /home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/kernels/elementwise.cc:297:14: error: no matching function for call to 'EvalImpl'
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout:7431:[  647s]   297 |       return EvalImpl<int32_t>(context, node, std::abs<int32_t>, type);
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7432-[  647s]       |              ^~~~~~~~~~~~~~~~~
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7433-[  647s] /home/abuild/rpmbuild/BUILD/tensorflow2-2.18.0/tensorflow/lite/kernels/elementwise.cc:236:21: note: candidate function template not viable: no overload of 'abs' matching 'std::function<int32_t (int32_t)>' (aka 'std::function<int (int)>') for 3rd argument
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7434-[  647s]   236 | inline TfLiteStatus EvalImpl(TfLiteContext* context, TfLiteNode* node,
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7435-[  647s]       |                     ^
+progress/R104/raw/352_build_tensorflow2_armv7l_libcxx.stdout-7436-[  647s]   237 |                              std::function<T(T)> func,

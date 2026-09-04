@@ -1,0 +1,459 @@
+#!/bin/bash
+set -euo pipefail
+
+if [ "$#" -ne 4 ]; then
+  echo "usage: $0 PACKAGE SPEC NUMBER_BASE RELEASE_BASE" >&2
+  exit 2
+fi
+
+package=$1
+spec=$2
+number_base=$3
+release_base=$4
+workspace=/home/toolchain/development/libc++_replacement
+repo="$workspace/codes/R104/$package"
+logger="$workspace/progress/R104/code/run_logged.sh"
+verifier="$workspace/progress/R104/code/verify_dynamic_cell.sh"
+config="$workspace/gbs_llvm.conf"
+target_branch=sandbox/lhmax2025/libcxx-migration
+summary="$workspace/progress/R104/work/matrix_${package}.summary"
+
+: >"$summary"
+cell=0
+package_ok=1
+for arch in armv7l aarch64 x86_64; do
+  for mode in libcxx gcc; do
+    cell=$((cell + 1))
+    number=$((number_base + (cell - 1) * 2))
+    verify_number=$((number + 1))
+    release="${release_base}.${cell}"
+    root="$workspace/tmp/GBS-ROOT/R104-matrix-${arch}-libcxx"
+    build_label="build_${package}_${arch}_${mode}"
+    verify_label="verify_${package}_${arch}_${mode}"
+    build_stdout="$workspace/progress/R104/raw/${number}_${build_label}.stdout"
+    args=(nice -n 15 ionice -c 3 gbs -c "$config" build -A "$arch"
+      -B "$root" -C --fail-fast --threads 1 --define '_smp_mflags -j2')
+    if [ "$mode" = gcc ]; then
+      args+=(--define '_toolchain_override gcc')
+    fi
+    args+=(--release "$release" --style git --include-all
+      --packaging-dir packaging --spec "$spec")
+
+    printf '%s %s START number=%s release=%s\n' "$arch" "$mode" "$number" "$release" | tee -a "$summary"
+    if ! (cd "$repo" && bash "$logger" "$number" "$build_label" "${args[@]}" >/dev/null 2>&1); then
+      rc=$(cat "$workspace/progress/R104/raw/${number}_${build_label}.exitcode")
+      printf '%s %s BUILD_FAIL rc=%s\n' "$arch" "$mode" "$rc" | tee -a "$summary"
+      package_ok=0
+      continue
+    fi
+    if ! bash "$logger" "$verify_number" "$verify_label" "$verifier" \
+      "$package" "$arch" "$mode" "$root" "$release" "$build_stdout" >/dev/null 2>&1; then
+      rc=$(cat "$workspace/progress/R104/raw/${verify_number}_${verify_label}.exitcode")
+      printf '%s %s VERIFY_FAIL rc=%s\n' "$arch" "$mode" "$rc" | tee -a "$summary"
+      package_ok=0
+      continue
+    fi
+    printf '%s %s PASS\n' "$arch" "$mode" | tee -a "$summary"
+    cat /proc/loadavg | tee -a "$summary"
+    awk '/MemAvailable/ {print}' /proc/meminfo | tee -a "$summary"
+  done
+done
+
+if [ "$package_ok" -ne 1 ]; then
+  echo "PACKAGE_NOT_PUSHED" | tee -a "$summary"
+  exit 1
+fi
+
+audit_number=$((number_base + 12))
+commit_number=$((number_base + 13))
+push_number=$((number_base + 14))
+verify_push_number=$((number_base + 15))
+branch_compare_number=$((number_base + 16))
+
+bash "$logger" "$audit_number" "audit_${package}_before_commit" bash -c \
+  "set -euo pipefail; git -C '$repo' diff --check; test \"\$(git -C '$repo' diff --name-only)\" = 'packaging/$spec'; remote=\$(git -C '$repo' ls-remote --heads origin refs/heads/$target_branch | cut -f1); local=\$(git -C '$repo' rev-parse HEAD); echo remote=\$remote; echo local=\$local; test \"\$remote\" = \"\$local\"; git -C '$repo' status --short --branch" >/dev/null
+
+git -C "$repo" config user.name hao.lin
+git -C "$repo" config user.email hao.lin@samsung.com
+bash "$logger" "$commit_number" "commit_${package}" git -C "$repo" commit \
+  -am "packaging: select libc++ for Clang toolchain builds
+
+Use libc++ only when the Base Toolchain selector resolves to Clang.
+Keep GCC and non-toolchain builds on their existing standard library.
+
+在 Base Toolchain 选择 Clang 时使用 libc++；GCC 与非工具链构建保持原行为。" >/dev/null
+
+bash "$logger" "$push_number" "push_${package}_sandbox" git -C "$repo" push origin \
+  "HEAD:refs/heads/$target_branch" >/dev/null
+
+bash "$logger" "$verify_push_number" "verify_${package}_sandbox_push" bash -c \
+  "set -euo pipefail; local=\$(git -C '$repo' rev-parse HEAD); remote=\$(git -C '$repo' ls-remote --heads origin refs/heads/$target_branch | cut -f1); echo local=\$local; echo remote=\$remote; test \"\$local\" = \"\$remote\"; git -C '$repo' status --short --branch" >/dev/null
+bash "$logger" "$branch_compare_number" "verify_${package}_other_branches" \
+  "$workspace/progress/R104/code/verify_remote_branches.sh" "$package" >/dev/null
+echo "PACKAGE_PUSHED $(git -C "$repo" rev-parse HEAD)" | tee -a "$summary"
+===== verifier =====
+#!/bin/bash
+set -euo pipefail
+
+if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
+  echo "usage: $0 PACKAGE ARCH MODE BUILD_ROOT RELEASE [BUILD_LOG]" >&2
+  exit 2
+fi
+
+package=$1
+arch=$2
+mode=$3
+build_root=$4
+release=$5
+workspace=/home/toolchain/development/libc++_replacement
+repo_root="$build_root/local/repos/tizen_unified_standard/$arch"
+scratch="$build_root/local/BUILD-ROOTS/scratch.$arch.0"
+extract="$workspace/progress/R104/work/verify/${package}_${arch}_${mode}"
+build_log=${6:-$scratch/.build.log}
+
+test -f "$build_log"
+rm -rf "$extract"
+mkdir -p "$extract"
+
+mapfile -t rpm_names < <(sed -n \
+  "s#^.*Wrote: /home/abuild/rpmbuild/RPMS/[^/]*/##p" "$build_log" | \
+  sed -n "/-${release}\.${arch}\.rpm$/p" | \
+  sed '/-debuginfo-/d; /-debugsource-/d' | sort -u)
+rpms=()
+for rpm_name in "${rpm_names[@]}"; do
+  rpm_path="$repo_root/RPMS/$rpm_name"
+  test -f "$rpm_path"
+  rpms+=("$rpm_path")
+done
+test "${#rpms[@]}" -gt 0
+printf 'package=%s\narch=%s\nmode=%s\nrpm_count=%s\n' \
+  "$package" "$arch" "$mode" "${#rpms[@]}"
+for rpm_file in "${rpms[@]}"; do
+  echo "RPM $rpm_file"
+  rpm2cpio "$rpm_file" | (cd "$extract" && cpio -idm --quiet)
+done
+
+if [ "$mode" = libcxx ]; then
+  compiler_lines=$(rg -c 'clang version 22\.1\.8|Clang 22\.1\.8|clang\+\+|-[^ ]*-clang\+\+' "$build_log" || true)
+  libcxx_flag_lines=$(rg -c -- '-stdlib=libc\+\+' "$build_log" || true)
+  libcxxabi_flag_lines=$(rg -c -- '-lc\+\+abi' "$build_log" || true)
+  compiler_lines=${compiler_lines:-0}
+  libcxx_flag_lines=${libcxx_flag_lines:-0}
+  libcxxabi_flag_lines=${libcxxabi_flag_lines:-0}
+  test "$compiler_lines" -gt 0
+  test "$libcxx_flag_lines" -gt 0
+  test "$libcxxabi_flag_lines" -gt 0
+else
+  compiler_lines=$(rg -c 'gcc version 14\.2\.0|GNU 14\.2\.0|-[^ ]*-g\+\+' "$build_log" || true)
+  libcxx_flag_lines=$(rg -c -- '-stdlib=libc\+\+' "$build_log" || true)
+  libcxxabi_flag_lines=$(rg -c -- '-lc\+\+abi' "$build_log" || true)
+  compiler_lines=${compiler_lines:-0}
+  libcxx_flag_lines=${libcxx_flag_lines:-0}
+  libcxxabi_flag_lines=${libcxxabi_flag_lines:-0}
+  test "$compiler_lines" -gt 0
+  test "$libcxx_flag_lines" -eq 0
+  test "$libcxxabi_flag_lines" -eq 0
+fi
+printf 'compiler_evidence_lines=%s\nstdlib_libcxx_flag_lines=%s\nlibcxxabi_flag_lines=%s\n' \
+  "$compiler_lines" "$libcxx_flag_lines" "$libcxxabi_flag_lines"
+
+elf_count=0
+libcxx_needed=0
+libstdcxx_needed=0
+while IFS= read -r -d '' candidate; do
+  if ! file -b "$candidate" | rg -q '^ELF'; then
+    continue
+  fi
+  elf_count=$((elf_count + 1))
+  needed=$(readelf -d "$candidate" 2>/dev/null | rg 'NEEDED' || true)
+  if printf '%s\n' "$needed" | rg -q 'libc\+\+\.so\.1'; then
+    libcxx_needed=$((libcxx_needed + 1))
+    echo "LIBCXX_NEEDED ${candidate#$extract/}"
+  fi
+  if printf '%s\n' "$needed" | rg -q 'libstdc\+\+\.so\.6'; then
+    libstdcxx_needed=$((libstdcxx_needed + 1))
+    echo "LIBSTDCXX_NEEDED ${candidate#$extract/}"
+  fi
+done < <(find "$extract" -type f -print0)
+printf 'elf_count=%s\nlibcxx_needed=%s\nlibstdcxx_needed=%s\n' \
+  "$elf_count" "$libcxx_needed" "$libstdcxx_needed"
+test "$elf_count" -gt 0
+if [ "$mode" = libcxx ]; then
+  test "$libcxx_needed" -gt 0
+  test "$libstdcxx_needed" -eq 0
+else
+  test "$libstdcxx_needed" -gt 0
+  test "$libcxx_needed" -eq 0
+fi
+
+if [ "$mode" = libcxx ]; then
+  headers=(
+    usr/include/c++/v1/__ostream/basic_ostream.h
+    usr/include/c++/v1/future
+    usr/include/c++/v1/istream
+    usr/include/c++/v1/string
+    usr/include/c++/v1/cxxabi.h
+  )
+  for header in "${headers[@]}"; do
+    test -f "$scratch/$header"
+    if [ "$header" = usr/include/c++/v1/cxxabi.h ]; then
+      rg -n 'class .*__forced_unwind' "$scratch/$header"
+    else
+      rg -n '__forced_unwind' "$scratch/$header"
+    fi
+  done
+fi
+
+echo PASS
+===== tf verifier =====
+#!/bin/bash
+set -euo pipefail
+
+if [ "$#" -ne 6 ]; then
+  echo "usage: $0 ARCH MODE BUILD_ROOT RELEASE BUILD_LOG OUTPUT_DIR" >&2
+  exit 2
+fi
+
+arch=$1
+mode=$2
+build_root=$3
+release=$4
+build_log=$5
+output_dir=$6
+workspace=/home/toolchain/development/libc++_replacement
+repo_root="$build_root/local/repos/tizen_unified_standard/$arch"
+scratch="$build_root/local/BUILD-ROOTS/scratch.$arch.0"
+
+test -f "$build_log"
+test ! -e "$output_dir"
+mkdir -p "$output_dir/payload" "$output_dir/symbols"
+
+mapfile -t rpm_names < <(sed -n \
+  "s#^.*Wrote: /home/abuild/rpmbuild/RPMS/[^/]*/##p" "$build_log" | \
+  sed -n "/-${release}\.${arch}\.rpm$/p" | \
+  sed '/-debuginfo-/d; /-debugsource-/d' | sort -u)
+test "${#rpm_names[@]}" -gt 0
+printf 'arch=%s\nmode=%s\nrpm_count=%s\n' "$arch" "$mode" "${#rpm_names[@]}"
+for rpm_name in "${rpm_names[@]}"; do
+  rpm_path="$repo_root/RPMS/$rpm_name"
+  test -f "$rpm_path"
+  echo "RPM $rpm_path"
+  rpm2cpio "$rpm_path" | (cd "$output_dir/payload" && cpio -idm --quiet)
+done
+
+compiler_lines=$(rg -c 'clang version 22\.1\.8|Clang 22\.1\.8|clang\+\+' "$build_log" || true)
+libcxx_flag_lines=$(rg -c -- '-stdlib=libc\+\+' "$build_log" || true)
+libcxxabi_flag_lines=$(rg -c -- '-lc\+\+abi' "$build_log" || true)
+compiler_lines=${compiler_lines:-0}
+libcxx_flag_lines=${libcxx_flag_lines:-0}
+libcxxabi_flag_lines=${libcxxabi_flag_lines:-0}
+printf 'clang_evidence_lines=%s\nstdlib_libcxx_flag_lines=%s\nlibcxxabi_flag_lines=%s\n' \
+  "$compiler_lines" "$libcxx_flag_lines" "$libcxxabi_flag_lines"
+test "$compiler_lines" -gt 0
+if [ "$mode" = libcxx ]; then
+  test "$libcxx_flag_lines" -gt 0
+  test "$libcxxabi_flag_lines" -gt 0
+else
+  test "$libcxx_flag_lines" -eq 0
+  test "$libcxxabi_flag_lines" -eq 0
+fi
+
+mapfile -d '' archives < <(find "$output_dir/payload" -type f -name '*.a' -print0 | sort -z)
+test "${#archives[@]}" -gt 0
+printf 'archive_count=%s\n' "${#archives[@]}"
+for archive in "${archives[@]}"; do
+  relative=${archive#"$output_dir/payload/"}
+  symbol_file="$output_dir/symbols/$(basename "$archive").nm"
+  nm -A -P -g --defined-only "$archive" >"$symbol_file"
+  member_count=$(ar t "$archive" | wc -l)
+  strong_count=$(awk '$3 ~ /^[TDRBSG]$/ {n++} END {print n+0}' "$symbol_file")
+  libcxx_names=$(rg -c 'NSt3__1|St3__1' "$symbol_file" || true)
+  libstdcxx_names=$(rg -c 'NSt7__cxx11|St7__cxx11' "$symbol_file" || true)
+  libcxx_names=${libcxx_names:-0}
+  libstdcxx_names=${libstdcxx_names:-0}
+  printf 'ARCHIVE %s members=%s strong=%s std___1=%s std___cxx11=%s\n' \
+    "$relative" "$member_count" "$strong_count" "$libcxx_names" "$libstdcxx_names"
+  rg -m 5 'NSt3__1|St3__1|NSt7__cxx11|St7__cxx11' "$symbol_file" || true
+done
+
+elf_count=0
+libcxx_needed=0
+libstdcxx_needed=0
+while IFS= read -r -d '' candidate; do
+  if ! file -b "$candidate" | rg -q '^ELF'; then
+    continue
+  fi
+  elf_count=$((elf_count + 1))
+  needed=$(readelf -d "$candidate" 2>/dev/null | rg 'NEEDED' || true)
+  if printf '%s\n' "$needed" | rg -q 'libc\+\+\.so\.1'; then
+    libcxx_needed=$((libcxx_needed + 1))
+    echo "LIBCXX_NEEDED ${candidate#$output_dir/payload/}"
+  fi
+  if printf '%s\n' "$needed" | rg -q 'libstdc\+\+\.so\.6'; then
+    libstdcxx_needed=$((libstdcxx_needed + 1))
+    echo "LIBSTDCXX_NEEDED ${candidate#$output_dir/payload/}"
+  fi
+done < <(find "$output_dir/payload" -type f -print0)
+printf 'elf_count=%s\nlibcxx_needed=%s\nlibstdcxx_needed=%s\n' \
+  "$elf_count" "$libcxx_needed" "$libstdcxx_needed"
+test "$elf_count" -gt 0
+if [ "$mode" = libcxx ]; then
+  test "$libcxx_needed" -gt 0
+  test "$libstdcxx_needed" -eq 0
+else
+  test "$libcxx_needed" -eq 0
+fi
+
+if [ "$mode" = libcxx ]; then
+  headers=(
+    usr/include/c++/v1/__ostream/basic_ostream.h
+    usr/include/c++/v1/future
+    usr/include/c++/v1/istream
+    usr/include/c++/v1/string
+    usr/include/c++/v1/cxxabi.h
+  )
+  for header in "${headers[@]}"; do
+    test -f "$scratch/$header"
+    if [ "$header" = usr/include/c++/v1/cxxabi.h ]; then
+      rg -n 'class .*__forced_unwind' "$scratch/$header"
+    else
+      rg -n '__forced_unwind' "$scratch/$header"
+    fi
+  done
+fi
+
+echo PASS
+===== tf match =====
+#!/usr/bin/env python3
+"""Re-run R103's exact strong-symbol/member attribution for one new archive root.
+
+This establishes which members of the newly built archive correspond to code found
+in the published consumers.  It does not claim that those old libstdc++ consumers
+can link against a libc++ archive; that requires rebuilding a consumer.
+"""
+
+import argparse
+import csv
+import re
+import shlex
+import subprocess
+from collections import defaultdict
+from pathlib import Path
+
+STRONG_TYPES = set("TDRBSG")
+NM_ARCHIVE = re.compile(r"^(.*)\[([^]]+)\]:\s+(\S+)\s+(\S+)(?:\s+.*)?$")
+CONSUMER_NAMES = {"inference-engine-tflite", "nnstreamer", "nntrainer"}
+
+
+def run(command, ledger):
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    ledger.write(f"COMMAND={shlex.join(command)}\nEXIT_CODE={result.returncode}\n")
+    if result.stderr:
+        ledger.write("STDERR=" + result.stderr.replace("\n", "\\n") + "\n")
+    if result.returncode:
+        raise RuntimeError(f"command failed: {shlex.join(command)}")
+    return result.stdout
+
+
+def parse_plain_nm(text):
+    found = set()
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            found.add(parts[0])
+    return found
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--archive-root", required=True, type=Path)
+parser.add_argument("--consumer-root", required=True, type=Path)
+parser.add_argument("--arch", required=True)
+parser.add_argument("--output-dir", required=True, type=Path)
+args = parser.parse_args()
+
+args.output_dir.mkdir(parents=True, exist_ok=False)
+provider_index = defaultdict(list)
+with (args.output_dir / "subcommands.log").open("w", encoding="utf-8") as ledger:
+    for archive in sorted(args.archive_root.rglob("*.a")):
+        if archive.name not in {"libtensorflow2-lite.a", "libtf_xla_runtime.a"}:
+            continue
+        text = run(["nm", "-A", "-P", "-g", "--defined-only", str(archive)], ledger)
+        for line in text.splitlines():
+            match = NM_ARCHIVE.match(line)
+            if not match:
+                continue
+            _, member, symbol, symbol_type = match.groups()
+            if symbol_type[:1] in STRONG_TYPES:
+                provider_index[symbol].append((archive.name, member, symbol_type))
+
+    rows = []
+    member_symbols = defaultdict(set)
+    for source_dir in sorted(args.consumer_root.iterdir()):
+        if source_dir.name not in CONSUMER_NAMES:
+            continue
+        arch_dir = source_dir / args.arch
+        if not arch_dir.is_dir():
+            continue
+        for path in sorted(arch_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            with path.open("rb") as candidate:
+                if candidate.read(4) != b"\x7fELF":
+                    continue
+            symbols = set()
+            for command in (["nm", "-a", "-P", "--defined-only", str(path)],
+                            ["nm", "-D", "-P", "--defined-only", str(path)]):
+                try:
+                    symbols.update(parse_plain_nm(run(command, ledger)))
+                except RuntimeError:
+                    pass
+            for symbol in sorted(symbols & provider_index.keys()):
+                for archive, member, symbol_type in provider_index[symbol]:
+                    key = (source_dir.name, str(path.relative_to(arch_dir)), archive, member)
+                    member_symbols[key].add(symbol)
+
+    for key, symbols in sorted(member_symbols.items()):
+        source, elf_path, archive, member = key
+        rows.append({
+            "consumer_source": source,
+            "arch": args.arch,
+            "elf_path": elf_path,
+            "archive": archive,
+            "archive_member": member,
+            "matched_strong_symbols": len(symbols),
+            "matched_symbol_names": ";".join(sorted(symbols)),
+        })
+
+with (args.output_dir / "member_matches.tsv").open("w", newline="", encoding="utf-8") as stream:
+    fields = ["consumer_source", "arch", "elf_path", "archive", "archive_member",
+              "matched_strong_symbols", "matched_symbol_names"]
+    writer = csv.DictWriter(stream, fieldnames=fields, delimiter="\t", lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+
+summary = defaultdict(lambda: {"members": set(), "symbols": set(), "elfs": set()})
+for row in rows:
+    key = (row["consumer_source"], row["archive"])
+    summary[key]["members"].add(row["archive_member"])
+    summary[key]["symbols"].update(row["matched_symbol_names"].split(";"))
+    summary[key]["elfs"].add(row["elf_path"])
+
+with (args.output_dir / "summary.tsv").open("w", newline="", encoding="utf-8") as stream:
+    fields = ["consumer_source", "archive", "consumer_elfs", "archive_members_lower_bound",
+              "exact_strong_symbols"]
+    writer = csv.DictWriter(stream, fieldnames=fields, delimiter="\t", lineterminator="\n")
+    writer.writeheader()
+    for (source, archive), values in sorted(summary.items()):
+        writer.writerow({
+            "consumer_source": source,
+            "archive": archive,
+            "consumer_elfs": len(values["elfs"]),
+            "archive_members_lower_bound": len(values["members"]),
+            "exact_strong_symbols": len(values["symbols"]),
+        })
+
+print(f"provider_strong_symbols={len(provider_index)}")
+print(f"member_match_rows={len(rows)}")
+for key, values in sorted(summary.items()):
+    print(f"SUMMARY {key[0]} {key[1]} elfs={len(values['elfs'])} "
+          f"members={len(values['members'])} symbols={len(values['symbols'])}")

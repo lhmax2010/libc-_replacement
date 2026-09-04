@@ -1,0 +1,113 @@
+   218	%if %{USE_CLANG} == "ON"
+   219	export CC=clang
+   220	export CXX=clang++
+   221	CC=clang CXX=clang++ \
+   222	cmake \
+   223	  -DCMAKE_C_COMPILER=clang \
+   224	  -DCMAKE_CXX_COMPILER=clang++ \
+   225	  -DCMAKE_VERBOSE_MAKEFILE=ON \
+   226	  -GNinja \
+   227	  -DTFLITE_BUILD_SHARED_LIB="%{SHARED_LIB}" \
+   228	  -DTFLITE_ENABLE_XNNPACK="%{USE_XNNPACK}" \
+   229	  -DTFLITE_ENABLE_GPU="%{USE_OPENCL}" \
+   230	  ../tensorflow/lite
+   231	%else # USE_CLANG OFF
+   232	cmake \
+   233	  -DCMAKE_VERBOSE_MAKEFILE=ON \
+   234	  -GNinja \
+   235	  -DCMAKE_C_FLAGS="${EXTRA_CFLAGS}" \
+   236	  -DCMAKE_CXX_FLAGS="${EXTRA_CXXFLAGS}" \
+   237	  -DTFLITE_BUILD_SHARED_LIB="%{SHARED_LIB}" \
+   238	  -DTFLITE_ENABLE_XNNPACK="%{USE_XNNPACK}" \
+   239	  -DXNNPACK_ENABLE_ARM_BF16=OFF \
+   240	  -DXNNPACK_ENABLE_ARM_I8MM=OFF \
+   241	  -DTFLITE_ENABLE_GPU="%{USE_OPENCL}" \
+   242	  ../tensorflow/lite
+   243	%endif # USE_CLANG
+   244	
+   245	cmake --build . %{?_smp_mflags}
+   246	
+   247	cmake --build . %{?_smp_mflags} -t benchmark_model
+   248	
+   249	popd
+   250	
+   251	# Build AOT runtime library (xla_aot_runtime_src)
+   252	# Use the same cross-compilation setup as TFLite build
+   253	mkdir -p build-aot
+   254	pushd build-aot
+   255	
+   256	%if %{USE_CLANG} == "ON"
+   257	cmake \
+   258	  -DCMAKE_C_COMPILER=clang \
+   259	  -DCMAKE_CXX_COMPILER=clang++ \
+   260	  -DCMAKE_C_FLAGS="${CFLAGS}" \
+   261	  -DCMAKE_CXX_FLAGS="${CXXFLAGS}" \
+   262	  -DCMAKE_VERBOSE_MAKEFILE=ON \
+   263	  -GNinja \
+   264	  %{_builddir}/%{name}-%{version}/aot/xla_aot_runtime_src
+   265	%else
+   266	cmake \
+   267	  -DCMAKE_C_FLAGS="${EXTRA_CFLAGS}" \
+   268	  -DCMAKE_CXX_FLAGS="${EXTRA_CXXFLAGS}" \
+   269	  -DCMAKE_VERBOSE_MAKEFILE=ON \
+   270	  -GNinja \
+   271	  %{_builddir}/%{name}-%{version}/aot/xla_aot_runtime_src
+   272	%endif
+   273	
+   274	ninja
+   275	popd
+   276	
+   277	%install
+   278	mkdir -p %{buildroot}%{_libdir}
+   279	mkdir -p %{buildroot}%{_libdir}/pkgconfig
+   280	mkdir -p %{buildroot}%{_includedir}/tensorflow2/lite
+   281	mkdir -p %{buildroot}%{_includedir}/tensorflow2/compiler/mlir
+   282	mkdir -p %{buildroot}%{_bindir}
+   283	mkdir -p %{buildroot}%{_datadir}/tensorflow2/lite/schema
+   284	pushd %{buildroot}%{_includedir}/tensorflow2
+   285	ln -sf . %{buildroot}%{_includedir}/tensorflow2/tensorflow
+   286	# TF2Lite users do: #include <tensorflow/FILENAME.h>
+   287	popd
+   288	
+   289	cp %{SOURCE1002} .
+   290	sed -i 's:@libdir@:%{_libdir}:g
+   291	    s:@includedir@:%{_includedir}/tensorflow2/:g' ./tensorflow2-lite.pc.in
+   292	
+   293	# Put the generated files into the buildroot folder
+   294	## install built static library and benchmark binary
+   295	%if %{SHARED_LIB} == "ON"
+   296	  install -m 0644 ./build/libtensorflow-lite.so %{buildroot}%{_libdir}/libtensorflow2-lite.so
+   297	%else
+   298	  install -m 0644 ./build/libtensorflow-lite-bundled.a %{buildroot}%{_libdir}/libtensorflow2-lite.a
+   299	%endif
+   300	
+   301	install -m 0655 ./build/tools/benchmark/benchmark_model %{buildroot}%{_bindir}/tflite_benchmark_model
+   302	
+   303	## install headers
+   304	pushd tensorflow/lite
+   305	find . -name "*.h" -type f -exec cp --parents {} %{buildroot}%{_includedir}/tensorflow2/lite \;
+   306	popd
+   307	
+   308	pushd tensorflow/compiler/mlir
+   309	find . -name "*.h" -type f -exec cp --parents {} %{buildroot}%{_includedir}/tensorflow2/compiler/mlir \;
+   310	popd
+   311	
+   312	### rename tensorflow -> tensorflow2
+   313	pushd %{buildroot}%{_includedir}/tensorflow2/
+   314	for HEADER in `find -name '*.h'`; do
+   315	  sed -i 's|#\W*include\W*<tensorflow/|#include <tensorflow2/|' ${HEADER}
+   316	  sed -i 's|#\W*include\W*"tensorflow/|#include "tensorflow2/|' ${HEADER}
+   317	done
+   318	popd
+   319	
+   320	## install flatbuffers header for tensorflow lite
+   321	mkdir -p %{buildroot}%{_includedir}/tensorflow2/flatbuffers
+   322	pushd build/flatbuffers/include
+   323	find . -name "*.h" -type f -exec cp --parents {} %{buildroot}%{_includedir}/tensorflow2/ \;
+   324	popd
+   325	
+   326	## change flatbuffers header include path in tflite / flatbuffers
+   327	pushd %{buildroot}%{_includedir}/tensorflow2/
+   328	for HEADER in `find -name '*.h'`; do
+   329	  sed -i 's|#\W*include\W*<flatbuffers/|#include <tensorflow2/flatbuffers/|' ${HEADER}
+   330	  sed -i 's|#\W*include\W*"flatbuffers/|#include "tensorflow2/flatbuffers/|' ${HEADER}

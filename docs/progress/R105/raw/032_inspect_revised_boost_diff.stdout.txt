@@ -1,0 +1,196 @@
+diff --git a/packaging/boost.spec b/packaging/boost.spec
+index eb35d61b0..6c7fc4ed7 100644
+--- a/packaging/boost.spec
++++ b/packaging/boost.spec
+@@ -14,6 +14,12 @@
+ 
+ %define disable_long_double 0
+ 
++%if %{defined _toolchain}
++%if %{toolchain_is clang}
++%define build_with_libcxx 1
++%endif
++%endif
++
+ %define boost_libs1 boost-date-time boost-filesystem boost-graph boost-iostreams boost-math boost-test
+ %define boost_libs2 boost-program-options boost-python3 boost-serialization boost-system boost-thread
+ %define boost_libs3 boost-wave boost-url boost-regex boost-contract boost-random boost-chrono boost-locale
+@@ -76,6 +82,10 @@ BuildRequires:  libicu-devel
+ BuildRequires:  pkgconfig(python3)
+ BuildRequires:  xz
+ BuildRequires:  fdupes
++%if 0%{?build_with_libcxx}
++BuildRequires:  libc++-devel
++BuildRequires:  libc++abi-devel
++%endif
+ 
+ %define _docdir %{_datadir}/doc/packages/boost-%{version}
+ 
+@@ -101,7 +111,11 @@ see the boost-doc package.
+ Summary:        Development package for Boost C++
+ Group:          Development/Libraries/C and C++
+ Requires:       %{all_libs}
++%if 0%{?build_with_libcxx}
++Requires:       libc++-devel
++%else
+ Requires:       libstdc++-devel
++%endif
+ 
+ %description    devel
+ This package contains all that is needed to develop/compile
+@@ -460,6 +474,11 @@ export EXPAT_INCLUDE=/usr/include EXPAT_LIBPATH=%{_libdir}
+ export PYTHON_FLAGS
+ LIBRARIES_FLAGS=--with-libraries=all
+ 
++%if 0%{?build_with_libcxx}
++CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
++LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
++%endif
++
+ %if !%{build_context}
+ # coroutine/coroutine2 depend on context
+ LIBRARIES_FLAGS="${LIBRARIES_FLAGS} --without-libraries=context,coroutine"
+@@ -476,6 +495,11 @@ touch user-config.jam
+ # Read shared build instructions
+ . ./.build
+ 
++# Keep the exact Boost.Build properties for the separate install scriptlet.
++printf '%s\n' "$CFLAGS" > .boost-cflags
++printf '%s\n' "$CXXFLAGS" > .boost-cxxflags
++printf '%s\n' "$LDFLAGS" > .boost-linkflags
++
+ %if %build_mpi
+ # Set PATH, MANPATH and LD_LIBRARY_PATH for mpi
+ . /var/mpi-selector/data/$(rpm --qf "%{NAME}-%{VERSION}" -q openmpi).sh
+@@ -547,6 +571,9 @@ install -D -m 644 %{testlogfile} $RPM_BUILD_ROOT%{_datadir}/boosttestsuite.log
+ 
+ # Read shared build instructions
+ . ./.build
++CFLAGS=$(cat .boost-cflags)
++CXXFLAGS=$(cat .boost-cxxflags)
++LDFLAGS=$(cat .boost-linkflags)
+ 
+ %if %build_mpi
+ # Set PATH, MANPATH and LD_LIBRARY_PATH for mpi
+@@ -556,7 +583,9 @@ install -D -m 644 %{testlogfile} $RPM_BUILD_ROOT%{_datadir}/boosttestsuite.log
+ ./b2 install %{?_smp_mflags} \
+     --prefix=%{buildroot}%{_prefix} --exec-prefix=%{buildroot}%{_bindir} \
+     --libdir=%{buildroot}%{_libdir} --includedir=%{buildroot}%{_includedir} \
+-    --user-config=./user-config.jam target-os=unix
++    --user-config=./user-config.jam ${CFLAGS:+cflags="$CFLAGS"} \
++    ${CXXFLAGS:+cxxflags="$CXXFLAGS"} ${LDFLAGS:+linkflags="$LDFLAGS"} \
++    target-os=unix
+ 
+ # do not install the python module - as long as noone needs it, it requires more fixes
+ # see https://bugzilla.redhat.com/show_bug.cgi?id=801534 for details
+   485	%endif
+   486	
+   487	%if !%{build_fiber}
+   488	LIBRARIES_FLAGS="${LIBRARIES_FLAGS} --without-libraries=fiber"
+   489	%endif
+   490	
+   491	EOF
+   492	
+   493	touch user-config.jam
+   494	
+   495	# Read shared build instructions
+   496	. ./.build
+   497	
+   498	# Keep the exact Boost.Build properties for the separate install scriptlet.
+   499	printf '%s\n' "$CFLAGS" > .boost-cflags
+   500	printf '%s\n' "$CXXFLAGS" > .boost-cxxflags
+   501	printf '%s\n' "$LDFLAGS" > .boost-linkflags
+   502	
+   503	%if %build_mpi
+   504	# Set PATH, MANPATH and LD_LIBRARY_PATH for mpi
+   505	. /var/mpi-selector/data/$(rpm --qf "%{NAME}-%{VERSION}" -q openmpi).sh
+   506	%endif
+   507	
+   508	# use supplied bootstrap.sh instead of mucking with old bjam
+   509	# see also: https://svn.boost.org/trac/boost/ticket/9304
+   510	./bootstrap.sh $LIBRARIES_FLAGS \
+   511	    --prefix=%{_prefix} --exec-prefix=%{_bindir} \
+   512	    --libdir=%{_libdir} --includedir=%{_includedir} \
+   513	    --with-toolset=${CC##*-}
+   514	
+   515	# add specific wishes in user-config.jam
+   516	%if %build_docs
+   517	cat << EOF >user-config.jam
+   518	using xsltproc ;
+   519	
+   520	using boostbook
+   521	    : /usr/share/xml/docbook/stylesheet/nwalsh/current
+   522	    : /usr/share/xml/docbook/schema/dtd/4.2
+   523	    ;
+   524	
+   525	using doxygen ;
+   526	EOF
+   527	%endif
+   528	
+   529	%if %build_mpi
+   530	cat << EOF >>user-config.jam
+   531	using mpi ;
+   532	EOF
+   533	%endif
+   534	
+   535	cat << EOF >>user-config.jam
+   536	
+   537	using python
+   538	    : ${PYTHON_VERSION}
+   539	    : /usr/bin/python3
+   540	    : %{_includedir}/python${PYTHON_VERSION}
+   541	    :
+   542	    :
+   543	    ;
+   544	
+   545	EOF
+   546	
+   547	# perform the compilation
+   548	./b2 %{?_smp_mflags} --prefix=%{_prefix} --libdir=%{_libdir} \
+   549	    --user-config=./user-config.jam ${CFLAGS:+cflags="$CFLAGS"} \
+   550	    ${CXXFLAGS:+cxxflags="$CXXFLAGS"} ${LDFLAGS:+linkflags="$LDFLAGS"} \
+   551	    target-os=unix
+   552	
+   553	
+   554	%if %build_docs
+   555	cd doc
+   556	../b2 --user-config=../user-config.jam --v2 man
+   557	%endif
+   558	
+   559	%if 0%{?run_tests}
+   560	BOOST_LIBS="chrono,program_options,thread,system,filesystem,date_time,regex,serialization,iostreams,random,test"
+   561	install -m 0755 %{SOURCE1003} ./
+   562	echo "RUN run_test.sh"
+   563	./run_test.sh %{version} $BOOST_LIBS %{testlogfile} || exit 0
+   564	%endif
+   565	
+   566	%install
+   567	
+   568	%if 0%{?run_tests}
+   569	install -D -m 644 %{testlogfile} $RPM_BUILD_ROOT%{_datadir}/boosttestsuite.log
+   570	%endif
+   571	
+   572	# Read shared build instructions
+   573	. ./.build
+   574	CFLAGS=$(cat .boost-cflags)
+   575	CXXFLAGS=$(cat .boost-cxxflags)
+   576	LDFLAGS=$(cat .boost-linkflags)
+   577	
+   578	%if %build_mpi
+   579	# Set PATH, MANPATH and LD_LIBRARY_PATH for mpi
+   580	. /var/mpi-selector/data/$(rpm --qf "%{NAME}-%{VERSION}" -q openmpi).sh
+   581	%endif
+   582	
+   583	./b2 install %{?_smp_mflags} \
+   584	    --prefix=%{buildroot}%{_prefix} --exec-prefix=%{buildroot}%{_bindir} \
+   585	    --libdir=%{buildroot}%{_libdir} --includedir=%{buildroot}%{_includedir} \
+   586	    --user-config=./user-config.jam ${CFLAGS:+cflags="$CFLAGS"} \
+   587	    ${CXXFLAGS:+cxxflags="$CXXFLAGS"} ${LDFLAGS:+linkflags="$LDFLAGS"} \
+   588	    target-os=unix
+   589	
+   590	# do not install the python module - as long as noone needs it, it requires more fixes
+   591	# see https://bugzilla.redhat.com/show_bug.cgi?id=801534 for details
+   592	rm -f %{buildroot}%{_libdir}/mpi.so
+   593	
+   594	mkdir -p %{buildroot}%{_docdir}
+   595	
