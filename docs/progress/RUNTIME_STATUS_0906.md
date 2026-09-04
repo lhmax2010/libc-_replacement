@@ -4,4 +4,4 @@
 |---|---|---:|---|---|
 | W1 闸门事项全面验证 | PARTIAL | 约 55 分钟 | `docs/progress/R109/W1_REPORT.md` | 发布仓与重编集合证据齐备；外部组件及内联全量消费面不可得，不作决定 |
 | W2 补齐外部缺口 | GAP_REMAINS | 约 25 分钟 | `docs/progress/R109/W2_REPORT.md` | 冻结源码 1,424 完整/24 部分/2 不可得；外部产品分母仍不可得 |
-| W3 Boost 其余边实测 | NOT_STARTED | 0 | `docs/progress/R109/` | — |
+| W3 Boost 其余边实测 | PARTIAL | 约 25 分钟 | `docs/progress/R109/W3_REPORT.md` | 90 条已分类；按实际架构代表符号实测 27、未测 63 |
