@@ -1,0 +1,1469 @@
+MISSING docs/progress/R68/REPORT.md
+FILE docs/progress/R72/REPORT.md
+# R72：libc++ 中“取消即终止”边界的枚举
+
+## 1. 范围与结论
+
+本任务未修改平台源码、产品代码或任何补丁；新增内容仅为枚举脚本、消费面扫描脚本、验证用例和报告材料。
+
+以项目当前的 Linux/glibc 2.40、pthread 后端、`_LIBCPP_HAS_COND_CLOCKWAIT=1` 配置为口径，源码可闭合验证的结果为：
+
+- **两套库实际行为差异：5 个边界定义，5 个均可达**。其中 4 个位于 libc++ 的 `condition_variable`：一个普通等待边界、两个时钟特化的定时等待边界、一个任意时钟模板边界；libstdc++ 的对应函数均已移除 `noexcept`。另 1 个是 `wbuffer_convert` 析构：两侧析构都隐式不抛异常，但只有 libc++ 析构会主动 `sync()`，因此只有 libc++ 把 wrapped streambuf 的取消点带入该边界。
+- **两侧共有：8 个边界定义**。包括 `jthread` 的析构/移动赋值、`random_device` 析构、filesystem 内部文件描述符析构、`basic_filebuf` 析构、进程退出时的标准流刷新，以及两个依赖虚拟 streambuf 输出路径的析构边界。这些不是迁移新增。
+- **另有 1 个仅语法形态不同但未形成独立行为差异的内部 helper**：libc++ `FileDescriptor::close()` 显式 `noexcept`，libstdc++ 对应 helper 未显式标注；但当前唯一调用者是两侧都隐式 `noexcept` 的 RAII 析构函数，外层共同边界已经遮蔽该差异。
+
+逐项证据见 `tables/verified_boundaries.tsv`。上述“5/5”是当前目标配置下经源码闭合或具体可构造虚路径复核的**可证数字**，不是对任意用户回调、任意自定义 streambuf、任意 libc 或任意模板实例化的数学完备证明；盲区见第 8 节。
+
+## 2. 方法与校准
+
+方法分三环：
+
+1. 用 Universal Ctags 定位 libc++ `include/` 与 `src/` 中的函数定义；显式识别 `noexcept`、`_NOEXCEPT`、`_LIBCPP_NOEXCEPT`，并把析构函数列为“隐式异常规格待复核”。
+2. 以 POSIX required/may 清单及 glibc Linux 取消包装器为种子，建立词法调用图，从每个不抛异常候选做有界 BFS。
+3. 对候选逐项人工复核重载、同名函数、条件编译、实际 libc 包装器和 libstdc++ 对应实现。自动输出只作为候选生成器，不直接作为结论。
+
+计数单位是当前配置中源码可见的函数定义；同一模板按定义计 1，不按实例化数膨胀。对仅由已计边界包裹、且源码中没有独立定义的隐式外层析构不重复计数。两库对照同时检查异常规格和调用结构；`wbuffer_convert` 说明“对应函数也隐式不抛异常”并不自动等价于“两侧同样受影响”，因为 libstdc++ 对应析构没有 libc++ 的 `sync()` 调用。
+
+校准成功：脚本重新发现了已知项 `condition_variable::wait -> __libcpp_condvar_wait -> pthread_cond_wait`（`commands/028_calibration_verified_rows.log`）。同时校准也暴露了词法图的预期假阳性，例如 `wait`、`remove`、`max` 等同名函数会串错；因此原始 882 行候选没有被当作 882 个边界。完整原始候选保留在 `raw/noexcept_candidates.tsv`。
+
+## 3. 取消点清单与平台口径
+
+`raw/cancellation_points.tsv` 完整列出：POSIX required 58 个名字、POSIX may 205 个名字，以及初始的 13 个保守 glibc 扩展种子。来源是 Linux `pthreads(7)` 与 POSIX 取消规则。名字级清单仍需结合参数复核，例如 `fcntl` 仅特定阻塞命令、`lockf` 仅 `F_LOCK` 属 required cancellation point；枚举器故意先宽收集、后人工排除。
+
+平台实际口径另用与目标 libc 同版本的 GNU glibc 2.40 官方源码核对 `SYSCALL_CANCEL`/取消包装器；官方 tarball SHA256 为 `19a890175e9263d748f627993de6f4b1af9cd21e03f080e4bfb3a1fac10205a2`，GitHub mirror 的同 tag commit 为 `3d1aed874918c466a4477af1da35983ab036690e`。所抽查的取消/非取消 wrapper 文件在二者间逐文件 SHA256 相同。Linux 顶层源码确认 67 个包装器文件名；其中 32 个名字不在上述 POSIX-required 名字集中，见 `tables/platform_extension_cancel_points.tsv`。这 32 个含 64 位别名和 Linux 扩展（如 `accept4`、`epoll_wait`、`getrandom`、`preadv2`、`splice` 等），不等价于“32 个彼此独立的规范 API”。目标 GBS sysroot 的 `libc.so.6` 为 glibc 2.40，SHA256 `215bfd3dc2b21691e626990cc0990a38d6f7e9f83b5a2f64c9e1e033d07ba656`；源码材料是同版本上游旁证，不冒充平台补丁源码。
+
+POSIX “may” 不能直接冒充本平台的实际取消点。例如当前 glibc 的 `stat/lstat/mkdir/ioctl` 走非取消 syscall，`closedir` 走 `__close_nocancel`；相关 libc++ filesystem/noexcept 路径只列入 `tables/portable_only_candidates.tsv`，未计入平台实数。stdio 与自定义 streambuf 路径依赖 FILE 标志及虚调用，按条件可达处理。
+
+## 4. 实际差异与可达设施
+
+5 个实际差异为：
+
+| ID | libc++ 边界 | 取消点 | 深度 | libstdc++ |
+|---|---|---|---:|---|
+| D01 | `condition_variable::wait` | `pthread_cond_wait` | 2 | 对应声明和定义均非 `noexcept` |
+| D02 | `__do_timed_wait(system_clock)` | `pthread_cond_timedwait` | 2 | 对应 helper 非 `noexcept` |
+| D03 | `__do_timed_wait(steady_clock)` | `pthread_cond_clockwait` | 1 | 对应 helper 非 `noexcept` |
+| D04 | `__do_timed_wait<Clock>` | 经 `wait_for` 到 D03 | 3 | 任意时钟路径非 `noexcept` |
+| D05 | `wbuffer_convert::~wbuffer_convert` | `sync()` 经 wrapped streambuf 到输出取消点 | 开放虚路径 | 对应析构同为不抛异常，但不调用 `sync()` |
+
+前 4 项不只影响直接使用 `condition_variable` 的代码。源码可达的设施包括 `condition_variable_any`、future/shared_future、`timed_mutex`/`recursive_timed_mutex`、`shared_mutex`/`shared_timed_mutex` 和任意时钟版 `this_thread::sleep_until`；D05 影响绑定输出 streambuf 的已弃用 `wbuffer_convert`。路径见 `tables/facility_paths.tsv`。
+
+可达性判据是：公开入口能在正常线程调用中阻塞于对应 pthread 取消点，且调用链上的该 libc++ helper 带不抛异常规格。对 D05，具体可构造条件是 wrapped streambuf 的同步输出进入取消点。普通 wait、steady 定时等待与自定义时钟等待均取得动态证据；system-clock 特化与 D05 取得静态/具体构造路径证据，本轮按“抽样 2–3 项”的任务要求未另做运行样本。
+
+## 5. 抽样验证
+
+用例 `code/noexcept_cancel_samples.cpp` 满足：工作线程非 `noexcept`、裸 `pthread_create`、应用层无 catch、取消点明确，并断言 `pthread_join` 的结果必须为 `PTHREAD_CANCELED`。
+
+三组结果完全一致：
+
+- libc++ 的 `wait`、`wait_for`、自定义时钟 `wait_until` 均收到 `pthread_cancel`（`CANCEL_RC=0`），随后打印 `libc++abi: terminating due to uncaught foreign exception`，退出 134，未能返回 join 结果。
+- libstdc++ 三组均退出 0，`JOIN_RC=0` 且 `JOIN_CANCELED=1`。
+
+逐格原始输出在 `raw/tests/`，汇总见 `tables/sample_results.tsv`。最终二进制对应的 `commands/039_final_runtime_identity.log` 中，`ldd` 与 `LD_DEBUG=libs` 证明 libc++ 格加载指定实验构建的 `libc++.so.1`/`libc++abi.so.1`，参照格加载系统 `libstdc++.so.6`。
+
+## 6. 平台消费面
+
+消费面以 R32 已成功扫描的 371 个 source RPM 为分母，对会到达 D01–D05 的设施做源码词法命中；结果见 `raw/facility_usage_summary.tsv`，逐文件命中见 `raw/facility_usage_hits.tsv`。
+
+扫描 371/371 source RPM 成功、失败 0；它们对应 347 个去重包名。至少命中一种相关设施的有 **35 个 source RPM / 26 个去重包名**。按 source RPM / 去重包名分设施为：`condition_variable` 13/10、future 族 35/26、timed-mutex 族 3/2、shared-mutex 族 4/3、`sleep_until` 3/2、`wbuffer_convert` 2/1。同一包可同时计入多类，故分项不可相加；`wbuffer_convert` 的唯一包名是 GCC 自身源码/测试，不是独立产品消费者。
+
+该计数只是近似上界：它会计入测试、示例、内嵌第三方代码和未构建分支；它不证明包最终以 libc++ 编译，也不证明线程会在该设施中被取消。反过来，宏封装、生成代码和无源码预编译对象可能造成漏计。
+
+## 7. 处置方向素材（不作推荐）
+
+1. **参照实现做法**：GCC PR103382 从普通 wait、内部定时 wait 和实现定义处移除了 `noexcept`，理由是 NPTL 的 `__forced_unwind` 必须能够穿过。GCC 的说明同时把旧头文件已记录的异常规格称为潜在 ABI 问题。
+2. **libc++ 当前政策**：libc++ 的 `noexcept` policy 允许从版本 13 起把标准写为 “Throws: Nothing” 的函数额外标成 `noexcept`，并明确承认用户提供的抛出可能不再传播。公开检索未找到 libc++ 对 pthread cancellation/condition_variable 这一精确场景的 issue 或维护者处置表态，记 `NOT_FOUND`。
+3. **若以移除异常规格处理**：D01/D02 有 out-of-line 定义，但异常规格也出现在头文件声明，旧消费者仍可能按 `noexcept` 生成终止路径；D03/D04 是头文件内联 helper。D05 位于头文件模板中，但其差异还包含析构是否执行 `sync()`，不是只删异常规格即可等价。其交付性质包含库重建和消费者重编两个维度。
+4. **若以结构替换处理**：可以改变上层设施采用的等待原语或控制流，使强制展开不穿过该边界；不同设施位于库内或头文件，交付性质不同。
+5. **在 `noexcept` 内 catch 后再普通重抛**不能消除边界：异常离开函数时仍违反异常规格。若采用运行时专用续跑机制，则属于不同于普通 C++ 重抛的实现形态。
+6. **上游处理**：可形成 libc++ policy 例外或跨平台条件实现；这会涉及上游规则与非-pthread ABI 配置，而不是单纯的平台包修改。
+
+以上仅陈述形态与约束，不排序、不推荐。来源 URL、检索词与 `NOT_FOUND` 记录见 `research/upstream_sources.tsv`。
+
+## 8. 盲区、判断与疑问
+
+### 枚举盲区
+
+- 虚函数/用户回调是开放世界：自定义 streambuf、allocator、deleter、predicate 或用户析构可以在任意隐式 `noexcept` 析构内调用取消点，无法仅靠 libc++ 源码闭合枚举。
+- 词法图不解析重载、模板实例化、函数指针、虚调用、宏展开后的精确目标；本轮靠人工复核消除已见假阳性，但不能证明零漏项。
+- POSIX 允许实现把 205 个 “may” 函数设为取消点；本轮平台实数只适用于 glibc 2.40/Linux 目标配置，不外推到 musl、其他 glibc 版本或非 Linux。
+- 只做 x86_64 动态抽样；静态源码路径同属 pthread 后端，但未在 armv7l 动态复跑。
+- `-fno-exceptions`、LTO、非 pthread backend、动态插件与自定义 libc 未覆盖。
+
+### 自行判断
+
+- 将“函数定义”作为计数单位，模板 D04 计 1 个定义，不按潜在实例化数膨胀。
+- 将 S01 记为“语法差异但行为被共同外层边界遮蔽”，不并入 5 个迁移行为差异。
+- 对 POSIX-may 项采用平台源码实证口径；未确认由 glibc 实现为取消点的，不计入 Tizen 当前实数。
+- 没有为本轮连接开发板；用户明确允许抽样在 x86_64 原生执行，本轮目标是源码枚举与两库对照。
+
+### 尚存疑问
+
+- libc++ 上游是否把 POSIX forced unwind 视为其 `noexcept` policy 的例外：公开检索未找到直接表态，`NOT_FOUND`。
+- 开放世界边界不存在有限、绝对完备的源码清单；因此“5 个实际差异”应理解为本轮明确限定口径内的可证数，而不是所有可能程序的全称命题。
+
+## 9. 过程异常申报
+
+- 三次早期只读搜索范围写得过宽并被终止，退出 130，记录在 `commands/002_inventory.log`、`005_platform_source_inventory.log`、`009_stop_overbroad_find.log`。
+- 官方 sourceware glibc clone 返回 403，随后使用 glibc 官方 GitHub mirror 的同一 `glibc-2.40` tag，记录在 `commands/010_*`、`011_*`。
+- 第一版消费面扫描按设施重复遍历 371 包，因延迟过高被中止并改为单次组合扫描；记录在 `commands/018_stop_slow_facility_scan.log`。
+- 一次生成扩展取消点表的 here-doc 带入多余 `+`，Python 语法错误退出 1；原文保留在 `commands/024_platform_extension_set.log`，修正版在 `025_*`。
+- 一次在完整解包 GCC 源中做无界文本检索被终止；已有精确上游来源，未影响结论，记录在 `commands/026_stop_unbounded_gcc_search.log`。
+FILE docs/progress/R73/REPORT.md
+# R73：libc++ 的 `noexcept` 边界——影响面分析与业界处置调研
+
+## 1. 范围与总结果
+
+本任务只做分析与调研，未修改平台源码、任何产品补丁或落章文档；没有连接开发板，也没有新增构建或运行实验。运行时事实复用 R72 已归档的逐格原始输出，本轮新增的是消费面精化、包级上下文复核、上游调研和与层 C 的关系分析。
+
+结论性事实如下：
+
+1. 接受现状时，D01–D04 的共同触发条件是：Linux/glibc 线程取消可用、目标线程启用取消、线程正阻塞于 libc++ `condition_variable` 的普通或定时等待路径、另一线程在该窗口调用 `pthread_cancel`。D05 还要求 `wbuffer_convert` 析构的 `sync()` 通过 wrapped streambuf 进入输出取消点，条件明显更窄。
+2. R72 的 **35 source RPM / 26 去重包名**是刻意宽收的词法上界，裸词 `future` 带来大量非 C++ 标准库命中。本轮按显式 `std::`/`using std::` 语法精化后，剩 **11 source RPM / 9 去重包名**；对这 9 个包名全部做了上下文复核。
+3. 在这 9 个显式使用者中，**确认的生产代码“目标线程在相关设施中等待且被 `pthread_cancel`”为 0**；GCC 源包中有 1 个与 D01 完全同形的上游自测。其余包未观察到设施等待点与取消请求的源码内关联。这个“0”不是安全证明：取消可来自其他翻译单元、依赖库或进程宿主，因此这 9 个包仍是潜在暴露面。
+4. libc++ 官方政策使用“may”，允许但不强制把 “Throws: Nothing” 强化为 `noexcept`；没有找到该政策内的 pthread-cancellation 专用例外，也没有找到 LLVM 对这一精确冲突的 issue、维护者拒绝或处置表态，均按限定检索范围记 `NOT_FOUND`。
+5. GCC PR103382 把该行为认定为错误并移除相关 `noexcept`。最终变更同时处理 ABI：新代码绑定 `GLIBCXX_3.4.30` 的可取消实现，旧 `GLIBCXX_3.4.11` 保留终止行为的 wrapper。
+6. 定向检索未发现 Chromium 或常见 libc++ 发行版对此边界的本地补丁。Chromium 的公开线程封装采用投递退出任务后 join；Android/Bionic 则不提供 `pthread_cancel`。这些是不同层次的规避事实，不是 libc++ 边界的等价修复。
+7. 5 处边界与层 C 最终补丁**没有文件级重叠**。D01–D04 与层 C 的 future 改动有运行路径上的语义相邻：层 C 处理执行方 catch，`noexcept` 边界处理等待方展开；两者并不互相替代。按当前补丁形态继续层 C 工作不会因文件冲突返工；若未来选择重构 future 的等待实现，则可能重新触及 `future`，这是特定处置方向带来的交叉，而非当前必然返工。
+
+## 2. 五处边界的触发条件与现场表现
+
+逐项表见 `tables/boundary_trigger_conditions.tsv`。
+
+### D01：普通 `condition_variable::wait`
+
+- 条件：目标线程在 `pthread_cond_wait` 中阻塞，取消处于启用状态，其他线程对它发起取消。
+- 设施：不仅是直接 `condition_variable`，还包括 libc++ 用它实现的 `condition_variable_any`、future/shared_future、共享互斥设施等。
+- 已观察表现：libc++ `CANCEL_RC=0` 后打印 `libc++abi: terminating due to uncaught foreign exception`，退出 134，join 结果未取得；libstdc++ 退出 0，join 返回 `PTHREAD_CANCELED`。
+- 归因难度：stderr 看起来像“未捕获外来异常”，不会直接指出 `condition_variable::wait noexcept`；需要调用栈中的 `__clang_call_terminate` 才能把现场归到边界。
+
+### D02：system-clock 定时等待 helper
+
+- 条件：线程阻塞于 `pthread_cond_timedwait` 且在超时前收到取消。
+- 可达性：公开 `wait_until(system_clock)` 有具体静态路径。
+- 动态表现：本轮及 R72 均未取得动态样本，记 `NOT_OBSERVED`；不得把 D01 的退出文本推断复制为本项观测。
+
+### D03：steady-clock 定时等待 helper
+
+- 条件：当前配置 `_LIBCPP_HAS_COND_CLOCKWAIT=1`，线程阻塞于 `pthread_cond_clockwait`，在超时前收到取消。
+- 已观察表现：与 D01 相同，libc++ 退出 134，libstdc++ 干净取消。
+
+### D04：任意 Clock 模板 helper
+
+- 条件：使用非 system/steady 的 Clock 重载，路径经 `wait_for` 到 steady helper，并在底层阻塞窗口收到取消。
+- 常见性：相较普通 wait 和 wait_for，多了自定义 Clock 这一条件，因而是 4 个 CV 边界中较窄的一项。
+- 已观察表现：libc++ 退出 134，libstdc++ 干净取消。
+
+### D05：`wbuffer_convert` 析构
+
+- 条件：已弃用的 `wbuffer_convert` 处于输出模式并有需要同步的状态；析构在持有待处理取消的线程中执行；其 `__close -> sync` 最终通过 wrapped streambuf 虚调用进入实际输出取消点。
+- 与 libstdc++ 的差别不只是异常规格：两侧析构都隐式不抛异常，但 libstdc++ 对应析构不执行 libc++ 这条 `sync()` 路径。
+- 动态表现：`NOT_OBSERVED`。因此其可达性来自具体源码路径，现场文本和实际发生频率均未观测。
+
+### 常见性口径
+
+“常见/罕见”没有运行遥测支撑，本报告只按附加前置条件陈述：D01 是最直接的常规阻塞形态；D02/D03 需在定时窗口取消；D04 再要求自定义 Clock；D05 同时要求已弃用设施、析构同步和虚拟输出取消点。是否真的频繁发生，仍取决于平台代码是否使用 `pthread_cancel` 终止这些等待线程。
+
+## 3. 平台包的真实使用形态
+
+### 3.1 方法与代表性
+
+R72 的宽口径扫描覆盖 371/371 source RPM，得到 35/26。为避免把英文单词、注释和非标准库类型当作设施，本轮对原始命中做第二层过滤：只接受显式 `std::name`、`::std::name` 或 `using std::name`。脚本是 `code/refine_facility_hits.py`，完整逐行命中在 `raw/explicit_std_facility_hits.tsv`。
+
+精化结果为 11 source RPM / 9 去重包名：`angle`、`binutils`、`binutils-aarch64`、`binutils-armv7hl`、`binutils-armv7l`、`boost`、`gcc`、`libzypp`、`nnstreamer`。本轮不是再抽少量样本，而是复核了全部 9 个显式命中包名；多个 binutils/GCC source RPM 因版本或架构复用同一上游源码，仍按任务既有 source RPM 与去重包名两种口径分别保留。
+
+随后在这些源码树中检索 `pthread_cancel`、取消状态/类型配置和 `pthread_exit`，再人工核对取消请求文件与标准设施文件是否属于同一实现路径。结果见 `tables/package_risk_review.tsv`。
+
+### 3.2 结果
+
+- `angle`、`libzypp`、`nnstreamer` 有生产路径上的 condition variable/future 使用，但源码树中未命中取消请求。
+- binutils 的显式设施位于 GDB support thread pool；唯一 `pthread_cancel` 请求在 CRIS simulator 测试，未观察到与生产 thread pool 的关联。4 个架构/包名变体同源。
+- Boost 的标准设施命中分布于公共头、示例和测试；取消请求位于 `libs/core/test/yield_prim_pthread_cancel_test.cpp`，未观察到与这些等待路径的生产关联。
+- GCC 的 libstdc++ testsuite 中包含 PR103382 的精确场景，这是测试证据，不是迁移到 libc++ 的产品消费者。
+
+因此：
+
+- **确证处于风险形态的生产包：0 个**；
+- **确证同形但仅测试用途：1 个去重包名（GCC）**；
+- **显式使用相关设施、但源码内部未观察到取消关联：9 个去重包名**。这里 GCC 也可能有其他设施使用，所以类别不是互斥的安全分区。
+
+无法把后一个数字解释为“不会触发”。`pthread_cancel` 可以由包外宿主、插件管理器、运行框架或未扫描二进制发起；源码共现只能证明正关联，不能证明无关联。35/26 仍作为宽上界保留，11/9 是显式 C++ 设施使用的较可信近似，0 是本轮能在源码内部闭合的生产风险形态数。
+
+## 4. 与此前线程取消问题的比较
+
+| 维度 | 此前层 A/B/C 问题 | 本轮 `noexcept` 边界 |
+|---|---|---|
+| 机制 | foreign forced unwind 的识别、重抛及显式 catch-all 吞并 | forced unwind 离开不抛异常函数时由编译器终止桩终止 |
+| 明确差异点 | 层 C 最终为 50 个显式 catch 站点，另有运行时层改动 | 当前限定配置下 5 个实际差异边界 |
+| 触发 | 取消穿过相关 handler/catch 路径 | 取消恰在相关 wait 或析构输出路径中发生 |
+| 影响面旁证 | 既有任务已有应用和标准库设施矩阵 | 宽扫 35/26，显式使用 11/9，生产取消关联 0 个被证实 |
+| 现场 | abort/foreign exception、可能表现为未重抛 | 同样可只见 uncaught foreign exception；边界需调用栈识别 |
+
+触发难度方面，D01 的技术窗口并不苛刻，但平台包是否采用 pthread cancellation 是决定因素；D04/D05 的附加条件更窄。影响面方面，现有证据只支持“显式设施使用者少于宽扫上界”，不支持把潜在外部取消排除。归因方面，两类问题都可能以 134 和 foreign-exception 文本出现；本轮问题还需识别 `__clang_call_terminate` 所在边界，因此不能声称定位代价更低。是否“相当”没有工时数据，记为定性相近而非量化结论。
+
+## 5. 业界与上游处置事实
+
+完整检索表见 `research/upstream_research.tsv`，检索范围见 `research/search_scope.tsv`。
+
+### 5.1 libc++ 的立场
+
+[libc++ 官方政策](https://libcxx.llvm.org/DesignDocs/NoexceptPolicy.html)写的是自版本 13 起“may”强化 “Throws: Nothing”，并明确这种做法可能阻止用户提供函数的异常传播。D95821 的[评审记录](https://reviews.llvm.org/D95821)特意把 “will” 改为 “may”，理由是允许实现这么做但不要求逐项遵守。因此存在的是**实现裁量空间**，不是一个已经定义好的 pthread-cancellation 例外机制。
+
+对 LLVM GitHub issue、本地 llvm-project 历史进行精确检索，没有找到 `pthread_cancel + condition_variable/noexcept` 或 `forced_unwind + condition_variable` 的 issue/讨论，也没有找到“提出后被拒”的维护者表态，结论为 `NOT_FOUND`。这只覆盖记录在 `search_scope.tsv` 的查询，不代表不存在换词、未索引或线下讨论。
+
+WG21 的 [P3085R0](https://www9.open-std.org/JTC1/SC22/WG21/docs/papers/2024/p3085r0.html)明确指出 C++ 视角不能抛出的 `fclose` 在 POSIX 取消中可以参与异常式展开，并认为这使 `noexcept` 准确性更难界定。它是 2024 年 R0 提案，不作为已采纳标准结论。
+
+### 5.2 GCC PR103382
+
+GCC 的[初始补丁说明](https://gcc.gnu.org/pipermail/libstdc%2B%2B/2021-December/053608.html)直接把 `condition_variable::wait noexcept` 称为错误：NPTL 的 `__forced_unwind` 会因此终止进程，正确行为是让它穿过。变更同时覆盖内部普通/定时/clock wait。
+
+讨论的代价主要是 ABI：已有调用方依据旧头文件把函数视为不抛异常。最终[提交记录](https://gcc.gnu.org/pipermail/libstdc%2B%2B/2021-December/053631.html)采用双版本：新 `@@GLIBCXX_3.4.30` 支持取消，旧 `@GLIBCXX_3.4.11` 通过 `noexcept` wrapper 保留旧行为。社区因此没有把“标准写不抛出”解释为必须终止；同时也没有无视旧二进制兼容性。
+
+检索到的讨论中，兼容 wrapper/符号版本是最终采用方案。没有找到主提交采用“禁用取消”或运行时绕过异常规格；不能把讨论中未采用的可能性写成 GCC 已实施行为。
+
+### 5.3 Chromium、Android 与其他项目
+
+- Chromium 的公开 [`Thread::StopSoon/Stop`](https://chromium.googlesource.com/chromium/src.git/+/refs/heads/main/base/threading/thread.cc)使用投递退出任务和 join；其[自有条件变量封装](https://chromium.googlesource.com/chromium/src/+/HEAD/base/synchronization/condition_variable.h)直接包 pthread condition variable。定向检索未找到 `pthread_cancel` 用法或该 libc++ 边界的本地补丁，记 `NOT_FOUND`。这说明公开主干呈现协作式退出形态，不证明所有 Chromium 衍生代码都禁用取消。
+- Android/Bionic 的[官方状态页](https://android.googlesource.com/platform/bionic/+/refs/heads/android11-dev/docs/status.md)明确不实现 `pthread_cancel`，理由是实现成本和正确使用难度。这从 libc 层消除了触发能力，但改变了平台提供的 API，不是标准库局部修复。
+- 对 Debian、Fedora、FreeBSD、Alpine 的 libc++ packaging 做了目标查询，未发现精确本地补丁，记 `NOT_FOUND`。FreeBSD 等平台的取消/展开机制也不应直接等同于 glibc forced unwind。
+
+## 6. 与层 C 的文件和机制关系
+
+层 C 最终补丁身份：
+
+- 头文件批 20 站点：`0a32dc44e0e57ed524283bc416bdc5c4f6a00b131de5e421485b6e7bcb4b82e9`；
+- 库内批 30 站点：`88228328db96b38ca139ec1fa3b04ddd82c25f17b97e8a90c674feb2a654d90e`。
+
+### 6.1 文件重叠
+
+5 个边界涉及：
+
+- `libcxx/include/__condition_variable/condition_variable.h`；
+- `libcxx/src/condition_variable.cpp`；
+- `libcxx/include/__locale_dir/wbuffer_convert.h`。
+
+层 C 涉及：
+
+- `libcxx/include/__ostream/basic_ostream.h`；
+- `libcxx/include/future`；
+- `libcxx/include/istream`；
+- `libcxx/include/string`；
+- `libcxx/src/future.cpp`；
+- `libcxx/src/ios.cpp`。
+
+交集为空。没有某个现有 hunk 需要同时承载两种改动。
+
+### 6.2 机制相容性
+
+层 C 在 catch 站点识别 forced unwind、提交必要状态后重抛；它要求异常继续离开该 handler。`noexcept` 边界则发生在异常继续向外传播之后或另一线程的等待路径：即使 catch 处理完全正确，只要展开跨过 D01–D05，仍会终止。因此：
+
+- 两者兼容，不互相替代；
+- future 场景可能同时需要执行方的层 C 防护和等待方边界允许取消穿过，但它们不是同一帧、同一站点；
+- 单纯去掉 D01–D04 的异常规格不会使层 C 多余；单纯层 C 也不会修复等待方被取消；
+- D05 没有层 C 对应 catch 路径。
+
+### 6.3 是否会造成后续返工
+
+按**当前已经确定的层 C 补丁内容**继续后续工作，不会因为这 5 处出现文件冲突或需要回改现有层 C hunk；因此“暂不处置是否必然导致后续层 C 返工”的答案是 **否**。
+
+边界条件是：如果未来处置方向选择重构 `future` 的等待架构，而不是仅调整 condition-variable 异常规格，那么 `include/future`/`src/future.cpp` 可能重新被修改并需要重验。这是某个尚未裁决方向的后果，不能据此把返工写成必然。
+
+## 7. 处置方向素材（不排序、不推荐）
+
+1. **按 GCC 方向移除 D01–D04 的异常规格**：涉及公开头文件、头文件 helper 和共享库定义；新消费者要重编才能取得一致的调用方异常元数据。对既有二进制还需处理 ABI/符号版本问题。若形成上游接受的 libc++ 变更，可避免永久本地偏离；若仅平台补丁，则形成平台差异。
+2. **按平台能力条件化异常规格**：仅在 glibc/pthread-cancellation 配置下允许展开，其他 ABI runtime 保持原状。仍涉及头文件和消费者重编，也引入条件配置矩阵；是否可被上游接受未有直接材料。
+3. **双符号/兼容 wrapper**：D01/D02 有 out-of-line 部分，可借鉴 GCC 为旧、新消费者保留不同行为；D03/D04 是 header helper，不能只靠共享库双符号覆盖全部 4 处。验证需含旧对象+新库、新对象+新库以及定时/自定义 Clock。
+4. **改变等待实现结构**：让 future 等设施不经过这些边界，或采用不同等待原语。可能同时改库内和头文件，future 方向会与层 C 文件重叠，验证面包括所有上层设施与竞态。
+5. **在旧边界内屏蔽/延迟取消**：可避免 forced unwind 离开 `noexcept`，但取消可能推迟到边界之后；若 wait 永不返回，取消也可能长期不完成。它改变取消时序，需要阻塞、超时、通知和多等待者验证。没有发现 GCC 最终提交采用此形态。
+6. **应用层协作退出而不使用 `pthread_cancel`**：需要修改应用/框架；Chromium 的公开线程封装呈现这一形态。它避开触发而非改变 libc++，与本项目此前“迁移不改消费者语义”的目标是不同性质的工作。
+7. **平台不提供线程取消**：Android/Bionic 是实例；性质是 libc/API 平台决定，影响所有消费者，不是标准库包内交付。
+8. **编译器/运行时对 forced unwind 特判绕过 `noexcept`**：工具链全局改动，可能改变语言异常规格的既有语义；本轮未找到已部署的同类项目实例，验证代价至少覆盖普通异常、析构、ABI 和两种展开模型。
+9. **D05 单独处置**：可以讨论析构是否同步、异常规格或 wrapped streambuf 结构；这些方向会改变刷新/资源语义，且位于头文件模板，需消费者重编。它不能由 D01–D04 的处理自动解决。
+10. **接受并记录差异**：无代码或构建成本；D01–D05 的触发和 134 风险保持存在，外部发起取消的风险仍无法由包内源码扫描排除。
+
+本节只列形态、交付性质和验证面，不作选择或优先级排序。
+
+## 8. 盲区、自行判断与疑问
+
+### 盲区
+
+- 包级分析只有源码，没有平台运行遥测，也未覆盖包外发起的取消、闭源二进制、插件宿主和生成代码。
+- 显式 `std::` 过滤会漏掉类型别名、宏、命名空间整体导入后无限定名和封装库；因此 11/9 不是下界证明。
+- D02/D05 没有动态样本；D05 的虚调用是开放世界，无法用 libc++ 源码穷尽所有 wrapped streambuf。
+- 联网检索受查询词和索引范围限制；LLVM/发行版的 `NOT_FOUND` 不等价于不存在私人补丁或未索引讨论。
+- 未验证 aarch64、非 glibc、非 pthread backend、LTO、旧消费者/新库混合 ABI。
+
+### 自行判断
+
+- 把 R72 的 35/26 保留为宽词法上界，同时新增显式 `std::` 的 11/9 口径；没有用后者覆盖或改写 R72 原结论。
+- 将全部 9 个显式命中包名作为本轮抽样，因数量可控且比再抽 2–3 个更少引入抽样偏差。
+- “确证风险形态 0 个”严格限定为生产源码内可闭合关联；没有据此把包判安全。
+- 把 D01–D04 的使用常见性和 D05 的罕见性写成“前置条件多少”的判断，不冒充运行频率统计。
+- 没有新增运行实验：任务目标是影响面和业界调研，R72 已提供 D01/D03/D04 的两库动态证据，本轮不重复构建。
+
+### 尚存疑问
+
+- 平台运行时是否存在由框架/服务管理器对上述 9 个包的工作线程发起取消：源码包内无法回答。
+- libc++ 维护者是否在未被精确关键词命中的讨论中表达过 POSIX cancellation 例外立场：`NOT_FOUND`。
+- D05 在真实 wrapped streambuf 上的退出表现和频率：`NOT_OBSERVED`。
+- 若未来裁决处置 D01/D02，Tizen 的 libc++ 符号版本/ABI 策略应如何承载旧消费者：本任务不选择。
+
+## 9. 结论回答
+
+- **若接受差异，何时出问题？** 当取消请求命中 D01–D04 的阻塞窗口，或 D05 的析构同步输出窗口，forced unwind 穿过 libc++ 不抛异常边界并触发终止。D01/D03/D04 已动态证实；D02/D05 动态表现未观测。
+- **风险形态包数？** R72 宽命中 35/26；显式标准设施使用为 11 source RPM / 9 包名；源码内确证生产取消关联 0，精确同形自测 1 个包名。外部取消使“0”不能解释为零风险。
+- **业界如何处理？** GCC 移除异常规格并以新符号版本处理 ABI；Android 不提供取消；Chromium 公开线程封装采用协作退出。没有找到 LLVM 的精确 issue/拒绝记录或其他发行版的本地补丁。
+- **与层 C 是否冲突？** 当前文件无重叠、机制互补；future 路径可同时经过两类逻辑，但不是同一站点。
+- **暂不处置是否会让后续工作返工？** 对当前层 C 补丁，**不会必然返工**。未来若选“重构 future 等待实现”这一特定方向，会重新触及层 C 文件并要求重验；其他方向未必。
+
+本报告不做修复、不做处置建议、不扩大既有方案范围。
+
+## 10. 过程异常申报
+
+- 首次提交命令在 `git diff --cached --check` 处退出 2；原因是逐字保存的原始命令/源码证据日志中含尾随空白。为避免篡改原始输出，没有清洗这些日志。
+- 为补录该失败原文而执行的命令块没有在 `git diff --cached --check` 非零后显式中止，后续 `git commit` 因而继续并成功。这是本轮命令包装的控制流缺陷。完整原文见 `commands/022_commit_with_global_check_warning.log`。
+- 该事件发生于本项目材料提交阶段：产品源码与补丁没有修改；人工撰写文件已通过限定路径的空白/完整性检查，材料 SHA/大小校验为 0 错误。首次 commit 尚未 push，本报告和该日志随后以 amend 纳入同一最终提交。
+FILE docs/progress/R75/REPORT.md
+# R75：问题五 `shrink_to_fit` 复现用例修正与实测
+
+日期：2026-08-28  
+承接：`progress/R74/REPORT.md` 中“不一致清单”第 1 项
+
+## 1. 结论摘要
+
+R74 指出的复现缺陷已经被消除：最终用例先完成字符串构造和 `reserve(65536)`，再开启分配门禁；主线程只在 `shrink_to_fit()` 触发的下一次 `allocate()` 已进入后请求取消。调试栈直接证明目标分配位于 `basic_string::shrink_to_fit` 内部，而不再位于字符串构造阶段。
+
+最终用例在 x86_64 与 armv7l、libstdc++ 与项目 libc++ 四个格上均稳定导致进程异常终止，没有一次线程干净取消或正常返回。因此，“取消在 `shrink_to_fit` 的不抛异常边界内送达时，两套实现都不能把它变成线程干净退出”得到实测支持。
+
+但终止形态和最终故障机制并不完全相同：x86_64 两套库均为 20/20 退出 134；armv7l 项目 libc++ 为 20/20 退出 134，系统 libstdc++ 为 20/20 退出 139。设备调试栈证明 armv7l/libstdc++ 先由 `shrink_to_fit` 的不抛异常边界调用 `std::terminate()`，随后在 `__gnu_cxx::__verbose_terminate_handler()` 内发生二次 SIGSEGV。因此，“两套标准库表现一致”在 armv7l 上若指相同退出信号或相同最终机制则不成立；只能说二者都未能线程干净取消、最终都结束进程。
+
+## 2. 用例修正
+
+原报告用例的自定义分配器从第一次分配起就永久停在 `pthread_testcancel()`，使取消在 `CancelString(1024, 'x')` 构造期间送达，控制流从未到达 `reserve()` 或 `shrink_to_fit()`。
+
+最终用例增加两个独立门禁：
+
+1. `target_allocation_enabled` 只在构造和 `reserve()` 完成后开启；
+2. `target_allocation_entered` 只在开启后的目标分配中置位，主线程据此发出取消请求。
+
+同时记录分配序号、容量和目标分配大小。x86_64 的目标分配为 libstdc++ 第 3 次、1025 字节，libc++ 第 3 次、1032 字节；armv7l 对应序号同为第 3 次。原用例与最终用例的逐行差异见 `raw/022_problem5_final_correct.diff`。
+
+两次探索尝试也完整保留：无取消送达点的版本两套库均超时；未加门禁的版本两套库均线程干净取消；最终门禁版本两套库均退出 134。结果见 `raw/018_attempts_digest.txt`。
+
+## 3. x86_64 结果与调用栈
+
+最终矩阵每套库运行 20 次：
+
+- libstdc++：20/20 命中 `EVENT prepared` 和 `EVENT target_allocate`，20/20 退出 134；
+- 项目 libc++：20/20 命中上述两个事件，20/20 退出 134。
+
+调试器在目标分配处和最终 SIGABRT 处各取一次全线程栈：
+
+- libstdc++：`CancelAllocator<char>::allocate` → `basic_string::shrink_to_fit` → `worker`；最终栈含 `std::terminate()`；
+- libc++：`CancelAllocator<char>::allocate` → `basic_string::shrink_to_fit` → `worker`；最终栈含 `__clang_call_terminate`、`std::terminate()` 和 libc++abi 的 foreign-exception 终止处理。
+
+自动证据门禁要求两份调试记录都同时包含目标函数、分配器帧和预期终止信号，结果为 PASS。关键行见 `raw/017_debug_key_lines.txt`，完整记录见 `raw/x86_debug/`。
+
+运行时身份通过 SHA256、`ldd` 和 `LD_DEBUG=libs` 留证。项目 libc++ 实际加载 `tmp/R69/build-x86_64/lib/libc++.so.1` 与 `libc++abi.so.1`，不是宿主同名库；身份摘要见 `raw/016_identity_digest_inputs.txt`。
+
+## 4. armv7l 结果
+
+两个二进制均为 ARM EABI5、带调试信息的动态 PIE。部署后再次计算二进制和项目运行库 SHA256，与宿主构建产物一致；`ldd` 证明 libc++ 格从独立目录加载项目 `libc++.so.1` 与 `libc++abi.so.1`。
+
+每套库运行 20 次：
+
+- 系统 libstdc++：20/20 传输成功、远端退出 139、目标事件 20/20；
+- 项目 libc++：20/20 传输成功、远端退出 134、目标事件 20/20。
+
+40 次运行均取得可解析的远端退出码，没有超时或传输失败。结构化矩阵和聚合见 `raw/arm_final/matrix.tsv`、`raw/arm_final/summary.tsv`。
+
+系统 libstdc++ 的设备端 GDB 现场补取了两次。第一份在实际 SIGSEGV 处保存全线程栈：
+
+`__gnu_cxx::__verbose_terminate_handler` → libstdc++ 内部帧 → `std::terminate` → `__clang_call_terminate` → `basic_string::shrink_to_fit` → `worker`。
+
+第二份用分阶段断点确认先后顺序：阶段 1 先命中 `std::terminate()`，调用者是 `__clang_call_terminate` 和 `shrink_to_fit`；阶段 2 随后进入 `__verbose_terminate_handler()`；阶段 3 才收到 SIGSEGV，PC 为 `__verbose_terminate_handler+38`。故 139 不是取消绕开 `shrink_to_fit` 后在别处偶然崩溃，而是同一不抛异常终止路径中的二次故障。完整记录见 `raw/arm_libstdcxx_gdb/007_gdb.stdout` 与 `raw/arm_libstdcxx_terminate_sequence/007_gdb.stdout`，提要见 `raw/044_arm_gdb_digest.txt`、`raw/046_arm_terminate_sequence_digest.txt`。
+
+SIGSEGV 指令为 `ldrb r3, [r4, #0]`，当时 `r4=0xe1a0b00d`，即 verbose handler 在读取当前异常类型名称时解引用了无效地址。寄存器和反汇编见 `raw/048_arm_terminate_fault_detail.txt`。这解释了为何该格没有走到 `abort()`，而是以 139 结束。
+
+板端只使用独立目录 `/opt/usr/home/owner/share/tmp/r75_20260828`。完成后该目录已移除并核验不存在，进程清单也已复核。
+
+## 5. 机制边界
+
+两套头文件都把 `basic_string::shrink_to_fit()` 声明为 `noexcept`/`_NOEXCEPT`。当前项目 libc++ 的函数体确有 `catch (const __forced_unwind&) { throw; }`，但该重抛仍需离开不抛异常函数，因此到达终止路径；源码摘录见 `raw/023_shrink_to_fit_declarations.txt` 与 `raw/024_libcxx_shrink_to_fit_body.txt`。
+
+本轮证明的是一个刻意构造的确定性边界条件：取消被送达于 `shrink_to_fit()` 内部的分配器取消点。它不能证明普通分配器会自然提供取消点。四格共有的上游机制是强制展开试图离开 `noexcept` 的 `shrink_to_fit`，从而进入 `std::terminate`；armv7l/libstdc++ 独有的下游机制是 verbose terminate handler 内二次段错。因此对外报告必须显式披露该架构差异，不能笼统写成“两套标准库表现一致”。
+
+## 6. 边界与异常申报
+
+- 没有修改平台源码、补丁或对外报告；只新增 R75 复现代码、驱动、证据和本报告。
+- ARM 构建驱动首次退出 1，原始驱动输出为空；未改代码的重试退出 0。构建子日志使用固定文件名，重试覆盖了首次子日志，因此无法从现存材料可靠断言首次失败原因。
+- 复核阶段曾让 `rg` 把正在生成的输出文件纳入搜索，形成自扩张扫描；发现后停止，并改用明确排除 `progress/R75/**` 的检索。误生成文件保留为 `resume_rg_context.txt`，不计入结论。
+- 复核时曾误把 R74 的第 5 个代码块当作“问题五复现”；错误 diff 保留为 `raw/020_problem5_final.diff`。随后依据 `blocks.json` 定位到第 10 个代码块并生成正确 diff。
+- 自行判断与尚存疑问见 `SELF_DECISIONS_AND_QUESTIONS.md`。
+FILE docs/progress/R76/REPORT.md
+# R76：四补丁追加至既有 Gerrit sandbox / QuickBuild 验证
+
+日期：2026-08-28  
+最终状态：`SUBMITTED_BUILD_PENDING`
+
+## 1. 结论
+
+四个定稿补丁已按 A、B、0003（头文件批）、0004（库内批）追加到既有
+`refs/heads/sandbox/lhmax2025/libcxx-ehabi-backport`。目标分支从
+`5ed6c77278dfa7a470667cf1a137723d3c96fe60` 普通快进至
+`08a64b6eb95ed74339f1d862a6c22a2f93fa78f9`；既有 HEAD 是新 HEAD 的祖先，
+既有提交没有丢失。
+
+四补丁在既有 HEAD 上依次执行 `git apply --check` 和索引应用均退出 0，
+包括与既有 ARM EHABI 改动相邻的层 A 第二处修改，没有冲突。四个补丁文件
+及 R69 `SHA256SUMS` 未改，提交源码 patch-id 与定稿原件逐项一致。
+
+推送后，除目标分支按预期快进外，其余 sandbox 分支及正式 `tizen_base`
+均未变化。误建的 `sandbox/lhmax2025/libcxx-forced-unwind` 经四提交逐项
+patch-id、完整 message 和 author 等价门禁后删除；没有观察到 R76 创建的
+其他分支。未推送正式分支，未向 LLVM 上游提交。
+
+本次沿用 R7 的 QuickBuild 触发形态：直推既有 sandbox ref 后由平台侧流程
+构建并人工观察。当前环境没有 QuickBuild 日志读取入口，故构建结果、产物、
+其他包影响和新增编译告警均为 `NOT_OBSERVED`，需要人工在平台侧查看；不能
+判定构建通过，状态为 `SUBMITTED_BUILD_PENDING`。
+
+## 2. 资源与补丁身份
+
+续作资源命令 `tools/resource_gate.sh --level light` 退出 0，见
+`commands/101_resource_gate_continuation.log`。
+
+| 顺序 | 补丁 | R69 记录 / 当前 SHA256 | 结果 |
+|---|---|---|---|
+| 1 | `0001-Layer-A-fix-foreign-forced-unwind-resume.patch` | `af41f2989efcc28405bd26e3db24fb8e26c1fcca89f7d6f22c9140ccdb5beebd` | 一致 |
+| 2 | `0002-Layer-B-add-GNU-forced-unwind-marker.patch` | `a121ce3bb7b95d3170a5ae0acd885557a5c7c0ab100b360a469d129c9c985b6e` | 一致 |
+| 3 | `0003-Layer-C-header-batch-20-sites.patch` | `0a32dc44e0e57ed524283bc416bdc5c4f6a00b131de5e421485b6e7bcb4b82e9` | 一致 |
+| 4 | `0004-Layer-C-library-batch-30-sites.patch` | `88228328db96b38ca139ec1fa3b04ddd82c25f17b97e8a90c674feb2a654d90e` | 一致 |
+
+复核原文见 `raw/107_patch_identity_recheck_corrected.stdout` 和
+`raw/108_patch_sha256_current.stdout`。补丁内容改动：**无**；
+`SHA256SUMS` 改动：**无**；平台源码人工修改：**无**。
+
+## 3. 目标分支推送前现状
+
+目标分支推送前 HEAD 为 `5ed6c77278dfa7a470667cf1a137723d3c96fe60`。
+它相对共同基线 `fd7a4929c0e424d564cdd1f0c55af9153dcea321` 有两个既有提交：
+
+1. `3d3e3da49e00ae89b0ff928dee811d6d0d1d4f0b`：
+   `libcxxabi: declare __gnu_unwind_frame in cxa_personality (#189787)`；
+2. `5ed6c77278dfa7a470667cf1a137723d3c96fe60`：
+   `packaging: add libc++ runtimes spec`。
+
+完整 message 见 `raw/110_target_existing_commits_full.stdout`。
+
+推送前 `sandbox/lhmax2025/*` 共五个分支，见
+`raw/103_sandbox_namespace_before.stdout`：
+
+| 分支 | 推送前 SHA |
+|---|---|
+| `libcxx-ehabi-backport` | `5ed6c77278dfa7a470667cf1a137723d3c96fe60` |
+| `libcxx-forced-unwind`（误建） | `74900f3fbb2969f7f127449f9b1d20df72b9eefa` |
+| `llvm_only_clang` | `f8277158cf44f872e2b2d62a2e839cb33bd0afea` |
+| `mlgo` | `08ffd8cd7c72f5dd6e612d8395362def96d84029` |
+| `mlgo_aot` | `88ff57cadcff52ab50ca6865db7faed7388358fe` |
+
+正式 `refs/heads/tizen_base` 推送前为
+`8dfebafe1a477b3dcc678ee4cb18a3a4306d5a7c`。
+
+## 4. 试应用与提交序列
+
+以目标分支现有 HEAD 建立独立 worktree，四补丁按定稿顺序逐个执行
+`git apply --check`、`git apply --index`，八条命令全部退出 0；最终
+`git diff --cached --check` 退出 0，补丁应用前后身份复核均为 4/4 `OK`。
+结果为 `R76_EXISTING_BRANCH_APPLY_PREFLIGHT=PASS`，原始日志位于
+`raw/apply_existing_branch/`。试应用结论：**无冲突**。
+
+正确目标分支上的新增提交为：
+
+| 顺序 | 层 | 提交 SHA | parent | author | committer |
+|---|---|---|---|---|---|
+| 1 | A | `77e0f73ba61ef3e865f65eaf089bd1eafd9bfdea` | `5ed6c77278dfa7a470667cf1a137723d3c96fe60` | `R51 Evidence <r51@example.invalid>` | `hao.lin <hao.lin@samsung.com>` |
+| 2 | B | `82afebabd7782ed25017e248f319c10284f7bec7` | `77e0f73ba61ef3e865f65eaf089bd1eafd9bfdea` | `R51 Evidence <r51@example.invalid>` | `hao.lin <hao.lin@samsung.com>` |
+| 3 | C 头文件批 | `9039afa48d5bdbd30f63589b0ca68e3c564f45ab` | `82afebabd7782ed25017e248f319c10284f7bec7` | `NOT_AVAILABLE <not-available@invalid>` | `hao.lin <hao.lin@samsung.com>` |
+| 4 | C 库内批 | `08a64b6eb95ed74339f1d862a6c22a2f93fa78f9` | `9039afa48d5bdbd30f63589b0ca68e3c564f45ab` | `He Fangyu <fangyu.he@samsung.com>` | `hao.lin <hao.lin@samsung.com>` |
+
+`raw/existing_branch_series_validation/commits.tsv` 证明四提交线性相接、
+committer 正确、author 保持占位/原值、每提交 patch-id 与原补丁相同，且
+总源码 diff 与试应用结果逐字节一致。Layer A 保留此前批准的中英文完整依赖
+说明和 Change-Id；其余三个 message 与定稿提交逐字一致。
+
+依赖说明明确：四者是一套，顺序为 A → B → 0003 头文件批 → 0004 库内批；
+两个层 C 批次依赖层 B，并在 ARM 上依赖层 A；只应用或验证子集可能失败或
+引入回归。
+
+## 5. 推送与分支对照
+
+实际推送命令：
+
+```text
+git -C tmp/R76/ehabi-backport-series push origin HEAD:refs/heads/sandbox/lhmax2025/libcxx-ehabi-backport
+```
+
+退出码 0，且未使用 `--force`、`--force-with-lease`、`+refs/...` 或
+`refs/for/...`。服务端结果为
+`5ed6c77278df..08a64b6eb95e` 普通快进；完整原文见
+`raw/127_push_existing_sandbox_branch.stderr`。
+
+服务端报告五条 commit-message 风格 warning（subject 长度或超过 72 字符的
+message 行）。它们不是编译告警，也不是 QuickBuild 结果；按“不修改定稿
+message”约束未处理。
+
+推送后：
+
+- 目标 HEAD 为 `08a64b6eb95ed74339f1d862a6c22a2f93fa78f9`；
+- `git merge-base --is-ancestor 5ed6c772… 08a64b6e…` 退出 0，既有提交未丢；
+- 除目标外的四个 sandbox 分支与推送前逐字一致；
+- 正式 `tizen_base` 仍为 `8dfebafe1a477b3dcc678ee4cb18a3a4306d5a7c`。
+
+原始对照见 `raw/128_target_branch_after_push.stdout`、
+`raw/129_sandbox_namespace_after_push.stdout`、
+`raw/130_formal_branch_after_push.stdout` 和 commands 131–134。
+
+## 6. 误建分支清理
+
+删除前门禁确认：误建分支从仍由正式 `tizen_base` 保留的
+`8dfebafe…` 起恰好追加四个任务提交，没有第五个提交；这四个提交与正确
+分支新增四提交逐项 stable patch-id 相同、完整 commit message 相同、author
+相同。完整表见 `raw/mistaken_branch_disposal_gate/equivalence.tsv`，门禁结果为
+`R76_MISTAKEN_BRANCH_DISPOSAL_GATE=PASS`。
+
+在目标推送及全部推后核对通过后，执行：
+
+```text
+git -C codes/llvm push origin --delete sandbox/lhmax2025/libcxx-forced-unwind
+```
+
+退出码 0。删除后精确查询误建 ref 为零输出且退出 0；sandbox 命名空间只剩
+正确目标及原有 `llvm_only_clang`、`mlgo`、`mlgo_aot`，目标与正式分支均未
+变化。原文见 commands/raw 137–145。除此之外没有观察到 R76 新建的其他
+分支。
+
+## 7. QuickBuild
+
+- 触发方式：沿用 R7，向 `platform/upstream/llvm` 的既有 sandbox ref 直推；
+- 构建目标：仓库/包 `platform/upstream/llvm`，ref
+  `sandbox/lhmax2025/libcxx-ehabi-backport`；平台 profile/架构矩阵
+  `NOT_OBSERVED`；
+- 触发点：成功的普通快进推送（command 127）；
+- 完整平台日志：`NOT_OBSERVED`，当前环境无法读取，需人工平台侧查看；
+- 构建是否成功：`NOT_OBSERVED`；
+- 构建产物是否正常生成：`NOT_OBSERVED`；
+- 与本地产物是否一致：`NOT_OBSERVED`，无法比对；
+- 是否导致平台其他包失败：`NOT_OBSERVED`；
+- 是否出现指向本次改动的新增编译告警：`NOT_OBSERVED`；
+- 构建失败重试次数：0（尚未观察到失败，未重试）。
+
+因此结论只能是 `SUBMITTED_BUILD_PENDING`，不能写
+`SUBMITTED_AND_BUILT`。人工需重点回传完整日志、产物状态、其他包结果及
+指向本次改动的新增告警。
+
+## 8. 验证范围与未覆盖范围
+
+既有状态：x86_64 与 armv7l 全量验证完成；三方独立评审提出的四项缺陷已
+修复并复验。本轮新增覆盖：补丁字节身份、既有目标 HEAD、命名空间快照、
+目标 HEAD 上顺序试应用、提交链/身份/message/patch-id/总 diff、普通快进
+推送、既有提交保留、其他分支不变及误建分支安全清理。
+
+未覆盖：aarch64、LLVM 官方测试套件全量运行、共存期/混合运行时场景，
+以及本次 QuickBuild 的实际构建、产物、其他包和告警结果。
+
+## 9. 异常、判断与疑问
+
+续作中记录三项技术性命令/脚本异常，均未改变任何判据对象：
+
+1. command 105 的精确 fetch 遇 SSH 连接超时；包装进程被终止，退出码未能
+   观测，按纪律记 `NOT_OBSERVED`。目标 SHA 已由 command 102 的远端查询
+   取得且对象本地存在；推送前 command 125 再次远端确认目标未变化。
+2. command 106 错在 `SHA256SUMS` 已含工作区相对路径却从补丁目录执行；
+   原样留证后只改调用工作目录，command 107 复核 4/4 `OK`。
+3. 首轮新 series 验证器把实际的中英文两个标题误写成一个不存在的合并标题；
+   只修正两条标题匹配，diff 为 `raw/123_validator_title_match_fix.diff`，重跑
+   通过。
+
+自行判断：删除门禁中的“无未迁移内容”按任务产生的四提交内容解释，同时
+要求误建分支基线仍由正式 ref 保留；据此检查提交数量、parent、patch-id、
+完整 message 和 author。两分支基线不同，因此不把 commit SHA/committer
+时间不同误判为补丁内容不同。该判断及其证据已明确记录。
+
+尚存疑问仅为平台侧不可见项：QuickBuild 的 profile、架构矩阵、完整日志、
+产物、其他包结果及新增编译告警，需人工查看后回传。
+FILE docs/progress/R88/REPORT.md
+# R88：总部 squash 提交核对报告
+
+核对日期：2026-09-01（Asia/Shanghai）
+
+## 1. 结论先行
+
+### 1.1 内容身份
+
+提交对象 `e79f1c3dde12c356142b77231e304c0da67adaf1` 与验证基准
+`08a64b6eb95ed74339f1d862a6c22a2f93fa78f9` 的 **Git tree ID 完全相同**：
+
+```text
+e35b4a413b8437d05a89047e09d6bd5ff524237d
+```
+
+`git diff --quiet 08a64b6e... e79f1c3d...` 返回 0。squash 涉及的 13 个
+文件集合一致，每个最终文件的 SHA256、字节数和内容均一致。因此，**就
+提交对象内容而言，`e79f1c3d...` 是此前验证过的同一棵树；若该对象原样
+进入目标分支，既有两架构全量测试和代码评审结论可直接沿用。**
+
+### 1.2 “已经合入”这一前提与远端现状不符
+
+2026-09-01 本次只读观测显示：
+
+- `refs/heads/tizen_base` 仍为
+  `8dfebafe1a477b3dcc678ee4cb18a3a4306d5a7c`；
+- Gerrit change 352523 的 current patch set 1 是 `e79f1c3d...`，但查询结果为
+  `status=NEW`、`open=true`；
+- `e79f1c3d...` 的父提交正是 `8dfebafe...`。
+
+所以，严格答案是：**当前能够确认 proposed patch set 与验证树相同，但
+尚不能确认“合入后的 `tizen_base`”相同，因为远端分支尚未包含它。** 在
+实际提交后必须再核对一次远端 ref；当前不得以“已合入”为发布前提。
+
+### 1.3 打包结论
+
+使用本机 `gbs 2.0.8` 对 `e79f1c3d...` 执行 standard non-native export 的
+实测结果与任务书中的预期不同：**squash 仍被自动导出为一个补丁**，不是
+直接进入 Source0 tarball：
+
+- `Patch0`—`Patch5`：既有 6 个下游源码补丁；
+- `Patch6`：`0007-libcxx-backport-EH-ABI-forced-unwind-handling.patch`，
+  对应整个 `e79f1c3d...` squash；
+- `%prep` 中存在并按序执行 `%patch0`—`%patch6`；
+- 7 个声明均有实际文件，不存在悬空或错位；
+- `Patch6` 在 `8dfebafe...` 内容上对 9 个源码文件执行
+  `patch --dry-run --fuzz=0 -p1`，全部通过。
+
+因此没有由 squash 造成的 spec 构建阻断。R88 没有实际编译包，实际构建
+结果记 `NOT_OBSERVED`；但导出结构、前像和补丁试应用均已核实。
+
+### 1.4 必须处理的元数据问题
+
+`SOURCE_PROVENANCE` 仍是旧版本，而且会安装到
+`/usr/share/doc/libcxx-runtimes/SOURCE_PROVENANCE`（属于
+`libc++-devel`）：旧 HEAD、补丁数、Patch6 身份及总体描述均与本次导出
+不符。它不参与编译和运行，不会导致 `%prep` 失败，但会把错误的来源、
+补丁清单和复现依据公开装入包中，因此发布前必须修正并重建相应源包。
+
+完整可用的建议文件见
+[`SOURCE_PROVENANCE.suggested`](SOURCE_PROVENANCE.suggested)。它按
+`e79f1c3d...` 的实际 GBS export 生成，并对 7 个 patch 的文件名、SHA256、
+stable patch-id 及 Source0 SHA256 做了机械复核。
+
+## 2. 取得方式与纪律
+
+1. 资源门禁：`tools/resource_gate.sh --level light`，退出码 0。
+2. `git ls-remote` 只读取得两个分支 ref。
+3. `git fetch --no-tags origin e79f1c3d...` 仅把对象写入 `FETCH_HEAD`；没有
+   更新、切换或推送任何分支。
+4. `ssh ... gerrit query --format=JSON --current-patch-set change:352523`
+   只读取得 change 状态；没有留言、投票或改状态。
+5. 全部比较使用 Git 对象接口；没有 checkout、没有修改 `codes/llvm`。
+6. GBS export 输出到 `tmp/R88/export`，使用 `nice -n 15 ionice -c 3`；没有
+   编译。补丁 dry-run 使用 `tmp/R88/patchcheck`。
+
+网络与命令原文、stdout、stderr、退出码见 `raw/`。两次包装器参数误用和
+导出等待观察命令如实补录在 `raw/UNLOGGED_RECOVERY_COMMANDS.md`。
+
+## 3. 逐文件比对
+
+以下 13 个文件既是 squash 的完整文件集，也是 sandbox 五提交（打包提交
+加四层改动）的完整文件集。两提交最终内容逐字节相同。
+
+| 文件 | SHA256（两侧相同） | 字节数 | 结果 |
+|---|---|---:|---|
+| `libcxx/include/__ostream/basic_ostream.h` | `e9dbe41f142f1bbf2925546cd2d7dbe73c1b1863ae41f7f94387d51c7a18ded6` | 23081 | PASS |
+| `libcxx/include/future` | `a52817e321b7659a3e0f174a66c8d09523945c071ceaff7e4d94935f938fade5` | 71598 | PASS |
+| `libcxx/include/istream` | `0a2db1722f84b9ce453152131dcfc7db608d7d64b22dea84a64da19fb8caa9a1` | 48850 | PASS |
+| `libcxx/include/string` | `a9d0adfef9ba6f86cb168b64b1500ad8fc4a6b97e4c54aef5e51175733bb6935` | 187843 | PASS |
+| `libcxx/src/future.cpp` | `004ecd2f870bea2d54441ae94443a774f77467676909345473dbc40aa455c7f3` | 5988 | PASS |
+| `libcxx/src/ios.cpp` | `ff2addf1a743c273fbf034192721126f440f611a0421a748c44eaf5339ba74fb` | 12411 | PASS |
+| `libcxxabi/include/cxxabi.h` | `45561ece403db01e742e3d8300b6527ae0e029458a96eab618e9399ac6b1f04c` | 8571 | PASS |
+| `libcxxabi/src/cxa_exception.cpp` | `8212a5b7a077bf7a2002ef0668deb2d3890c59158d35910d47526abad224bd03` | 33835 | PASS |
+| `libcxxabi/src/cxa_personality.cpp` | `08fb954c0f681973a92b873a8dbc43611daf6c295fb2fc64fcdf128b02257b86` | 63198 | PASS |
+| `packaging/SOURCE_PROVENANCE` | `1cd5a45ea027d8f22b8dc5812eebbcf56f6c52e42446ad531729ce80289e7a37` | 3662 | PASS（内容相同但共同过期） |
+| `packaging/libcxx-llvm22.map` | `e806ab237e86bbe1e1d25c9bedbb129016ed67e9e72acb9259154b4b51a1304d` | 30 | PASS |
+| `packaging/libcxx-runtimes.manifest` | `db262cd0f01ca668a019b79bf1bb1a9731a100205ff4d4b256d071b3d5304dc3` | 71 | PASS |
+| `packaging/libcxx-runtimes.spec` | `a8437cca668ee785906ba5349efcd5b4b91a049ffd4b53e5234a6c2c6066af74` | 4933 | PASS |
+
+注意：“完全一致”指两个提交的完整 Git tree，不只是上述文件。没有发现
+任何额外基础树差异；两个不同父提交 `3d3e3da4...` 与 `8dfebafe...` 的 tree
+本身也相同，只是提交元数据不同。
+
+## 4. 11 项关键改动
+
+逐项结果均为 PASS：
+
+| 项 | 结果 | 核对事实 |
+|---|---|---|
+| A-1 | PASS | 外来异常调用 `_Unwind_Resume_or_Rethrow` |
+| A-2 | PASS | ARM EHABI forced foreign 路径以 `results.ttypeIndex != 0` 识别 catching handler |
+| B-1 | PASS | `cxxabi.h` 定义可见的抽象类 `__forced_unwind`，并有 out-of-line 析构 |
+| B-2 | PASS | forced foreign typed catch 用 `typeid(__cxxabiv1::__forced_unwind)` 匹配 |
+| F1 | PASS | badbit/failbit mask 判断在内层 `catch (...)`；forced catch 立即重抛；函数尾无裸 `throw;` |
+| F2 | PASS | `get(basic_streambuf&, delim)` 的 forced typed 分支调用 `__setstate_nothrow` 后重抛 |
+| N1 | PASS | 算术输出只保留普通 `catch (...)` 调 helper，未增加 forced 裸重抛 handler |
+| N2 | PASS | `basic_ostream.h`、`future`、`istream`、`string` 四处均含 `<cxxabi.h>` |
+| M1 | PASS | deferred forced 分支调用 `__restore_deferred`；`__sub_wait` 为 `while (!__is_ready())` |
+| M2 | PASS | 用户 `_Rp` 析构位于第一段锁作用域结束后，随后重新加锁提交 ready |
+| 引用特化 | PASS | `__assoc_state<_Rp&>` 同时具备 `__construct_value_unready` 和 `__complete_forced_unwind` |
+
+实际代码片段集中见 [`KEY_CHANGE_EVIDENCE.md`](KEY_CHANGE_EVIDENCE.md)，原始
+带行号输出见 `raw/010_*`、`raw/011_*`、`raw/012_*`。
+
+## 5. `SOURCE_PROVENANCE` 逐项核对
+
+### 5.1 当前文件与实际导出的差异
+
+| 字段/范围 | 当前文件 | `e79f1c3d...` 实际 export |
+|---|---|---|
+| revision | `3d3e3da4...` | 源码内容锚点 `e79f1c3d...`；生成 spec 的 `VCS` 也为 `e79f1c3d...` |
+| patch 数 | 6 | 7 |
+| 第 6 个 patch commit | `3d3e3da4...` | `8dfebafe...` |
+| 第 6 个 patch SHA256 | `b9fdf664...` | `f52129a2...` |
+| forced-unwind squash | 未记录 | 第 7 个 patch，commit `e79f1c3d...` |
+| export 描述 | “plus six” | “plus seven” |
+
+第 6 个 patch 的 stable patch-id 仍为 `ab69099b...`，说明源码差异相同；
+SHA256 改变来自总部提交的邮件头/提交元数据变化，provenance 仍应记录实际
+导出文件的 SHA256。
+
+### 5.2 所谓“内部编号矛盾”
+
+`export_patch_0006_file=0006-...` 对应 `Patch5` **在 GBS 数字规则上并不
+矛盾**：文件名按 1 起始，spec 的 `PatchN` 按 0 起始。本次实测生成 spec
+也正是该映射。
+
+但存在实质性的**语义含混和过期**：键名 `ehabi_backport_export_patch`
+指向的是既有 `__gnu_unwind_frame` 声明补丁，而当前要追踪的 forced-unwind
+squash 实际是新 Patch6/文件 0007，且完全没有记录。建议文件将二者明确
+拆成 `gnu_unwind_frame_*` 和 `forced_unwind_*`，消除误读。
+
+### 5.3 实际后果
+
+- 对编译/运行：无直接影响；该文件只在 `%prep` 被复制并安装为文档。
+- 对发布/审计：有直接影响；包会公开声称错误 revision 与补丁集合，无法
+  用它重建、核验或回答供应链来源问题。
+- 对已产 RPM：仅改仓库文件不够，需重建 `libcxx-runtimes`，因为错误文件
+  已装入各架构 `libc++-devel`。
+
+### 5.4 为什么建议使用后续 packaging-only 提交
+
+若直接 amend `e79f1c3d...` 并在文件里硬编码 `e79f1c3d...` 及其 Patch7
+SHA，amend 会改变提交和导出补丁本身，形成自引用失效。建议先让代码对象
+`e79f1c3d...` 成为稳定内容锚点，再用一个只改 packaging 元数据的后续提交
+加入建议文件。GBS 不把 packaging-only 提交导出成 Source0 补丁，因此 7
+个源码 patch 身份保持稳定；最终包 revision 则由生成 spec 的 `VCS` 字段
+记录。建议文件因此使用：
+
+```text
+validated_source_tree_vcs=platform/upstream/llvm#e79f1c3dde12c356142b77231e304c0da67adaf1
+package_revision_identity=GBS_GENERATED_SPEC_VCS_FIELD
+```
+
+避免声称文件能够包含自身提交 SHA。
+
+### 5.5 建议的完整文件内容
+
+以下内容适用于以 `e79f1c3d...` 为稳定源码内容锚点的后续
+packaging-only 提交；与单独交付的 `SOURCE_PROVENANCE.suggested` 完全
+相同：
+
+```text
+component=llvm-project libcxx+libcxxabi
+version=22.1.8
+source_tarball=llvm-22.1.8.tar.gz
+source_tarball_sha256=1f5fe8da0a18255a63cde36f1570c88265bb8ffc6458deae06d04e77abc6f7d2
+source_tarball_anchor=R9C_GBS_STANDARD_EXPORT
+validated_source_tree_vcs=platform/upstream/llvm#e79f1c3dde12c356142b77231e304c0da67adaf1
+package_revision_identity=GBS_GENERATED_SPEC_VCS_FIELD
+local_tizen_base_branch=tizen_base
+upstream_tag=llvmorg-22.1.8
+gbs_export_tag=upstream/22.1.8
+upstream_peeled_commit=ca7933e47d3a3451d81e72ac174dcb5aa28b59d1
+official_release_archive=llvm-project-22.1.8.src.tar.xz
+official_release_archive_sha256=922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888
+official_release_anchor_scope=CONTENT_COMPARISON_ONLY
+export_patch_count=7
+export_patch_0001_file=0001-Add-support-for-Tizen-toolchain-vendor.patch
+export_patch_0001_sha256=a71a7503e851f4ebe1c192326d832c28f79a81ff1c9db43696d0487c118d587c
+export_patch_0001_patch_id=cf2d5d98ab6c48ef843b1c5d9372cc5640ad2b6c
+export_patch_0001_commit=53accdc47cd72c0daf61bf70e52946b2d8d80f2e
+export_patch_0002_file=0002-Link-libclang_rt.asan.so-against-libatomic-when-nece.patch
+export_patch_0002_sha256=cefb73ec25a64f8c70cc0e585dfc688a23eb44b740093755ffaf8ee86f7e716e
+export_patch_0002_patch_id=d47008f74357f06fa89e89aa04ac02242138568e
+export_patch_0002_commit=f31417256f953cc5d26cd188704c89ad41572b50
+export_patch_0003_file=0003-Fix-armv7l-build-when-compiler-is-clang.patch
+export_patch_0003_sha256=9ce436eb2f73e01b112cfeb10d6108e33c719b1db54a8fc404abdc10c367102b
+export_patch_0003_patch_id=3f0c4ed2b51658bc1585361385439d453458851d
+export_patch_0003_commit=9576175b59fa577c940eff1712a59b129ae03f03
+export_patch_0004_file=0004-clang-add-support-for-LLVM-gold-plugin-in-case-of-ac.patch
+export_patch_0004_sha256=45d68e84754f93ebe10ba80725e6cbb28826890e344f0ae910e061690105e944
+export_patch_0004_patch_id=4584830adae087a4fb6348b80da4c755699bae35
+export_patch_0004_commit=9ad40bd946a75b44d8e05de8ba3263a5ce2ed885
+export_patch_0005_file=0005-Merge-MLGO-AOT-compilation-support-and-optimization-.patch
+export_patch_0005_sha256=da2cacae22ef8ececf808596b14ff53b6741db23e3f34d7fc5e07a75fa3543c2
+export_patch_0005_patch_id=bac21649416c0ea19ee8fa7ef00d4a7d8fa3dafa
+export_patch_0005_commit=fd7a4929c0e424d564cdd1f0c55af9153dcea321
+export_patch_0006_file=0006-libcxxabi-declare-__gnu_unwind_frame-in-cxa_personal.patch
+export_patch_0006_sha256=f52129a2f008603a3cf74fc1bf448d984b0f1827a48a9597f346223d87b98062
+export_patch_0006_patch_id=ab69099b6f2dd679eeaf8b1dfe82bb13fdabc479
+export_patch_0006_commit=8dfebafe1a477b3dcc678ee4cb18a3a4306d5a7c
+export_patch_0007_file=0007-libcxx-backport-EH-ABI-forced-unwind-handling.patch
+export_patch_0007_sha256=b2d657339c18c5c1416bc9b3890afd39394b9ce46af061c1db809315ad4746d3
+export_patch_0007_patch_id=b00e455e21b89a23a7b13ce9b68103fbc9b28fb4
+export_patch_0007_commit=e79f1c3dde12c356142b77231e304c0da67adaf1
+gnu_unwind_frame_export_patch=0006-libcxxabi-declare-__gnu_unwind_frame-in-cxa_personal.patch
+gnu_unwind_frame_spec_patch_entry=Patch5
+forced_unwind_export_patch=0007-libcxx-backport-EH-ABI-forced-unwind-handling.patch
+forced_unwind_spec_patch_entry=Patch6
+platform_frozen_tarball_sha256=16a932e1bad4e1ed68938b48aa9fe5613992426584a75dd17dacabf2151d122e
+platform_frozen_tarball_status=SUPERSEDED_BY_R9C
+superseded_platform_spec_vcs=platform/upstream/llvm#c12cbe887ff08f04628e1b1165f8d02ce69a9146
+superseded_platform_spec_vcs_status=SUPERSEDED_BY_R9C_TEST_COMMIT_ID_NON_AUTHORITATIVE
+platform_vs_r9c_source0_difference=clang/bindings/python/.git_archival.txt only
+platform_vs_r9c_source0_difference_cause=git export-subst expansion in local standard export
+platform_vs_r9c_source0_build_impact=NO_BUILD_IMPACT
+platform_vs_r9c_source0_build_impact_evidence=progress/R9C/build_impact_verdict.tsv
+source_export=GBS standard non-native export from upstream/22.1.8 plus seven auto-generated downstream patches; --no-patch-export forbidden
+provenance_revision_basis=GBS standard export at platform/upstream/llvm#e79f1c3dde12c356142b77231e304c0da67adaf1 verified 2026-09-01
+stdlib_abi=libcxxabi
+unwinder=libgcc_s
+compiler_rt=disabled
+llvm_unwinder=disabled
+symbol_version_node=LLVM_22
+```
+
+## 6. squash 后的补丁导出与构建影响
+
+源仓 `libcxx-runtimes.spec` 本身没有手写 `PatchN` 或 `%patchN`；GBS export
+依据 `upstream/22.1.8..HEAD` 自动注入。`e79f1c3d...` 同时改 packaging 和 9
+个源码文件，因而其源码部分被导出成一个新的下游 patch。实际生成结果：
+
+```text
+Patch5: 0006-libcxxabi-declare-__gnu_unwind_frame-in-cxa_personal.patch
+Patch6: 0007-libcxx-backport-EH-ABI-forced-unwind-handling.patch
+...
+%patch5 -p1
+%patch6 -p1
+FILE docs/progress/R90/REPORT.md
+# R90：R87 扫描器的阳性校准
+
+日期：2026-09-01（Asia/Shanghai）
+
+## 1. 结论
+
+**R87 的三个原扫描器均能检出本次构造的全部阳性样本。**
+
+- 二进制阳性：6 种独立 ABI 形态；分别放入 ELF 可重定位目标文件、共享库、
+  可执行 ELF 和静态归档。
+- 源码阳性：10 个预期判定分支。
+- 自动核对：42 个“载体 × 阳性形态/判定分支”检查，42 个通过，0 个漏检。
+- `scan_elf_symbols.py`：3/3 ELF 解析成功，五种二进制判定分支全部触发。
+- `scan_static_archives.py`：1/1 归档扫描成功，五种二进制判定分支全部触发。
+- `scan_noexcept_type_uses.py`：1/1 校准源码根扫描成功，D01、D02–D04、
+  D05 与 GENERAL 的预期分支全部触发。
+
+因此，R87 在其**已申报覆盖范围内**的零命中不能解释为“扫描器根本找不到
+这些形态”；阳性校准建立了其判定路径的检出能力。R87 的原结论——在其已
+覆盖语料中未发现目标用法——成立，证明力得到补足。
+
+这不把结论扩大到未覆盖源码、宏/生成源码、被剥离且不留相关符号的代码，
+也不修改 R87 的任何既有材料。
+
+## 2. 原脚本身份与不修改证明
+
+直接调用 `docs/progress/R87/code/` 中的三个既有文件；调用前后 SHA256
+一致：
+
+| 文件 | SHA256 |
+|---|---|
+| `scan_elf_symbols.py` | `dbcc1c1bfa21b6d277a8c5186091ad93dc67cef40d571736a75111e963e513f2` |
+| `scan_static_archives.py` | `efc4af747c1ad0de2f6f2955a040cb5516f62f15a94aa2d142d3a6bafd6f917b` |
+| `scan_noexcept_type_uses.py` | `e81bd6f7afec0fa932430819f3f2f292c4f0bdc1230a9e8efeba9ebdb92629a9` |
+
+没有复制后修改判定逻辑。适配仅包括：
+
+1. 为 ELF 扫描器制作一条与 R87 原接口相同的 shard JSON，并按
+   `extracted/<prefix>/<id>/...` 布置三个 ELF；
+2. 为静态归档扫描器提供一个单行绝对路径清单；
+3. 为源码扫描器提供一个只有一个 `SCAN_OK` 根的 `scan_status.tsv`。
+
+## 3. 阳性样本设计
+
+### 3.1 二进制 ABI 样本
+
+源码为 `samples/positive_symbols.cpp`。它是隔离的 ABI 探针：在最小
+`std` 命名空间声明中固定目标类名和 `noexcept` 类型，不依赖宿主
+libstdc++ 当前是否已移除某个标注，也不与平台源码或 libc++ 链接。
+
+| 编号 | 构造 | 预期 mangled 形态 | 要触发的 R87 判定 |
+|---|---|---|---|
+| B01 | `&condition_variable::wait` 作为 `auto` 参数，同时把其成员函数指针类型作为深层模板类型参数 | 目标名 `condition_variable4wait` 与成员指针 `M...DoF` 同符号 | `SITE_WITH_NOEXCEPT_TYPE_ENCODING`、`SITE_WITH_POINTER_NOEXCEPT_ENCODING` |
+| B02 | `&condition_variable::__do_timed_wait` 与其类型进入四层模板 | `condition_variable15__do_timed_wait` + `M...DoF` | 同上；校准 D02–D04 共用的扫描分支 |
+| B03 | 只把 `wait` 的成员函数指针类型作为模板类型参数 | 只有 `condition_variable` 类名和 `DoF`，没有 `wait` | `CONDITION_VARIABLE_NOEXCEPT_FUNCTION_TYPE` |
+| B04 | `noexcept` 成员函数指针作为普通函数参数 | `MSt18condition_variableDoF...`，没有目标函数名 | `CONDITION_VARIABLE_NOEXCEPT_FUNCTION_TYPE` |
+| B05 | 深层模板中放入 `wbuffer_convert` 及 `void (*)(wbuffer_convert&) noexcept` | `wbuffer_convert...PDoF`，没有析构名 | `WBUFFER_CONVERT_NOEXCEPT_FUNCTION_TYPE` |
+| B06 | `wbuffer_convert` 析构的 `noexcept(...)` 结果作为 bool 模板参数 | 同一符号含 `wbuffer_convert` 和 `Lb1E` | `WBUFFER_CONVERT_BOOL_TEMPLATE_CANDIDATE` |
+
+B01/B02 中 `template<auto P>` 只负责把真实目标函数名带入符号；`DoF` 来自
+另一个显式类型模板参数。这与 R87 已查明的“单独 `template<auto P>` 不编码
+异常规格”不矛盾。
+
+B02 使用一个结构等价的 `__do_timed_wait` 声明校准原扫描器的共用名字/类型
+分支。原扫描器本身不区分 system_clock、steady_clock 和任意 Clock 的签名，
+所以这里不是对三种 overload 语义或可达性的重新验证。
+
+### 3.2 源码样本
+
+`samples/source_positive.cpp` 使用宿主标准头并实编译通过；另一个 ABI 探针
+源码也进入同一源码根。覆盖：
+
+- D01：显式地址、成员指针类型、`decltype`/trait、别名地址；
+- D02–D04：`__do_timed_wait` 私有 helper 引用；
+- D05：析构拼写、`noexcept` 和 `is_nothrow_destructible`；
+- GENERAL：宽地址、宽类型查询、`noexcept(cv.wait(lock))`。
+
+### 3.3 载体
+
+同一 ABI 探针以 `g++ -std=c++20 -O0 -g` 构建为：
+
+| 载体 | 类型 | SHA256 |
+|---|---|---|
+| `positive_symbols.o` | ELF64 x86-64 relocatable | `c1e08bb1b8e8b9123605d4f9e1bbcd58ee865ba0e3f7b7d2aaeb55976359489a` |
+| `libpositive_symbols.so` | ELF64 x86-64 shared object | `e96d770965d6eeaa084253411fcf12df03ed3c903c34ec5ada13111f4c9e1106` |
+| `positive_symbols.elf` | ELF64 x86-64 PIE executable | `d6f6f8fb9186aaef652af0a1fc0348d09272d3cb7079e017c3f32533f1dda51f` |
+| `libpositive_symbols.a` | ar static archive，含上述 `.o` | `efff566ff99ea5fbdfb1a766a111b070b8fb8fe66fdfcdffcc5daa43d9252fdb` |
+
+本次是判定逻辑阳性校准，只生成宿主 x86_64 样本。Itanium ABI 的 `Do`/`PDo`
+编码不随上述三个平台架构改变；R87 原扫描已经实际解析 armv7l ELF32、
+aarch64/x86_64 ELF64。本次没有另行构造 ARM 阳性二进制。
+
+## 4. 独立阳性确认
+
+在运行 R87 扫描器之前，使用 GNU `nm --no-demangle`、`nm -C`、
+`readelf --wide --symbols`、`ar t` 和 `c++filt` 直接检查目标文件、共享库和
+归档。这条确认路径不调用 R87 的 ELF parser 或 `classify()`。
+
+六个实际阳性符号如下（省略仅在说明文字中的换行，不截短原符号）：
+
+```text
+_Z14deep_real_siteIXadL_ZNSt18condition_variable4waitERiEEMS0_DoFvS1_E10deep_layerILi11ES4_ILi12ES4_ILi13ES4_ILi14EiEEEEEiT1_T0_
+_Z14deep_real_siteIXadL_ZNSt18condition_variable15__do_timed_waitERlEEMS0_DoFvS1_E10deep_layerILi21ES4_ILi22ES4_ILi23ES4_ILi24ElEEEEEiT1_T0_
+_Z19condition_type_onlyIMSt18condition_variableDoFvRiE10deep_layerILi7ES4_ILi8ES4_ILi9EiEEEEiT0_T_
+_Z27condition_pointer_parameterMSt18condition_variableDoFvRiE
+_Z17wbuffer_type_onlyISt15wbuffer_convertIcwEPDoFvRS1_E10deep_layerILi31ES5_ILi32ES5_ILi33ElEEEEiT1_T0_
+_Z23wbuffer_destructor_boolISt15wbuffer_convertIcwELb1E10deep_layerILi41ES2_ILi42ES2_ILi43ES2_ILi44EcEEEEEiT1_
+```
+
+`c++filt` 独立显示：B01/B02 是目标地址加 `noexcept` 成员函数指针；B03/B04
+是没有方法名的 `noexcept` 成员函数指针；B05 是 `noexcept` 普通函数指针；
+B06 的布尔值为 `true`。`readelf` 在共享库及归档成员中均看到相同符号，
+`ar t` 确认归档成员为 `positive_symbols.o`。完整原文见 `raw/006_*`。
+
+## 5. 原脚本扫描结果
+
+### 5.1 ELF
+
+```text
+json_package_records=1
+elf_records=3
+unique_elf_paths=3
+mangled_symbols_scanned=32
+site_symbol_rows=72
+site_with_noexcept_type_encoding_rows=12
+site_with_pointer_noexcept_encoding_rows=12
+condition_variable_noexcept_function_type_rows=16
+wbuffer_convert_noexcept_function_type_rows=4
+wbuffer_convert_bool_template_candidate_rows=4
+parse_failures=0
+```
+
+共享库同时从 `.dynsym` 与 `.symtab` 各命中一次，因此部分检查的匹配行数为
+2；这不是两个独立样本。目标文件和可执行文件各为 1。
+
+### 5.2 静态归档
+
+```text
+archive_paths=1
+mangled_symbols_scanned=8
+candidate_rows=18
+SITE_WITH_NOEXCEPT_TYPE_ENCODING=3
+SITE_WITH_POINTER_NOEXCEPT_ENCODING=3
+CONDITION_VARIABLE_NOEXCEPT_FUNCTION_TYPE=4
+WBUFFER_CONVERT_NOEXCEPT_FUNCTION_TYPE=1
+WBUFFER_CONVERT_BOOL_TEMPLATE_CANDIDATE=1
+scan_failures=0
+```
+
+### 5.3 源码
+
+最终重扫：1 个根、32 行候选、失败 0；预期的 10 类源码检查均至少命中
+一行。具体文件与行号见 `tables/source_candidates.tsv`。
+
+### 5.4 逐项矩阵
+
+完整 42 行见 `tables/calibration_matrix.tsv`。压缩展示如下：
+
+| 样本 | `.o` | `.so` | 可执行 ELF | `.a` | 源码 |
+|---|---:|---:|---:|---:|---:|
+| B01 真实 wait 名 + `DoF` | PASS | PASS | PASS | PASS | 对应 S01/S03 PASS |
+| B02 helper 名 + `DoF` | PASS | PASS | PASS | PASS | S05 PASS |
+| B03 condition type-only 深层模板 | PASS | PASS | PASS | PASS | S02 PASS |
+| B04 成员指针函数参数 | PASS | PASS | PASS | PASS | S02 PASS |
+| B05 wbuffer type-only 深层模板 | PASS | PASS | PASS | PASS | S07 PASS |
+| B06 析构 trait bool 模板参数 | PASS | PASS | PASS | PASS | S06/S07 PASS |
+| 别名/GENERAL 源码分支 | 不适用 | 不适用 | 不适用 | 不适用 | S04/S08–S10 PASS |
+
+没有漏检，因此不存在需要修正脚本并重扫 R87 语料的校准失败。
+
+## 6. 1,079 项源码盲区评估
+
+### 6.1 口径更正但不修改 R87
+
+`1,079` 是报告中的算术差 `1,450 − 371`。逐 SRPM 文件名核对发现，R87
+扫描的 R32/T1 语料与 R11 冻结快照不是严格子集：
+
+| 指标 | 数量 |
+|---|---:|
+| R11 冻结源码记录 | 1,450 |
+| R87 `SCAN_OK` 记录 | 371 |
+| 报告的算术差 | 1,079 |
+| R87 与 R11 文件名精确相同 | 345 |
+| R87 已扫但版本/Release 不属于 R11 快照 | 26 |
+| R11 快照真正未扫记录 | 1,105 |
+
+26 条主要是 binutils、cmake、gcc、gettext、jsoncpp、llvm 等版本/Release
+漂移，逐项映射见 `tables/source_gap_snapshot_drift.tsv`。这不推翻 371 个根的
+扫描结果，但意味着若目标是补齐 R11 的 1,450 条冻结记录，应以 1,105 为
+待处理分母。
+
+### 6.2 是否能在合理成本内覆盖
+
+**可以覆盖，但应视为一次有边界、分批、I/O 主导的独立工作，不是一次
+轻量追加。**依据：
+
+- R11 的 1,450 个 SRPM 已全部下载并通过 SHA256；本机逐 `target` 检查为
+  1,450/1,450 存在，不需要再次下载。
+- 1,105 个精确缺口的压缩 SRPM 总量为 `15,623,924,553` bytes；资源门禁时
+  可用磁盘约 357 GiB。
+- 已有 `analyze_dlopen_sources.py` 提供安全展开普通 tar/zip 的实现；系统有
+  `rpm2cpio`、`rpm2archive`、`cpio`、`tar`、`7z`。
+- 可以逐包执行“校验 → 临时展开 SRPM → 安全展开内嵌源码归档 → 原脚本
+  单 worker 扫描 → 保存候选/状态 → 释放该批临时目录”，从而避免同时保留
+  1,105 个完整展开树。
+
+限制：未实际展开这 1,105 包，展开后峰值和总 I/O 为 `NOT_OBSERVED`。
+`chromium-efl` 单个 SRPM 为 7,223,059,319 bytes，且 R11 已证明传统
+`rpm2cpio` 会遇到 cpio 的 >4 GiB 限制；它必须单独走 `rpm2archive` 等可处理
+大文件的路径并复核完整性。其余缺口压缩量约 8.40 GB，操作成本明显较低。
+
+### 6.3 盲区影响与命中可能性
+
+用 R11 已发布 ELF 的操作性 C++ 指标映射回 source RPM：
+
+| 集合 | 记录数 | 至少一个 C++ 指标 ELF | 比例 |
+|---|---:|---:|---:|
+| 与 R11 精确相同的已扫记录 | 345 | 343 | 99.42% |
+| R11 精确未扫记录 | 1,105 | 140 | 12.67% |
+
+因此未覆盖集合整体**更不可能**包含目标用法：R32/T1 的 371 条本来就是为
+C++/取消风险调查筛出的高富集语料，而余集大量是纯 C、脚本、数据、内核或
+没有 C++ 指标运行时 ELF 的包。
+
+但盲区不能忽略：
+
+1. 仍有 140 个未扫 source RPM 已知产出 C++ 指标 ELF；其中包括
+   `chromium-efl`、Rust、dotnet build tools、LLVM 和多个 GCC 交叉工具链。
+2. “没有 C++ 指标 ELF”不等于源码没有 C++：可能只产生静态库、构建工具、
+   测试或生成源码，也可能相关符号被剥离/内联。
+3. R87 的二进制层已经全量覆盖这些包的已发布 ELF/静态归档，显著降低了
+   ABI 可见用法遗漏的概率；但 bool trait、SFINAE/overload 选择等结果可能
+   不携带目标名字，仍主要依赖源码层。
+
+所以该盲区对“已覆盖语料零命中”没有影响，对“平台 1,450 个源码包的穷尽
+零命中”仍有实质影响。完整平台源码结论需要按 R11 快照补扫 1,105 条。
+
+## 7. 自行判断、限制、异常与尚存疑问
+
+自行判断：
+
+1. 阳性校准按原扫描器的判定分支设计，而不是重复验证 D02/D03/D04 三种
+   overload 的运行时可达性；三者在扫描器中本来共用同一 helper 名分支。
+2. 用隔离最小声明固定 ABI 形态，避免宿主 libstdc++ 的标注状态污染样本；
+   另提供一份使用真实宿主头且编译通过的源码层样本。
+3. 把 1,079 作为报告算术口径保留，同时给出严格快照交集得到的 1,105；
+   没有回写 R87。
+4. “更不可能”只依据已发布 ELF 的 C++ 指标富集度，不把 965 条无指标记录
+   判成不可能。
+
+限制：
+
+- 阳性 ABI 载体只在 x86_64 生成；没有另造 ARM ELF 阳性。
+- 本次不扩扫 1,105 个缺口，解压峰值、总耗时和 chromium 特殊路径成功率均
+  为 `NOT_OBSERVED`。
+- 阳性校准证明这些已知形态能被发现，不证明词法扫描可以发现任意宏展开、
+  生成代码或 ABI 名中已完全擦除目标来源的语义变化。
+
+执行异常（均已保留原始记录）：
+
+FILE docs/progress/R92/REPORT.md
+# R92：未扫源码包的补扫
+
+## 结论
+
+R87 的零命中结论在本轮新增的可得源码范围内仍然成立。
+
+R90 严格按 R11 冻结快照核算出的 1,105 条源码缺口中，有 140 条产出至少一个带 C++ 指标的已发布 ELF。本轮：
+
+- 140/140 个本地 SRPM 均通过既有 SHA256 复核；
+- R87 原版 `scan_noexcept_type_uses.py` 对 140/140 个展开根正常完成，脚本内容未修改；
+- 原始收口口径为 130 个 SRPM 完整扫描、8 个因安全解包排除项而部分覆盖；R93 对排除项做元数据分类后，6 个可以收口，最终为 136 个完整扫描、2 个部分覆盖；
+- 2 个 SRPM 只有打包文件、没有上游 C/C++ 源码，源码内容记 `NOT_AVAILABLE`；
+- 原脚本产生 150 条宽口径候选，去重为 100 个位置；全部分类完毕，真实 D01–D05 函数地址、函数类型、模板参数、traits/noexcept 用法为 0；
+- 140 个包对应的 4,374 条 C++ 指标 ELF 均被 R87 成功解析；R87 的 39,166 条 ELF 中另有 1 条未能解析，属于 `u-boot-rubikpi3`，不在本次 140 包/4,374 条范围内，因此不影响本轮结论。
+
+本任务没有修改 R87 的材料、脚本或判定逻辑，没有做修复或处置建议。
+
+## 1. 覆盖关系
+
+使用与 R90 相同的三个冻结输入机械重建集合：
+
+- `progress/R11/tables/source_download_status.tsv`：R11 的 1,450 条源码记录；
+- `docs/progress/R32/tables/scan_status.tsv`：R87 使用的 371 个 `SCAN_OK` 根；
+- `progress/R11/tables/elf_inventory.tsv`：已发布 ELF 与 source RPM 的映射。
+
+结果见 `tables/coverage_summary.tsv`：
+
+| 指标 | 数量 |
+| --- | ---: |
+| R11 冻结源码记录 | 1,450 |
+| R87 原源码语料 `SCAN_OK` | 371 |
+| 与 R11 文件名精确相同的已扫记录 | 345 |
+| R11 精确源码缺口 | 1,105 |
+| 缺口中产出 C++ 指标 ELF 的源码记录 | 140 |
+| 140 包对应的已发布 C++ 指标 ELF 行 | 4,374 |
+| 已包含在 R87 ELF 扫描范围 | 4,374/4,374 |
+
+R87 的二进制扫描输入是 R11 的全部 ELF shard：共读取 39,166 条 ELF 记录，
+其中 1 条 `/boot/u-boot.mbn` 因扩展 section count 未能解析，对应
+`u-boot-rubikpi3-2025.10-0.src.rpm`。该 source RPM 不在本次 140 包清单；
+`tables/cpp_gap_binary_coverage.tsv` 的 4,374 条也不含这一路径。因此本次
+4,374 条均处于 R87 成功解析范围。源码补扫的主要价值仍是发现可能只存在于
+源码语义中的 traits、`decltype`、bool 模板参数、别名和重载选择。
+
+## 2. 补扫口径与执行方法
+
+### 2.1 清单与来源
+
+`tables/cpp_gap_140.tsv` 列出全部 140 条，包含包名、压缩大小、本地路径、记录 SHA256、文件存在性和关联 ELF 数。140 个文件全部已经由 R11 下载，不进行网络下载。
+
+### 2.2 展开与资源控制
+
+逐包串行执行：
+
+1. 重新计算 SRPM SHA256；
+2. 临时展开当前 SRPM；
+3. 安全展开内嵌 tar/zip 源码归档；
+4. 为当前根生成单条 `SCAN_OK` 输入；
+5. 调用 R87 原脚本，`--workers 1`；
+6. 持久化状态、候选与命令 ledger；
+7. 删除当前包临时树，再进入下一包。
+
+执行使用 `nice -n 15` 与 `ionice -c 3`，没有构建，并行度为 1。设置 80 GiB 可用磁盘保护线；低于该值会停止。峰值最大的 chromium 包也只在当前包生命周期内展开，完成后缓存和临时树已清除；最终可用磁盘恢复到约 335 GiB。
+
+共识别并处理 195 个内嵌源码归档：187 个普通完成，8 个在 R92 当时按安全
+策略排除了共 1,003 个成员。R93 只读取归档目录元数据后确认：1,003/1,003
+全部为符号链接，没有普通文件、硬链接、设备或无法识别类型；994 个链接指向
+归档内已纳入扫描根的普通文件/目录，9 个是目标不在归档中的悬空链接。
+因此 6 个包的排除项可完全收口；`bcc-tools`（1 个悬空链接）和
+`chromium-efl`（8 个悬空链接）保守保留部分覆盖。分类明细位于
+`../R93/tables/excluded_archive_members.tsv` 和
+`../R93/tables/eight_package_coverage.tsv`。
+
+R87 扫描器 SHA256：
+
+`e81bd6f7afec0fa932430819f3f2f292c4f0bdc1230a9e8efeba9ebdb92629a9`
+
+`git status -- docs/progress/R87` 为空，证明既有 R87 材料未修改。
+
+## 3. 源码可得性
+
+机械执行层面，140/140 个根都被原脚本正常处理。R92 原始内容完整性口径为：
+
+| 状态 | 数量 | 说明 |
+| --- | ---: | --- |
+| `AVAILABLE_AND_SCANNED` | 130 | SRPM 的源码归档没有排除成员，完整展开并扫描 |
+| `PARTIAL_SAFE_EXTRACTION` | 8 | 源码已扫描，但当时尚未分类安全解包排除的 1,003 个成员 |
+| `NOT_AVAILABLE` | 2 | SRPM 只有打包文件，没有上游 C/C++ 源码 |
+
+R93 对上述 8 包收口后的最终判定为：
+
+| 最终状态 | 数量 | 说明 |
+| --- | ---: | --- |
+| 完整扫描 | 136 | 原 130 包，加上 6 个全部链接目标均在扫描根内的包 |
+| 部分覆盖 | 2 | `bcc-tools`、`chromium-efl`；共 9 个悬空链接目标不在归档，无法证明目标源码已扫描 |
+| `NOT_AVAILABLE` | 2 | packaging-only SRPM，没有上游 C/C++ 源码 |
+
+两个 `NOT_AVAILABLE` 项逐项如下：
+
+1. `mic-bootstrap-1.0-1.src.rpm`：仅有 `baselibs.conf`、`mic-bootstrap.spec`、`rpmlintrc`；spec 只有 `Source100/Source101` 指向这两个打包辅助文件，没有上游源码 Source。
+2. `qemu-accel-0.4-1.4.src.rpm`：仅有 `qemu-accel-aarch64.spec`，没有上游源码 Source。
+
+这两个根上运行扫描器得到零候选，只能说明其 SRPM 自带打包文本中没有命中；不能冒充上游 C++ 源码已经扫过。两者的已发布 C++ 指标 ELF 仍包含于 R87 二进制扫描范围。逐项证据见 `raw/011_*` 与 `tables/source_completeness.tsv`。
+
+## 4. 候选复核
+
+原脚本输出 150 条宽候选、100 个去重位置，涉及 chromium、LLVM 和 10 条 GCC/GCC 交叉工具链 source RPM 记录。`tables/candidate_classification.tsv` 保留每一行原文、位置、分类与理由；分类脚本遇到未知形态会返回非零，本轮未知形态为 0。
+
+| 分类 | 原始候选行 | 去重位置 | 真实目标用法 |
+| --- | ---: | ---: | ---: |
+| condition_variable 内部 `__condvar` **数据成员**指针，不是 `wait` 函数指针 | 100 | 50 | 0 |
+| `__do_timed_wait` 自身的声明、定义或普通直接调用 | 34 | 34 | 0 |
+| `wbuffer_convert` 析构函数自身的声明或定义 | 14 | 14 | 0 |
+| 无关的 `atomic::wait` noexcept 查询 | 2 | 2 | 0 |
+| 合计 | 150 | 100 | 0 |
+
+其中 100 行数据成员指针候选是同一批 50 个位置被 `MEMBER_POINTER_TYPE` 与 alias 分支各保留一次。它们的类型是 `std::__condvar std::condition_variable::*`，没有取得 D01 `wait` 的地址，也不携带 `wait` 函数类型的异常规格。其余三类同样不是任务所查的地址、函数类型、非类型模板参数或 traits 使用。
+
+`tables/true_hits.tsv` 仅有表头，真实命中为 0。
+
+## 5. 原结论是否变化
+
+不变化，但边界必须精确表述：
+
+> 在 R87 原 371 个源码根、本轮新增 136 个完整覆盖和 2 个部分覆盖的精确
+> R11 快照记录，以及 R87 成功解析的发布 ELF和已检查静态归档中，未发现
+> 平台以会受异常规格变化影响的函数指针、函数类型、模板参数或 traits 等
+> 形式使用 D01–D05。本轮 140 包对应的 4,374 条 ELF 均成功解析。
+
+不能表述为“1,450 个源码包源码绝对全部零命中”，因为本轮 2 个 packaging-only SRPM 没有携带其已发布 C++ ELF 所对应的上游源码，且任务刻意没有补扫 965 个无 C++ ELF 指标的源码记录。
+
+## 6. 剩余盲区
+
+1. 上述 2 个 packaging-only SRPM 的上游 C/C++ 源码来源没有在包内提供，源码层为 `NOT_AVAILABLE`；其二进制产物已覆盖。
+2. `bcc-tools` 与 `chromium-efl` 共 9 个符号链接的目标不在源码归档中；链接本身没有独有文件内容，但无法证明缺失目标的源码已经扫描，因此两包仍为部分覆盖。
+3. R90 缺口中的另 965 条没有已发布 C++ 指标 ELF，按本任务范围未补扫。它们仍可能包含仅用于静态库、构建工具、测试、生成代码或最终被剥离/内联的 C++。
+4. 源码正则扫描不能展开编译期宏、生成器输出或外部拉取内容，也不能证明语义已完全擦除的 bool/SFINAE 结果来自哪个表达式。
+5. 结论绑定 R11 冻结快照；当前仓若已有版本漂移，不属于这次补扫。
+
+## 7. 执行异常与恢复
+
+所有命令原文、输出和退出码均在 `raw/`；逐包提取与扫描子命令在 `raw/source_scan_command_ledger.txt`。
+
+1. 第一次处理大于 4 GiB 的 SRPM 时，辅助脚本错误地捕获了 `rpm2archive` 的标准输出，导致内存增长。发现后立即精确中止；日志包装器因收到中断未能自行写出退出码，`raw/004_scan_cpp_gap_sources.exitcode` 中的 `130` 是依据会话返回值补写的**恢复记录**，不是包装器自动生成。已完成 5 包断点未丢失，原 stdout/stderr 未修改。
+2. 修正为标准输出直接流式写磁盘后，导出成功；随即发现辅助脚本预先创建了本应由安全解包函数创建的目录，以 `FileExistsError` 退出。判据未执行、断点未变化。
+3. 仅修正 R92 辅助脚本的流向与目录前置条件，保留已成功生成的磁盘流缓存，再从断点续跑。最终 140 个根的扫描器命令均正常结束；源码内容覆盖仍按 136 完整、2 部分、2 不可得表述。没有修改 R87 扫描器。
+4. 执行异常退出类运行实验时环境曾连续出现保护性中止提示；W2 后续只进行本地静态处理，并减少工具回显。没有尝试绕过保护。
+
+这些均为命令自身技术性错误，不是扫描判据失败。
+
+## 8. 自行判断与尚存疑问
+
+自行判断：
+
+1. 以 R11 文件名精确差集 1,105 为冻结快照分母，不使用简单算术差 1,079；这沿用 R90 已说明的口径。
+2. 用 `cpp_indicator=YES` 把任务指定的 140 条从差集中机械选出。
+3. 将原扫描器的宽候选逐项分类，只有实际取得目标函数地址/类型、把它们用于模板/traits，或其他会携带异常规格的形态才算真实命中。
+4. 对两个 packaging-only SRPM，区分“扫描器正常扫描了现有根”和“上游 C++ 源码不可得”，后者如实记 `NOT_AVAILABLE`。
+5. 对 9 个目标不在归档的符号链接不推断目标内容，保守把所属的两个包继续记为部分覆盖。
+
+尚存疑问：若人工要求对两个 packaging-only 项取得源码层结论，需要确定其发布 ELF 的真正上游源码/构建来源；现有 SRPM 与本地冻结材料不能回答。该问题不阻塞对其二进制层的既有结论；另有 2 包因 9 个悬空链接目标保留部分覆盖。
+
+## 9. 证据索引
+
+- 140 条清单：`tables/cpp_gap_140.tsv`
+- 4,374 条二进制覆盖映射：`tables/cpp_gap_binary_coverage.tsv`
+- 覆盖统计：`tables/coverage_summary.tsv`
+- SRPM 内容清单：`tables/srpm_payload_inventory.tsv`
+- 逐包扫描状态：`tables/source_scan_status.tsv`
+- 内容完整性：`tables/source_completeness.tsv`
+- 归档处理：`tables/archive_status.tsv`
+- 原始宽候选：`tables/source_candidates.tsv`
+- 全候选分类：`tables/candidate_classification.tsv`
+- 分类汇总：`tables/candidate_classification_summary.tsv`
+- 真实命中表：`tables/true_hits.tsv`
+- 最终统计：`tables/final_summary.tsv`
+- 命令与完整输出：`raw/`
+
+## 10. 纪律确认
+
+- 未修改平台源码或任何补丁。
+- 未修改 R87 扫描脚本和既有结论材料。
+- 未做修复或处置建议。
+- 未向 Gerrit 或任何外部源码仓推送。
+FILE docs/progress/R93/REPORT.md
+# R93：过夜任务材料收口
+
+## 结论
+
+本任务只修正 R82/R92 的材料、状态和证据对应关系，没有重跑实验、没有修改
+已有原始输出。
+
+- R92 状态从 `COMPLETE` 改为 `PARTIAL`。
+- R92 原始覆盖口径修正为 130 包完整扫描 / 8 包部分覆盖 / 2 包源码不可得。
+- 对 8 包的 1,003 个排除成员完成归档目录元数据分类：全部为符号链接，
+  994 个目标已在扫描根内，9 个目标不在归档，无法分类的成员为 0。
+- 据此 6 包完成收口；bcc-tools 与 chromium-efl 保守保持部分覆盖。最终口径为
+  136 包完整 / 2 包部分 / 2 包源码不可得。
+- R87 的 ELF 准确口径为 39,166 条中 1 条未解析；失败项属于
+  `u-boot-rubikpi3`，不在本次 140 包/4,374 条范围，故 R92 的具体结论不变。
+- R92 的退出码 130 已标注为恢复记录。
+- R82 增加 raw/034 对应的两用例执行等价重建脚本，并明确不能声称逐字节恢复。
+
+## 1. 状态与 R92 三档修正
+
+`docs/progress/OVERNIGHT_STATUS_0901.md` 的 R92 已改为 `PARTIAL`，同时记录：
+
+| 阶段 | 完整 | 部分 | 源码不可得 |
+| --- | ---: | ---: | ---: |
+| R92 原始执行后 | 130 | 8 | 2 |
+| R93 元数据收口后 | 136 | 2 | 2 |
+
+`docs/progress/R92/tables/source_completeness.tsv` 已逐包改为：
+
+- `AVAILABLE_AND_SCANNED`：130；
+- `AVAILABLE_AND_SCANNED_R93_LINKS_CLOSED`：6；
+- `PARTIAL_DANGLING_LINK_TARGETS_NOT_AVAILABLE`：2；
+- `NOT_AVAILABLE`：2。
+
+同步修正 `docs/progress/R92/tables/final_summary.tsv` 与 R92 报告。原候选、扫描
+状态、归档状态和 raw 输出未改。
+
+## 2. 8 包排除成员分类
+
+### 2.1 方法
+
+没有重做源码扫描，也没有展开源码树。只从现有冻结 SRPM 流式读取对应源码
+归档的 tar 目录头，逐条复用 R92 当时的纳入规则：安全路径的普通文件或目录
+纳入，其余排除。记录成员类型、链接目标及目标是否解析到归档内已纳入的普通
+文件/目录。
+
+分类总数必须与 R92 `archive_status.tsv` 的 1,003 精确一致，否则辅助脚本返回
+非零。实际为 1,003/1,003。
+
+### 2.2 类型统计
+
+| 类型 | 数量 |
+| --- | ---: |
+| 符号链接 | 1,003 |
+| 硬链接 | 0 |
+| 普通文件 | 0 |
+| 目录 | 0 |
+| FIFO/设备/其他 | 0 |
+| 不安全路径成员 | 0 |
+| 无法分类 | 0 |
+
+链接目标分类：
+
+| 目标状态 | 数量 | 判定 |
+| --- | ---: | --- |
+| 归档内普通文件/目录，已位于扫描根 | 994 | 链接没有独有文件内容，目标内容已纳入原扫描根 |
+| 目标不在归档 | 9 | 链接本身没有文件内容，但不能证明缺失目标源码已扫描，保守保持缺口 |
+
+对于 994 个内部目标，原扫描器仍只读取其既定 C/C++ 文件 glob；这里的“已在
+扫描范围”表示目标作为安全普通文件/目录存在于传给 R87 的根中，不扩张原脚本
+的文件类型口径。
+
+### 2.3 逐包更新
+
+| source RPM | 排除链接 | 内部目标已纳入 | 目标不在归档 | 更新后判定 |
+| --- | ---: | ---: | ---: | --- |
+| bcc-tools-0.35.0-3.1 | 70 | 69 | 1 | 部分覆盖 |
+| chromium-efl-1.1.144-1 | 870 | 862 | 8 | 部分覆盖 |
+| dotnet-build-tools-8.0.404-1 | 36 | 36 | 0 | 完整收口 |
+| elfutils-0.189-1.14 | 2 | 2 | 0 | 完整收口 |
+| elfutils-0.189-1.16 | 2 | 2 | 0 | 完整收口 |
+| heaptrack-1.4.5-1 | 1 | 1 | 0 | 完整收口 |
+| llvm-22.1.8-19.1 | 19 | 19 | 0 | 完整收口 |
+| org.tizen.vc-engine-default-1.90.1-1 | 3 | 3 | 0 | 完整收口 |
+
+无法分类成员为 0。9 个悬空链接逐项保存在
+`tables/dangling_symlinks.tsv`；完整 1,003 行位于
+`tables/excluded_archive_members.tsv`。
+
+## 3. R87 ELF 表述修正
+
+R87 表中的实际数字是：
+
+- ELF records：39,166；
+- parse failures：1；
+- 失败 source RPM：`u-boot-rubikpi3-2025.10-0.src.rpm`；
+- 失败路径：`/boot/u-boot.mbn`；
+- 原因：扫描器未实现该文件使用的扩展 section count。
+
+机械连接 `cpp_gap_binary_coverage.tsv` 后确认：失败 source RPM 不在 R92 的
+140 包清单，失败路径也不在 4,374 条明细中。因此应表述为“本次 4,374 条均
+被 R87 成功解析”，不能再表述为“R87 39,166/39,166 全部完成”。证据见
+`tables/r87_elf_failure_scope.tsv`。
+
+## 4. 退出码 130 的恢复记录
+
+`docs/progress/R92/raw/004_scan_cpp_gap_sources.exitcode` 的 130 不是日志包装器
+自动写入。包装器在中断时尚未来得及生成 exitcode 文件；该值后来依据统一执行
+会话实际返回的 130 补写。已有 stdout/stderr 没有修改。
+
+现已增加
+`docs/progress/R92/raw/004_scan_cpp_gap_sources.exitcode.recovery-note.txt`，并在
+R92 报告中写明来源。
+
+## 5. R82 脚本版本收口
+
+`raw/034_run_arm_local_matrix.stdout` 只含 filesystem、iostreams 两个用例，
+但归档的 `run_arm_local_matrix.sh` 后来已扩展为三个用例。执行当时没有保存脚本
+SHA256 或不可变快照，因而无法证明任何重建文件与当时文件逐字节相同。
+
+本次增加：
+
+- `docs/progress/R82/code/run_arm_local_matrix.executed-034.reconstructed.sh`：依据
+  原始输出、当时路径配置和后续增量修改重建的执行等价两用例版本；
+- `docs/progress/R82/code/EXECUTED_SCRIPT_VERSIONS.md`：说明当前脚本、重建脚本
+  与 raw/034 的关系和限制；
+- R82 报告中的版本说明。
+
+验证只比较静态执行集合：raw/034 的唯一 `CASE=` 为 filesystem、iostreams；
+重建脚本循环同两项；当前脚本循环三项。没有执行其中任何二进制。
+
+以后每次执行前，应把脚本复制为编号化不可变快照、记录 SHA256，并让命令引用
+快照；多文件脚本同时保存依赖清单和各文件 SHA256。
+
+## 6. 技术性非零
+
+- `raw/003_*`：已有目录定位命令最后一个 glob 未命中，shell 返回 1；命令仍
+  找到 5 个相关路径，不是材料判据失败。
+- `raw/005_*`：限时的只读文件名查找在 30 秒到期，返回 124；未得到所需大包
+  归档，随后改用 SRPM 流式目录元数据，不依赖该结果。
+- `raw/008_*`：首次从大 SRPM 外层 tar 选择成员时遗漏路径前缀，返回 1；改为
+  basename 通配后 `raw/010_*` 成功，分类总数严格为 1,003。
+- `raw/018_*`、`raw/019_*`：材料一致性检查把不交付的临时 `work/` 或校验
+  命令自身刚生成、尚未复制的日志也纳入目录比较，分别返回 1；内容计数门禁
+  本身已通过。`raw/020_*` 收敛比较范围后全部通过。
+
+## 7. 修改范围与纪律
+
+修改/新增范围：
+
+- `docs/progress/OVERNIGHT_STATUS_0901.md`；
+- `docs/progress/R92/REPORT.md`、完整性/覆盖汇总与映射表、清单生成辅助代码及退出码恢复说明；
+- `docs/progress/R82/REPORT.md`、执行等价重建脚本和版本说明；
+- `docs/progress/R93/` 本报告、分类表、辅助代码和完整命令输出。
+
+没有修改 R82/R92 已有原始 stdout/stderr/command/exitcode 文件，没有重跑实验，
+没有修改平台源码或补丁，没有向 Gerrit、正式分支或 LLVM 上游推送；仅按任务
+要求向本项目仓提交交付材料。
+FILE docs/progress/OVERNIGHT_STATUS_0901.md
+# 2026-09-01 过夜任务状态
+
+| 任务 | 状态 | 用时 | 产物路径 | 备注 |
+| --- | --- | --- | --- | --- |
+| W1 / R82 | PARTIAL | 约 1 小时 20 分 | `docs/progress/R82/` | 90 条边完成分类；2 类完成双架构各 5 次，额外 1 类完成 x86_64 各 5 次；停止新增异常退出实验 |
+| W2 / R92 | PARTIAL | 约 35 分钟（实际执行窗口） | `docs/progress/R92/` | R92 原始口径：130 包完整扫描 / 8 包部分覆盖 / 2 包源码不可得；R93 分类后 6 包收口，最终 136 完整 / 2 部分 / 2 不可得；真实命中 0 |
+
+更新时间：2026-09-02（W2 收口）。

@@ -1,0 +1,410 @@
+docs/progress/OVERNIGHT_STATUS_0901.md-3-| 任务 | 状态 | 用时 | 产物路径 | 备注 |
+docs/progress/OVERNIGHT_STATUS_0901.md-4-| --- | --- | --- | --- | --- |
+docs/progress/OVERNIGHT_STATUS_0901.md:5:| W1 / R82 | PARTIAL | 约 1 小时 20 分 | `docs/progress/R82/` | 90 条边完成分类；2 类完成双架构各 5 次，额外 1 类完成 x86_64 各 5 次；停止新增异常退出实验 |
+docs/progress/OVERNIGHT_STATUS_0901.md:6:| W2 / R92 | PARTIAL | 约 35 分钟（实际执行窗口） | `docs/progress/R92/` | R92 原始口径：130 包完整扫描 / 8 包部分覆盖 / 2 包源码不可得；R93 分类后 6 包收口，最终 136 完整 / 2 部分 / 2 不可得；真实命中 0 |
+docs/progress/OVERNIGHT_STATUS_0901.md-7-
+docs/progress/OVERNIGHT_STATUS_0901.md-8-更新时间：2026-09-02（W2 收口）。
+--
+docs/progress/R75/REPORT.md-4-承接：`progress/R74/REPORT.md` 中“不一致清单”第 1 项
+docs/progress/R75/REPORT.md-5-
+docs/progress/R75/REPORT.md:6:## 1. 结论摘要
+docs/progress/R75/REPORT.md-7-
+docs/progress/R75/REPORT.md-8-R74 指出的复现缺陷已经被消除：最终用例先完成字符串构造和 `reserve(65536)`，再开启分配门禁；主线程只在 `shrink_to_fit()` 触发的下一次 `allocate()` 已进入后请求取消。调试栈直接证明目标分配位于 `basic_string::shrink_to_fit` 内部，而不再位于字符串构造阶段。
+docs/progress/R75/REPORT.md-9-
+docs/progress/R75/REPORT.md:10:最终用例在 x86_64 与 armv7l、libstdc++ 与项目 libc++ 四个格上均稳定导致进程异常终止，没有一次线程干净取消或正常返回。因此，“取消在 `shrink_to_fit` 的不抛异常边界内送达时，两套实现都不能把它变成线程干净退出”得到实测支持。
+docs/progress/R75/REPORT.md-11-
+docs/progress/R75/REPORT.md:12:但终止形态和最终故障机制并不完全相同：x86_64 两套库均为 20/20 退出 134；armv7l 项目 libc++ 为 20/20 退出 134，系统 libstdc++ 为 20/20 退出 139。设备调试栈证明 armv7l/libstdc++ 先由 `shrink_to_fit` 的不抛异常边界调用 `std::terminate()`，随后在 `__gnu_cxx::__verbose_terminate_handler()` 内发生二次 SIGSEGV。因此，“两套标准库表现一致”在 armv7l 上若指相同退出信号或相同最终机制则不成立；只能说二者都未能线程干净取消、最终都结束进程。
+docs/progress/R75/REPORT.md-13-
+docs/progress/R75/REPORT.md-14-## 2. 用例修正
+--
+docs/progress/R75/REPORT.md-21-2. `target_allocation_entered` 只在开启后的目标分配中置位，主线程据此发出取消请求。
+docs/progress/R75/REPORT.md-22-
+docs/progress/R75/REPORT.md:23:同时记录分配序号、容量和目标分配大小。x86_64 的目标分配为 libstdc++ 第 3 次、1025 字节，libc++ 第 3 次、1032 字节；armv7l 对应序号同为第 3 次。原用例与最终用例的逐行差异见 `raw/022_problem5_final_correct.diff`。
+docs/progress/R75/REPORT.md-24-
+docs/progress/R75/REPORT.md-25-两次探索尝试也完整保留：无取消送达点的版本两套库均超时；未加门禁的版本两套库均线程干净取消；最终门禁版本两套库均退出 134。结果见 `raw/018_attempts_digest.txt`。
+docs/progress/R75/REPORT.md-26-
+docs/progress/R75/REPORT.md:27:## 3. x86_64 结果与调用栈
+docs/progress/R75/REPORT.md-28-
+docs/progress/R75/REPORT.md-29-最终矩阵每套库运行 20 次：
+--
+docs/progress/R75/REPORT.md-37-- libc++：`CancelAllocator<char>::allocate` → `basic_string::shrink_to_fit` → `worker`；最终栈含 `__clang_call_terminate`、`std::terminate()` 和 libc++abi 的 foreign-exception 终止处理。
+docs/progress/R75/REPORT.md-38-
+docs/progress/R75/REPORT.md:39:自动证据门禁要求两份调试记录都同时包含目标函数、分配器帧和预期终止信号，结果为 PASS。关键行见 `raw/017_debug_key_lines.txt`，完整记录见 `raw/x86_debug/`。
+docs/progress/R75/REPORT.md-40-
+docs/progress/R75/REPORT.md:41:运行时身份通过 SHA256、`ldd` 和 `LD_DEBUG=libs` 留证。项目 libc++ 实际加载 `tmp/R69/build-x86_64/lib/libc++.so.1` 与 `libc++abi.so.1`，不是宿主同名库；身份摘要见 `raw/016_identity_digest_inputs.txt`。
+docs/progress/R75/REPORT.md-42-
+docs/progress/R75/REPORT.md-43-## 4. armv7l 结果
+--
+docs/progress/R75/REPORT.md-72-- 没有修改平台源码、补丁或对外报告；只新增 R75 复现代码、驱动、证据和本报告。
+docs/progress/R75/REPORT.md-73-- ARM 构建驱动首次退出 1，原始驱动输出为空；未改代码的重试退出 0。构建子日志使用固定文件名，重试覆盖了首次子日志，因此无法从现存材料可靠断言首次失败原因。
+docs/progress/R75/REPORT.md:74:- 复核阶段曾让 `rg` 把正在生成的输出文件纳入搜索，形成自扩张扫描；发现后停止，并改用明确排除 `progress/R75/**` 的检索。误生成文件保留为 `resume_rg_context.txt`，不计入结论。
+docs/progress/R75/REPORT.md-75-- 复核时曾误把 R74 的第 5 个代码块当作“问题五复现”；错误 diff 保留为 `raw/020_problem5_final.diff`。随后依据 `blocks.json` 定位到第 10 个代码块并生成正确 diff。
+docs/progress/R75/REPORT.md-76-- 自行判断与尚存疑问见 `SELF_DECISIONS_AND_QUESTIONS.md`。
+--
+docs/progress/R73/REPORT.md-5-本任务只做分析与调研，未修改平台源码、任何产品补丁或落章文档；没有连接开发板，也没有新增构建或运行实验。运行时事实复用 R72 已归档的逐格原始输出，本轮新增的是消费面精化、包级上下文复核、上游调研和与层 C 的关系分析。
+docs/progress/R73/REPORT.md-6-
+docs/progress/R73/REPORT.md:7:结论性事实如下：
+docs/progress/R73/REPORT.md-8-
+docs/progress/R73/REPORT.md:9:1. 接受现状时，D01–D04 的共同触发条件是：Linux/glibc 线程取消可用、目标线程启用取消、线程正阻塞于 libc++ `condition_variable` 的普通或定时等待路径、另一线程在该窗口调用 `pthread_cancel`。D05 还要求 `wbuffer_convert` 析构的 `sync()` 通过 wrapped streambuf 进入输出取消点，条件明显更窄。
+docs/progress/R73/REPORT.md-10-2. R72 的 **35 source RPM / 26 去重包名**是刻意宽收的词法上界，裸词 `future` 带来大量非 C++ 标准库命中。本轮按显式 `std::`/`using std::` 语法精化后，剩 **11 source RPM / 9 去重包名**；对这 9 个包名全部做了上下文复核。
+docs/progress/R73/REPORT.md:11:3. 在这 9 个显式使用者中，**确认的生产代码“目标线程在相关设施中等待且被 `pthread_cancel`”为 0**；GCC 源包中有 1 个与 D01 完全同形的上游自测。其余包未观察到设施等待点与取消请求的源码内关联。这个“0”不是安全证明：取消可来自其他翻译单元、依赖库或进程宿主，因此这 9 个包仍是潜在暴露面。
+docs/progress/R73/REPORT.md-12-4. libc++ 官方政策使用“may”，允许但不强制把 “Throws: Nothing” 强化为 `noexcept`；没有找到该政策内的 pthread-cancellation 专用例外，也没有找到 LLVM 对这一精确冲突的 issue、维护者拒绝或处置表态，均按限定检索范围记 `NOT_FOUND`。
+docs/progress/R73/REPORT.md-13-5. GCC PR103382 把该行为认定为错误并移除相关 `noexcept`。最终变更同时处理 ABI：新代码绑定 `GLIBCXX_3.4.30` 的可取消实现，旧 `GLIBCXX_3.4.11` 保留终止行为的 wrapper。
+docs/progress/R73/REPORT.md-14-6. 定向检索未发现 Chromium 或常见 libc++ 发行版对此边界的本地补丁。Chromium 的公开线程封装采用投递退出任务后 join；Android/Bionic 则不提供 `pthread_cancel`。这些是不同层次的规避事实，不是 libc++ 边界的等价修复。
+docs/progress/R73/REPORT.md:15:7. 5 处边界与层 C 最终补丁**没有文件级重叠**。D01–D04 与层 C 的 future 改动有运行路径上的语义相邻：层 C 处理执行方 catch，`noexcept` 边界处理等待方展开；两者并不互相替代。按当前补丁形态继续层 C 工作不会因文件冲突返工；若未来选择重构 future 的等待实现，则可能重新触及 `future`，这是特定处置方向带来的交叉，而非当前必然返工。
+docs/progress/R73/REPORT.md-16-
+docs/progress/R73/REPORT.md-17-## 2. 五处边界的触发条件与现场表现
+--
+docs/progress/R73/REPORT.md-19-逐项表见 `tables/boundary_trigger_conditions.tsv`。
+docs/progress/R73/REPORT.md-20-
+docs/progress/R73/REPORT.md:21:### D01：普通 `condition_variable::wait`
+docs/progress/R73/REPORT.md-22-
+docs/progress/R73/REPORT.md-23-- 条件：目标线程在 `pthread_cond_wait` 中阻塞，取消处于启用状态，其他线程对它发起取消。
+--
+docs/progress/R73/REPORT.md-26-- 归因难度：stderr 看起来像“未捕获外来异常”，不会直接指出 `condition_variable::wait noexcept`；需要调用栈中的 `__clang_call_terminate` 才能把现场归到边界。
+docs/progress/R73/REPORT.md-27-
+docs/progress/R73/REPORT.md:28:### D02：system-clock 定时等待 helper
+docs/progress/R73/REPORT.md-29-
+docs/progress/R73/REPORT.md-30-- 条件：线程阻塞于 `pthread_cond_timedwait` 且在超时前收到取消。
+docs/progress/R73/REPORT.md-31-- 可达性：公开 `wait_until(system_clock)` 有具体静态路径。
+docs/progress/R73/REPORT.md:32:- 动态表现：本轮及 R72 均未取得动态样本，记 `NOT_OBSERVED`；不得把 D01 的退出文本推断复制为本项观测。
+docs/progress/R73/REPORT.md-33-
+docs/progress/R73/REPORT.md:34:### D03：steady-clock 定时等待 helper
+docs/progress/R73/REPORT.md-35-
+docs/progress/R73/REPORT.md-36-- 条件：当前配置 `_LIBCPP_HAS_COND_CLOCKWAIT=1`，线程阻塞于 `pthread_cond_clockwait`，在超时前收到取消。
+docs/progress/R73/REPORT.md:37:- 已观察表现：与 D01 相同，libc++ 退出 134，libstdc++ 干净取消。
+docs/progress/R73/REPORT.md-38-
+docs/progress/R73/REPORT.md:39:### D04：任意 Clock 模板 helper
+docs/progress/R73/REPORT.md-40-
+docs/progress/R73/REPORT.md-41-- 条件：使用非 system/steady 的 Clock 重载，路径经 `wait_for` 到 steady helper，并在底层阻塞窗口收到取消。
+--
+docs/progress/R73/REPORT.md-43-- 已观察表现：libc++ 退出 134，libstdc++ 干净取消。
+docs/progress/R73/REPORT.md-44-
+docs/progress/R73/REPORT.md:45:### D05：`wbuffer_convert` 析构
+docs/progress/R73/REPORT.md-46-
+docs/progress/R73/REPORT.md-47-- 条件：已弃用的 `wbuffer_convert` 处于输出模式并有需要同步的状态；析构在持有待处理取消的线程中执行；其 `__close -> sync` 最终通过 wrapped streambuf 虚调用进入实际输出取消点。
+--
+docs/progress/R73/REPORT.md-51-### 常见性口径
+docs/progress/R73/REPORT.md-52-
+docs/progress/R73/REPORT.md:53:“常见/罕见”没有运行遥测支撑，本报告只按附加前置条件陈述：D01 是最直接的常规阻塞形态；D02/D03 需在定时窗口取消；D04 再要求自定义 Clock；D05 同时要求已弃用设施、析构同步和虚拟输出取消点。是否真的频繁发生，仍取决于平台代码是否使用 `pthread_cancel` 终止这些等待线程。
+docs/progress/R73/REPORT.md-54-
+docs/progress/R73/REPORT.md-55-## 3. 平台包的真实使用形态
+--
+docs/progress/R73/REPORT.md-88-| 现场 | abort/foreign exception、可能表现为未重抛 | 同样可只见 uncaught foreign exception；边界需调用栈识别 |
+docs/progress/R73/REPORT.md-89-
+docs/progress/R73/REPORT.md:90:触发难度方面，D01 的技术窗口并不苛刻，但平台包是否采用 pthread cancellation 是决定因素；D04/D05 的附加条件更窄。影响面方面，现有证据只支持“显式设施使用者少于宽扫上界”，不支持把潜在外部取消排除。归因方面，两类问题都可能以 134 和 foreign-exception 文本出现；本轮问题还需识别 `__clang_call_terminate` 所在边界，因此不能声称定位代价更低。是否“相当”没有工时数据，记为定性相近而非量化结论。
+docs/progress/R73/REPORT.md-91-
+docs/progress/R73/REPORT.md-92-## 5. 业界与上游处置事实
+--
+docs/progress/R73/REPORT.md-98-[libc++ 官方政策](https://libcxx.llvm.org/DesignDocs/NoexceptPolicy.html)写的是自版本 13 起“may”强化 “Throws: Nothing”，并明确这种做法可能阻止用户提供函数的异常传播。D95821 的[评审记录](https://reviews.llvm.org/D95821)特意把 “will” 改为 “may”，理由是允许实现这么做但不要求逐项遵守。因此存在的是**实现裁量空间**，不是一个已经定义好的 pthread-cancellation 例外机制。
+docs/progress/R73/REPORT.md-99-
+docs/progress/R73/REPORT.md:100:对 LLVM GitHub issue、本地 llvm-project 历史进行精确检索，没有找到 `pthread_cancel + condition_variable/noexcept` 或 `forced_unwind + condition_variable` 的 issue/讨论，也没有找到“提出后被拒”的维护者表态，结论为 `NOT_FOUND`。这只覆盖记录在 `search_scope.tsv` 的查询，不代表不存在换词、未索引或线下讨论。
+docs/progress/R73/REPORT.md-101-
+docs/progress/R73/REPORT.md:102:WG21 的 [P3085R0](https://www9.open-std.org/JTC1/SC22/WG21/docs/papers/2024/p3085r0.html)明确指出 C++ 视角不能抛出的 `fclose` 在 POSIX 取消中可以参与异常式展开，并认为这使 `noexcept` 准确性更难界定。它是 2024 年 R0 提案，不作为已采纳标准结论。
+docs/progress/R73/REPORT.md-103-
+docs/progress/R73/REPORT.md-104-### 5.2 GCC PR103382
+--
+docs/progress/R73/REPORT.md-144-### 6.2 机制相容性
+docs/progress/R73/REPORT.md-145-
+docs/progress/R73/REPORT.md:146:层 C 在 catch 站点识别 forced unwind、提交必要状态后重抛；它要求异常继续离开该 handler。`noexcept` 边界则发生在异常继续向外传播之后或另一线程的等待路径：即使 catch 处理完全正确，只要展开跨过 D01–D05，仍会终止。因此：
+docs/progress/R73/REPORT.md-147-
+docs/progress/R73/REPORT.md-148-- 两者兼容，不互相替代；
+docs/progress/R73/REPORT.md-149-- future 场景可能同时需要执行方的层 C 防护和等待方边界允许取消穿过，但它们不是同一帧、同一站点；
+docs/progress/R73/REPORT.md:150:- 单纯去掉 D01–D04 的异常规格不会使层 C 多余；单纯层 C 也不会修复等待方被取消；
+docs/progress/R73/REPORT.md:151:- D05 没有层 C 对应 catch 路径。
+docs/progress/R73/REPORT.md-152-
+docs/progress/R73/REPORT.md-153-### 6.3 是否会造成后续返工
+--
+docs/progress/R73/REPORT.md-159-## 7. 处置方向素材（不排序、不推荐）
+docs/progress/R73/REPORT.md-160-
+docs/progress/R73/REPORT.md:161:1. **按 GCC 方向移除 D01–D04 的异常规格**：涉及公开头文件、头文件 helper 和共享库定义；新消费者要重编才能取得一致的调用方异常元数据。对既有二进制还需处理 ABI/符号版本问题。若形成上游接受的 libc++ 变更，可避免永久本地偏离；若仅平台补丁，则形成平台差异。
+docs/progress/R73/REPORT.md-162-2. **按平台能力条件化异常规格**：仅在 glibc/pthread-cancellation 配置下允许展开，其他 ABI runtime 保持原状。仍涉及头文件和消费者重编，也引入条件配置矩阵；是否可被上游接受未有直接材料。
+docs/progress/R73/REPORT.md:163:3. **双符号/兼容 wrapper**：D01/D02 有 out-of-line 部分，可借鉴 GCC 为旧、新消费者保留不同行为；D03/D04 是 header helper，不能只靠共享库双符号覆盖全部 4 处。验证需含旧对象+新库、新对象+新库以及定时/自定义 Clock。
+docs/progress/R73/REPORT.md-164-4. **改变等待实现结构**：让 future 等设施不经过这些边界，或采用不同等待原语。可能同时改库内和头文件，future 方向会与层 C 文件重叠，验证面包括所有上层设施与竞态。
+docs/progress/R73/REPORT.md-165-5. **在旧边界内屏蔽/延迟取消**：可避免 forced unwind 离开 `noexcept`，但取消可能推迟到边界之后；若 wait 永不返回，取消也可能长期不完成。它改变取消时序，需要阻塞、超时、通知和多等待者验证。没有发现 GCC 最终提交采用此形态。
+--
+docs/progress/R73/REPORT.md-167-7. **平台不提供线程取消**：Android/Bionic 是实例；性质是 libc/API 平台决定，影响所有消费者，不是标准库包内交付。
+docs/progress/R73/REPORT.md-168-8. **编译器/运行时对 forced unwind 特判绕过 `noexcept`**：工具链全局改动，可能改变语言异常规格的既有语义；本轮未找到已部署的同类项目实例，验证代价至少覆盖普通异常、析构、ABI 和两种展开模型。
+docs/progress/R73/REPORT.md:169:9. **D05 单独处置**：可以讨论析构是否同步、异常规格或 wrapped streambuf 结构；这些方向会改变刷新/资源语义，且位于头文件模板，需消费者重编。它不能由 D01–D04 的处理自动解决。
+docs/progress/R73/REPORT.md:170:10. **接受并记录差异**：无代码或构建成本；D01–D05 的触发和 134 风险保持存在，外部发起取消的风险仍无法由包内源码扫描排除。
+docs/progress/R73/REPORT.md-171-
+docs/progress/R73/REPORT.md-172-本节只列形态、交付性质和验证面，不作选择或优先级排序。
+--
+docs/progress/R73/REPORT.md-178-- 包级分析只有源码，没有平台运行遥测，也未覆盖包外发起的取消、闭源二进制、插件宿主和生成代码。
+docs/progress/R73/REPORT.md-179-- 显式 `std::` 过滤会漏掉类型别名、宏、命名空间整体导入后无限定名和封装库；因此 11/9 不是下界证明。
+docs/progress/R73/REPORT.md:180:- D02/D05 没有动态样本；D05 的虚调用是开放世界，无法用 libc++ 源码穷尽所有 wrapped streambuf。
+docs/progress/R73/REPORT.md-181-- 联网检索受查询词和索引范围限制；LLVM/发行版的 `NOT_FOUND` 不等价于不存在私人补丁或未索引讨论。
+docs/progress/R73/REPORT.md-182-- 未验证 aarch64、非 glibc、非 pthread backend、LTO、旧消费者/新库混合 ABI。
+--
+docs/progress/R73/REPORT.md-184-### 自行判断
+docs/progress/R73/REPORT.md-185-
+docs/progress/R73/REPORT.md:186:- 把 R72 的 35/26 保留为宽词法上界，同时新增显式 `std::` 的 11/9 口径；没有用后者覆盖或改写 R72 原结论。
+docs/progress/R73/REPORT.md-187-- 将全部 9 个显式命中包名作为本轮抽样，因数量可控且比再抽 2–3 个更少引入抽样偏差。
+docs/progress/R73/REPORT.md-188-- “确证风险形态 0 个”严格限定为生产源码内可闭合关联；没有据此把包判安全。
+docs/progress/R73/REPORT.md:189:- 把 D01–D04 的使用常见性和 D05 的罕见性写成“前置条件多少”的判断，不冒充运行频率统计。
+docs/progress/R73/REPORT.md:190:- 没有新增运行实验：任务目标是影响面和业界调研，R72 已提供 D01/D03/D04 的两库动态证据，本轮不重复构建。
+docs/progress/R73/REPORT.md-191-
+docs/progress/R73/REPORT.md-192-### 尚存疑问
+--
+docs/progress/R73/REPORT.md-194-- 平台运行时是否存在由框架/服务管理器对上述 9 个包的工作线程发起取消：源码包内无法回答。
+docs/progress/R73/REPORT.md-195-- libc++ 维护者是否在未被精确关键词命中的讨论中表达过 POSIX cancellation 例外立场：`NOT_FOUND`。
+docs/progress/R73/REPORT.md:196:- D05 在真实 wrapped streambuf 上的退出表现和频率：`NOT_OBSERVED`。
+docs/progress/R73/REPORT.md:197:- 若未来裁决处置 D01/D02，Tizen 的 libc++ 符号版本/ABI 策略应如何承载旧消费者：本任务不选择。
+docs/progress/R73/REPORT.md-198-
+docs/progress/R73/REPORT.md:199:## 9. 结论回答
+docs/progress/R73/REPORT.md-200-
+docs/progress/R73/REPORT.md:201:- **若接受差异，何时出问题？** 当取消请求命中 D01–D04 的阻塞窗口，或 D05 的析构同步输出窗口，forced unwind 穿过 libc++ 不抛异常边界并触发终止。D01/D03/D04 已动态证实；D02/D05 动态表现未观测。
+docs/progress/R73/REPORT.md-202-- **风险形态包数？** R72 宽命中 35/26；显式标准设施使用为 11 source RPM / 9 包名；源码内确证生产取消关联 0，精确同形自测 1 个包名。外部取消使“0”不能解释为零风险。
+docs/progress/R73/REPORT.md-203-- **业界如何处理？** GCC 移除异常规格并以新符号版本处理 ABI；Android 不提供取消；Chromium 公开线程封装采用协作退出。没有找到 LLVM 的精确 issue/拒绝记录或其他发行版的本地补丁。
+--
+docs/progress/R93/REPORT.md-1-# R93：过夜任务材料收口
+docs/progress/R93/REPORT.md-2-
+docs/progress/R93/REPORT.md:3:## 结论
+docs/progress/R93/REPORT.md-4-
+docs/progress/R93/REPORT.md-5-本任务只修正 R82/R92 的材料、状态和证据对应关系，没有重跑实验、没有修改
+docs/progress/R93/REPORT.md-6-已有原始输出。
+docs/progress/R93/REPORT.md-7-
+docs/progress/R93/REPORT.md:8:- R92 状态从 `COMPLETE` 改为 `PARTIAL`。
+docs/progress/R93/REPORT.md:9:- R92 原始覆盖口径修正为 130 包完整扫描 / 8 包部分覆盖 / 2 包源码不可得。
+docs/progress/R93/REPORT.md:10:- 对 8 包的 1,003 个排除成员完成归档目录元数据分类：全部为符号链接，
+docs/progress/R93/REPORT.md-11-  994 个目标已在扫描根内，9 个目标不在归档，无法分类的成员为 0。
+docs/progress/R93/REPORT.md-12-- 据此 6 包完成收口；bcc-tools 与 chromium-efl 保守保持部分覆盖。最终口径为
+docs/progress/R93/REPORT.md:13:  136 包完整 / 2 包部分 / 2 包源码不可得。
+docs/progress/R93/REPORT.md-14-- R87 的 ELF 准确口径为 39,166 条中 1 条未解析；失败项属于
+docs/progress/R93/REPORT.md:15:  `u-boot-rubikpi3`，不在本次 140 包/4,374 条范围，故 R92 的具体结论不变。
+docs/progress/R93/REPORT.md:16:- R92 的退出码 130 已标注为恢复记录。
+docs/progress/R93/REPORT.md-17-- R82 增加 raw/034 对应的两用例执行等价重建脚本，并明确不能声称逐字节恢复。
+docs/progress/R93/REPORT.md-18-
+docs/progress/R93/REPORT.md-19-## 1. 状态与 R92 三档修正
+docs/progress/R93/REPORT.md-20-
+docs/progress/R93/REPORT.md:21:`docs/progress/OVERNIGHT_STATUS_0901.md` 的 R92 已改为 `PARTIAL`，同时记录：
+docs/progress/R93/REPORT.md-22-
+docs/progress/R93/REPORT.md-23-| 阶段 | 完整 | 部分 | 源码不可得 |
+docs/progress/R93/REPORT.md-24-| --- | ---: | ---: | ---: |
+docs/progress/R93/REPORT.md:25:| R92 原始执行后 | 130 | 8 | 2 |
+docs/progress/R93/REPORT.md-26-| R93 元数据收口后 | 136 | 2 | 2 |
+docs/progress/R93/REPORT.md-27-
+docs/progress/R93/REPORT.md-28-`docs/progress/R92/tables/source_completeness.tsv` 已逐包改为：
+docs/progress/R93/REPORT.md-29-
+docs/progress/R93/REPORT.md:30:- `AVAILABLE_AND_SCANNED`：130；
+docs/progress/R93/REPORT.md-31-- `AVAILABLE_AND_SCANNED_R93_LINKS_CLOSED`：6；
+docs/progress/R93/REPORT.md:32:- `PARTIAL_DANGLING_LINK_TARGETS_NOT_AVAILABLE`：2；
+docs/progress/R93/REPORT.md-33-- `NOT_AVAILABLE`：2。
+docs/progress/R93/REPORT.md-34-
+--
+docs/progress/R93/REPORT.md-36-状态、归档状态和 raw 输出未改。
+docs/progress/R93/REPORT.md-37-
+docs/progress/R93/REPORT.md:38:## 2. 8 包排除成员分类
+docs/progress/R93/REPORT.md-39-
+docs/progress/R93/REPORT.md-40-### 2.1 方法
+--
+docs/progress/R93/REPORT.md-103-`tables/r87_elf_failure_scope.tsv`。
+docs/progress/R93/REPORT.md-104-
+docs/progress/R93/REPORT.md:105:## 4. 退出码 130 的恢复记录
+docs/progress/R93/REPORT.md-106-
+docs/progress/R93/REPORT.md:107:`docs/progress/R92/raw/004_scan_cpp_gap_sources.exitcode` 的 130 不是日志包装器
+docs/progress/R93/REPORT.md-108-自动写入。包装器在中断时尚未来得及生成 exitcode 文件；该值后来依据统一执行
+docs/progress/R93/REPORT.md:109:会话实际返回的 130 补写。已有 stdout/stderr 没有修改。
+docs/progress/R93/REPORT.md-110-
+docs/progress/R93/REPORT.md-111-现已增加
+--
+docs/progress/R90/REPORT.md-3-日期：2026-09-01（Asia/Shanghai）
+docs/progress/R90/REPORT.md-4-
+docs/progress/R90/REPORT.md:5:## 1. 结论
+docs/progress/R90/REPORT.md-6-
+docs/progress/R90/REPORT.md-7-**R87 的三个原扫描器均能检出本次构造的全部阳性样本。**
+--
+docs/progress/R90/REPORT.md-13-- `scan_elf_symbols.py`：3/3 ELF 解析成功，五种二进制判定分支全部触发。
+docs/progress/R90/REPORT.md-14-- `scan_static_archives.py`：1/1 归档扫描成功，五种二进制判定分支全部触发。
+docs/progress/R90/REPORT.md:15:- `scan_noexcept_type_uses.py`：1/1 校准源码根扫描成功，D01、D02–D04、
+docs/progress/R90/REPORT.md:16:  D05 与 GENERAL 的预期分支全部触发。
+docs/progress/R90/REPORT.md-17-
+docs/progress/R90/REPORT.md-18-因此，R87 在其**已申报覆盖范围内**的零命中不能解释为“扫描器根本找不到
+docs/progress/R90/REPORT.md:19:这些形态”；阳性校准建立了其判定路径的检出能力。R87 的原结论——在其已
+docs/progress/R90/REPORT.md-20-覆盖语料中未发现目标用法——成立，证明力得到补足。
+docs/progress/R90/REPORT.md-21-
+docs/progress/R90/REPORT.md:22:这不把结论扩大到未覆盖源码、宏/生成源码、被剥离且不留相关符号的代码，
+docs/progress/R90/REPORT.md-23-也不修改 R87 的任何既有材料。
+docs/progress/R90/REPORT.md-24-
+--
+docs/progress/R90/REPORT.md-52-|---|---|---|---|
+docs/progress/R90/REPORT.md-53-| B01 | `&condition_variable::wait` 作为 `auto` 参数，同时把其成员函数指针类型作为深层模板类型参数 | 目标名 `condition_variable4wait` 与成员指针 `M...DoF` 同符号 | `SITE_WITH_NOEXCEPT_TYPE_ENCODING`、`SITE_WITH_POINTER_NOEXCEPT_ENCODING` |
+docs/progress/R90/REPORT.md:54:| B02 | `&condition_variable::__do_timed_wait` 与其类型进入四层模板 | `condition_variable15__do_timed_wait` + `M...DoF` | 同上；校准 D02–D04 共用的扫描分支 |
+docs/progress/R90/REPORT.md-55-| B03 | 只把 `wait` 的成员函数指针类型作为模板类型参数 | 只有 `condition_variable` 类名和 `DoF`，没有 `wait` | `CONDITION_VARIABLE_NOEXCEPT_FUNCTION_TYPE` |
+docs/progress/R90/REPORT.md-56-| B04 | `noexcept` 成员函数指针作为普通函数参数 | `MSt18condition_variableDoF...`，没有目标函数名 | `CONDITION_VARIABLE_NOEXCEPT_FUNCTION_TYPE` |
+--
+docs/progress/R90/REPORT.md-71-源码也进入同一源码根。覆盖：
+docs/progress/R90/REPORT.md-72-
+docs/progress/R90/REPORT.md:73:- D01：显式地址、成员指针类型、`decltype`/trait、别名地址；
+docs/progress/R90/REPORT.md:74:- D02–D04：`__do_timed_wait` 私有 helper 引用；
+docs/progress/R90/REPORT.md:75:- D05：析构拼写、`noexcept` 和 `is_nothrow_destructible`；
+docs/progress/R90/REPORT.md-76-- GENERAL：宽地址、宽类型查询、`noexcept(cv.wait(lock))`。
+docs/progress/R90/REPORT.md-77-
+--
+docs/progress/R90/REPORT.md-82-| 载体 | 类型 | SHA256 |
+docs/progress/R90/REPORT.md-83-|---|---|---|
+docs/progress/R90/REPORT.md:84:| `positive_symbols.o` | ELF64 x86-64 relocatable | `c1e08bb1b8e8b9123605d4f9e1bbcd58ee865ba0e3f7b7d2aaeb55976359489a` |
+docs/progress/R90/REPORT.md:85:| `libpositive_symbols.so` | ELF64 x86-64 shared object | `e96d770965d6eeaa084253411fcf12df03ed3c903c34ec5ada13111f4c9e1106` |
+docs/progress/R90/REPORT.md:86:| `positive_symbols.elf` | ELF64 x86-64 PIE executable | `d6f6f8fb9186aaef652af0a1fc0348d09272d3cb7079e017c3f32533f1dda51f` |
+docs/progress/R90/REPORT.md-87-| `libpositive_symbols.a` | ar static archive，含上述 `.o` | `efff566ff99ea5fbdfb1a766a111b070b8fb8fe66fdfcdffcc5daa43d9252fdb` |
+docs/progress/R90/REPORT.md-88-
+docs/progress/R90/REPORT.md:89:本次是判定逻辑阳性校准，只生成宿主 x86_64 样本。Itanium ABI 的 `Do`/`PDo`
+docs/progress/R90/REPORT.md-90-编码不随上述三个平台架构改变；R87 原扫描已经实际解析 armv7l ELF32、
+docs/progress/R90/REPORT.md:91:aarch64/x86_64 ELF64。本次没有另行构造 ARM 阳性二进制。
+docs/progress/R90/REPORT.md-92-
+docs/progress/R90/REPORT.md-93-## 4. 独立阳性确认
+--
+docs/progress/R90/REPORT.md-234-
+docs/progress/R90/REPORT.md-235-所以该盲区对“已覆盖语料零命中”没有影响，对“平台 1,450 个源码包的穷尽
+docs/progress/R90/REPORT.md:236:零命中”仍有实质影响。完整平台源码结论需要按 R11 快照补扫 1,105 条。
+docs/progress/R90/REPORT.md-237-
+docs/progress/R90/REPORT.md-238-## 7. 自行判断、限制、异常与尚存疑问
+--
+docs/progress/R90/REPORT.md-240-自行判断：
+docs/progress/R90/REPORT.md-241-
+docs/progress/R90/REPORT.md:242:1. 阳性校准按原扫描器的判定分支设计，而不是重复验证 D02/D03/D04 三种
+docs/progress/R90/REPORT.md-243-   overload 的运行时可达性；三者在扫描器中本来共用同一 helper 名分支。
+docs/progress/R90/REPORT.md-244-2. 用隔离最小声明固定 ABI 形态，避免宿主 libstdc++ 的标注状态污染样本；
+--
+docs/progress/R90/REPORT.md-251-限制：
+docs/progress/R90/REPORT.md-252-
+docs/progress/R90/REPORT.md:253:- 阳性 ABI 载体只在 x86_64 生成；没有另造 ARM ELF 阳性。
+docs/progress/R90/REPORT.md-254-- 本次不扩扫 1,105 个缺口，解压峰值、总耗时和 chromium 特殊路径成功率均
+docs/progress/R90/REPORT.md-255-  为 `NOT_OBSERVED`。
+--
+docs/progress/R90/REPORT.md-276-尚存疑问：平台未来希望补扫的是 R11 冻结快照 1,450 条，还是当前更新后的
+docs/progress/R90/REPORT.md-277-源码仓快照？两者会改变精确分母和 26 条版本漂移的处理，但不影响本次扫描器
+docs/progress/R90/REPORT.md:278:阳性校准结论。
+docs/progress/R90/REPORT.md-279-
+docs/progress/R90/REPORT.md-280-## 8. 证据索引
+--
+docs/progress/R72/REPORT.md-1-# R72：libc++ 中“取消即终止”边界的枚举
+docs/progress/R72/REPORT.md-2-
+docs/progress/R72/REPORT.md:3:## 1. 范围与结论
+docs/progress/R72/REPORT.md-4-
+docs/progress/R72/REPORT.md-5-本任务未修改平台源码、产品代码或任何补丁；新增内容仅为枚举脚本、消费面扫描脚本、验证用例和报告材料。
+--
+docs/progress/R72/REPORT.md-19-1. 用 Universal Ctags 定位 libc++ `include/` 与 `src/` 中的函数定义；显式识别 `noexcept`、`_NOEXCEPT`、`_LIBCPP_NOEXCEPT`，并把析构函数列为“隐式异常规格待复核”。
+docs/progress/R72/REPORT.md-20-2. 以 POSIX required/may 清单及 glibc Linux 取消包装器为种子，建立词法调用图，从每个不抛异常候选做有界 BFS。
+docs/progress/R72/REPORT.md:21:3. 对候选逐项人工复核重载、同名函数、条件编译、实际 libc 包装器和 libstdc++ 对应实现。自动输出只作为候选生成器，不直接作为结论。
+docs/progress/R72/REPORT.md-22-
+docs/progress/R72/REPORT.md-23-计数单位是当前配置中源码可见的函数定义；同一模板按定义计 1，不按实例化数膨胀。对仅由已计边界包裹、且源码中没有独立定义的隐式外层析构不重复计数。两库对照同时检查异常规格和调用结构；`wbuffer_convert` 说明“对应函数也隐式不抛异常”并不自动等价于“两侧同样受影响”，因为 libstdc++ 对应析构没有 libc++ 的 `sync()` 调用。
+--
+docs/progress/R72/REPORT.md-39-| ID | libc++ 边界 | 取消点 | 深度 | libstdc++ |
+docs/progress/R72/REPORT.md-40-|---|---|---|---:|---|
+docs/progress/R72/REPORT.md:41:| D01 | `condition_variable::wait` | `pthread_cond_wait` | 2 | 对应声明和定义均非 `noexcept` |
+docs/progress/R72/REPORT.md:42:| D02 | `__do_timed_wait(system_clock)` | `pthread_cond_timedwait` | 2 | 对应 helper 非 `noexcept` |
+docs/progress/R72/REPORT.md:43:| D03 | `__do_timed_wait(steady_clock)` | `pthread_cond_clockwait` | 1 | 对应 helper 非 `noexcept` |
+docs/progress/R72/REPORT.md:44:| D04 | `__do_timed_wait<Clock>` | 经 `wait_for` 到 D03 | 3 | 任意时钟路径非 `noexcept` |
+docs/progress/R72/REPORT.md:45:| D05 | `wbuffer_convert::~wbuffer_convert` | `sync()` 经 wrapped streambuf 到输出取消点 | 开放虚路径 | 对应析构同为不抛异常，但不调用 `sync()` |
+docs/progress/R72/REPORT.md-46-
+docs/progress/R72/REPORT.md:47:前 4 项不只影响直接使用 `condition_variable` 的代码。源码可达的设施包括 `condition_variable_any`、future/shared_future、`timed_mutex`/`recursive_timed_mutex`、`shared_mutex`/`shared_timed_mutex` 和任意时钟版 `this_thread::sleep_until`；D05 影响绑定输出 streambuf 的已弃用 `wbuffer_convert`。路径见 `tables/facility_paths.tsv`。
+docs/progress/R72/REPORT.md-48-
+docs/progress/R72/REPORT.md:49:可达性判据是：公开入口能在正常线程调用中阻塞于对应 pthread 取消点，且调用链上的该 libc++ helper 带不抛异常规格。对 D05，具体可构造条件是 wrapped streambuf 的同步输出进入取消点。普通 wait、steady 定时等待与自定义时钟等待均取得动态证据；system-clock 特化与 D05 取得静态/具体构造路径证据，本轮按“抽样 2–3 项”的任务要求未另做运行样本。
+docs/progress/R72/REPORT.md-50-
+docs/progress/R72/REPORT.md-51-## 5. 抽样验证
+--
+docs/progress/R72/REPORT.md-62-## 6. 平台消费面
+docs/progress/R72/REPORT.md-63-
+docs/progress/R72/REPORT.md:64:消费面以 R32 已成功扫描的 371 个 source RPM 为分母，对会到达 D01–D05 的设施做源码词法命中；结果见 `raw/facility_usage_summary.tsv`，逐文件命中见 `raw/facility_usage_hits.tsv`。
+docs/progress/R72/REPORT.md-65-
+docs/progress/R72/REPORT.md-66-扫描 371/371 source RPM 成功、失败 0；它们对应 347 个去重包名。至少命中一种相关设施的有 **35 个 source RPM / 26 个去重包名**。按 source RPM / 去重包名分设施为：`condition_variable` 13/10、future 族 35/26、timed-mutex 族 3/2、shared-mutex 族 4/3、`sleep_until` 3/2、`wbuffer_convert` 2/1。同一包可同时计入多类，故分项不可相加；`wbuffer_convert` 的唯一包名是 GCC 自身源码/测试，不是独立产品消费者。
+--
+docs/progress/R72/REPORT.md-72-1. **参照实现做法**：GCC PR103382 从普通 wait、内部定时 wait 和实现定义处移除了 `noexcept`，理由是 NPTL 的 `__forced_unwind` 必须能够穿过。GCC 的说明同时把旧头文件已记录的异常规格称为潜在 ABI 问题。
+docs/progress/R72/REPORT.md-73-2. **libc++ 当前政策**：libc++ 的 `noexcept` policy 允许从版本 13 起把标准写为 “Throws: Nothing” 的函数额外标成 `noexcept`，并明确承认用户提供的抛出可能不再传播。公开检索未找到 libc++ 对 pthread cancellation/condition_variable 这一精确场景的 issue 或维护者处置表态，记 `NOT_FOUND`。
+docs/progress/R72/REPORT.md:74:3. **若以移除异常规格处理**：D01/D02 有 out-of-line 定义，但异常规格也出现在头文件声明，旧消费者仍可能按 `noexcept` 生成终止路径；D03/D04 是头文件内联 helper。D05 位于头文件模板中，但其差异还包含析构是否执行 `sync()`，不是只删异常规格即可等价。其交付性质包含库重建和消费者重编两个维度。
+docs/progress/R72/REPORT.md-75-4. **若以结构替换处理**：可以改变上层设施采用的等待原语或控制流，使强制展开不穿过该边界；不同设施位于库内或头文件，交付性质不同。
+docs/progress/R72/REPORT.md-76-5. **在 `noexcept` 内 catch 后再普通重抛**不能消除边界：异常离开函数时仍违反异常规格。若采用运行时专用续跑机制，则属于不同于普通 C++ 重抛的实现形态。
+--
+docs/progress/R72/REPORT.md-86-- 词法图不解析重载、模板实例化、函数指针、虚调用、宏展开后的精确目标；本轮靠人工复核消除已见假阳性，但不能证明零漏项。
+docs/progress/R72/REPORT.md-87-- POSIX 允许实现把 205 个 “may” 函数设为取消点；本轮平台实数只适用于 glibc 2.40/Linux 目标配置，不外推到 musl、其他 glibc 版本或非 Linux。
+docs/progress/R72/REPORT.md:88:- 只做 x86_64 动态抽样；静态源码路径同属 pthread 后端，但未在 armv7l 动态复跑。
+docs/progress/R72/REPORT.md-89-- `-fno-exceptions`、LTO、非 pthread backend、动态插件与自定义 libc 未覆盖。
+docs/progress/R72/REPORT.md-90-
+docs/progress/R72/REPORT.md-91-### 自行判断
+docs/progress/R72/REPORT.md-92-
+docs/progress/R72/REPORT.md:93:- 将“函数定义”作为计数单位，模板 D04 计 1 个定义，不按潜在实例化数膨胀。
+docs/progress/R72/REPORT.md-94-- 将 S01 记为“语法差异但行为被共同外层边界遮蔽”，不并入 5 个迁移行为差异。
+docs/progress/R72/REPORT.md-95-- 对 POSIX-may 项采用平台源码实证口径；未确认由 glibc 实现为取消点的，不计入 Tizen 当前实数。
+docs/progress/R72/REPORT.md:96:- 没有为本轮连接开发板；用户明确允许抽样在 x86_64 原生执行，本轮目标是源码枚举与两库对照。
+docs/progress/R72/REPORT.md-97-
+docs/progress/R72/REPORT.md-98-### 尚存疑问
+--
+docs/progress/R72/REPORT.md-103-## 9. 过程异常申报
+docs/progress/R72/REPORT.md-104-
+docs/progress/R72/REPORT.md:105:- 三次早期只读搜索范围写得过宽并被终止，退出 130，记录在 `commands/002_inventory.log`、`005_platform_source_inventory.log`、`009_stop_overbroad_find.log`。
+docs/progress/R72/REPORT.md-106-- 官方 sourceware glibc clone 返回 403，随后使用 glibc 官方 GitHub mirror 的同一 `glibc-2.40` tag，记录在 `commands/010_*`、`011_*`。
+docs/progress/R72/REPORT.md-107-- 第一版消费面扫描按设施重复遍历 371 包，因延迟过高被中止并改为单次组合扫描；记录在 `commands/018_stop_slow_facility_scan.log`。
+docs/progress/R72/REPORT.md-108-- 一次生成扩展取消点表的 here-doc 带入多余 `+`，Python 语法错误退出 1；原文保留在 `commands/024_platform_extension_set.log`，修正版在 `025_*`。
+docs/progress/R72/REPORT.md:109:- 一次在完整解包 GCC 源中做无界文本检索被终止；已有精确上游来源，未影响结论，记录在 `commands/026_stop_unbounded_gcc_search.log`。
+--
+docs/progress/R92/REPORT.md-1-# R92：未扫源码包的补扫
+docs/progress/R92/REPORT.md-2-
+docs/progress/R92/REPORT.md:3:## 结论
+docs/progress/R92/REPORT.md-4-
+docs/progress/R92/REPORT.md:5:R87 的零命中结论在本轮新增的可得源码范围内仍然成立。
+docs/progress/R92/REPORT.md-6-
+docs/progress/R92/REPORT.md-7-R90 严格按 R11 冻结快照核算出的 1,105 条源码缺口中，有 140 条产出至少一个带 C++ 指标的已发布 ELF。本轮：
+--
+docs/progress/R92/REPORT.md-9-- 140/140 个本地 SRPM 均通过既有 SHA256 复核；
+docs/progress/R92/REPORT.md-10-- R87 原版 `scan_noexcept_type_uses.py` 对 140/140 个展开根正常完成，脚本内容未修改；
+docs/progress/R92/REPORT.md:11:- 原始收口口径为 130 个 SRPM 完整扫描、8 个因安全解包排除项而部分覆盖；R93 对排除项做元数据分类后，6 个可以收口，最终为 136 个完整扫描、2 个部分覆盖；
+docs/progress/R92/REPORT.md-12-- 2 个 SRPM 只有打包文件、没有上游 C/C++ 源码，源码内容记 `NOT_AVAILABLE`；
+docs/progress/R92/REPORT.md:13:- 原脚本产生 150 条宽口径候选，去重为 100 个位置；全部分类完毕，真实 D01–D05 函数地址、函数类型、模板参数、traits/noexcept 用法为 0；
+docs/progress/R92/REPORT.md:14:- 140 个包对应的 4,374 条 C++ 指标 ELF 均被 R87 成功解析；R87 的 39,166 条 ELF 中另有 1 条未能解析，属于 `u-boot-rubikpi3`，不在本次 140 包/4,374 条范围内，因此不影响本轮结论。
+docs/progress/R92/REPORT.md-15-
+docs/progress/R92/REPORT.md-16-本任务没有修改 R87 的材料、脚本或判定逻辑，没有做修复或处置建议。
+--
+docs/progress/R92/REPORT.md-84-| 状态 | 数量 | 说明 |
+docs/progress/R92/REPORT.md-85-| --- | ---: | --- |
+docs/progress/R92/REPORT.md:86:| `AVAILABLE_AND_SCANNED` | 130 | SRPM 的源码归档没有排除成员，完整展开并扫描 |
+docs/progress/R92/REPORT.md:87:| `PARTIAL_SAFE_EXTRACTION` | 8 | 源码已扫描，但当时尚未分类安全解包排除的 1,003 个成员 |
+docs/progress/R92/REPORT.md-88-| `NOT_AVAILABLE` | 2 | SRPM 只有打包文件，没有上游 C/C++ 源码 |
+docs/progress/R92/REPORT.md-89-
+docs/progress/R92/REPORT.md:90:R93 对上述 8 包收口后的最终判定为：
+docs/progress/R92/REPORT.md-91-
+docs/progress/R92/REPORT.md-92-| 最终状态 | 数量 | 说明 |
+docs/progress/R92/REPORT.md-93-| --- | ---: | --- |
+docs/progress/R92/REPORT.md:94:| 完整扫描 | 136 | 原 130 包，加上 6 个全部链接目标均在扫描根内的包 |
+docs/progress/R92/REPORT.md-95-| 部分覆盖 | 2 | `bcc-tools`、`chromium-efl`；共 9 个悬空链接目标不在归档，无法证明目标源码已扫描 |
+docs/progress/R92/REPORT.md-96-| `NOT_AVAILABLE` | 2 | packaging-only SRPM，没有上游 C/C++ 源码 |
+--
+docs/progress/R92/REPORT.md-115-| 合计 | 150 | 100 | 0 |
+docs/progress/R92/REPORT.md-116-
+docs/progress/R92/REPORT.md:117:其中 100 行数据成员指针候选是同一批 50 个位置被 `MEMBER_POINTER_TYPE` 与 alias 分支各保留一次。它们的类型是 `std::__condvar std::condition_variable::*`，没有取得 D01 `wait` 的地址，也不携带 `wait` 函数类型的异常规格。其余三类同样不是任务所查的地址、函数类型、非类型模板参数或 traits 使用。
+docs/progress/R92/REPORT.md-118-
+docs/progress/R92/REPORT.md-119-`tables/true_hits.tsv` 仅有表头，真实命中为 0。
+docs/progress/R92/REPORT.md-120-
+docs/progress/R92/REPORT.md:121:## 5. 原结论是否变化
+docs/progress/R92/REPORT.md-122-
+docs/progress/R92/REPORT.md-123-不变化，但边界必须精确表述：
+--
+docs/progress/R92/REPORT.md-126-> R11 快照记录，以及 R87 成功解析的发布 ELF和已检查静态归档中，未发现
+docs/progress/R92/REPORT.md-127-> 平台以会受异常规格变化影响的函数指针、函数类型、模板参数或 traits 等
+docs/progress/R92/REPORT.md:128:> 形式使用 D01–D05。本轮 140 包对应的 4,374 条 ELF 均成功解析。
+docs/progress/R92/REPORT.md-129-
+docs/progress/R92/REPORT.md-130-不能表述为“1,450 个源码包源码绝对全部零命中”，因为本轮 2 个 packaging-only SRPM 没有携带其已发布 C++ ELF 所对应的上游源码，且任务刻意没有补扫 965 个无 C++ ELF 指标的源码记录。
+--
+docs/progress/R92/REPORT.md-136-3. R90 缺口中的另 965 条没有已发布 C++ 指标 ELF，按本任务范围未补扫。它们仍可能包含仅用于静态库、构建工具、测试、生成代码或最终被剥离/内联的 C++。
+docs/progress/R92/REPORT.md-137-4. 源码正则扫描不能展开编译期宏、生成器输出或外部拉取内容，也不能证明语义已完全擦除的 bool/SFINAE 结果来自哪个表达式。
+docs/progress/R92/REPORT.md:138:5. 结论绑定 R11 冻结快照；当前仓若已有版本漂移，不属于这次补扫。
+docs/progress/R92/REPORT.md-139-
+docs/progress/R92/REPORT.md-140-## 7. 执行异常与恢复
+--
+docs/progress/R92/REPORT.md-142-所有命令原文、输出和退出码均在 `raw/`；逐包提取与扫描子命令在 `raw/source_scan_command_ledger.txt`。
+docs/progress/R92/REPORT.md-143-
+docs/progress/R92/REPORT.md:144:1. 第一次处理大于 4 GiB 的 SRPM 时，辅助脚本错误地捕获了 `rpm2archive` 的标准输出，导致内存增长。发现后立即精确中止；日志包装器因收到中断未能自行写出退出码，`raw/004_scan_cpp_gap_sources.exitcode` 中的 `130` 是依据会话返回值补写的**恢复记录**，不是包装器自动生成。已完成 5 包断点未丢失，原 stdout/stderr 未修改。
+docs/progress/R92/REPORT.md-145-2. 修正为标准输出直接流式写磁盘后，导出成功；随即发现辅助脚本预先创建了本应由安全解包函数创建的目录，以 `FileExistsError` 退出。判据未执行、断点未变化。
+docs/progress/R92/REPORT.md-146-3. 仅修正 R92 辅助脚本的流向与目录前置条件，保留已成功生成的磁盘流缓存，再从断点续跑。最终 140 个根的扫描器命令均正常结束；源码内容覆盖仍按 136 完整、2 部分、2 不可得表述。没有修改 R87 扫描器。
+--
+docs/progress/R92/REPORT.md-159-5. 对 9 个目标不在归档的符号链接不推断目标内容，保守把所属的两个包继续记为部分覆盖。
+docs/progress/R92/REPORT.md-160-
+docs/progress/R92/REPORT.md:161:尚存疑问：若人工要求对两个 packaging-only 项取得源码层结论，需要确定其发布 ELF 的真正上游源码/构建来源；现有 SRPM 与本地冻结材料不能回答。该问题不阻塞对其二进制层的既有结论；另有 2 包因 9 个悬空链接目标保留部分覆盖。
+docs/progress/R92/REPORT.md-162-
+docs/progress/R92/REPORT.md-163-## 9. 证据索引
+--
+docs/progress/R92/REPORT.md-180-
+docs/progress/R92/REPORT.md-181-- 未修改平台源码或任何补丁。
+docs/progress/R92/REPORT.md:182:- 未修改 R87 扫描脚本和既有结论材料。
+docs/progress/R92/REPORT.md-183-- 未做修复或处置建议。
+docs/progress/R92/REPORT.md-184-- 未向 Gerrit 或任何外部源码仓推送。
