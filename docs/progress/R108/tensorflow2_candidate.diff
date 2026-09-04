@@ -1,0 +1,66 @@
+diff --git a/packaging/tensorflow2.spec b/packaging/tensorflow2.spec
+index b87d871f..dd2fb22a 100644
+--- a/packaging/tensorflow2.spec
++++ b/packaging/tensorflow2.spec
+@@ -46,6 +46,14 @@ Source3000:     tensorflow2-aot.tar.gz
+ %define USE_CLANG     "OFF"
+ %endif
+ 
++%if %{USE_CLANG} == "ON"
++%if %{defined _toolchain}
++%if %{toolchain_is clang}
++%define build_with_libcxx 1
++%endif
++%endif
++%endif
++
+ %if %{USE_CLANG} == "ON"
+ %ifarch armv7l
+ BuildRequires: python-accel-armv7l-cross-arm
+@@ -73,6 +81,10 @@ BuildRequires: clang
+ BuildRequires: cmake
+ BuildRequires: ninja
+ BuildRequires: python3
++%if 0%{?build_with_libcxx}
++BuildRequires: libc++-devel
++BuildRequires: libc++abi-devel
++%endif
+ 
+ %description
+ This is a standalone package of TensorFlow Lite.
+@@ -164,6 +176,10 @@ pushd build
+ CLANG_ASMFLAGS=" --target=%{host_triplet} "
+ CLANG_CFLAGS=" --target=%{host_triplet} "
+ CLANG_CXXFLAGS=" --target=%{host_triplet} "
++%if 0%{?build_with_libcxx}
++CLANG_CXXFLAGS="${CLANG_CXXFLAGS} -stdlib=libc++"
++export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
++%endif
+ 
+ export ASMFLAGS="${CLANG_ASMFLAGS}"
+ export CFLAGS="${CLANG_CFLAGS}"
+diff --git a/tensorflow/lite/kernels/elementwise.cc b/tensorflow/lite/kernels/elementwise.cc
+index 5552f125..aabf8a07 100644
+--- a/tensorflow/lite/kernels/elementwise.cc
++++ b/tensorflow/lite/kernels/elementwise.cc
+@@ -286,7 +286,8 @@ TfLiteStatus AbsEval(TfLiteContext* context, TfLiteNode* node) {
+   const TfLiteType type = input->type;
+   switch (type) {
+     case kTfLiteFloat32:
+-      return EvalImpl<float>(context, node, std::abs<float>, type);
++      return EvalImpl<float>(context, node,
++                             static_cast<float (*)(float)>(std::abs), type);
+     case kTfLiteInt8:
+       return AbsEvalQuantized<int8_t>(context, node, type);
+     case kTfLiteInt16:
+@@ -294,7 +295,9 @@ TfLiteStatus AbsEval(TfLiteContext* context, TfLiteNode* node) {
+                  ? AbsInt16EvalImpl(context, node, type)
+                  : AbsEvalQuantized<int16_t>(context, node, type);
+     case kTfLiteInt32:
+-      return EvalImpl<int32_t>(context, node, std::abs<int32_t>, type);
++      return EvalImpl<int32_t>(context, node,
++                               static_cast<int32_t (*)(int32_t)>(std::abs),
++                               type);
+     default:
+       TF_LITE_KERNEL_LOG(context, "Current data type %s is not supported.",
+                          TfLiteTypeGetName(type));
