@@ -2,7 +2,7 @@
 
 ## 结论
 
-状态：`PRE_PUSH_READY`。
+状态：`COMPLETE`。
 
 - 基线分支：`codex/r5-ehabi-diagnosis`
 - 基线提交：`e7790fc87f1cfcbd3620e51867263a16ce46fad5`
@@ -12,7 +12,9 @@
 - 创建前远端分支数：3；完整快照见 `remote_branches_before.tsv`。
 - 交接文件：`docs/RUNTIME_VALIDATION_HANDOVER.md`。
 
-推送后远端对照结果将在 `POST_PUSH_VERIFICATION.md` 中记录；本报告不提前推断。
+首次交接提交为 `f6020d79fa5da0c09673be8fb2a355f68be2685e`，已用普通
+`git push` 创建远端分支。推送后远端对照见 `POST_PUSH_VERIFICATION.md`：
+既有 3 个分支逐项 SHA 不变，新增恰好 1 条且远端 SHA 与本地一致。
 
 ## 交接说明覆盖
 
