@@ -1,0 +1,562 @@
+commit c5c4230a988bec124e83a89d8ffedb8ce07e01ea
+Author:     He Fangyu <fangyu.he@samsung.com>
+AuthorDate: Fri Aug 7 11:26:16 2026 +0800
+Commit:     He Fangyu <fangyu.he@samsung.com>
+CommitDate: Fri Aug 7 11:26:58 2026 +0800
+
+    packaging: add tensorflow2-aot, offline in-GBS TF AOT toolchain for LLVM MLGO (x86_64 + aarch64)
+    
+    Single-commit import of the complete tensorflow2-aot work, per-arch
+    specs generated gcc.spec-style from a parameterized master (run
+    packaging/pre_checkin.sh after editing it); both variants emit the same
+    tensorflow2-aot binary package (AutoReqProv disabled on the subpackage:
+    the bundled wheels carry hashed vendor sonames that would otherwise
+    become unresolvable Requires) for llvm's BuildRequires, and
+    ExclusiveArch lets plain gbs build -A <arch> pick the right one.
+    
+    Ships three TF build-system patches (pinned Go SDK checksums,
+    wheel-action shell env, JVM-arch platform detection for accelerated
+    chroots), the requirements-lock bump (h5py 3.12.1 / psutil 6.0.0),
+    per-arch offline pip mirrors, bazel 6.5.0 binaries, and the bazel
+    repository cache. Large sources are freshly-gzipped streams split into
+    <=88MB chunks reassembled at build time: no git object in this history
+    exceeds 88MB, and re-compression defeats server-side delta reuse against
+    farm clones that hold earlier objects only partially.
+    
+    The Tizen buildroot ships neither realpath(1) nor timeout(1); both are
+    shimmed in %build. On aarch64 the bazel analysis phase is warmed under a
+    timeout-retry loop (with a force-kill shutdown fallback) because the JVM
+    under qemu-user sporadically deadlocks with no output.
+    
+    Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+    Change-Id: I38d6a3afb6498f4958091b56d8c45719078aaa27
+
+ .gbs.conf                                          |   9 +
+ packaging/aot-extra-wheels.tar                     | Bin 0 -> 122880 bytes
+ packaging/bazel-6.5.0-linux-arm64.gz.part00        | Bin 0 -> 92274688 bytes
+ packaging/bazel-6.5.0-linux-arm64.gz.part01        | Bin 0 -> 64397417 bytes
+ packaging/bazel-6.5.0-linux-x86_64                 | Bin 0 -> 54809867 bytes
+ packaging/bazel-repo-cache.tgz.part00              | Bin 0 -> 92274688 bytes
+ packaging/bazel-repo-cache.tgz.part01              | Bin 0 -> 92274688 bytes
+ packaging/bazel-repo-cache.tgz.part02              | Bin 0 -> 92274688 bytes
+ packaging/bazel-repo-cache.tgz.part03              | Bin 0 -> 92274688 bytes
+ packaging/bazel-repo-cache.tgz.part04              | Bin 0 -> 92274688 bytes
+ packaging/bazel-repo-cache.tgz.part05              | Bin 0 -> 92274688 bytes
+ packaging/bazel-repo-cache.tgz.part06              | Bin 0 -> 92274688 bytes
+ packaging/bazel-repo-cache.tgz.part07              | Bin 0 -> 92274688 bytes
+ packaging/bazel-repo-cache.tgz.part08              | Bin 0 -> 92274688 bytes
+ packaging/bazel-repo-cache.tgz.part09              | Bin 0 -> 92274688 bytes
+ packaging/bazel-repo-cache.tgz.part10              | Bin 0 -> 47532417 bytes
+ packaging/pip-mirror-aarch64.tgz.part00            | Bin 0 -> 92274688 bytes
+ packaging/pip-mirror-aarch64.tgz.part01            | Bin 0 -> 6245698 bytes
+ packaging/pip-mirror-x86_64.tgz.part00             | Bin 0 -> 92274688 bytes
+ packaging/pip-mirror-x86_64.tgz.part01             | Bin 0 -> 19550302 bytes
+ packaging/pre_checkin.sh                           |   9 +
+ packaging/tensorflow2-aot-aarch64.spec             | 299 +++++++++++++++++++++
+ packaging/tensorflow2-aot.spec                     | 297 ++++++++++++++++++++
+ requirements_lock_3_12.txt                         |  86 +++---
+ tensorflow/tools/pip_package/utils/tf_wheel.bzl    |   3 +
+ tensorflow/workspace0.bzl                          |  25 +-
+ .../remote_config/remote_platform_configure.bzl    |  28 +-
+ .../remote_config/remote_platform_configure.bzl    |  28 +-
+ 28 files changed, 721 insertions(+), 63 deletions(-)
+diff --git a/packaging/tensorflow2-aot-aarch64.spec b/packaging/tensorflow2-aot-aarch64.spec
+new file mode 100644
+index 00000000000..16d16eaac05
+--- /dev/null
++++ b/packaging/tensorflow2-aot-aarch64.spec
+@@ -0,0 +1,299 @@
++%define aot_arch aarch64
++
++# TensorFlow AOT toolchain for LLVM MLGO.
++# Master spec, parameterized by %%{aot_arch} (gcc.spec-style): editing this
++# file is the only maintenance point; run pre_checkin.sh afterwards to
++# regenerate the derived per-arch specs (currently
++# tensorflow2-aot-aarch64.spec, two predefine lines + this file verbatim).
++# Every variant emits the same tensorflow2-aot binary package, so llvm's
++# BuildRequires never changes. ExclusiveArch makes plain `gbs build -A
++# <arch>` (no --spec) pick the right variant automatically.
++%{!?aot_arch: %define aot_arch x86_64}
++%define aot_prefix /opt/tensorflow-aot
++%define py_ver 3.12
++%if "%{aot_arch}" == "aarch64"
++%define py_platform aarch64-unknown-linux-gnu
++%else
++%define py_platform x86_64-unknown-linux-gnu
++%endif
++%{!?aot_build_jobs: %define aot_build_jobs 4}
++
++Name:           tensorflow2-aot-%{aot_arch}
++Summary:        TensorFlow AOT toolchain (saved_model_cli) for LLVM MLGO, %{aot_arch}
++Version:        2.18.0
++Release:        1
++Group:          Development/Toolchain
++License:        Apache-2.0
++Source0:        %{name}-%{version}.tar.gz
++Source1001:     tensorflow2.manifest
++# Large sources are shipped as fresh gzip streams split into <=88MB chunks and re-assembled
++# with cat at prep/build time: no git object may exceed ~90MB or constrained
++# build-farm clones OOM in unpack-objects. Chunk order = lexical suffix order.
++%if "%{aot_arch}" == "aarch64"
++Source3030:     bazel-6.5.0-linux-arm64.gz.part00
++Source3031:     bazel-6.5.0-linux-arm64.gz.part01
++%else
++Source3000:     bazel-6.5.0-linux-x86_64
++%endif
++Source3010:     bazel-repo-cache.tgz.part00
++Source3011:     bazel-repo-cache.tgz.part01
++Source3012:     bazel-repo-cache.tgz.part02
++Source3013:     bazel-repo-cache.tgz.part03
++Source3014:     bazel-repo-cache.tgz.part04
++Source3015:     bazel-repo-cache.tgz.part05
++Source3016:     bazel-repo-cache.tgz.part06
++Source3017:     bazel-repo-cache.tgz.part07
++Source3018:     bazel-repo-cache.tgz.part08
++Source3019:     bazel-repo-cache.tgz.part09
++Source3020:     bazel-repo-cache.tgz.part10
++# Runtime-only pypi deps of saved_model_cli not present in bazel's pip repos
++# (flatbuffers, astor, google-pasta), pinned from requirements_lock_3_12.txt.
++Source3003:     aot-extra-wheels.tar
++# Local PyPI mirror of everything in requirements_lock_3_12.txt: rules_python's
++# whl_library resolves requirements by running pip, which bypasses the bazel
++# repository cache; PIP_NO_INDEX/PIP_FIND_LINKS point pip here instead.
++%if "%{aot_arch}" == "aarch64"
++Source3050:     pip-mirror-aarch64.tgz.part00
++Source3051:     pip-mirror-aarch64.tgz.part01
++%else
++Source3040:     pip-mirror-x86_64.tgz.part00
++Source3041:     pip-mirror-x86_64.tgz.part01
++%endif
++
++ExclusiveArch:  %{aot_arch}
++# The bundled hermetic python and TF wheel carry their own shared objects;
++# do not let rpm derive requires/provides from them.
++AutoReqProv:    no
++
++BuildRequires:  zip
++BuildRequires:  unzip
++# For bazel repository rules (llvm_configure etc.); the built product uses
++# its own hermetic CPython, not this one.
++BuildRequires:  python3
++# Build TF with gcc: the buildroot's clang 22 rejects upb's pre-C23 offsetof
++# usage under -Werror; gcc matches the host-validated configuration.
++BuildRequires:  gcc
++BuildRequires:  gcc-c++
++BuildRequires:  which
++BuildRequires:  findutils
++BuildRequires:  patchelf
++
++%global debug_package %{nil}
++# GBS passes --define "_build_create_debug 1", which makes find-debuginfo
++# populate /usr/lib/debug even though no debuginfo subpackage exists to own
++# the result — rpm then aborts on "Installed (but unpackaged) file(s)".
++# This is a build-time-only toolchain; skip debuginfo extraction entirely.
++%global __debug_install_post %{nil}
++
++%description
++Build wrapper for the %{aot_arch} tensorflow2-aot package; see the
++tensorflow2-aot subpackage.
++
++%package -n tensorflow2-aot
++Summary:        TensorFlow AOT toolchain (saved_model_cli) for LLVM MLGO
++Group:          Development/Toolchain
++# The bundled hermetic python and wheels carry vendored shared objects with
++# hashed sonames (numpy's libgfortran-*.so etc.); without this the dependency
++# generator turns them into unresolvable Requires. Per-package tag: the one on
++# the main package does not cover subpackages.
++AutoReqProv:    no
++
++%description -n tensorflow2-aot
++Self-contained TensorFlow AOT compilation environment (saved_model_cli,
++tfcompile, XLA AOT runtime sources and headers) built offline from the
++TensorFlow 2.18 sources. Consumed at build time by llvm to AOT-compile
++MLGO models (inliner, regalloc eviction) into the compiler.
++
++%prep
++%setup -q
++cp %{SOURCE1001} ./tensorflow2-aot.manifest
++mkdir -p _repo_cache
++cat %{SOURCE3010} %{SOURCE3011} %{SOURCE3012} %{SOURCE3013} %{SOURCE3014} \
++    %{SOURCE3015} %{SOURCE3016} %{SOURCE3017} %{SOURCE3018} %{SOURCE3019} \
++    %{SOURCE3020} | tar -xzf - -C _repo_cache
++mkdir -p _pip_mirror
++%if "%{aot_arch}" == "aarch64"
++cat %{SOURCE3050} %{SOURCE3051} | tar -xzf - -C _pip_mirror
++%else
++cat %{SOURCE3040} %{SOURCE3041} | tar -xzf - -C _pip_mirror
++%endif
++
++%build
++%if "%{aot_arch}" == "aarch64"
++cat %{SOURCE3030} %{SOURCE3031} | gzip -dc > ./bazel
++%else
++cp %{SOURCE3000} ./bazel
++%endif
++chmod +x ./bazel
++
++# Dependency provenance policy: everything installable from the Tizen
++# Base/Unified repos comes via BuildRequires (gcc, python3, zip, unzip,
++# patchelf, ...). Only three things cannot (no bazel package exists; Tizen
++# python3 is 3.14 while TF 2.18 requires <=3.12): the bazel binary, the
++# hermetic CPython 3.12, and the pinned pip wheels. Each vendored binary is
++# runtime-verified inside this Tizen buildroot below and the build fails
++# fast if any of them cannot execute here.
++./bazel --version || { echo "FATAL: vendored bazel cannot run in this buildroot"; exit 1; }
++
++export HERMETIC_PYTHON_VERSION=%{py_ver}
++# Keep bazel's output base outside the source tree: %%prep wipes the tree on
++# every run, so an in-tree output base means a full ~4h rebuild after even a
++# one-line spec change. The buildroot itself survives between gbs runs.
++export BAZEL_ROOT=$HOME/.cache/bazel-tf-aot
++mkdir -p "$BAZEL_ROOT"
++
++# Force gcc for bazel's C++ toolchain autodetection (see BuildRequires note).
++export CC=/usr/bin/gcc
++export CXX=/usr/bin/g++
++export BAZEL_COMPILER=gcc
++
++# Offline pip: rules_python's whl_library shells out to pip to resolve the
++# requirements lock. Disable pip isolation so it honors these env vars and
++# point it at the bundled wheel mirror instead of PyPI.
++export RULES_PYTHON_PIP_ISOLATED=0
++export PIP_NO_INDEX=1
++export PIP_FIND_LINKS=$PWD/_pip_mirror
++
++# Tizen coreutils ships no realpath(1); TF's toolchain-probing repository
++# rules call it via `bash -c "realpath ..."`. Provide a shim.
++mkdir -p $PWD/shims
++printf '#!/bin/sh\nexec readlink -f "$@"\n' > $PWD/shims/realpath
++# ... and no timeout(1) either; minimal shell replacement (rc!=0 on expiry).
++cat > $PWD/shims/timeout << 'TMOEOF'
++#!/bin/sh
++secs=$1; shift
++"$@" & pid=$!
++( t=0; while [ $t -lt $secs ]; do sleep 10; t=$((t+10)); kill -0 $pid 2>/dev/null || exit 0; done; kill -9 $pid 2>/dev/null ) & wd=$!
++wait $pid; rc=$?
++kill $wd 2>/dev/null; wait $wd 2>/dev/null
++exit $rc
++TMOEOF
++chmod +x $PWD/shims/realpath $PWD/shims/timeout
++export PATH=$PWD/shims:$PATH
++
++# Resource caps: TF/XLA translation units peak at 2-3GB each with gcc;
++# unbounded parallelism has frozen the build host before. Cap both the
++# action count and the memory budget bazel schedules against. Raise with
++# --define "aot_build_jobs N" on a dedicated machine.
++%if "%{aot_arch}" == "aarch64"
++# The bazel JVM under qemu-user sporadically deadlocks during analysis with
++# no output (observed locally and on the build farm, where an 8h inactivity
++# watchdog then kills the job). Warm the analysis phase under a timeout and
++# restart the server on a hang: turns a dead build into a <=90min retry.
++for attempt in 1 2 3; do
++    if timeout 5400 ./bazel --output_user_root=$BAZEL_ROOT \
++        --host_jvm_args=-XX:ActiveProcessorCount=2 \
++        build --nobuild \
++        -c opt --curses=no --color=no \
++        --copt=-Wno-error=incompatible-pointer-types \
++        --jobs=%{aot_build_jobs} \
++        --local_cpu_resources=%{aot_build_jobs} \
++        --local_ram_resources=8192 \
++        --spawn_strategy=local \
++        --repository_cache=$PWD/_repo_cache \
++        --experimental_repository_disable_download \
++        //tensorflow/tools/pip_package:wheel \
++        //tensorflow/compiler/aot:tfcompile \
++        //tensorflow/python/tools:saved_model_cli; then
++        echo "analysis warm-up OK (attempt $attempt)"
++        break
++    fi
++    echo "analysis attempt $attempt hung or failed; restarting bazel server"
++    timeout 120 ./bazel --output_user_root=$BAZEL_ROOT shutdown || true
++    for f in $BAZEL_ROOT/*/server/server.pid.txt; do
++        [ -f "$f" ] && kill -9 "$(cat "$f")" 2>/dev/null || true
++    done
++    [ $attempt = 3 ] && { echo "FATAL: bazel analysis kept hanging"; exit 1; }
++done
++%endif
++./bazel --output_user_root=$BAZEL_ROOT \
++%if "%{aot_arch}" == "aarch64"
++    --host_jvm_args=-XX:ActiveProcessorCount=2 \
++%endif
++    build \
++    -c opt \
++    --curses=no --color=no --verbose_failures \
++%if "%{aot_arch}" == "aarch64"
++    --copt=-Wno-error=incompatible-pointer-types \
++%endif
++    --jobs=%{aot_build_jobs} \
++    --local_cpu_resources=%{aot_build_jobs} \
++    --local_ram_resources=8192 \
++    --spawn_strategy=local \
++    --repository_cache=$PWD/_repo_cache \
++    --experimental_repository_disable_download \
++    //tensorflow/tools/pip_package:wheel \
++    //tensorflow/compiler/aot:tfcompile \
++    //tensorflow/python/tools:saved_model_cli
++
++# Shut the server down so nothing holds files open during %%install.
++./bazel --output_user_root=$BAZEL_ROOT shutdown
++
++%install
++AOT_ROOT=%{buildroot}%{aot_prefix}
++SITE_DIR=$AOT_ROOT/lib/python%{py_ver}/site-packages
++mkdir -p $AOT_ROOT/bin $SITE_DIR
++# %%install runs in a fresh shell; mirror %%build's output base.
++BAZEL_ROOT=$HOME/.cache/bazel-tf-aot
++
++# 1. Bundled hermetic CPython.
++PY_EXT=$(echo $BAZEL_ROOT/*/external/python_%{py_platform})
++test -d "$PY_EXT" || { echo "FATAL: hermetic python dir not found"; exit 1; }
++cp -a "$PY_EXT" $AOT_ROOT/python
++rm -f $AOT_ROOT/python/BUILD.bazel $AOT_ROOT/python/WORKSPACE
++# Runtime-verify the bundled interpreter inside this Tizen buildroot.
++$AOT_ROOT/python/bin/python%{py_ver} -c "import sys; print(sys.version)" || \
++    { echo "FATAL: bundled CPython cannot run in this buildroot"; exit 1; }
++
++# 2. TensorFlow wheel -> site-packages.
++WHEEL=$(find bazel-bin/tensorflow/tools/pip_package -name "tensorflow-%{version}*.whl" | head -1)
++test -n "$WHEEL" || { echo "FATAL: built tensorflow wheel not found"; exit 1; }
++unzip -q "$WHEEL" -d $SITE_DIR
++
++# 3. Python runtime deps of saved_model_cli (numpy, absl, protobuf, ...) from
++#    the hermetic pip repos used during the build. No `cp -n`: the Tizen
++#    buildroot coreutils does not support it, and silencing errors here once
++#    hid exactly that failure. Loud, verified copies only.
++for dep in $BAZEL_ROOT/*/external/pypi_*/site-packages; do
++    [ -d "$dep" ] || continue
++    cp -a "$dep"/. $SITE_DIR/ || { echo "FATAL: failed to copy $dep"; exit 1; }
++done
++test -d $SITE_DIR/absl || { echo "FATAL: pypi deps missing after copy (absl)"; exit 1; }
++test -d $SITE_DIR/numpy || { echo "FATAL: pypi deps missing after copy (numpy)"; exit 1; }
++
++# 3b. Runtime-only deps missing from the bazel pip repos.
++mkdir -p _extra_wheels
++tar -xf %{SOURCE3003} -C _extra_wheels
++for w in _extra_wheels/*.whl; do
++    unzip -qo "$w" -d $SITE_DIR
++done
++
++# 4. tfcompile binary.
++install -m 0755 bazel-bin/tensorflow/compiler/aot/tfcompile $AOT_ROOT/bin/tfcompile
++
++# 5. saved_model_cli launcher at <prefix>/bin, where llvm's
++#    TENSORFLOW_AOT_PATH/../../../../bin lookup expects it.
++cat > $AOT_ROOT/bin/saved_model_cli << 'EOF'
++#!/bin/sh
++SELF="$(cd "$(dirname "$0")/.." && pwd)"
++export PYTHONPATH="$SELF/lib/python%{py_ver}/site-packages${PYTHONPATH:+:$PYTHONPATH}"
++exec "$SELF/python/bin/python%{py_ver}" -c "from tensorflow.python.tools.saved_model_cli import main; main()" "$@"
++EOF
++sed -i "s/%%{py_ver}/%{py_ver}/g" $AOT_ROOT/bin/saved_model_cli 2>/dev/null || true
++chmod 0755 $AOT_ROOT/bin/saved_model_cli
++
++# Smoke test: load TF and the AOT entry point through the bundled
++# interpreter, exactly as the wrapper does. Run from a neutral directory —
++# importing tensorflow with the source tree as cwd fails by design. Do NOT
++# use `saved_model_cli --help`: absl prints usage and exits 1, so it can
++# never be a pass/fail signal.
++test -x %{buildroot}%{aot_prefix}/bin/saved_model_cli || \
++    { echo "FATAL: saved_model_cli wrapper missing or not executable"; exit 1; }
++( cd / && PYTHONPATH=%{buildroot}%{aot_prefix}/lib/python%{py_ver}/site-packages \
++    %{buildroot}%{aot_prefix}/python/bin/python%{py_ver} -c \
++    "import tensorflow as tf; from tensorflow.python.tools import saved_model_cli; print('smoke: TF', tf.__version__)" ) || \
++    { echo "FATAL: saved_model_cli smoke test failed"; exit 1; }
++
++%files -n tensorflow2-aot
++%manifest tensorflow2-aot.manifest
++%{aot_prefix}
+diff --git a/packaging/tensorflow2-aot.spec b/packaging/tensorflow2-aot.spec
+new file mode 100644
+index 00000000000..1ecbbd5f6b1
+--- /dev/null
++++ b/packaging/tensorflow2-aot.spec
+@@ -0,0 +1,297 @@
++# TensorFlow AOT toolchain for LLVM MLGO.
++# Master spec, parameterized by %%{aot_arch} (gcc.spec-style): editing this
++# file is the only maintenance point; run pre_checkin.sh afterwards to
++# regenerate the derived per-arch specs (currently
++# tensorflow2-aot-aarch64.spec, two predefine lines + this file verbatim).
++# Every variant emits the same tensorflow2-aot binary package, so llvm's
++# BuildRequires never changes. ExclusiveArch makes plain `gbs build -A
++# <arch>` (no --spec) pick the right variant automatically.
++%{!?aot_arch: %define aot_arch x86_64}
++%define aot_prefix /opt/tensorflow-aot
++%define py_ver 3.12
++%if "%{aot_arch}" == "aarch64"
++%define py_platform aarch64-unknown-linux-gnu
++%else
++%define py_platform x86_64-unknown-linux-gnu
++%endif
++%{!?aot_build_jobs: %define aot_build_jobs 4}
++
++Name:           tensorflow2-aot-%{aot_arch}
++Summary:        TensorFlow AOT toolchain (saved_model_cli) for LLVM MLGO, %{aot_arch}
++Version:        2.18.0
++Release:        1
++Group:          Development/Toolchain
++License:        Apache-2.0
++Source0:        %{name}-%{version}.tar.gz
++Source1001:     tensorflow2.manifest
++# Large sources are shipped as fresh gzip streams split into <=88MB chunks and re-assembled
++# with cat at prep/build time: no git object may exceed ~90MB or constrained
++# build-farm clones OOM in unpack-objects. Chunk order = lexical suffix order.
++%if "%{aot_arch}" == "aarch64"
++Source3030:     bazel-6.5.0-linux-arm64.gz.part00
++Source3031:     bazel-6.5.0-linux-arm64.gz.part01
++%else
++Source3000:     bazel-6.5.0-linux-x86_64
++%endif
++Source3010:     bazel-repo-cache.tgz.part00
++Source3011:     bazel-repo-cache.tgz.part01
++Source3012:     bazel-repo-cache.tgz.part02
++Source3013:     bazel-repo-cache.tgz.part03
++Source3014:     bazel-repo-cache.tgz.part04
++Source3015:     bazel-repo-cache.tgz.part05
++Source3016:     bazel-repo-cache.tgz.part06
++Source3017:     bazel-repo-cache.tgz.part07
++Source3018:     bazel-repo-cache.tgz.part08
++Source3019:     bazel-repo-cache.tgz.part09
++Source3020:     bazel-repo-cache.tgz.part10
++# Runtime-only pypi deps of saved_model_cli not present in bazel's pip repos
++# (flatbuffers, astor, google-pasta), pinned from requirements_lock_3_12.txt.
++Source3003:     aot-extra-wheels.tar
++# Local PyPI mirror of everything in requirements_lock_3_12.txt: rules_python's
++# whl_library resolves requirements by running pip, which bypasses the bazel
++# repository cache; PIP_NO_INDEX/PIP_FIND_LINKS point pip here instead.
++%if "%{aot_arch}" == "aarch64"
++Source3050:     pip-mirror-aarch64.tgz.part00
++Source3051:     pip-mirror-aarch64.tgz.part01
++%else
++Source3040:     pip-mirror-x86_64.tgz.part00
++Source3041:     pip-mirror-x86_64.tgz.part01
++%endif
++
++ExclusiveArch:  %{aot_arch}
++# The bundled hermetic python and TF wheel carry their own shared objects;
++# do not let rpm derive requires/provides from them.
++AutoReqProv:    no
++
++BuildRequires:  zip
++BuildRequires:  unzip
++# For bazel repository rules (llvm_configure etc.); the built product uses
++# its own hermetic CPython, not this one.
++BuildRequires:  python3
++# Build TF with gcc: the buildroot's clang 22 rejects upb's pre-C23 offsetof
++# usage under -Werror; gcc matches the host-validated configuration.
++BuildRequires:  gcc
++BuildRequires:  gcc-c++
++BuildRequires:  which
++BuildRequires:  findutils
++BuildRequires:  patchelf
++
++%global debug_package %{nil}
++# GBS passes --define "_build_create_debug 1", which makes find-debuginfo
++# populate /usr/lib/debug even though no debuginfo subpackage exists to own
++# the result — rpm then aborts on "Installed (but unpackaged) file(s)".
++# This is a build-time-only toolchain; skip debuginfo extraction entirely.
++%global __debug_install_post %{nil}
++
++%description
++Build wrapper for the %{aot_arch} tensorflow2-aot package; see the
++tensorflow2-aot subpackage.
++
++%package -n tensorflow2-aot
++Summary:        TensorFlow AOT toolchain (saved_model_cli) for LLVM MLGO
++Group:          Development/Toolchain
++# The bundled hermetic python and wheels carry vendored shared objects with
++# hashed sonames (numpy's libgfortran-*.so etc.); without this the dependency
++# generator turns them into unresolvable Requires. Per-package tag: the one on
++# the main package does not cover subpackages.
++AutoReqProv:    no
++
++%description -n tensorflow2-aot
++Self-contained TensorFlow AOT compilation environment (saved_model_cli,
++tfcompile, XLA AOT runtime sources and headers) built offline from the
++TensorFlow 2.18 sources. Consumed at build time by llvm to AOT-compile
++MLGO models (inliner, regalloc eviction) into the compiler.
++
++%prep
++%setup -q
++cp %{SOURCE1001} ./tensorflow2-aot.manifest
++mkdir -p _repo_cache
++cat %{SOURCE3010} %{SOURCE3011} %{SOURCE3012} %{SOURCE3013} %{SOURCE3014} \
++    %{SOURCE3015} %{SOURCE3016} %{SOURCE3017} %{SOURCE3018} %{SOURCE3019} \
++    %{SOURCE3020} | tar -xzf - -C _repo_cache
++mkdir -p _pip_mirror
++%if "%{aot_arch}" == "aarch64"
++cat %{SOURCE3050} %{SOURCE3051} | tar -xzf - -C _pip_mirror
++%else
++cat %{SOURCE3040} %{SOURCE3041} | tar -xzf - -C _pip_mirror
++%endif
++
++%build
++%if "%{aot_arch}" == "aarch64"
++cat %{SOURCE3030} %{SOURCE3031} | gzip -dc > ./bazel
++%else
++cp %{SOURCE3000} ./bazel
++%endif
++chmod +x ./bazel
++
++# Dependency provenance policy: everything installable from the Tizen
++# Base/Unified repos comes via BuildRequires (gcc, python3, zip, unzip,
++# patchelf, ...). Only three things cannot (no bazel package exists; Tizen
++# python3 is 3.14 while TF 2.18 requires <=3.12): the bazel binary, the
++# hermetic CPython 3.12, and the pinned pip wheels. Each vendored binary is
++# runtime-verified inside this Tizen buildroot below and the build fails
++# fast if any of them cannot execute here.
++./bazel --version || { echo "FATAL: vendored bazel cannot run in this buildroot"; exit 1; }
++
++export HERMETIC_PYTHON_VERSION=%{py_ver}
++# Keep bazel's output base outside the source tree: %%prep wipes the tree on
++# every run, so an in-tree output base means a full ~4h rebuild after even a
++# one-line spec change. The buildroot itself survives between gbs runs.
++export BAZEL_ROOT=$HOME/.cache/bazel-tf-aot
++mkdir -p "$BAZEL_ROOT"
++
++# Force gcc for bazel's C++ toolchain autodetection (see BuildRequires note).
++export CC=/usr/bin/gcc
++export CXX=/usr/bin/g++
++export BAZEL_COMPILER=gcc
++
++# Offline pip: rules_python's whl_library shells out to pip to resolve the
++# requirements lock. Disable pip isolation so it honors these env vars and
++# point it at the bundled wheel mirror instead of PyPI.
++export RULES_PYTHON_PIP_ISOLATED=0
++export PIP_NO_INDEX=1
++export PIP_FIND_LINKS=$PWD/_pip_mirror
++
++# Tizen coreutils ships no realpath(1); TF's toolchain-probing repository
++# rules call it via `bash -c "realpath ..."`. Provide a shim.
++mkdir -p $PWD/shims
++printf '#!/bin/sh\nexec readlink -f "$@"\n' > $PWD/shims/realpath
++# ... and no timeout(1) either; minimal shell replacement (rc!=0 on expiry).
++cat > $PWD/shims/timeout << 'TMOEOF'
++#!/bin/sh
++secs=$1; shift
++"$@" & pid=$!
++( t=0; while [ $t -lt $secs ]; do sleep 10; t=$((t+10)); kill -0 $pid 2>/dev/null || exit 0; done; kill -9 $pid 2>/dev/null ) & wd=$!
++wait $pid; rc=$?
++kill $wd 2>/dev/null; wait $wd 2>/dev/null
++exit $rc
++TMOEOF
++chmod +x $PWD/shims/realpath $PWD/shims/timeout
++export PATH=$PWD/shims:$PATH
++
++# Resource caps: TF/XLA translation units peak at 2-3GB each with gcc;
++# unbounded parallelism has frozen the build host before. Cap both the
++# action count and the memory budget bazel schedules against. Raise with
++# --define "aot_build_jobs N" on a dedicated machine.
++%if "%{aot_arch}" == "aarch64"
++# The bazel JVM under qemu-user sporadically deadlocks during analysis with
++# no output (observed locally and on the build farm, where an 8h inactivity
++# watchdog then kills the job). Warm the analysis phase under a timeout and
++# restart the server on a hang: turns a dead build into a <=90min retry.
++for attempt in 1 2 3; do
++    if timeout 5400 ./bazel --output_user_root=$BAZEL_ROOT \
++        --host_jvm_args=-XX:ActiveProcessorCount=2 \
++        build --nobuild \
++        -c opt --curses=no --color=no \
++        --copt=-Wno-error=incompatible-pointer-types \
++        --jobs=%{aot_build_jobs} \
++        --local_cpu_resources=%{aot_build_jobs} \
++        --local_ram_resources=8192 \

@@ -202,4 +202,46 @@ Source1004: mlgo_x86_model.tar.gz
 - 未修改任何平台源码、spec、配置或补丁；
 - 未向 Gerrit 或任何外部源码仓推送；
 - 未切换或修改 `codex/runtime-validation`；
-- W2、W3 均未启动。
+- W2 因 W1 没有可用资产而记 `NOT_AVAILABLE`；W3 已独立执行，见 `docs/progress/BUILD_W3_0905/`。
+
+## 10. 人工答复后的续查（最终状态更新）
+
+人工已授权：由本项目增加默认兼容的标准库开关；缺失 sysroot 缓存时从脚本中的 Tizen `reference` 地址下载；使用 `config/gbs.conf`；把验证脚本资源限制改为 job=2、`nice -n 15`、`ionice -c 3`；模型只选择 inliner。续查没有改动源码或生成资产。
+
+### 10.1 交叉支持机制的更正
+
+早先“没有等价交叉支持内容”的表述不完整。继续检查隐藏文件后确认，`.bazelrc` 已定义 `build:cpu_cross --define=with_cross_compiler_support=true`，`release_base` 也引用 `--config=cpu_cross`；嵌套 XLA 配置有同类内容。但两个 AOT spec 的实际 Bazel 命令既没有 `--config=cpu_cross`，也没有直接传入该 define。因此代码和等价配置存在，未解决的是 spec 没有消费它。证据见 `raw/117_*`、`raw/119_*`、`raw/120_*`。
+
+### 10.2 inliner 范围不能解除当前阻断
+
+逐对象核对现有三架构合并资产得到：
+
+| 架构 | `InlinerSizeModel.o` 中 `std::__cxx11` / `std::__1` | `RegAllocEvictModel.o` 中 `std::__cxx11` / `std::__1` | 整包 `std::__cxx11` | 整包 `std::__1` |
+|---|---|---|---:|---:|
+| aarch64 | 0 / 0 | 0 / 0 | 44 | 0 |
+| armv7l | 0 / 0 | 0 / 0 | 26 | 0 |
+| x86_64 | 0 / 0 | 0 / 0 | 26 | 0 |
+
+整包的 ABI 敏感符号全部位于 XLA runtime 归档/对象；新指南的 `mlgo_inliner_<arch>.tar.gz` 只含模型头、模型对象和 manifest，不含 runtime。证据见 `raw/123_*`、`raw/124_*`、`raw/125_*`。
+
+因此，只生成三个 inliner 包不能替换携带 `std::__cxx11` 的 runtime，无法解除当前 LLVM 链接阻断。继续生成会得到一个可检查的部分产物，但不会满足 W1 的目标；这属于新的目标矛盾，故停止 W1，没有用不完整资产进入 W2。
+
+### 10.3 默认产物“完全相同”的口径问题
+
+生成脚本会写入 manifest 时间戳，tar 封装也带元数据；在没有可复现构建约束时，即使有效载荷相同，压缩包逐字节哈希也可能不同。因此需要人工明确“完全相同”是指字节级一致，还是载荷、接口、ABI 和有效内容一致（排除时间戳与封装元数据）。本轮未自行选择口径。
+
+## 11. 需与开发人员确认的事项
+
+| 项目 | 指南或材料的说法 | 实际情况 | 本轮临时处理 | 需确认内容 |
+|---|---|---|---|---|
+| 交叉支持 | 指南引用 `mlgo-tf-aot-cross.diff` 并要求启用交叉 define | diff 不存在；`.bazelrc` 有等价 `cpu_cross`，AOT spec 未引用 | 记录现状，未改 spec | 正式 spec 应加 `--config=cpu_cross` 还是使用其他入口 |
+| sysroot 缓存 | 指南称目录内有约 75 MiB 缓存 | 当前分支没有且 `build/` 被忽略 | 已获准未来从 `reference` 地址下载；本轮未下载 | 指南是否应固定快照与校验值以保证复现 |
+| 验证资源 | 脚本自动使用 5/6 jobs、`nice -n 10`、无 ionice | 与 job=2、`nice -n 15`、`ionice -c 3` 冲突 | 已获准未来只改资源参数；本轮未运行 | 是否为脚本增加正式资源参数接口 |
+| 资产拆分 | 指南产出 9 包，LLVM spec 消费 3 个合并包；本轮只选 inliner | ABI 阻断在 runtime，不在 inliner/regalloc 模型对象 | 未修改 LLVM spec，未拼装不完整资产 | 三包消费接口如何适配，以及是否允许同步重生 runtime |
+
+## 12. 最终未观测项
+
+- 兼容标准库开关的实现与默认路径基线对照：`NOT_OBSERVED`；
+- sysroot 在线下载：`NOT_OBSERVED`；
+- 三架构 inliner/runtime 资产生成：`NOT_OBSERVED`；
+- LLVM 三架构 GBS 验证：`NOT_OBSERVED`。
