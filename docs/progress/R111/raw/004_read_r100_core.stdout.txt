@@ -1,0 +1,467 @@
+# R100：Tizen-Base-Toolchain 的 libc++ 迁移判定清单
+
+## 结论摘要
+
+本轮没有修改配置、平台源码或补丁，也没有推送 Gerrit。对准确的
+`Tizen-Base-Toolchain` 快照重新生成分母后，共识别 73 个 C++ 候选源码包：
+
+| 判定 | 数量 | 含义 |
+|---|---:|---|
+| `NEED_LIBCXX` | 10 | 已有符号证据证明与将迁移的代码跨界传递 C++ ABI |
+| `NO_LIBCXX_NEEDED` | 55 | 已有正面隔离证据：纯 C 边、Base 内闭包、独立工具或仅头文件载体 |
+| `CANNOT_SWITCH_CURRENTLY` | 6 | 当前 spec/产品角色明确使用 GCC；这是当前配置状态，不是永久技术结论 |
+| `CONFLICT_NEED_BUT_CANNOT` | 0 | 没有包同时命中“需要”和“当前不能” |
+| `UNDETERMINED` | 2 | 有 C++ 静态归档及 Unified BuildRequires，但不能证明是否真实静态链接 |
+
+因此现有事实是：按包方案有 10 个已证实需要改的包，另有 2 个尚不能定性；
+全局方案会同时触及 55 个已判定不需要改的 C++ 包，并暴露 6 个当前 GCC 包。
+本报告不在两种方案之间作推荐或优先级排序。
+
+## 1. 判定规则
+
+人工确认后的规则见 `STAGE1_RULES.md`。按确认意见删除了原规则 N4
+“广泛链接”：只要已证明 C++ ABI 耦合，N2 已经给出 `NEED_LIBCXX`，N4
+不会产生独立判定。consumer 数量仍作为影响面数据保留。
+
+核心边界仍是“是否跨界传递 C++ 语义”，而不是“进程中是否同时装载两套
+运行时”。没有证据的项保留为 `UNDETERMINED`，不并入“不需要改”。
+
+## 2. 分母重新生成
+
+### 2.1 输入身份
+
+- Base：`Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647`
+- 配套 Unified：`Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247`
+- Base 元数据：292 条 source 记录、254 个去重源码名、1,705 条 binary 记录。
+- 构建日志：749 条成功日志，覆盖三个架构和 256 个日志标签；将 URL 编码的
+  `libsigc%2B%2B` 还原为 `libsigc++`，并将三个按目标拆分的
+  `qemu-accel-*` 构建标签归并到实际 source package `qemu-accel`。
+
+所有仓库身份、URL、记录数与命令见 `raw/004_*`、`006_*`、`009_*`、
+`117_*`。
+
+### 2.2 “C++ 包”的操作定义
+
+使用四种正面证据的并集：
+
+1. 实际构建日志出现 C++ 编译器识别、CXX 构建动作或真实 C++ 编译命令；
+2. 已发布 binary RPM 声明 C++ runtime 依赖；
+3. 静态归档存在外部可见、且能被 `c++filt` 实际解码的 C++ 符号；
+4. RPM 安装 `.hpp/.hh/.hxx` 或明确的 C++ include 路径。
+
+因此：仅有静态归档但没有全局 C++ 符号的不计入静态 C++；仅有头文件的包
+计入候选分母并标为 `CPP_HEADER_PAYLOAD`，但不因此自动判为需要迁移。
+
+初次构建日志扫描错误地以大小写不敏感方式匹配 `.C`，把普通 `.c` 算成
+C++；修正后由 112 个降为 71 个原始 C++ 构建标签、69 个规范化源码名。
+错误结果没有用于最终分母，修正与恢复记录见 `raw/053_*` 及脚本注释。
+
+最终证据并集为 73 个源码包：69 个有实际 C++ 构建日志，36 个有动态
+C++ runtime 信号，10 个有真实 C++ 静态归档，12 个带 C++ 头文件。
+各集合会重叠，逐包证据见 `tables/base_cpp_package_decisions.tsv`。
+
+### 2.3 与 R95 的 38 包为何不同
+
+R95 的 38 是 GCC 标准仓 `Tizen-Base` 中“产出 C++ runtime ELF”的口径；
+R100 使用的是另一个项目 `Tizen-Base-Toolchain`，且为了判断全局 flags 的
+影响，操作定义扩展到实际 C++ 构建、静态归档和头文件载体。
+
+- 共同：38；R95 的 38 个全部能映射到 R100 分母。
+- R100 新增：35。
+- R95 有而 R100 没有：0。
+
+新增 35 个为：`automake`、`binutils-armv7hl`、`binutils-riscv64`、
+`bison`、`c-ares`、`cereal`、`dejagnu`、`diffutils`、`expat`、`file`、
+`flex`、`gcc-armv7hl`、`glibc`、`keyutils`、`krb5`、`libcxx-runtimes`、
+`libdbuspolicy-header`、`libffi`、`libsndfile`、`libtool`、`libunistring`、
+`libunwind`、`lttng-ust`、`lua`、`pkg-config`、`python`、`python3`、
+`python3-base`、`rpm`、`sqlite`、`tensorflow2`、`update-alternatives`、
+`util-linux`、`v4l-utils`、`zstd`。
+
+它们的新增原因逐项记录在
+`tables/r95_r100_denominator_crosswalk.tsv`；不能把 73 与 R95 的 38
+解释为同一项目、同一口径下数量增长。
+
+## 3. 符号级边界证据
+
+为避免只凭依赖名判断，本轮对 armv7l 做了精确符号交集：
+
+- Unified→Base：98 个精确 RPM、281,751,329 字节，逐包 SHA256 通过；
+  解析 353 个 package/SONAME 候选、1,034 条实际 ELF 边，未解析项 0。
+  源码对分类为 28 个布局敏感、19 个有 C++ ABI 但布局未排除、17 个纯 C、
+  2 个无符号交集。
+- Base 内部：81 个精确 RPM、106,704,169 字节；解析 257 条 ELF 边，
+  未解析项 0。源码对为 4 个布局敏感、1 个 C++ ABI 未排除、19 个纯 C、
+  1 个无符号交集。
+- 静态归档：136 个 RPM、429,265,248 字节全部校验；2,218 个归档条目中
+  805 个含外部可见且可解码 C++ 符号，归属于 10 个源码包。
+
+静态归档初扫曾把局部 fortify 包装符号和 `_ZGV*` 向量 ABI 名称算作阳性；
+经 `nm -g` 与 `c++filt` 独立校准后重扫，最终只采用收紧后的 805 条结果。
+完整符号、demangle 和命令证据在 `tables/armv7l_*_edges/`、
+`tables/static_archive_symbols_refined.tsv` 与 `raw/*individual*`。
+
+只在 armv7l 做符号交集是本轮为控制资源作出的范围选择；构建日志、RPM
+元数据和文件清单覆盖三个架构。不能把符号交集部分表述成三架构实测。
+
+## 4. 逐包判定
+
+### 4.1 已证实需要改用 libc++：10
+
+`abseil-cpp`、`bcc-tools`、`boost`、`bpftrace`、`icu`、`jsoncpp`、
+`libsigc++`、`llvm`、`pcre`、`taglib`。
+
+其中 `abseil-cpp`、`boost`、`icu`、`jsoncpp`、`libsigc++`、`llvm`、
+`pcre`、`taglib` 具有精确 Unified→Base C++ 符号边；`bcc-tools` 与
+`bpftrace` 通过 Base 内部的布局敏感 LLVM C++ 边进入同一迁移闭包。
+
+### 4.2 当前不能切换：6
+
+`gcc`、`gcc-aarch64`、`gcc-armv7hl`、`gcc-armv7l`、`gcc-riscv64`、
+`glibc`。
+
+依据是 R98 已从精确 spec 与构建日志确认它们当前使用 GCC；其中 `gcc`
+还承担 libstdc++ provider 角色。该标签只描述当前配置/角色，未来若能改用
+Clang 或重构角色，必须重新判定。
+
+### 4.3 不需要改：55
+
+`automake`、`binutils`、`binutils-aarch64`、`binutils-armv7hl`、
+`binutils-armv7l`、`binutils-riscv64`、`bison`、`c-ares`、`ccache`、
+`cereal`、`cmake`、`db4`、`dejagnu`、`diffutils`、`doxygen`、
+`elfutils`、`expat`、`file`、`flex`、`gdb`、`gettext`、`gn`、`golang`、
+`groff`、`icecream`、`keyutils`、`krb5`、`libcxx-runtimes`、
+`libdbuspolicy-header`、`libffi`、`libsndfile`、`libtool`、`libunistring`、
+`libunwind`、`lttng-ust`、`lua`、`ncurses`、`nghttp2`、`ninja`、
+`openfst`、`patchelf`、`pbzip2`、`pkg-config`、`python`、`python3`、
+`python3-base`、`qemu-accel`、`rpm`、`sqlite`、`tiff`、`tinyxml2`、
+`update-alternatives`、`util-linux`、`v4l-utils`、`zstd`。
+
+这里的“无需改”不是“不是 C++”：具体依据分别是精确边仅有纯 C/无交集、
+独立工具或 Base 内闭包没有 Unified runtime 边、仅由 consumer 编译的头文件，
+以及没有迁移侧 consumer 的静态归档。`libcxx-runtimes` 已在自己的 spec
+中明确构建目标运行时，不需要靠 Base 全局注入再次选择自身。
+
+### 4.4 证据不足：2
+
+- `gmp`：3 个归档条目含真实 C++ 全局符号；`eigen`、
+  `python-pycrypto` 有 BuildRequires，但未证明是否链接 C++ 归档。
+- `tensorflow2`：6 个归档条目含真实 C++ 全局符号；
+  `inference-engine-tflite`、`nnstreamer`、`nntrainer` 有 BuildRequires，
+  但未证明是否链接这些归档。
+
+BuildRequires 只证明文件进入构建根，不能机械等同于链接。需取得这五个
+consumer 的实际链接命令或产物符号/对象归属后才能定性。
+
+每包的命中规则、架构、runtime consumer、BuildRequires consumer、镜像
+归属、VCS 和边分类均在 `tables/base_cpp_package_decisions.tsv`。
+
+## 5. 全局注入选项的实际驱动器探针
+
+探针使用现有 Tizen buildroot 内的目标 GCC 14.2.0 与 Clang 22.1.8，测试：
+
+```text
+CXXFLAGS: -stdlib=libc++
+LDFLAGS:  -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed
+```
+
+实际结果：
+
+- armv7l 与 x86_64 的 GCC/G++ 均明确报
+  `unrecognized command-line option '-stdlib=libc++'`；不是静默忽略。
+- Clang++ 在三个架构都无诊断接受 `-stdlib=libc++`，但这不是“静默
+  忽略”：`-###` 显示它选择 `-lc++`，并把 `--no-as-needed -lc++abi
+  --as-needed` 传给链接器。
+- Clang C driver 的编译探针对 `-stdlib=libc++` 给出
+  `argument unused during compilation` 警告，因此也不是静默忽略。
+- aarch64 GCC buildroot 中驱动器启动即退出 139，连 `--version` 都失败，
+  该格记 `NOT_OBSERVED`，不能把 139 解释为选项拒绝。GCC 选项语义由
+  armv7l 与 x86_64 两个实际 GCC 14.2.0 格确认。
+- 部分真实链接动作受复用 buildroot 的动态加载器/`ld` 依赖缺失影响；
+  选项是否被解析及转发以不执行链接器的 `-###` 为准，不把环境故障写成
+  编译器语义。
+
+因此本次没有发现“驱动器悄悄丢弃整组选项然后产物仍是 libstdc++”的格：
+GCC 明确失败，Clang++ 实际改变库选择，Clang C 给警告。至于某个包的构建
+系统是否完全丢弃环境变量，本轮没有逐包完整构建，记 `NOT_OBSERVED`。
+
+摘要见 `tables/driver_option_probe.tsv`，完整命令和输出见 `raw/040_*`。
+
+## 6. 两种配置形态的事实对照
+
+### 按包 spec 设置
+
+- 已证实需要处理：10 个，即 4.1 的名单。
+- 尚待定：`gmp`、`tensorflow2`；未把它们计入 10。
+- 已判定不需要的 55 个包不被主动改变。
+- 当前 GCC 的 6 个包不接收 `-stdlib=libc++`。
+- 具体形态是在上述包各自编译/链接 C++ 的路径中加入与 Unified 一致的
+  `-stdlib=libc++` 及链接器组；本轮未修改任何 spec，也未验证十个包的
+  完整构建。
+
+### Base project_config 全局设置
+
+- 环境赋值作用域是 Base 项目的全部 254 个去重源码名，而非只有 73 个
+  C++ 候选。
+- 在 73 个候选中：10 个属于预期改变，55 个属于不需要却被触及，2 个
+  语义待定，6 个当前 GCC 包在变量实际传播时会明确拒绝。
+- 69 个规范化源码名有实际 C++ 构建日志：10 个需要、51 个不需要、
+  2 个待定、6 个 GCC。另有 4 个“不需要”包只有产物证据，当前日志中
+  未观测到 C++ flags 消费。
+- 对 Clang 构建的“不需要”包，这不是“多带一个无用选项”：一旦
+  CXXFLAGS 被消费，`-stdlib=libc++` 会真实改变头文件与运行库选择；
+  LDFLAGS 的 `--no-as-needed -lc++abi` 也会被转交链接器。
+- 73 之外的 C-only 包是否消费全局 LDFLAGS 没有穷举；因此不能给出
+  全部 254 包的“失败/无效”精确计数。这是全局方案仍需单独验证的面。
+- 若采用全局形态而要保留六个 GCC 包，必须存在对这些包不传播该组选项的
+  条件或例外；本轮只陈述这一机械后果，不选择如何实现。
+
+逐包影响见 `tables/global_injection_package_effects.tsv`，方案计数见
+`tables/configuration_strategy_comparison.tsv`。
+
+## 7. 范围、盲区与自行判断
+
+### 未覆盖/仍需材料
+
+1. `gmp` 与 `tensorflow2` 的真实静态链接命令或迁移后 consumer 产物；
+2. aarch64 GCC 驱动器选项格（当前复用 buildroot 启动即 139）；
+3. x86_64/aarch64 的逐符号边界复核；本轮符号级分类仅 armv7l；
+4. 动态加载、插件注册或 IPC 中隐藏的 C++ 对象边；RPM DT_NEEDED 无法证明
+   不存在这类边；
+5. 全部 254 个 Base 源码包对 LDFLAGS 的实际消费；
+6. 两种配置形态的完整包构建均未执行。
+
+曾生成一份对 43 个初始待定包做全 binary RPM 重扫的清单，但精确估算为
+406 个 RPM、1,578,067,964 字节。为避免在已有符号级证据之外再引入约
+1.58 GB 下载和更大的提取负载，该扫描没有启动；只按 SHA256 硬链接了
+51 个既有缓存文件，未从中产生结论。清单和决定过程保留在 `raw/110_*`—
+`113_*`，它不属于已完成覆盖面。
+
+### 本轮自行判断
+
+1. 按人工确认删除冗余“广泛链接”判据，只保留 consumer 数作为影响面；
+2. 将三个 `qemu-accel-*` 构建标签归并为元数据中的一个 source package；
+3. 为控制资源，符号级接口分类选择 armv7l，三架构元数据和日志继续保留；
+4. 把“没有 Unified runtime C++ 边、只在 Base 内闭包或独立进程使用”作为
+   `NO_LIBCXX_NEEDED` 的正面隔离证据；动态加载盲区另行保留；
+5. 对有 C++ 静态归档且只有 BuildRequires 证据的两包不自行推断链接，保留
+   `UNDETERMINED`；
+6. 估算全 binary 补扫会增加 1.58 GB 下载后停止该可选扩展，不用部分缓存
+   推断结果；
+7. 不在全局与按包方案之间作推荐或排序。
+
+### 技术性异常
+
+构建日志正则、静态归档相对路径、HTTP 无响应、首次探针语言参数和
+aarch64 驱动器启动问题均保留了原命令、非零退出码和恢复说明。它们没有
+被当作判据不成立，也没有覆盖原始输出。
+
+## 8. 不变事项
+
+本任务只做分析；未修改 `project_config`、平台源码或补丁，未推送 Gerrit，
+未实施迁移，也未作方案推荐。
+# R100 第一步：Base Toolchain C++ 包三分类规则（已确认并应用）
+
+状态：`CONFIRMED_AND_APPLIED`
+
+本文件保留第一阶段经人工确认的机械判定规则。逐包判定与全局/逐包两种方案的
+事实对照见本任务的主报告；本任务不作推荐。
+
+## 1. 对象和分母
+
+### 1.1 项目身份
+
+本任务的 `Base` 明确定义为：
+
+- `Tizen-Base-Toolchain`；
+- 静态输入锚点为 R98 使用的
+  `tizen-base-toolchain_20260828.101647`；
+- 配对依赖输入为
+  `tizen-unified-toolchain_20260829.015247`。
+
+不把 R95 的 `Tizen-Base/tizen-base_20260827.214809` 直接当作本任务分母。
+R95 的符号分类方法可以复用，其包归属和数量只能作辅助线索，最终判定必须回到
+Toolchain 项目的精确 RPM、spec、依赖和符号证据。
+
+### 1.2 “每个 C++ 包”的机械定义
+
+判定单位为去重后的源码包名。一个源码包只要在任一受支持架构、任一子包命中
+下列任一条件，就进入 `BT_CPP` 候选全集：
+
+1. 实际构建日志中出现 C++ 编译动作（目标 `clang++` / `g++` 或明确以 C++
+   language mode 编译的 translation unit）；
+2. 产出的可执行 ELF / 共享对象含 Itanium C++ ABI 符号；
+3. 产出的可执行 ELF / 共享对象直接依赖 `libstdc++.so*`、`libc++.so*` 或
+   `libc++abi.so*`；
+4. 产出的静态归档成员含 Itanium C++ ABI 符号或 C++ unwind/typeinfo 证据。
+
+头文件-only 包不因“文件后缀为 C++”自动进入上述运行产物集合；单独列为
+`HEADER_ONLY_CPP_API`，并纳入完整审计候选分母。它自身不消费全局编译选项，
+但其头文件会进入 consumer，所以在判断 consumer 时按 consumer 的实际实例化
+结果处理。
+
+同一源码名有多个 Release 或架构时先保留逐记录结果，再合并到源码名。任一记录
+命中“需要改”时，源码包级不能标成“不需要改”；架构间或 Release 间结论不同则
+进入冲突表，不用多数票覆盖。
+
+### 1.3 当前已知候选不等于最终分母
+
+R98 的 `runtime_signal_source_summary.tsv` 在 Base Toolchain 下有 38 条记录、
+36 个去重源码名；其中 `patchelf`、`pcre` 各有两个 Release。这是按已发布包的
+C++ runtime requirement 得到的候选，不证明已经覆盖只产出静态库、静态链接
+ELF、或构建过程中使用 C++ 但最终产物没有动态 C++ runtime 依赖的源码包。
+
+因此第二步先按 1.2 对 Base Toolchain 全部源码包建立精确 `BT_CPP`，再逐包分类。
+R95 的 38 个去重源码名属于另一个项目，不能拿来补齐差额。
+
+## 2. 证据等级和禁止事项
+
+每个判定至少引用下列一种可复核证据；包名、用途印象或“通常如此”不算证据。
+
+| 代码 | 证据 |
+| --- | --- |
+| E1 | 同轮实际构建日志中的编译器、语言和命令行 |
+| E2 | 精确 revision 的 spec / 构建脚本中的工具链覆盖和硬编码 |
+| E3 | 精确 RPM 内 ELF 的 `DT_NEEDED`、UND/DEF 交集及 demangle 结果 |
+| E4 | 精确静态归档成员的符号、typeinfo、unwind 信息 |
+| E5 | `dlopen`/插件注册配置及被装入同一进程的实际证据 |
+| E6 | 精确镜像清单与进程/插件归属；镜像共存本身不等于同进程 |
+| E7 | 精确源码/API/头文件中的参数、返回值、对象所有权、回调和异常边界 |
+| E8 | repository metadata 中的构建期、运行期依赖；只证明拓扑候选，不单独证明 C++ 类型跨界 |
+
+禁止从以下事实直接推导“需要改”或“不需要改”：
+
+- 只因包是 C++；
+- 只因两个包同时进入同一镜像；
+- 只因存在 `DT_NEEDED`；
+- 只因符号中未出现显式 `std::`；
+- 只因当前没有观察到边；
+- 把 R95 的标准 Base 结果无条件外推到 Base Toolchain。
+
+## 3. 三类规则
+
+### 3.1 `NEED_LIBCXX`（需要改用 libc++）
+
+命中以下任一条：
+
+- **N1：已证明的跨运行时布局边。** Base 包与计划迁移到 libc++ 的包之间，
+  实际同进程调用边传递/返回/拥有布局敏感的标准库类型；包括已由 API 规则证明
+  隐藏标准库布局的 Boost/第三方类型。
+- **N2：C++ ABI 耦合但布局尚未排除。** 实际 UND/DEF、插件、回调、异常或对象
+  所有权边使用 C++ ABI，而现有证据不能证明只传 C 数据。此类不因“未看到
+  `std::`”下调为安全。
+- **N3：同进程装载且存在 C++ 语义交换。** 包进入设备镜像，并有 E5/E6/E7
+  证明它与 libc++ 代码同进程，且跨边界存在 C++ 对象、异常、allocator/new/delete
+  所有权或 C++ 回调。单纯同镜像、甚至同进程但已证明为纯 C API，不命中 N3。
+判定依据必须指向具体 consumer、provider、ELF 和符号/API。只存在构建依赖不命中。
+运行期 consumer 数保留为影响规模字段，不再作为独立规则：一旦存在 C++ ABI
+耦合且布局未被排除，N2 已经给出“需要改”判定；重复增加“广泛链接”规则不会
+产生新的分类结果。
+
+### 3.2 `NO_LIBCXX_NEEDED`（不需要改）
+
+必须有正面隔离证据，并命中以下至少一条，同时不命中任何 N 规则：
+
+- **O1：纯构建期工具。** 产物不进入所核设备镜像，不被设备运行时包依赖或动态
+  加载，只在构建机以独立进程执行；输入输出为文件、命令行或已证明的 C 数据。
+- **O2：Base 内部闭包。** 所有实际运行期 consumer/provider 均留在不迁移的
+  Base 闭包内，没有通向 libc++ 迁移集合的运行期或动态加载边。
+- **O3：已证明的纯 C 边。** 虽被 libc++ 包链接/加载，但 E3 与 E7 联合证明
+  对外 ABI 只有 C 接口，跨界没有 C++ 对象、异常、所有权或 C++ 回调。
+- **O4：独立进程边界。** 即使进入镜像或属于测试/诊断工具，也只以独立进程
+  运行；与平台交换的是命令行、文件、socket/IPC 的稳定 C/字节协议，没有同进程
+  C++ ABI 边。
+
+`NO_LIBCXX_NEEDED` 不是“未发现问题”的默认值。若缺少排除动态加载、静态链接或
+隐藏 C++ API 所需的材料，先记 `UNDETERMINED`。
+
+### 3.3 `CANNOT_SWITCH_CURRENTLY`（当前不能改）
+
+命中以下任一条：
+
+- **C1：精确 spec/构建脚本显式选择 GCC。** 包定义
+  `_toolchain_override gcc`，或硬编码目标 GCC/G++/GFortran，先机械归入“当前
+  工具链约束”。这只表示当前配置不允许直接套用 libc++，不声称永远不能迁移。
+- **C2：有受控构建证据证明 Clang/libc++ 不满足该包所需的语言、目标、插件、
+  GCC runtime 或 binutils 集成要求。** 必须记录失败点，不能凭包名推断。
+- **C3：包本身提供 GCC/libstdc++ ABI 或必须生成/测试该 ABI，切换后会改变其
+  被验证的产品对象。** 必须由 spec 子包、安装内容和测试目标共同证明。
+
+只有 `_toolchain_override gcc` 时，结果字段写
+`CANNOT_SWITCH_CURRENTLY(C1_DECLARED)`；有 C2/C3 实测时再写更强的
+`C2_PROVEN`/`C3_PROVIDER_ROLE`，避免把“当前声明”偷换成技术上永远不可能。
+
+## 4. 规则冲突和证据不足
+
+三类不采用简单覆盖优先级，按以下决策树执行：
+
+1. 同时命中 N 与 C：记 `CONFLICT_NEED_BUT_CANNOT`，单独列出；不能用“不能改”
+   掩盖实际边界，也不能无视工具链约束强行归为“需要改”。
+2. 命中 N、未命中 C：`NEED_LIBCXX`。
+3. 命中 C、未命中 N：`CANNOT_SWITCH_CURRENTLY`。
+4. 未命中 N/C，但 O 的正面隔离条件完整：`NO_LIBCXX_NEEDED`。
+5. N/C/O 均未被充分证明，或不同架构/Release 的证据冲突：
+   `UNDETERMINED`/`CONFLICT_EVIDENCE`，列出所缺材料；不得强塞进“不需要改”。
+
+`UNDETERMINED` 是审计状态而不是第四种处置方案。补齐证据后，每个包最终仍落入
+人工要求的三类之一；若人工要求首轮表必须强制三分，则需另行指定“未知项”的
+保守归类政策。
+
+## 5. 计划迁移集合的定义
+
+边界规则中的“将迁移到 libc++ 的代码”暂定义为：Unified Toolchain 中会消费
+全局 `CXXFLAGS/LDFLAGS` 且没有 GCC 工具链约束的 C++ 源码包。具体集合要由
+同一快照的实际构建日志、spec 和产物证据生成，不能把“项目内所有包”与“真正
+编译 C++ 的包”混为一谈。
+
+Unified 中显式 `_toolchain_override gcc` 的包属于例外集合；它们与 Base 包形成
+的边仍记录，但不能预先假定其迁移后 runtime 身份。
+
+## 6. 第二、三步将输出的字段
+
+逐包表至少包含：
+
+```text
+source_name | exact_sourcerpm | arches | C++_evidence | image_membership
+build_only_or_runtime | runtime_consumers | cpp_edge_class
+toolchain_constraint | matched_rules | final_class | conflict_or_gap
+evidence_paths
+```
+
+方案比较另建两张表：
+
+1. 逐包加 spec：只统计 `NEED_LIBCXX`，并单列 `CONFLICT_NEED_BUT_CANNOT`；
+2. Base Toolchain 全局注入：以项目全部源码包为暴露分母，不只统计 C++ 包；逐包
+   判断构建系统是否实际消费 `CXXFLAGS/LDFLAGS`、实际 driver 是 GCC 还是 Clang。
+
+driver 小探针只证明选项被 GCC/Clang 接受、拒绝或告警；不能替代某个包完整构建
+系统是否传递/覆盖这些变量。未做完整包构建时，包级结果写 `NOT_OBSERVED`。
+
+## 7. 人工确认结果
+
+1. 是否接受 `BT_CPP` 使用“实际 C++ 编译动作或 ELF/静态归档 C++ 证据”的并集，
+   而不是直接沿用 R95 的 38 个标准 Base 源码名？
+2. 是否接受“同镜像/同进程本身不自动触发迁移，必须存在 C++ 语义交换”的 N3？
+3. 是否接受 `_toolchain_override gcc` 先归为
+   `CANNOT_SWITCH_CURRENTLY(C1_DECLARED)`，同时明确这不是永久不可迁移的结论？
+4. 是否接受证据不足时先用审计状态 `UNDETERMINED`，而不是违反“禁止推断补全”
+   将其默认塞进“不需要改”？
+
+上述口径已于人工确认后生效；原待确认的“广泛链接”N4 按人工意见删除。
+
+上述规则已用于本次逐包判定。
+# 全局选项驱动器探针说明
+
+完整原始输出位于 `raw/040_probe_global_flags_all_drivers_retry.*`，摘要位于
+`tables/driver_option_probe.tsv`。
+
+判读时必须区分三种状态：
+
+- `REJECTED`：驱动器明确非零并报不识别选项；
+- `ACCEPTED_SILENT`：没有诊断，但不代表“忽略”。Clang++ 的 `-###`
+  已显示选择 `-lc++`，所以这里是静默接受且生效；
+- `ACCEPTED_WITH_DIAGNOSTIC`：Clang C 编译明确警告 `-stdlib` 未用于 C
+  编译，链接 trace 仍显示链接参数被转交。
+
+aarch64 GCC 的 139 在 `--version` 即出现，属于复用 buildroot 的运行故障，
+不是对选项的判定证据，已标成 `NOT_OBSERVED`。

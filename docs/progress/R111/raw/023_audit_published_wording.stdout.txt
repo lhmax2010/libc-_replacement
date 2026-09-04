@@ -1,0 +1,281 @@
+=== R109 executive ===
+# Base 层 libc++ 适配：一页汇总
+
+## 判定结果
+
+本轮对象是 `Tizen-Base-Toolchain` 的 254 个源码包。先用实际 C++ 构建记录、
+运行时依赖、符号和头文件载体识别出 73 个 C++ 候选，再以“是否和将迁移的代码
+跨边界交换 C++ 语义”为核心逐包核对。最终结果为：需要改 11 个、不需要改
+237 个、当前不能改 6 个、未定 0 个。需要改的 11 个是：
+
+`abseil-cpp`、`bcc-tools`、`boost`、`bpftrace`、`icu`、`jsoncpp`、
+`libsigc++`、`llvm`、`pcre`、`taglib`、`tensorflow2`。
+
+之所以不是所有 C++ 包都改，是因为共存本身并不构成问题；实际风险来自跨两套
+标准库边界传递容器、字符串、智能指针、异常或其他 C++ ABI 语义。只在构建机
+运行、对外只暴露 C 接口、只提供由消费方编译的头文件，或经实际链接核查没有
+把 C++ 静态成员带入消费方的包，不需要仅因“含 C++”而切换。
+
+## 为什么逐包启用，而不全局注入
+
+逐包方案只触及上述 11 个已证实需要适配的包。全局注入会同时触及 55 个已经
+判定不需要改的 C++ 包，并碰到 6 个当前明确走 GCC 路径的包。探针已实测：
+
+- GCC 对 `-stdlib=libc++` 明确报错，不会静默忽略；这 6 个包会直接失败；
+- Clang 接受该选项，并实际把标准库选择切到 libc++；因此那 55 个包会在没有
+  边界需求的情况下被静默改变，而不是“多带一个无用选项”。
+
+这里的“当前不能改”描述现有工具链配置/产品角色，不是永久技术结论。
+
+## 当前实施进度
+
+| 状态 | 数量 | 包 |
+|---|---:|---|
+| 已完成并推送 | 8 | `abseil-cpp`、`boost`、`icu`、`jsoncpp`、`libsigc++`、`pcre`、`taglib`、`tensorflow2` |
+| 暂停 | 3 | `llvm`、`bcc-tools`、`bpftrace` |
+
+八个已完成包的精确提交 SHA 见 `tables/implementation_status.tsv`。暂停三包必须
+协调处理：LLVM 所用 MLGO/XLA 预编译 C++ 对象按 libstdc++ ABI 生成，与 libc++
+代码链接时出现 `std::__cxx11` / `std::__1` 符号不匹配；同时
+`bcc-tools → llvm` 有 584 个、`bpftrace → llvm` 有 201 个已证明布局敏感的
+C++ 符号，不能只切换链条的一端。
+
+## 与总部 step0 的关系
+
+总部的 639/91 是 `Tizen-Base` 的二进制包口径；本轮 254/73/11 是
+`Tizen-Base-Toolchain` 的源码包和边界判定口径。固定快照重算只能得到 Base
+646/83；另一套 ELF 扫描虽得到 91，但方法不同，不能替代原口径。两仓源码集合
+只差 Base 独有 `toybox` 和 Toolchain 独有四包；`toybox` 不含 C++、不依赖
+libstdc++，不是漏掉的迁移对象。
+
+## 未覆盖范围
+
+- 判定锚定已归档的固定快照、已取得的构建记录、镜像清单和消费关系；后续新增
+  包、revision 漂移或新的动态加载关系需要重新核对。
+- 镜像归属只覆盖已有的六份 boot/headed/headless、aarch64/armv7l 精确清单，
+  不代表所有产品 profile。
+- LLVM/MLGO 资产尚未重建，三包协调验证尚未完成。
+- Unified 包侧适配、MLGO AOT 资产生产和运行时专项验证属于其他工作线，不在
+  本轮整理范围内。
+
+=== R109 scope ===
+# 总部 step0 与 Base Toolchain 判定的口径关系
+
+## 1. 两组数字回答的不是同一个问题
+
+总部 step0 统计的是 `Tizen-Base` 仓的**二进制包**：639 个二进制包中，
+91 个依赖 `libstdc++`。本项目判定的是 `Tizen-Base-Toolchain` 仓的
+**源码包**：254 个源码包中有 73 个 C++ 候选，最终只有 11 个被实证为需要
+适配 libc++。两者仓不同，统计单位也不同；一个源码包还可能生成多个二进制
+子包，所以 639/91 与 254/73/11 不能直接相除或一一对应。
+
+“含 C++”也不等于“需要改”：只有会与迁移后的代码跨边界交换 C++ 语义的包
+才进入 11 包清单。纯 C 接口、仅构建期使用或没有相关运行时边界的 C++ 包，
+仍可不改变标准库选择。
+
+## 2. 对 step0 数字的复现边界
+
+R106 使用固定快照
+`Tizen-Base/tizen-base_20260827.214809` 的 primary repodata 重算，得到：
+
+- 646 个唯一二进制包名；
+- 83 个二进制包在仓库依赖元数据中直接 `Requires` libstdc++。
+
+该结果不能严格复现总部的 639/91。原因是总部数字取自未记录 revision、时间点
+和 repodata 校验和的滚动仓，事后无法恢复同一输入。R106 另用 RPM payload 内
+ELF 的 `DT_NEEDED` 扫描，在排除 noarch/riscv64 后可以得到 91 个实际依赖包名；
+但这是另一套观测对象和算法，不能拿它冒充 step0 原始口径。
+
+## 3. 两仓集合差异
+
+R106 按源码包名对固定快照比较：
+
+| 集合 | 数量 | 包名 |
+|---|---:|---|
+| 两仓共有 | 250 | 见 R106 完整表 |
+| 仅 `Tizen-Base` | 1 | `toybox` |
+| 仅 `Tizen-Base-Toolchain` | 4 | `binutils-armv7hl`、`gcc-armv7hl`、`libcxx-runtimes`、`tensorflow2` |
+
+`toybox` 的已发布产物无 C++ runtime ELF，仓库依赖元数据也不要求 libstdc++；
+源码包中统计到 236 个 `.c` 文件、常见 C++ 后缀为 0。因此它虽不在本轮 254
+包分母中，却不构成 libc++ 迁移对象的遗漏。为什么两个项目的 manifest 对它
+取舍不同，现有材料未给出政策说明，记为 `NOT_AVAILABLE`；这不影响其代码/产物
+性质判断。
+
+二进制包层面，固定快照共有 638 个包名；仅 Base 有 8 个 `toybox` 子包，仅
+Base Toolchain 有 12 个工具链、libc++、TensorFlow 等子包。子包集合差异说明
+项目选包和功能配置不同，不能据此把一边的包数量外推到另一边。
+
+=== R102 limitations/report ===
+docs/progress/R109/EXECUTIVE_SUMMARY.md:16:把 C++ 静态成员带入消费方的包，不需要仅因“含 C++”而切换。
+docs/progress/R109/EXECUTIVE_SUMMARY.md:18:## 为什么逐包启用，而不全局注入
+docs/progress/R109/EXECUTIVE_SUMMARY.md:20:逐包方案只触及上述 11 个已证实需要适配的包。全局注入会同时触及 55 个已经
+docs/progress/R109/EXECUTIVE_SUMMARY.md:21:判定不需要改的 C++ 包，并碰到 6 个当前明确走 GCC 路径的包。探针已实测：
+docs/progress/R109/EXECUTIVE_SUMMARY.md:23:- GCC 对 `-stdlib=libc++` 明确报错，不会静默忽略；这 6 个包会直接失败；
+docs/progress/R109/EXECUTIVE_SUMMARY.md:24:- Clang 接受该选项，并实际把标准库选择切到 libc++；因此那 55 个包会在没有
+docs/progress/R109/EXECUTIVE_SUMMARY.md:50:## 未覆盖范围
+docs/progress/R109/EXECUTIVE_SUMMARY.md:53:  包、revision 漂移或新的动态加载关系需要重新核对。
+docs/progress/R109/EXECUTIVE_SUMMARY.md:54:- 镜像归属只覆盖已有的六份 boot/headed/headless、aarch64/armv7l 精确清单，
+docs/progress/R109/EXECUTIVE_SUMMARY.md:58:  本轮整理范围内。
+docs/progress/R109/REPORT.md:26:头文件和 CMake 配置、没有 ELF；`python-pycrypto` 三架构实际链接 `-lgmp`
+docs/progress/R109/REPORT.md:28:`libgmpxx.a` 的强符号交集为 0。因此已知消费链没有吸收 gmp 的 C++ 静态代码，
+docs/progress/R109/REPORT.md:34:三架构的真实链接命令中均确认 `libtensorflow2-lite.a` 被使用。20 个消费
+docs/progress/R109/REPORT.md:37:`std::unique_ptr<tflite::FlatBufferModel>` 等布局敏感类型。因此静态归档的
+docs/progress/R109/REPORT.md:46:- 两包只允许改变“判定结果、理由、证据”三个原有字段；
+docs/progress/R109/REPORT.md:59:  8/11 当前进度和未覆盖范围。
+docs/progress/R109/REPORT.md:64:整理过程中没有发现与用户指定最终计数或 R103 证据相冲突的既有判定，因而没有
+docs/progress/R109/REPORT.md:65:自行修改其他项目。仍需保留的证据边界不是判定错误：镜像归属不覆盖所有产品
+docs/progress/R109/REPORT.md:66:profile；后续 revision、新消费方或动态加载关系可能使结论需要重新核对；全平台
+docs/progress/R109/REPORT.md:73:评估技术路线。`gmp` 理由中明确写出适用消费者范围，避免把局部实证外推为未来
+docs/progress/R109/REPORT.md:77:639/91 无法事后严格复现；这已经按 `NOT_AVAILABLE` 的原因写入关系说明，不用
+docs/progress/R102/REPORT.md:25:- 判定证据：R100 的 73 个 C++ 候选判定、armv7l 的 Unified→Base 与 Base
+docs/progress/R102/REPORT.md:26:  内部精确 ELF/符号边、三架构构建与 RPM 元数据、六份标准镜像清单。
+docs/progress/R102/REPORT.md:27:- 包用途：沿用原表证据列保存的仓库 `Summary`；254/254 都有该字段。
+docs/progress/R102/REPORT.md:28:- 为避免把翻译或常识当成新证据，普通包的用途直接引用仓库原始英文摘要；10 个
+docs/progress/R102/REPORT.md:31:- 精确运行时符号边只覆盖 armv7l，因此凡依赖该证据的理由都明确写出架构，不将
+docs/progress/R102/REPORT.md:32:  其表述成三架构实测。
+docs/progress/R102/REPORT.md:35:实际构建日志、动态 C++ 运行时依赖、静态归档全局 C++ 符号、C++ 头文件载体均为
+docs/progress/R102/REPORT.md:36:否。其余“不需要改”包则引用正面的拓扑或接口分类证据。
+docs/progress/R102/REPORT.md:54:ABI 耦合、但不能进一步证明布局”两类证据，没有把后一类写成已证明的数据错读。
+docs/progress/R102/REPORT.md:60:| 不含 C++ 载体 | 181 | 三架构四项候选门禁结果均为否，没有可选择标准库的 C++ 构建或交付边界 |
+docs/progress/R102/REPORT.md:62:| 独立工具或仅在 Base 拓扑中运行 | 17 | 自身直接链接 libstdc++，但 armv7l 精确图中 Unified runtime 边为 0；Base 内部无 C++ 语义边或仅为 C 接口 |
+docs/progress/R102/REPORT.md:64:| 含 C++ 静态归档但无消费边 | 2 | `golang`、`icecream` 的归档有 C++ 符号，但精确图中迁移侧/Base 内部 runtime consumer 均为 0 |
+docs/progress/R102/REPORT.md:78:`gcc`、`gcc-aarch64`、`gcc-armv7hl`、`gcc-armv7l`、`gcc-riscv64`、`glibc`
+docs/progress/R102/REPORT.md:79:当前承担 GCC 编译器、目标工具链或 GNU C 运行库构建角色，现有 spec/产品角色要求
+docs/progress/R102/REPORT.md:80:使用 GCC。本轮理由明确写成“当前配置和产品职责限制，不是永久技术结论”。
+docs/progress/R102/REPORT.md:83:动作，已发布产物没有直接 C++ runtime 依赖。armv7l 精确图中，这六包通向 Unified
+docs/progress/R102/REPORT.md:84:的 C++ runtime 边与 Base 内部 C++ 语义边均为 0。因而覆盖范围内没有已建立的实际
+docs/progress/R102/REPORT.md:90:- `gmp`：三架构 `libgmpxx.a` 各有 11 个全局 C++ 符号，`libgmpxx` 动态库直接
+docs/progress/R102/REPORT.md:93:- `tensorflow2`：两组静态归档各有约一万至四万多个 C++ 符号并安装大量 C++
+docs/progress/R102/REPORT.md:94:  头文件；只知道三个 Unified consumer 有 BuildRequires，缺实际静态吸收关系和
+docs/progress/R102/REPORT.md:98:若实际静态链接成立却保持 libstdc++，可能把对象布局、异常或所有权语义复制进
+docs/progress/R102/REPORT.md:106:- 理由列中内部规则代号为 0；以“无证据”“未发现”作为不改理由的条目为 0。
+docs/progress/R102/REPORT.md:111:只有 R100 本来就标为“未定”的 `gmp`、`tensorflow2` 缺少完成最终判断所需证据。
+docs/progress/R102/REPORT.md:112:没有发现其余 252 项既有判定缺少原规则所需证据。这里的“充分”受既有覆盖边界
+docs/progress/R102/REPORT.md:124:4. `NOT_OBSERVED` 只用于既有覆盖之外的事实；已完成门禁的否定结果写成具体检查
+docs/progress/R102/REPORT.md:131:2. 精确符号边目前仅有 armv7l；其他架构是否存在额外边为 `NOT_OBSERVED`。
+docs/progress/R102/REPORT.md:133:   `NOT_OBSERVED`。
+docs/progress/R102/NO_CHANGE_GROUPS.md:3:本文件把共同判据与逐包差异分开。所有判定均沿用 R100；运行时精确符号边覆盖 armv7l，镜像归属覆盖已保存的六份标准清单。
+docs/progress/R102/NO_CHANGE_GROUPS.md:7:| 不含 C++ 载体 | 181 | 三架构四项检查（实际构建日志、C++ 运行时依赖、静态归档全局 C++ 符号、C++ 头文件载体）结果均为否；没有可施加标准库选择的 C++ 构建或交付边界。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:9:| 独立工具或仅在 Base 拓扑中运行 | 17 | 产物直接链接 libstdc++，但 armv7l 完整精确拓扑测得通向 Unified 的运行时边为 0；Base 内部也没有 C++ 语义边，或仅有纯 C 接口。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:11:| 含 C++ 静态归档但无消费边 | 2 | 静态归档确有 C++ 符号，但精确拓扑中的 Unified 与 Base 内部运行时消费边均为 0，当前没有被迁移侧吸收到同一进程。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:17:三架构四项检查（实际构建日志、C++ 运行时依赖、静态归档全局 C++ 符号、C++ 头文件载体）结果均为否；没有可施加标准库选择的 C++ 构建或交付边界。
+docs/progress/R102/NO_CHANGE_GROUPS.md:21:| `acl` | Commands for Manipulating POSIX Access Control Lists | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:22:| `alsa-lib` | The Advanced Linux Sound Architecture (ALSA) library | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:23:| `alsa-utils` | Advanced Linux Sound Architecture (ALSA) utilities | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:25:| `attr` | Commands for Manipulating Extended Attributes | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:29:| `bash` | The GNU Bourne Again shell | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:34:| `bzip2` | A Program for Compressing Files | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:36:| `coreutils` | The GNU core utilities: a set of tools commonly used in shell scripts | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:38:| `curl` | A utility for getting files from remote servers (FTP, HTTP, and others) | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:40:| `default-ac-domains` | The definition of default ac domains | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:44:| `e2fsprogs` | Utilities for the Second Extended File System | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:48:| `filesystem` | The basic directory layout for a Linux system | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:49:| `findutils` | The GNU versions of find utilities (find and xargs) | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:50:| `fribidi` | Free Implementation of BiDi Algorithm | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:51:| `gawk` | GNU awk | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:52:| `gcc-contrib` | GCC related scripts | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:54:| `giflib` | Library for manipulating GIF format image files | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:55:| `grep` | Print lines matching a pattern | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:57:| `gzip` | The GNU data compression program | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:61:| `iniparser` | Stand-alone ini file parsing library | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:63:| `iproute2` | collection of utilities for controlling TCP/IP networking and traffic control in Linux | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:64:| `iptables` | Tools for managing Linux kernel packet filtering capabilities | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:67:| `kmod` | Utilities to load modules into the kernel | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:69:| `libarchive` | A library for handling streaming archive formats | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:70:| `libbpf` | Libbpf library | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:71:| `libcap` | Library for Capabilities (linux-privs) Support | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:72:| `libdrm` | Userspace interface to kernel DRM services | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:76:| `libgcrypt` | The GNU Crypto Library | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:77:| `libgpg-error` | Library That Defines Common Error Values for All GnuPG Components | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:78:| `libjpeg-turbo` | A MMX/SSE2 accelerated library for manipulating JPEG image files | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:81:| `libnl3` | Library for netlink sockets | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:82:| `libogg` | Ogg Bitstream Library | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:84:| `libpsl` | C library for the Publix Suffix List | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:86:| `libvorbis` | The Vorbis General Audio Compression Codec | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:87:| `libwebp` | WebP image codec libraries | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:88:| `libxcrypt` | Extended crypt library for descrypt, md5crypt, bcrypt, and others | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:89:| `libxml2` | A Library to Manipulate XML Files | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:90:| `libxslt` | XSL Transformation Library | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:97:| `mtdev` | Multitouch Protocol Translation Library | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:98:| `net-tools` | Basic networking tools | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:99:| `nspr` | Netscape Portable Runtime | 是：tizen-headed-aarch64;tizen-headed-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:100:| `nss` | Network Security Services | 是：tizen-headed-aarch64;tizen-headed-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:101:| `openssl1.1` | Secure Sockets Layer and cryptography libraries and tools | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:102:| `openssl3` | Secure Sockets Layer and cryptography libraries and tools | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:103:| `opus` | An audio codec for use in low-delay speech and audio communication | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:104:| `pam` | A Security Tool that Provides Authentication for Applications | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:106:| `pcre2` | Perl-compatible regular expression library | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:124:| `popt` | A C library for parsing command line parameters | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:125:| `procps-ng` | System and process monitoring utilities | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；是：进程监控与诊断工具 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:177:| `readline` | The Readline Library | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:178:| `sed` | A Stream-Oriented Non-Interactive Text Editor | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:179:| `setup` | A set of system configuration and setup files | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:181:| `shadow-utils` | Utilities for managing accounts and shadow password files | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:182:| `smack` | Selection of tools for developers working with Smack | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:183:| `tar` | GNU implementation of tar ((t)ape (ar)chiver) | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:186:| `tzdata` | Timezone Descriptions | 是：tizen-headed-aarch64;tizen-headed-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:187:| `unzip` | A utility for unpacking zip files | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:193:| `xdgmime` | Querying information about file type | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:195:| `xmlsec1` | Library providing support for "XML Signature" and "XML Encryption" standards | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:196:| `xmlstarlet` | Command Line XML Toolkit | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:198:| `xz` | A Program for Compressing Files | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:200:| `zip` | File compression program | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:201:| `zlib` | Data Compression Library | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:209:| `automake` | A Program for Automatically Generating GNU-Style Makefile.in Files | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`automake` 的仓库摘要将其用途定义为“A Program for Automatically Generating GNU-Style Makefile.in Files”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:210:| `binutils-riscv64` | GNU Binutils | 否：六个精确镜像清单无该 VCS；是：交叉架构二进制检查与诊断工具；`binutils-riscv64` 的仓库摘要将其用途定义为“GNU Binutils”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:211:| `c-ares` | Library for asynchronous name resolves | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`c-ares` 的仓库摘要将其用途定义为“Library for asynchronous name resolves”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:212:| `dejagnu` | Framework for testing other programs. | 否：六个精确镜像清单无该 VCS；是：测试框架；`dejagnu` 的仓库摘要将其用途定义为“Framework for testing other programs.”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:213:| `diffutils` | GNU diff Utilities | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`diffutils` 的仓库摘要将其用途定义为“GNU diff Utilities”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:214:| `expat` | XML Parser Toolkit | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`expat` 的仓库摘要将其用途定义为“XML Parser Toolkit”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:215:| `file` | A Tool to Determine File Types | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`file` 的仓库摘要将其用途定义为“A Tool to Determine File Types”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:216:| `flex` | Fast Lexical Analyzer Generator | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`flex` 的仓库摘要将其用途定义为“Fast Lexical Analyzer Generator”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:217:| `keyutils` | Linux Key Management Utilities | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`keyutils` 的仓库摘要将其用途定义为“Linux Key Management Utilities”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:218:| `krb5` | MIT Kerberos5 Implementation--Libraries | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`krb5` 的仓库摘要将其用途定义为“MIT Kerberos5 Implementation--Libraries”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:219:| `libdbuspolicy-header` | Header-only package of libdbuspolicy | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`libdbuspolicy-header` 的仓库摘要将其用途定义为“Header-only package of libdbuspolicy”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:220:| `libffi` | A portable foreign function interface library | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`libffi` 的仓库摘要将其用途定义为“A portable foreign function interface library”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:221:| `libsndfile` | C library for reading and writing sound files | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`libsndfile` 的仓库摘要将其用途定义为“C library for reading and writing sound files”。实际构建日志中有 C++ 编译动作，已发布包还包含 3 个架构份次的 C++ 头文件载体；这些头文件由使用方自己的编译器和标准库编译。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:222:| `libtool` | A Tool to Build Shared Libraries | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`libtool` 的仓库摘要将其用途定义为“A Tool to Build Shared Libraries”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:223:| `libunistring` | GNU Unicode string library | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`libunistring` 的仓库摘要将其用途定义为“GNU Unicode string library”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:224:| `libunwind` | Unwind Library | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；是：产出 libunwind-tests 测试子包；`libunwind` 的仓库摘要将其用途定义为“Unwind Library”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:225:| `lttng-ust` | LTTng Userspace Tracer library | 否：六个精确镜像清单无该 VCS；是：用户态跟踪设施；`lttng-ust` 的仓库摘要将其用途定义为“LTTng Userspace Tracer library”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:226:| `lua` | Small Embeddable Language with Simple Procedural Syntax | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`lua` 的仓库摘要将其用途定义为“Small Embeddable Language with Simple Procedural Syntax”。已发布包还包含 3 个架构份次的 C++ 头文件载体；这些头文件由使用方自己的编译器和标准库编译。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:227:| `pkg-config` | A library management system | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`pkg-config` 的仓库摘要将其用途定义为“A library management system”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:228:| `python` | Python Interpreter | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`python` 的仓库摘要将其用途定义为“Python Interpreter”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它在 Base 内部测得的跨包调用也只经过 C 接口。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:229:| `python3` | Python 3 Interpreter | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`python3` 的仓库摘要将其用途定义为“Python 3 Interpreter”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它在 Base 内部测得的跨包调用也只经过 C 接口。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:230:| `python3-base` | Python 3 Interpreter and Stdlib Core | 否：六个精确镜像清单无该 VCS；是：产出 python3-testsuite 子包；`python3-base` 的仓库摘要将其用途定义为“Python 3 Interpreter and Stdlib Core”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:231:| `qemu-accel` | Native binaries for speeding up cross compile | 否：六个精确镜像清单无该 VCS；是：交叉构建加速/模拟工具；`qemu-accel` 的仓库摘要将其用途定义为“Native binaries for speeding up cross compile”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本不在已核对的六份标准设备镜像清单中。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:232:| `rpm` | The Package Manager | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`rpm` 的仓库摘要将其用途定义为“The Package Manager”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:233:| `sqlite` | Embeddable SQL Database Engine | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`sqlite` 的仓库摘要将其用途定义为“Embeddable SQL Database Engine”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:234:| `update-alternatives` | Maintain symbolic links determining default commands | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`update-alternatives` 的仓库摘要将其用途定义为“Maintain symbolic links determining default commands”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:235:| `util-linux` | A collection of basic system utilities | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`util-linux` 的仓库摘要将其用途定义为“A collection of basic system utilities”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它在 Base 内部测得的跨包调用也只经过 C 接口。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:236:| `v4l-utils` | Utilities for video4linux and DVB devices | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`v4l-utils` 的仓库摘要将其用途定义为“Utilities for video4linux and DVB devices”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:237:| `zstd` | Zstandard compression tools | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`zstd` 的仓库摘要将其用途定义为“Zstandard compression tools”。实际构建日志中有 C++ 编译动作，但已发布包没有 C++ 头文件载体。包级检查同时给出：直接 C++ 运行时依赖为“NO”、含全局 C++ 符号的静态归档数量为 0；armv7l 精确运行时图中通向 Unified 的 C++ 边为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。所以这里的 C++ 只存在于构建过程或随使用方编译的非运行时载体，不形成由本包固定标准库实现的跨包 C++ ABI 边界，无需切换本包。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:241:产物直接链接 libstdc++，但 armv7l 完整精确拓扑测得通向 Unified 的运行时边为 0；Base 内部也没有 C++ 语义边，或仅有纯 C 接口。
+docs/progress/R102/NO_CHANGE_GROUPS.md:245:| `binutils` | GNU Binutils | 否：六个精确镜像清单无该 VCS；是：含 readelf/objdump 等二进制检查与诊断工具；`binutils` 的仓库摘要将其用途定义为“GNU Binutils”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。仓元数据还将它标识为测试、诊断或构建工具，按已测拓扑独立运行。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:246:| `binutils-aarch64` | GNU Binutils | 否：六个精确镜像清单无该 VCS；是：交叉架构二进制检查与诊断工具；`binutils-aarch64` 的仓库摘要将其用途定义为“GNU Binutils”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。仓元数据还将它标识为测试、诊断或构建工具，按已测拓扑独立运行。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:247:| `binutils-armv7hl` | GNU Binutils | 否：六个精确镜像清单无该 VCS；是：交叉架构二进制检查与诊断工具；`binutils-armv7hl` 的仓库摘要将其用途定义为“GNU Binutils”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。仓元数据还将它标识为测试、诊断或构建工具，按已测拓扑独立运行。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:248:| `binutils-armv7l` | GNU Binutils | 否：六个精确镜像清单无该 VCS；是：交叉架构二进制检查与诊断工具；`binutils-armv7l` 的仓库摘要将其用途定义为“GNU Binutils”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。仓元数据还将它标识为测试、诊断或构建工具，按已测拓扑独立运行。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:249:| `ccache` | A Fast C/C++ Compiler Cache | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`ccache` 的仓库摘要将其用途定义为“A Fast C/C++ Compiler Cache”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:250:| `cmake` | Cross-platform make system | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`cmake` 的仓库摘要将其用途定义为“Cross-platform make system”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部唯一相关调用只共享 C 接口符号，不传递 C++ 对象。它的源码版本不在已核对的六份标准设备镜像清单中。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:251:| `doxygen` | Automated C, C++, and Java Documentation Generator | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`doxygen` 的仓库摘要将其用途定义为“Automated C, C++, and Java Documentation Generator”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:252:| `elfutils` | Higher-level library to access ELF | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；是：ELF 检查与诊断工具集；`elfutils` 的仓库摘要将其用途定义为“Higher-level library to access ELF”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。仓元数据还将它标识为测试、诊断或构建工具，按已测拓扑独立运行。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:253:| `gdb` | A GNU source-level debugger for C, C++, Java and other languages | 否：六个精确镜像清单无该 VCS；是：调试器；`gdb` 的仓库摘要将其用途定义为“A GNU source-level debugger for C, C++, Java and other languages”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部唯一相关调用只共享 C 接口符号，不传递 C++ 对象。它的源码版本不在已核对的六份标准设备镜像清单中。仓元数据还将它标识为测试、诊断或构建工具，按已测拓扑独立运行。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:254:| `gettext` | GNU libraries and utilities for producing multi-lingual messages | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`gettext` 的仓库摘要将其用途定义为“GNU libraries and utilities for producing multi-lingual messages”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:255:| `gn` | A meta-build system that generates build files for Ninja | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`gn` 的仓库摘要将其用途定义为“A meta-build system that generates build files for Ninja”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:256:| `groff` | A document formatting system | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`groff` 的仓库摘要将其用途定义为“A document formatting system”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:257:| `ninja` | Ninja build system | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`ninja` 的仓库摘要将其用途定义为“Ninja build system”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:258:| `openfst` | Weighted finite-state transducer library | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`openfst` 的仓库摘要将其用途定义为“Weighted finite-state transducer library”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:259:| `patchelf` | A utility for patching ELF binaries | 是：tizen-headed-aarch64;tizen-headed-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`patchelf` 的仓库摘要将其用途定义为“A utility for patching ELF binaries”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:260:| `pbzip2` | Parallel implementation of bzip2 | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`pbzip2` 的仓库摘要将其用途定义为“Parallel implementation of bzip2”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:261:| `tinyxml2` | A simple, small, C++ XML parser | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`tinyxml2` 的仓库摘要将其用途定义为“A simple, small, C++ XML parser”。它产出的 ELF 直接依赖 libstdc++，但 armv7l 的完整精确运行时图测得：通向 Unified 迁移集合的运行时边为 0；Base 内部跨包 C++ 语义边也为 0。它的源码版本不在已核对的六份标准设备镜像清单中。因此它虽然自身使用 libstdc++，却不构成已识别的混合标准库 C++ 对象边界；切换它不能关闭额外风险边，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:269:| `db4` | Berkeley DB Database Library Version 4.8 | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`db4` 的仓库摘要将其用途定义为“Berkeley DB Database Library Version 4.8”。它的部分 ELF 自身直接依赖 libstdc++，但 armv7l 的实际依赖和符号交集显示，Unified 侧调用方：`man-db`；跨包共享的都是 C 接口符号，其余被分析边没有 C++ 符号交集。Base 内部相关调用同样只共享 C 接口。它的源码版本不在已核对的六份标准设备镜像清单中。C 接口只传递 C 类型，不依赖任一 C++ 标准库的对象布局、异常或析构规则，因此两侧标准库不同不会改变这条已测边界，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:270:| `ncurses` | Terminal control library | 是：tizen-boot-aarch64-rpi;tizen-boot-armv7l-rpi;tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`ncurses` 的仓库摘要将其用途定义为“Terminal control library”。它的部分 ELF 自身直接依赖 libstdc++，但 armv7l 的实际依赖和符号交集显示，Unified 侧调用方：`aspell`、`parted`、`pass`、`psmisc`；跨包共享的都是 C 接口符号，其余被分析边没有 C++ 符号交集。Base 内部相关调用同样只共享 C 接口。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。C 接口只传递 C 类型，不依赖任一 C++ 标准库的对象布局、异常或析构规则，因此两侧标准库不同不会改变这条已测边界，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:271:| `nghttp2` | This is an experimental implementation of Hypertext Transfer Protocol version 2. | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`nghttp2` 的仓库摘要将其用途定义为“This is an experimental implementation of Hypertext Transfer Protocol version 2.”。它的部分 ELF 自身直接依赖 libstdc++，但 armv7l 的实际依赖和符号交集显示，Unified 侧调用方：`lwnode`；跨包共享的都是 C 接口符号，其余被分析边没有 C++ 符号交集。Base 内部相关调用同样只共享 C 接口。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。C 接口只传递 C 类型，不依赖任一 C++ 标准库的对象布局、异常或析构规则，因此两侧标准库不同不会改变这条已测边界，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:272:| `tiff` | Tools for Converting from and to the Tiff Format | 是：tizen-headed-aarch64;tizen-headed-armv7l;tizen-headless-aarch64;tizen-headless-armv7l；否：仓库元数据的主要用途不是测试/诊断/基准；`tiff` 的仓库摘要将其用途定义为“Tools for Converting from and to the Tiff Format”。它的部分 ELF 自身直接依赖 libstdc++，但 armv7l 的实际依赖和符号交集显示，Unified 侧调用方：`efl`、`lcms2`、`opencv`；跨包共享的都是 C 接口符号，其余被分析边没有 C++ 符号交集。它的源码版本精确匹配至少一份已核对的标准设备镜像清单。C 接口只传递 C 类型，不依赖任一 C++ 标准库的对象布局、异常或析构规则，因此两侧标准库不同不会改变这条已测边界，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:274:## 含 C++ 静态归档但无消费边（2 包）
+docs/progress/R102/NO_CHANGE_GROUPS.md:276:静态归档确有 C++ 符号，但精确拓扑中的 Unified 与 Base 内部运行时消费边均为 0，当前没有被迁移侧吸收到同一进程。
+docs/progress/R102/NO_CHANGE_GROUPS.md:280:| `golang` | The Go Programming Language | 否：六个精确镜像清单无该 VCS；是：产出 golang-tests 测试子包；`golang` 的仓库摘要将其用途定义为“The Go Programming Language”。包中确有 2 个架构份次的静态归档含可解码全局 C++ 符号，但 armv7l 精确依赖图中，Unified 与 Base 内部对这些产物的运行时消费边均为 0。它的源码版本不在已核对的六份标准设备镜像清单中。在当前已测拓扑里，这些 C++ 代码没有被迁移侧吸收到同一进程，也没有跨包传递 C++ 语义；切换该包不能关闭额外边界，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:281:| `icecream` | For Distributed Compile in the Network | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`icecream` 的仓库摘要将其用途定义为“For Distributed Compile in the Network”。包中确有 3 个架构份次的静态归档含可解码全局 C++ 符号，但 armv7l 精确依赖图中，Unified 与 Base 内部对这些产物的运行时消费边均为 0。它的源码版本不在已核对的六份标准设备镜像清单中。在当前已测拓扑里，这些 C++ 代码没有被迁移侧吸收到同一进程，也没有跨包传递 C++ 语义；切换该包不能关闭额外边界，判定无需改。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:289:| `bison` | The GNU Parser Generator | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`bison` 是把语法规则生成解析器源码的构建工具（仓库摘要：“The GNU Parser Generator”）。它作为构建工具把输入语法生成源码，本身不提供 C++ 运行库。C++ 命中来自 3 个架构份次的头文件载体；已发布包的直接 C++ 运行时依赖为“NO”，含全局 C++ 符号的静态归档数量为 0，armv7l 运行时图中的 Unified/Base C++ 边也都是 0。它的源码版本不在已核对的六份标准设备镜像清单中。这些头文件最终由使用方按其自身工具链实例化，会自然继承使用方选择的 libc++，无需给本包单独增加标准库切换。 |
+docs/progress/R102/NO_CHANGE_GROUPS.md:290:| `cereal` | A header-only C++11 serialization library | 否：六个精确镜像清单无该 VCS；否：仓库元数据的主要用途不是测试/诊断/基准；`cereal` 是由使用方直接包含和实例化的 C++ 序列化头文件库（仓库摘要：“A header-only C++11 serialization library”）。C++ 命中来自 3 个架构份次的头文件载体；已发布包的直接 C++ 运行时依赖为“NO”，含全局 C++ 符号的静态归档数量为 0，armv7l 运行时图中的 Unified/Base C++ 边也都是 0。它的源码版本不在已核对的六份标准设备镜像清单中。这些头文件最终由使用方按其自身工具链实例化，会自然继承使用方选择的 libc++，无需给本包单独增加标准库切换。 |

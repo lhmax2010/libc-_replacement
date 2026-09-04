@@ -1,0 +1,721 @@
+# R100 第一步：Base Toolchain C++ 包三分类规则（已确认并应用）
+
+状态：`CONFIRMED_AND_APPLIED`
+
+本文件保留第一阶段经人工确认的机械判定规则。逐包判定与全局/逐包两种方案的
+事实对照见本任务的主报告；本任务不作推荐。
+
+## 1. 对象和分母
+
+### 1.1 项目身份
+
+本任务的 `Base` 明确定义为：
+
+- `Tizen-Base-Toolchain`；
+- 静态输入锚点为 R98 使用的
+  `tizen-base-toolchain_20260828.101647`；
+- 配对依赖输入为
+  `tizen-unified-toolchain_20260829.015247`。
+
+不把 R95 的 `Tizen-Base/tizen-base_20260827.214809` 直接当作本任务分母。
+R95 的符号分类方法可以复用，其包归属和数量只能作辅助线索，最终判定必须回到
+Toolchain 项目的精确 RPM、spec、依赖和符号证据。
+
+### 1.2 “每个 C++ 包”的机械定义
+
+判定单位为去重后的源码包名。一个源码包只要在任一受支持架构、任一子包命中
+下列任一条件，就进入 `BT_CPP` 候选全集：
+
+1. 实际构建日志中出现 C++ 编译动作（目标 `clang++` / `g++` 或明确以 C++
+   language mode 编译的 translation unit）；
+2. 产出的可执行 ELF / 共享对象含 Itanium C++ ABI 符号；
+3. 产出的可执行 ELF / 共享对象直接依赖 `libstdc++.so*`、`libc++.so*` 或
+   `libc++abi.so*`；
+4. 产出的静态归档成员含 Itanium C++ ABI 符号或 C++ unwind/typeinfo 证据。
+
+头文件-only 包不因“文件后缀为 C++”自动进入上述运行产物集合；单独列为
+`HEADER_ONLY_CPP_API`，并纳入完整审计候选分母。它自身不消费全局编译选项，
+但其头文件会进入 consumer，所以在判断 consumer 时按 consumer 的实际实例化
+结果处理。
+
+同一源码名有多个 Release 或架构时先保留逐记录结果，再合并到源码名。任一记录
+命中“需要改”时，源码包级不能标成“不需要改”；架构间或 Release 间结论不同则
+进入冲突表，不用多数票覆盖。
+
+### 1.3 当前已知候选不等于最终分母
+
+R98 的 `runtime_signal_source_summary.tsv` 在 Base Toolchain 下有 38 条记录、
+36 个去重源码名；其中 `patchelf`、`pcre` 各有两个 Release。这是按已发布包的
+C++ runtime requirement 得到的候选，不证明已经覆盖只产出静态库、静态链接
+ELF、或构建过程中使用 C++ 但最终产物没有动态 C++ runtime 依赖的源码包。
+
+因此第二步先按 1.2 对 Base Toolchain 全部源码包建立精确 `BT_CPP`，再逐包分类。
+R95 的 38 个去重源码名属于另一个项目，不能拿来补齐差额。
+
+## 2. 证据等级和禁止事项
+
+每个判定至少引用下列一种可复核证据；包名、用途印象或“通常如此”不算证据。
+
+| 代码 | 证据 |
+| --- | --- |
+| E1 | 同轮实际构建日志中的编译器、语言和命令行 |
+| E2 | 精确 revision 的 spec / 构建脚本中的工具链覆盖和硬编码 |
+| E3 | 精确 RPM 内 ELF 的 `DT_NEEDED`、UND/DEF 交集及 demangle 结果 |
+| E4 | 精确静态归档成员的符号、typeinfo、unwind 信息 |
+| E5 | `dlopen`/插件注册配置及被装入同一进程的实际证据 |
+| E6 | 精确镜像清单与进程/插件归属；镜像共存本身不等于同进程 |
+| E7 | 精确源码/API/头文件中的参数、返回值、对象所有权、回调和异常边界 |
+| E8 | repository metadata 中的构建期、运行期依赖；只证明拓扑候选，不单独证明 C++ 类型跨界 |
+
+禁止从以下事实直接推导“需要改”或“不需要改”：
+
+- 只因包是 C++；
+- 只因两个包同时进入同一镜像；
+- 只因存在 `DT_NEEDED`；
+- 只因符号中未出现显式 `std::`；
+- 只因当前没有观察到边；
+- 把 R95 的标准 Base 结果无条件外推到 Base Toolchain。
+
+## 3. 三类规则
+
+### 3.1 `NEED_LIBCXX`（需要改用 libc++）
+
+命中以下任一条：
+
+- **N1：已证明的跨运行时布局边。** Base 包与计划迁移到 libc++ 的包之间，
+  实际同进程调用边传递/返回/拥有布局敏感的标准库类型；包括已由 API 规则证明
+  隐藏标准库布局的 Boost/第三方类型。
+- **N2：C++ ABI 耦合但布局尚未排除。** 实际 UND/DEF、插件、回调、异常或对象
+  所有权边使用 C++ ABI，而现有证据不能证明只传 C 数据。此类不因“未看到
+  `std::`”下调为安全。
+- **N3：同进程装载且存在 C++ 语义交换。** 包进入设备镜像，并有 E5/E6/E7
+  证明它与 libc++ 代码同进程，且跨边界存在 C++ 对象、异常、allocator/new/delete
+  所有权或 C++ 回调。单纯同镜像、甚至同进程但已证明为纯 C API，不命中 N3。
+判定依据必须指向具体 consumer、provider、ELF 和符号/API。只存在构建依赖不命中。
+运行期 consumer 数保留为影响规模字段，不再作为独立规则：一旦存在 C++ ABI
+耦合且布局未被排除，N2 已经给出“需要改”判定；重复增加“广泛链接”规则不会
+产生新的分类结果。
+
+### 3.2 `NO_LIBCXX_NEEDED`（不需要改）
+
+必须有正面隔离证据，并命中以下至少一条，同时不命中任何 N 规则：
+
+- **O1：纯构建期工具。** 产物不进入所核设备镜像，不被设备运行时包依赖或动态
+  加载，只在构建机以独立进程执行；输入输出为文件、命令行或已证明的 C 数据。
+- **O2：Base 内部闭包。** 所有实际运行期 consumer/provider 均留在不迁移的
+  Base 闭包内，没有通向 libc++ 迁移集合的运行期或动态加载边。
+- **O3：已证明的纯 C 边。** 虽被 libc++ 包链接/加载，但 E3 与 E7 联合证明
+  对外 ABI 只有 C 接口，跨界没有 C++ 对象、异常、所有权或 C++ 回调。
+- **O4：独立进程边界。** 即使进入镜像或属于测试/诊断工具，也只以独立进程
+  运行；与平台交换的是命令行、文件、socket/IPC 的稳定 C/字节协议，没有同进程
+  C++ ABI 边。
+
+`NO_LIBCXX_NEEDED` 不是“未发现问题”的默认值。若缺少排除动态加载、静态链接或
+隐藏 C++ API 所需的材料，先记 `UNDETERMINED`。
+
+### 3.3 `CANNOT_SWITCH_CURRENTLY`（当前不能改）
+
+命中以下任一条：
+
+- **C1：精确 spec/构建脚本显式选择 GCC。** 包定义
+  `_toolchain_override gcc`，或硬编码目标 GCC/G++/GFortran，先机械归入“当前
+  工具链约束”。这只表示当前配置不允许直接套用 libc++，不声称永远不能迁移。
+- **C2：有受控构建证据证明 Clang/libc++ 不满足该包所需的语言、目标、插件、
+  GCC runtime 或 binutils 集成要求。** 必须记录失败点，不能凭包名推断。
+- **C3：包本身提供 GCC/libstdc++ ABI 或必须生成/测试该 ABI，切换后会改变其
+  被验证的产品对象。** 必须由 spec 子包、安装内容和测试目标共同证明。
+
+只有 `_toolchain_override gcc` 时，结果字段写
+`CANNOT_SWITCH_CURRENTLY(C1_DECLARED)`；有 C2/C3 实测时再写更强的
+`C2_PROVEN`/`C3_PROVIDER_ROLE`，避免把“当前声明”偷换成技术上永远不可能。
+
+## 4. 规则冲突和证据不足
+
+三类不采用简单覆盖优先级，按以下决策树执行：
+
+1. 同时命中 N 与 C：记 `CONFLICT_NEED_BUT_CANNOT`，单独列出；不能用“不能改”
+   掩盖实际边界，也不能无视工具链约束强行归为“需要改”。
+2. 命中 N、未命中 C：`NEED_LIBCXX`。
+3. 命中 C、未命中 N：`CANNOT_SWITCH_CURRENTLY`。
+4. 未命中 N/C，但 O 的正面隔离条件完整：`NO_LIBCXX_NEEDED`。
+5. N/C/O 均未被充分证明，或不同架构/Release 的证据冲突：
+   `UNDETERMINED`/`CONFLICT_EVIDENCE`，列出所缺材料；不得强塞进“不需要改”。
+
+`UNDETERMINED` 是审计状态而不是第四种处置方案。补齐证据后，每个包最终仍落入
+人工要求的三类之一；若人工要求首轮表必须强制三分，则需另行指定“未知项”的
+保守归类政策。
+
+## 5. 计划迁移集合的定义
+
+边界规则中的“将迁移到 libc++ 的代码”暂定义为：Unified Toolchain 中会消费
+全局 `CXXFLAGS/LDFLAGS` 且没有 GCC 工具链约束的 C++ 源码包。具体集合要由
+同一快照的实际构建日志、spec 和产物证据生成，不能把“项目内所有包”与“真正
+编译 C++ 的包”混为一谈。
+
+Unified 中显式 `_toolchain_override gcc` 的包属于例外集合；它们与 Base 包形成
+的边仍记录，但不能预先假定其迁移后 runtime 身份。
+
+## 6. 第二、三步将输出的字段
+
+逐包表至少包含：
+
+```text
+source_name | exact_sourcerpm | arches | C++_evidence | image_membership
+build_only_or_runtime | runtime_consumers | cpp_edge_class
+toolchain_constraint | matched_rules | final_class | conflict_or_gap
+evidence_paths
+```
+
+方案比较另建两张表：
+
+1. 逐包加 spec：只统计 `NEED_LIBCXX`，并单列 `CONFLICT_NEED_BUT_CANNOT`；
+2. Base Toolchain 全局注入：以项目全部源码包为暴露分母，不只统计 C++ 包；逐包
+   判断构建系统是否实际消费 `CXXFLAGS/LDFLAGS`、实际 driver 是 GCC 还是 Clang。
+
+driver 小探针只证明选项被 GCC/Clang 接受、拒绝或告警；不能替代某个包完整构建
+系统是否传递/覆盖这些变量。未做完整包构建时，包级结果写 `NOT_OBSERVED`。
+
+## 7. 人工确认结果
+
+1. 是否接受 `BT_CPP` 使用“实际 C++ 编译动作或 ELF/静态归档 C++ 证据”的并集，
+   而不是直接沿用 R95 的 38 个标准 Base 源码名？
+2. 是否接受“同镜像/同进程本身不自动触发迁移，必须存在 C++ 语义交换”的 N3？
+3. 是否接受 `_toolchain_override gcc` 先归为
+   `CANNOT_SWITCH_CURRENTLY(C1_DECLARED)`，同时明确这不是永久不可迁移的结论？
+4. 是否接受证据不足时先用审计状态 `UNDETERMINED`，而不是违反“禁止推断补全”
+   将其默认塞进“不需要改”？
+
+上述口径已于人工确认后生效；原待确认的“广泛链接”N4 按人工意见删除。
+
+上述规则已用于本次逐包判定。
+
+=== R100 classifier ===
+#!/usr/bin/env python3
+"""Build the mechanical R100 per-source-package decision table."""
+
+import csv
+import re
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+csv.field_size_limit(sys.maxsize)
+
+
+def read(path):
+    with Path(path).open(newline="", encoding="utf-8") as stream:
+        return list(csv.DictReader(stream, delimiter="\t"))
+
+
+def write(path, rows):
+    fields = list(rows[0])
+    with Path(path).open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fields, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def normalized(name):
+    name = name.replace("%2B%2B", "++")
+    if name in {"qemu-accel-aarch64", "qemu-accel-armv7l", "qemu-accel-riscv64"}:
+        return "qemu-accel"
+    return name
+
+
+base_sources = read("progress/R98/tables/base_source_records.tsv")
+base_binaries = read("progress/R98/tables/base_binary_records.tsv")
+unified_sources = read("progress/R98/tables/unified_source_records.tsv")
+source_by_srpm = {row["location"]: row["name"] for row in base_sources}
+source_info = defaultdict(list)
+for row in base_sources:
+    source_info[row["name"]].append(row)
+binary_by_source = defaultdict(list)
+for row in base_binaries:
+    binary_by_source[source_by_srpm.get(row["sourcerpm"], "NOT_AVAILABLE")].append(row)
+
+# Exact positive evidence sets.
+build_rows = read("progress/R100/tables/base_cpp_buildlog_scan.tsv")
+build = defaultdict(list)
+for row in build_rows:
+    if row["cpp_compile_detected"] == "YES":
+        build[normalized(row["source_package"])].append(row)
+dynamic = {
+    row["source_name"] for row in read("progress/R98/tables/base_cpp_source_records.tsv")
+}
+static_table = read("progress/R100/tables/static_archive_symbols_refined.tsv")
+static_cpp = defaultdict(list)
+for row in static_table:
+    if row["cpp_mangled_symbol"] == "YES":
+        static_cpp[source_by_srpm.get(row["source_name"], row["source_name"])].append(row)
+carrier_rows = read("progress/R100/tables/base_filelist_cpp_carriers.tsv")
+headers = defaultdict(list)
+for row in carrier_rows:
+    if int(row["cpp_header_count"]):
+        headers[row["source_name"]].append(row)
+
+candidates = set(build) | dynamic | set(static_cpp) | set(headers)
+
+# Runtime cross-boundary evidence, exact armv7l snapshot contents.
+cross_rows = read("progress/R100/armv7l_cross_edges/actual_cross_source_edge_classification.tsv")
+cross_classes = defaultdict(Counter)
+cross_consumers = defaultdict(set)
+for row in cross_rows:
+    provider = source_by_srpm.get(row["provider_sourcerpm"], row["provider_sourcerpm"])
+    cross_classes[provider][row["classification"]] += 1
+    cross_consumers[provider].add(row["consumer_sourcerpm"])
+
+cpp_classes = {"LAYOUT_SENSITIVE_STD_TYPE", "CPP_ABI_NO_STD_LAYOUT_PROVEN"}
+need = {name for name, classes in cross_classes.items() if any(classes[key] for key in cpp_classes)}
+
+# Base-internal C++ edges propagate the same-runtime requirement.
+internal_rows = read("progress/R100/armv7l_internal_edges/actual_cross_source_edge_classification.tsv")
+internal_cpp = []
+internal_classes = defaultdict(Counter)
+for row in internal_rows:
+    consumer = source_by_srpm.get(row["consumer_sourcerpm"], row["consumer_sourcerpm"])
+    provider = source_by_srpm.get(row["provider_sourcerpm"], row["provider_sourcerpm"])
+    internal_classes[consumer][row["classification"]] += 1
+    if row["classification"] in cpp_classes:
+        internal_cpp.append((consumer, provider, row["classification"]))
+changed = True
+while changed:
+    changed = False
+    for consumer, provider, _ in internal_cpp:
+        if provider in need and consumer not in need:
+            need.add(consumer)
+            changed = True
+
+# Current compiler constraints are exact R98 spec/build-log findings.
+constraints = {
+    row["source_package"]
+    for row in read("progress/R98/tables/gcc_source_package_summary.tsv")
+    if row["project"] == "base" and "GCC" in row["compiler_statuses"].split(";")
+}
+
+# Exact device-image membership, mapped by VCS identity.
+names_by_vcs = defaultdict(set)
+for row in base_sources:
+    names_by_vcs[row["vcs"]].add(row["name"])
+images = defaultdict(set)
+for manifest in sorted(Path("progress/R98/inputs/image_packages").glob("*.packages")):
+    with manifest.open(encoding="utf-8") as stream:
+        for line in stream:
+            fields = line.rstrip("\n").split(" ", 2)
+            if len(fields) != 3:
+                continue
+            for name in names_by_vcs.get(fields[2], ()):
+                images[name].add(manifest.stem)
+
+# Exact Unified source BuildRequires -> Base provider source topology.  It is
+# evidence of availability to the build, not proof that a static archive is linked.
+provider_by_capability = defaultdict(set)
+for row in base_binaries:
+    name = source_by_srpm.get(row["sourcerpm"], "NOT_AVAILABLE")
+    for capability in filter(None, row["provides"].split(";")):
+        provider_by_capability[capability].add(name)
+unified_build_consumers = defaultdict(set)
+for consumer in unified_sources:
+    for requirement in filter(None, consumer["requires"].split(";")):
+        for provider in provider_by_capability.get(requirement, ()):
+            unified_build_consumers[provider].add(consumer["name"])
+
+# Binary role facts.
+shared_provider = {}
+for name in candidates:
+    shared_provider[name] = any(
+        any(re.match(r"^lib.*\.so(?:\.|$)", cap) for cap in row["provides"].split(";"))
+        for row in binary_by_source.get(name, [])
+    )
+
+rows = []
+for name in sorted(candidates):
+    evidence = []
+    if build[name]: evidence.append("ACTUAL_CPP_BUILD_LOG")
+    if name in dynamic: evidence.append("CPP_RUNTIME_DEPENDENCY")
+    if static_cpp[name]: evidence.append("GLOBAL_DEMANGLED_CPP_IN_STATIC_ARCHIVE")
+    if headers[name]: evidence.append("CPP_HEADER_PAYLOAD")
+
+    reasons = []
+    if name in need:
+        reasons.append("N1_EXACT_CPP_RUNTIME_EDGE")
+    if name in constraints:
+        reasons.append("C1_CURRENT_GCC_OVERRIDE_OR_GCC_ROLE")
+
+    if name in need and name in constraints:
+        decision = "CONFLICT_NEED_BUT_CANNOT"
+    elif name in need:
+        decision = "NEED_LIBCXX"
+    elif name in constraints:
+        decision = "CANNOT_SWITCH_CURRENTLY"
+    elif name == "libcxx-runtimes":
+        decision = "NO_LIBCXX_NEEDED"
+        reasons.append("NO_ALREADY_EXPLICIT_LIBCXX_RUNTIME_BUILD")
+    elif cross_classes[name] and not any(cross_classes[name][key] for key in cpp_classes):
+        decision = "NO_LIBCXX_NEEDED"
+        reasons.append("NO_EXACT_EDGES_ONLY_C_OR_NO_INTERSECTION")
+    elif headers[name] and name not in dynamic and not static_cpp[name] and not shared_provider[name]:
+        decision = "NO_LIBCXX_NEEDED"
+        reasons.append("NO_HEADER_PAYLOAD_COMPILED_BY_CONSUMER")
+    elif static_cpp[name] and unified_build_consumers[name]:
+        decision = "UNDETERMINED"
+        reasons.append("U_STATIC_CPP_ARCHIVE_WITH_BUILDREQUIRE_CONSUMERS_LINK_NOT_PROVEN")
+    elif not cross_consumers[name]:
+        decision = "NO_LIBCXX_NEEDED"
+        if static_cpp[name]:
+            reasons.append("NO_CPP_STATIC_ARCHIVE_WITHOUT_UNIFIED_CONSUMER")
+        elif name in dynamic:
+            reasons.append("NO_BASE_ONLY_OR_INDEPENDENT_PRODUCT_NO_UNIFIED_RUNTIME_EDGE")
+        else:
+            reasons.append("NO_BUILD_EXPOSURE_WITHOUT_SHIPPED_CPP_BOUNDARY")
+    else:
+        decision = "UNDETERMINED"
+        reasons.append("U_NO_POSITIVE_ISOLATION_OR_CPP_EDGE_PROOF")
+
+    rows.append({
+        "source_package": name,
+        "decision": decision,
+        "matched_rules": ";".join(reasons),
+        "denominator_evidence": ";".join(evidence),
+        "buildlog_arches": ";".join(sorted({row["arch"] for row in build[name]})) or "NONE",
+        "dynamic_cpp_runtime_signal": "YES" if name in dynamic else "NO",
+        "cpp_static_archive_count": str(len(static_cpp[name])),
+        "cpp_header_rpm_count": str(len(headers[name])),
+        "provides_shared_library": "YES" if shared_provider[name] else "NO",
+        "unified_runtime_consumer_count": str(len(cross_consumers[name])),
+        "unified_runtime_edge_classes": ";".join(f"{k}={v}" for k, v in sorted(cross_classes[name].items())) or "NONE",
+        "base_internal_edge_classes_as_consumer": ";".join(f"{k}={v}" for k, v in sorted(internal_classes[name].items())) or "NONE",
+        "unified_buildrequire_consumer_count": str(len(unified_build_consumers[name])),
+        "unified_buildrequire_consumers": ";".join(sorted(unified_build_consumers[name])) or "NONE",
+        "six_image_membership": ";".join(sorted(images[name])) or "NONE",
+        "current_gcc_constraint": "YES" if name in constraints else "NO",
+        "source_vcs": ";".join(sorted({row["vcs"] for row in source_info[name]})) or "NOT_AVAILABLE",
+        "evidence_scope_note": "ARMV7L_SYMBOL_EDGES;ALL_ARCH_BUILDS_AND_ARTIFACT_METADATA",
+    })
+
+write("progress/R100/tables/base_cpp_package_decisions.tsv", rows)
+counts = Counter(row["decision"] for row in rows)
+print(f"denominator={len(rows)}")
+for key in sorted(counts):
+    names = [row["source_package"] for row in rows if row["decision"] == key]
+    print(f"{key}={counts[key]}")
+    print(f"{key}_NAMES=" + ";".join(names))
+
+=== R100 buildlog scanner ===
+#!/usr/bin/env python3
+"""Scan exact Base Toolchain build logs for positive C++ build evidence.
+
+The scanner reads logs from the URLs already frozen by R98.  It records only
+positive, line-oriented evidence and does not infer C++ from an exported CXX
+variable alone.
+"""
+
+import csv
+import re
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+INPUT = Path("progress/R98/tables/buildlog_compiler_evidence.tsv")
+OUTPUT = Path("progress/R100/tables/base_cpp_buildlog_scan.tsv")
+
+PATTERNS = [
+    ("CMAKE_CXX_ID", re.compile(r"(?:The )?CXX compiler identification is\s+", re.I)),
+    ("CMAKE_CXX_BUILD", re.compile(r"(?:Building|Linking) CXX (?:object|executable|shared library|static library)", re.I)),
+    ("CMAKE_CXX_COMPILER", re.compile(r"CMAKE_CXX_COMPILER(?::FILEPATH)?=.+(?:clang\+\+|g\+\+|c\+\+)", re.I)),
+    ("AUTOCONF_CXX", re.compile(r"checking (?:whether|for).*(?:GNU C\+\+ compiler|C\+\+ compiler)", re.I)),
+    ("MESON_CPP", re.compile(r"C\+\+ compiler for the (?:host|build) machine:", re.I)),
+    ("COMPILER_COMMAND", re.compile(r"(?:^|[\s'\"])(?:/[A-Za-z0-9_./+-]+/)?(?:[A-Za-z0-9_.+-]+-)?(?:clang\+\+|g\+\+|c\+\+)(?:[\s'\"]|$)")),
+    # Keep the suffix case-sensitive: C++ uses upper-case `.C`, while lower-case
+    # `.c` is C.  A previous re.I here incorrectly classified ordinary C builds.
+    ("CXX_SOURCE_COMPILE", re.compile(r"(?:(?i:\s-c\s+|compil(?:e|ing).*?))(?:\S+/)?\S+\.(?:cc|cpp|cxx|C)(?:\s|$)")),
+]
+
+
+def scan(row):
+    url = row["url"]
+    last_error = ""
+    for attempt in range(1, 4):
+        try:
+            req = Request(url, headers={"User-Agent": "R100-cpp-log-audit/1"})
+            with urlopen(req, timeout=90) as response:
+                evidence = []
+                total = 0
+                for line_no, raw in enumerate(response, 1):
+                    total += len(raw)
+                    text = raw.decode("utf-8", "replace").rstrip("\r\n")
+                    for kind, pattern in PATTERNS:
+                        if pattern.search(text):
+                            # Export-only lines are not compile evidence.
+                            if kind == "COMPILER_COMMAND" and re.search(r"\bexport\s+CC=.*\bCXX=", text):
+                                continue
+                            evidence.append((kind, line_no, text[:1000]))
+                            break
+                    if len(evidence) >= 5:
+                        break
+            return row, "YES" if evidence else "NO", evidence, total, "OK"
+        except Exception as exc:  # network/transient errors are preserved
+            last_error = f"{type(exc).__name__}: {exc}"
+            time.sleep(attempt)
+    return row, "NOT_AVAILABLE", [], 0, last_error
+
+
+rows = []
+with INPUT.open(newline="", encoding="utf-8") as handle:
+    for row in csv.DictReader(handle, delimiter="\t"):
+        if row["project"] == "base" and row["fetch_result"] == "OK":
+            rows.append(row)
+
+OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+fields = [
+    "snapshot", "arch", "source_package", "cpp_compile_detected",
+    "evidence_kinds", "evidence_lines", "evidence_text", "bytes_read",
+    "url", "scan_status",
+]
+results = []
+with ThreadPoolExecutor(max_workers=2) as executor:
+    futures = [executor.submit(scan, row) for row in rows]
+    for index, future in enumerate(as_completed(futures), 1):
+        row, detected, evidence, total, status = future.result()
+        results.append({
+            "snapshot": row["snapshot"],
+            "arch": row["arch"],
+            "source_package": row["source_package"],
+            "cpp_compile_detected": detected,
+            "evidence_kinds": ";".join(item[0] for item in evidence) or "NONE",
+            "evidence_lines": ";".join(str(item[1]) for item in evidence) or "NONE",
+            "evidence_text": " || ".join(item[2] for item in evidence) or "NONE",
+            "bytes_read": str(total),
+            "url": row["url"],
+            "scan_status": status,
+        })
+        if index % 100 == 0:
+            print(f"progress={index}/{len(rows)}", file=sys.stderr, flush=True)
+
+results.sort(key=lambda item: (item["source_package"], item["arch"]))
+with OUTPUT.open("w", newline="", encoding="utf-8") as handle:
+    writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(results)
+
+yes = sum(item["cpp_compile_detected"] == "YES" for item in results)
+no = sum(item["cpp_compile_detected"] == "NO" for item in results)
+na = sum(item["cpp_compile_detected"] == "NOT_AVAILABLE" for item in results)
+unique_yes = len({item["source_package"] for item in results if item["cpp_compile_detected"] == "YES"})
+print(f"rows={len(results)} yes={yes} no={no} not_available={na} unique_cpp_sources={unique_yes}")
+
+=== R101 generator ===
+#!/usr/bin/env python3
+import csv
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+
+def read_tsv(path):
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f, delimiter="\t"))
+
+
+if len(sys.argv) != 7:
+    raise SystemExit(
+        "usage: generate_full_inventory.py SOURCE_RECORDS BINARY_RECORDS "
+        "R100_DECISIONS IMAGE_DIR OUTPUT_TSV OUTPUT_MD"
+    )
+
+source_path, binary_path, decision_path, image_dir, output_tsv, output_md = map(
+    Path, sys.argv[1:]
+)
+source_rows = read_tsv(source_path)
+binary_rows = read_tsv(binary_path)
+decision_rows = read_tsv(decision_path)
+decisions = {row["source_package"]: row for row in decision_rows}
+
+sources = defaultdict(list)
+for row in source_rows:
+    sources[row["name"]].append(row)
+
+sourcerpm_to_source = {row["location"]: row["name"] for row in source_rows}
+direct_libstdcpp_binaries = defaultdict(set)
+for row in binary_rows:
+    if "libstdc++.so" in row["requires"]:
+        source = sourcerpm_to_source.get(row["sourcerpm"])
+        if source:
+            direct_libstdcpp_binaries[source].add(row["name"])
+
+image_by_vcs = defaultdict(set)
+for image_file in sorted(image_dir.glob("*.packages")):
+    image = image_file.name.removesuffix(".packages")
+    with open(image_file, encoding="utf-8") as f:
+        for line in f:
+            fields = line.rstrip("\n").split()
+            if len(fields) >= 3 and "#" in fields[-1]:
+                image_by_vcs[fields[-1]].add(image)
+
+tool_roles = {
+    "app-rootstrap-checker": "rootstrap 完整性检查器",
+    "bcc-tools": "BPF 性能分析、监控与跟踪工具",
+    "binutils": "含 readelf/objdump 等二进制检查与诊断工具",
+    "binutils-aarch64": "交叉架构二进制检查与诊断工具",
+    "binutils-armv7hl": "交叉架构二进制检查与诊断工具",
+    "binutils-armv7l": "交叉架构二进制检查与诊断工具",
+    "binutils-riscv64": "交叉架构二进制检查与诊断工具",
+    "boost": "产出 boost-test 测试框架子包",
+    "bpftrace": "eBPF 跟踪工具",
+    "build-compare": "构建结果比较工具",
+    "dejagnu": "测试框架",
+    "elfutils": "ELF 检查与诊断工具集",
+    "expect": "交互程序自动化/测试工具",
+    "gdb": "调试器",
+    "golang": "产出 golang-tests 测试子包",
+    "hal-rootstrap-checker": "HAL rootstrap 完整性检查器",
+    "lttng-ust": "用户态跟踪设施",
+    "libunwind": "产出 libunwind-tests 测试子包",
+    "llvm": "产出 lldb 调试器子包",
+    "perl-Test-Pod": "测试模块",
+    "perl-Test-Pod-Coverage": "测试/覆盖率模块",
+    "procps-ng": "进程监控与诊断工具",
+    "python-mock": "测试 mock 库",
+    "python-nose": "测试框架",
+    "python-unittest2": "测试框架",
+    "python3-nose": "测试框架",
+    "python3-base": "产出 python3-testsuite 子包",
+    "qemu-accel": "交叉构建加速/模拟工具",
+    "qemu-linux-user": "用户态模拟器",
+}
+
+decision_zh = {
+    "NEED_LIBCXX": "需要改",
+    "NO_LIBCXX_NEEDED": "不需要改",
+    "CANNOT_SWITCH_CURRENTLY": "当前不能改",
+    "UNDETERMINED": "未定",
+}
+
+
+def reason_for(row):
+    decision = row["decision"]
+    cross = row["unified_runtime_edge_classes"]
+    internal = row["base_internal_edge_classes_as_consumer"]
+    rule = row["matched_rules"]
+    if decision == "NEED_LIBCXX":
+        if "LAYOUT_SENSITIVE" in internal and cross == "NONE":
+            return "以布局敏感的 C++ ABI 消费 Base 内已需迁移的 LLVM，必须留在同一 libc++ 闭包。"
+        if "LAYOUT_SENSITIVE" in cross:
+            return "与 Unified 消费方存在已证明传递布局敏感 C++ 类型的运行期边。"
+        return "与 Unified 消费方存在已证明的 C++ ABI 边，现有证据不能排除对象布局耦合。"
+    if decision == "CANNOT_SWITCH_CURRENTLY":
+        return "当前 spec/产品角色明确使用 GCC；这是当前配置约束，不是永久技术限制。"
+    if decision == "UNDETERMINED":
+        return "含真实 C++ 静态归档且有 Unified 构建依赖方，但尚无实际链接证据。"
+    if rule == "NO_EXACT_EDGES_ONLY_C_OR_NO_INTERSECTION":
+        return "精确符号交集证明跨项目运行期边仅为 C 接口或无符号交集，不传递 C++ 对象。"
+    if rule == "NO_HEADER_PAYLOAD_COMPILED_BY_CONSUMER":
+        return "只提供由消费方自行实例化的 C++ 头文件，本包不形成独立运行时边界。"
+    if rule == "NO_CPP_STATIC_ARCHIVE_WITHOUT_UNIFIED_CONSUMER":
+        return "虽有 C++ 静态归档，但精确依赖拓扑中没有迁移侧消费方。"
+    if rule == "NO_ALREADY_EXPLICIT_LIBCXX_RUNTIME_BUILD":
+        return "本包就是显式构建 libc++/libc++abi 的运行时包，不靠 Base 全局选项切换自身。"
+    if rule == "NO_BASE_ONLY_OR_INDEPENDENT_PRODUCT_NO_UNIFIED_RUNTIME_EDGE":
+        return "产出 C++，但精确拓扑未形成通向 Unified 的运行期 C++ 语义边，属于 Base 闭包或独立工具。"
+    if rule == "NO_BUILD_EXPOSURE_WITHOUT_SHIPPED_CPP_BOUNDARY":
+        if row["six_image_membership"] != "NONE":
+            return "构建中虽出现 C++ 动作，但已发布产物不含 C++ 运行时边界；入镜像不等于交换 C++ 语义。"
+        return "C++ 仅见于构建过程，已发布产物不含可跨项目使用的 C++ 运行时边界。"
+    raise RuntimeError(f"unhandled rule {rule}")
+
+
+rows = []
+for name in sorted(sources):
+    records = sources[name]
+    vcs_values = sorted({r["vcs"] for r in records if r["vcs"]})
+    sourcerpms = sorted({r["location"] for r in records})
+    summaries = sorted({r["summary"] for r in records if r["summary"]})
+    images = sorted({img for vcs in vcs_values for img in image_by_vcs.get(vcs, set())})
+    image_value = "是：" + ";".join(images) if images else "否：六个精确镜像清单无该 VCS"
+    tool_value = (
+        "是：" + tool_roles[name]
+        if name in tool_roles
+        else "否：仓库元数据的主要用途不是测试/诊断/基准"
+    )
+    if name not in decisions:
+        cpp = "否：R100 四路完整候选扫描未命中"
+        relationship = "无关"
+        decision = "不需要改"
+        reason = "该快照的构建日志与产物扫描均未发现 C++ 编译、ABI、运行时、静态归档或头文件载体。"
+        evidence = (
+            "R100 分母扫描未进入 73 个 C++ 候选；"
+            f"source={';'.join(sourcerpms)}；VCS={';'.join(vcs_values) or 'NOT_AVAILABLE'}"
+        )
+    else:
+        r = decisions[name]
+        cpp = "是：" + r["denominator_evidence"]
+        if direct_libstdcpp_binaries.get(name):
+            relationship = "直接链接 libstdc++"
+        elif r["matched_rules"] == "NO_ALREADY_EXPLICIT_LIBCXX_RUNTIME_BUILD":
+            relationship = "自身提供 libc++/libc++abi，与 libstdc++ 无直接链接"
+        elif (
+            r["matched_rules"] == "NO_EXACT_EDGES_ONLY_C_OR_NO_INTERSECTION"
+            and "PURE_C_INTERFACE" in (
+                r["unified_runtime_edge_classes"]
+                + r["base_internal_edge_classes_as_consumer"]
+            )
+        ):
+            relationship = "仅通过 C 接口间接相关"
+        elif r["matched_rules"] == "NO_HEADER_PAYLOAD_COMPILED_BY_CONSUMER":
+            relationship = "仅构建期使用，产物不含 C++ 运行时"
+        elif r["matched_rules"] == "NO_BUILD_EXPOSURE_WITHOUT_SHIPPED_CPP_BOUNDARY":
+            relationship = "仅构建期使用，产物不含 C++ 运行时"
+        else:
+            relationship = "含 C++ 但不与外部交换 C++ 语义"
+        decision = decision_zh[r["decision"]]
+        reason = reason_for(r)
+        evidence = (
+            f"R100={r['decision']}/{r['matched_rules']}；"
+            f"直接libstdc++二进制={';'.join(sorted(direct_libstdcpp_binaries.get(name, set()))) or 'NONE'}；"
+            f"Unified边={r['unified_runtime_edge_classes']}；"
+            f"Base内部消费边={r['base_internal_edge_classes_as_consumer']}；"
+            f"VCS={r['source_vcs']}"
+        )
+    if summaries:
+        evidence += f"；Summary={summaries[0]}"
+    rows.append(
+        {
+            "源码包名": name,
+            "是否含C++及依据": cpp,
+            "与libstdc++的关系": relationship,
+            "判定结果": decision,
+            "理由": reason,
+            "证据": evidence,
+            "是否进入设备镜像": image_value,
+            "是否为测试诊断基准类工具": tool_value,
+        }
+    )
+
+fields = list(rows[0])
+output_tsv.parent.mkdir(parents=True, exist_ok=True)
+with open(output_tsv, "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(
+        f, delimiter="\t", fieldnames=fields, lineterminator="\n"
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+
+with open(output_md, "w", encoding="utf-8") as f:
+    f.write("# Tizen-Base-Toolchain 全部源码包 libc++ 判定清单\n\n")
+    f.write(
+        "数据锚点：`tizen-base-toolchain_20260828.101647`；按源码包名去重。"
+        "表中的“不需要改”沿用 R100 的 55 项结论；其余 181 项是 R100 四路完整候选扫描均未命中的非 C++ 包。\n\n"
+    )
+    f.write("| " + " | ".join(fields) + " |\n")
+    f.write("|" + "---|" * len(fields) + "\n")
+    for row in rows:
+        values = [row[field].replace("|", "\\|").replace("\n", " ") for field in fields]
+        f.write("| " + " | ".join(values) + " |\n")
+
+print(f"source_packages={len(rows)}")
+print(f"cpp_packages={sum(name in decisions for name in sources)}")
+for label in ("需要改", "不需要改", "当前不能改", "未定"):
+    print(f"decision_{label}={sum(row['判定结果'] == label for row in rows)}")
+print(f"image_yes={sum(row['是否进入设备镜像'].startswith('是：') for row in rows)}")
+print(f"tool_yes={sum(row['是否为测试诊断基准类工具'].startswith('是：') for row in rows)}")

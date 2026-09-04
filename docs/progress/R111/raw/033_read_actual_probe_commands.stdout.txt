@@ -1,0 +1,246 @@
+#!/bin/bash
+set -u
+
+if [ "$#" -ne 4 ]; then
+  echo "usage: $0 ARCH ROOT FAMILY LANGUAGE" >&2
+  exit 2
+fi
+
+arch=$1
+root=$2
+family=$3
+language=$4
+
+case "$arch" in
+  armv7l)
+    triple=armv7l-tizen-linux-gnueabi
+    loader=("$root/usr/bin/qemu-arm" -L "$root")
+    ;;
+  aarch64)
+    triple=aarch64-tizen-linux-gnu
+    loader=("$root/usr/bin/qemu-aarch64" -L "$root"
+      "$root/usr/lib64/ld-linux-aarch64.so.1"
+      --library-path "$root/usr/lib64:$root/usr/lib")
+    ;;
+  x86_64)
+    triple=x86_64-tizen-linux-gnu
+    loader=()
+    ;;
+  *) echo "unsupported arch: $arch" >&2; exit 2 ;;
+esac
+
+case "$family:$language" in
+  gcc:c) driver="$root/usr/bin/$triple-gcc"; xlanguage=c ;;
+  gcc:cxx) driver="$root/usr/bin/$triple-g++"; xlanguage=c++ ;;
+  clang:c) driver="$root/usr/bin/$triple-clang"; xlanguage=c ;;
+  clang:cxx) driver="$root/usr/bin/$triple-clang++"; xlanguage=c++ ;;
+  *) echo "unsupported family/language: $family/$language" >&2; exit 2 ;;
+esac
+
+test -x "$driver" || { echo "driver not executable: $driver" >&2; exit 3; }
+runner=("${loader[@]}" "$driver")
+case "$language" in
+  c) source='int main(void) { return 0; }' ;;
+  cxx) source='int main() { return 0; }' ;;
+esac
+
+run_probe() {
+  local label=$1
+  shift
+  local output rc status
+  printf 'COMMAND[%s]=' "$label"
+  printf '%q ' "${runner[@]}" "$@"
+  printf '\n'
+  output=$(printf '%s\n' "$source" | "${runner[@]}" "$@" 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    status=REJECTED
+  elif [ -n "$output" ]; then
+    status=ACCEPTED_WITH_DIAGNOSTIC
+  else
+    status=ACCEPTED_SILENT
+  fi
+  printf 'RESULT[%s]\trc=%s\tstatus=%s\n' "$label" "$rc" "$status"
+  if [ -n "$output" ]; then
+    printf 'OUTPUT[%s]_BEGIN\n%s\nOUTPUT[%s]_END\n' "$label" "$output" "$label"
+  fi
+}
+
+tmp_output="/tmp/r100-${arch}-${family}-${language}-$$"
+trap 'rm -f "$tmp_output"' EXIT
+
+printf 'ARCH=%s\nROOT=%s\nFAMILY=%s\nLANGUAGE=%s\nDRIVER=%s\n' \
+  "$arch" "$root" "$family" "$language" "$driver"
+run_probe version --version
+run_probe compile_stdlib -stdlib=libc++ -x "$xlanguage" -c -o /dev/null -
+run_probe link_stdlib_only -stdlib=libc++ -x "$xlanguage" -o "$tmp_output" -
+run_probe link_no_as_needed -Wl,--no-as-needed -x "$xlanguage" -o "$tmp_output" -
+run_probe link_cxxabi -lc++abi -x "$xlanguage" -o "$tmp_output" -
+run_probe link_as_needed -Wl,--as-needed -x "$xlanguage" -o "$tmp_output" -
+run_probe link_full -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed \
+  -x "$xlanguage" -o "$tmp_output" -
+run_probe trace_full -### -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed \
+  -x "$xlanguage" -o "$tmp_output" -
+=== exact wrapper command ===
+bash -lc set\ -u\;\ for\ spec\ in\ \"armv7l\ tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0\"\ \"aarch64\ tmp/GBS-ROOT/LIBCXX-2218-aarch64-20260804-r2/local/BUILD-ROOTS/scratch.aarch64.0\"\ \"x86_64\ tmp/GBS-ROOT/LIBCXX-R91-x86_64-retry1/local/BUILD-ROOTS/scratch.x86_64.0\"\;\ do\ set\ --\ \$spec\;\ arch=\$1\;\ root=\$2\;\ for\ family\ in\ gcc\ clang\;\ do\ for\ lang\ in\ c\ cxx\;\ do\ printf\ \"=====\ %s\ %s\ %s\ =====\\n\"\ \"\$arch\"\ \"\$family\"\ \"\$lang\"\;\ nice\ -n\ 15\ ionice\ -c\ 3\ bash\ progress/R100/code/probe_global_stdlib_flags.sh\ \"\$arch\"\ \"\$root\"\ \"\$family\"\ \"\$lang\"\;\ rc=\$\?\;\ printf\ \"PROBE_EXIT=%s\\n\"\ \"\$rc\"\;\ test\ \"\$rc\"\ -eq\ 0\ \|\|\ exit\ \"\$rc\"\;\ done\;\ done\;\ done 
+=== output summary ===
+===== armv7l gcc c =====
+ARCH=armv7l
+ROOT=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0
+FAMILY=gcc
+LANGUAGE=c
+DRIVER=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-gcc
+COMMAND[version]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-gcc --version 
+RESULT[version]	rc=0	status=ACCEPTED_WITH_DIAGNOSTIC
+OUTPUT[version]_BEGIN
+armv7l-tizen-linux-gnueabi-gcc (Tizen GCC 14.2.0 20240801 4.13) 14.2.0
+Copyright (C) 2024 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+OUTPUT[version]_END
+COMMAND[compile_stdlib]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-gcc -stdlib=libc++ -x c -c -o /dev/null - 
+RESULT[compile_stdlib]	rc=1	status=REJECTED
+OUTPUT[compile_stdlib]_BEGIN
+armv7l-tizen-linux-gnueabi-gcc: error: unrecognized command-line option ‘-stdlib=libc++’
+OUTPUT[compile_stdlib]_END
+COMMAND[link_stdlib_only]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-gcc -stdlib=libc++ -x c -o /tmp/r100-armv7l-gcc-c-29535 - 
+RESULT[link_stdlib_only]	rc=1	status=REJECTED
+OUTPUT[link_stdlib_only]_BEGIN
+armv7l-tizen-linux-gnueabi-gcc: error: unrecognized command-line option ‘-stdlib=libc++’
+OUTPUT[link_stdlib_only]_END
+COMMAND[link_no_as_needed]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-gcc -Wl\,--no-as-needed -x c -o /tmp/r100-armv7l-gcc-c-29535 - 
+RESULT[link_no_as_needed]	rc=1	status=REJECTED
+OUTPUT[link_no_as_needed]_BEGIN
+qemu-arm-static: Could not open '/lib/ld-linux.so.3': No such file or directory
+OUTPUT[link_no_as_needed]_END
+COMMAND[link_cxxabi]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-gcc -lc++abi -x c -o /tmp/r100-armv7l-gcc-c-29535 - 
+RESULT[link_cxxabi]	rc=1	status=REJECTED
+OUTPUT[link_cxxabi]_BEGIN
+qemu-arm-static: Could not open '/lib/ld-linux.so.3': No such file or directory
+OUTPUT[link_cxxabi]_END
+COMMAND[link_as_needed]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-gcc -Wl\,--as-needed -x c -o /tmp/r100-armv7l-gcc-c-29535 - 
+RESULT[link_as_needed]	rc=1	status=REJECTED
+OUTPUT[link_as_needed]_BEGIN
+qemu-arm-static: Could not open '/lib/ld-linux.so.3': No such file or directory
+OUTPUT[link_as_needed]_END
+COMMAND[link_full]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-gcc -stdlib=libc++ -Wl\,--no-as-needed -lc++abi -Wl\,--as-needed -x c -o /tmp/r100-armv7l-gcc-c-29535 - 
+RESULT[link_full]	rc=1	status=REJECTED
+OUTPUT[link_full]_BEGIN
+armv7l-tizen-linux-gnueabi-gcc: error: unrecognized command-line option ‘-stdlib=libc++’
+OUTPUT[link_full]_END
+COMMAND[trace_full]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-gcc -### -stdlib=libc++ -Wl\,--no-as-needed -lc++abi -Wl\,--as-needed -x c -o /tmp/r100-armv7l-gcc-c-29535 - 
+RESULT[trace_full]	rc=1	status=REJECTED
+OUTPUT[trace_full]_BEGIN
+Using built-in specs.
+COLLECT_GCC=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-gcc
+COLLECT_LTO_WRAPPER=/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/../lib/gcc/armv7l-tizen-linux-gnueabi/14.2.0/lto-wrapper
+armv7l-tizen-linux-gnueabi-gcc: error: unrecognized command-line option ‘-stdlib=libc++’
+Target: armv7l-tizen-linux-gnueabi
+Configured with: ../configure --prefix=/usr --infodir=/usr/share/info --mandir=/usr/share/man --libdir=/usr/lib --libexecdir=/usr/lib --enable-languages=c,c++,fortran --enable-checking=release --disable-libssp --disable-bootstrap --disable-libvtv --enable-plugin --disable-libgcj --with-slibdir=/usr/lib --with-system-zlib --with-sysroot=/ --enable-__cxa_atexit --enable-libstdcxx-allocator=new --enable-version-specific-runtime-libs --enable-linker-build-id --without-system-libunwind --enable-threads=posix --disable-multilib --disable-cet --enable-lto --enable-libcc1 --enable-libgfortran --with-arch=armv7-a --with-tune=cortex-a8 --disable-sjlj-exceptions --with-bugurl=http://bugs.tizen.org/ --with-pkgversion='Tizen GCC 14.2.0 20240801 4.13' --target=armv7l-tizen-linux-gnueabi --host=armv7l-tizen-linux-gnueabi --build=armv7l-tizen-linux-gnueabi
+Thread model: posix
+Supported LTO compression algorithms: zlib
+gcc version 14.2.0 (Tizen GCC 14.2.0 20240801 4.13) 
+OUTPUT[trace_full]_END
+PROBE_EXIT=0
+===== armv7l gcc cxx =====
+ARCH=armv7l
+ROOT=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0
+FAMILY=gcc
+LANGUAGE=cxx
+DRIVER=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-g++
+COMMAND[version]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-g++ --version 
+RESULT[version]	rc=0	status=ACCEPTED_WITH_DIAGNOSTIC
+OUTPUT[version]_BEGIN
+armv7l-tizen-linux-gnueabi-g++ (Tizen GCC 14.2.0 20240801 4.13) 14.2.0
+Copyright (C) 2024 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+OUTPUT[version]_END
+COMMAND[compile_stdlib]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-g++ -stdlib=libc++ -x c++ -c -o /dev/null - 
+RESULT[compile_stdlib]	rc=1	status=REJECTED
+OUTPUT[compile_stdlib]_BEGIN
+armv7l-tizen-linux-gnueabi-g++: error: unrecognized command-line option ‘-stdlib=libc++’
+OUTPUT[compile_stdlib]_END
+COMMAND[link_stdlib_only]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-g++ -stdlib=libc++ -x c++ -o /tmp/r100-armv7l-gcc-cxx-29594 - 
+RESULT[link_stdlib_only]	rc=1	status=REJECTED
+OUTPUT[link_stdlib_only]_BEGIN
+armv7l-tizen-linux-gnueabi-g++: error: unrecognized command-line option ‘-stdlib=libc++’
+OUTPUT[link_stdlib_only]_END
+COMMAND[link_no_as_needed]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-g++ -Wl\,--no-as-needed -x c++ -o /tmp/r100-armv7l-gcc-cxx-29594 - 
+RESULT[link_no_as_needed]	rc=1	status=REJECTED
+OUTPUT[link_no_as_needed]_BEGIN
+qemu-arm-static: Could not open '/lib/ld-linux.so.3': No such file or directory
+OUTPUT[link_no_as_needed]_END
+COMMAND[link_cxxabi]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-g++ -lc++abi -x c++ -o /tmp/r100-armv7l-gcc-cxx-29594 - 
+RESULT[link_cxxabi]	rc=1	status=REJECTED
+OUTPUT[link_cxxabi]_BEGIN
+qemu-arm-static: Could not open '/lib/ld-linux.so.3': No such file or directory
+OUTPUT[link_cxxabi]_END
+COMMAND[link_as_needed]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-g++ -Wl\,--as-needed -x c++ -o /tmp/r100-armv7l-gcc-cxx-29594 - 
+RESULT[link_as_needed]	rc=1	status=REJECTED
+OUTPUT[link_as_needed]_BEGIN
+qemu-arm-static: Could not open '/lib/ld-linux.so.3': No such file or directory
+OUTPUT[link_as_needed]_END
+COMMAND[link_full]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-g++ -stdlib=libc++ -Wl\,--no-as-needed -lc++abi -Wl\,--as-needed -x c++ -o /tmp/r100-armv7l-gcc-cxx-29594 - 
+RESULT[link_full]	rc=1	status=REJECTED
+OUTPUT[link_full]_BEGIN
+armv7l-tizen-linux-gnueabi-g++: error: unrecognized command-line option ‘-stdlib=libc++’
+OUTPUT[link_full]_END
+COMMAND[trace_full]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-g++ -### -stdlib=libc++ -Wl\,--no-as-needed -lc++abi -Wl\,--as-needed -x c++ -o /tmp/r100-armv7l-gcc-cxx-29594 - 
+RESULT[trace_full]	rc=1	status=REJECTED
+OUTPUT[trace_full]_BEGIN
+Using built-in specs.
+COLLECT_GCC=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-g++
+COLLECT_LTO_WRAPPER=/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/../lib/gcc/armv7l-tizen-linux-gnueabi/14.2.0/lto-wrapper
+armv7l-tizen-linux-gnueabi-g++: error: unrecognized command-line option ‘-stdlib=libc++’
+Target: armv7l-tizen-linux-gnueabi
+Configured with: ../configure --prefix=/usr --infodir=/usr/share/info --mandir=/usr/share/man --libdir=/usr/lib --libexecdir=/usr/lib --enable-languages=c,c++,fortran --enable-checking=release --disable-libssp --disable-bootstrap --disable-libvtv --enable-plugin --disable-libgcj --with-slibdir=/usr/lib --with-system-zlib --with-sysroot=/ --enable-__cxa_atexit --enable-libstdcxx-allocator=new --enable-version-specific-runtime-libs --enable-linker-build-id --without-system-libunwind --enable-threads=posix --disable-multilib --disable-cet --enable-lto --enable-libcc1 --enable-libgfortran --with-arch=armv7-a --with-tune=cortex-a8 --disable-sjlj-exceptions --with-bugurl=http://bugs.tizen.org/ --with-pkgversion='Tizen GCC 14.2.0 20240801 4.13' --target=armv7l-tizen-linux-gnueabi --host=armv7l-tizen-linux-gnueabi --build=armv7l-tizen-linux-gnueabi
+Thread model: posix
+Supported LTO compression algorithms: zlib
+gcc version 14.2.0 (Tizen GCC 14.2.0 20240801 4.13) 
+OUTPUT[trace_full]_END
+PROBE_EXIT=0
+===== armv7l clang c =====
+ARCH=armv7l
+ROOT=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0
+FAMILY=clang
+LANGUAGE=c
+DRIVER=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-clang
+COMMAND[version]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-clang --version 
+RESULT[version]	rc=0	status=ACCEPTED_WITH_DIAGNOSTIC
+OUTPUT[version]_BEGIN
+clang version 22.1.8
+Target: armv7l-tizen-linux-gnueabi
+Thread model: posix
+InstalledDir: /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin
+Configuration file: /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/clang.cfg
+OUTPUT[version]_END
+COMMAND[compile_stdlib]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-clang -stdlib=libc++ -x c -c -o /dev/null - 
+RESULT[compile_stdlib]	rc=0	status=ACCEPTED_WITH_DIAGNOSTIC
+OUTPUT[compile_stdlib]_BEGIN
+armv7l-tizen-linux-gnueabi-clang: warning: argument unused during compilation: '-stdlib=libc++' [-Wunused-command-line-argument]
+OUTPUT[compile_stdlib]_END
+COMMAND[link_stdlib_only]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-clang -stdlib=libc++ -x c -o /tmp/r100-armv7l-clang-c-29656 - 
+RESULT[link_stdlib_only]	rc=1	status=REJECTED
+OUTPUT[link_stdlib_only]_BEGIN
+qemu-arm-static: Could not open '/lib/ld-linux.so.3': No such file or directory
+armv7l-tizen-linux-gnueabi-clang: error: clang frontend command failed with exit code 255 (use -v to see invocation)
+clang version 22.1.8
+Target: armv7l-tizen-linux-gnueabi
+Thread model: posix
+InstalledDir: /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin
+Configuration file: /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/clang.cfg
+armv7l-tizen-linux-gnueabi-clang: note: diagnostic msg: Error generating preprocessed source(s) - ignoring input from stdin.
+armv7l-tizen-linux-gnueabi-clang: note: diagnostic msg: Error generating preprocessed source(s) - no preprocessable inputs.
+OUTPUT[link_stdlib_only]_END
+COMMAND[link_no_as_needed]=tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/qemu-arm -L tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0 tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-clang -Wl\,--no-as-needed -x c -o /tmp/r100-armv7l-clang-c-29656 - 
+RESULT[link_no_as_needed]	rc=1	status=REJECTED
+OUTPUT[link_no_as_needed]_BEGIN
+qemu-arm-static: Could not open '/lib/ld-linux.so.3': No such file or directory
+armv7l-tizen-linux-gnueabi-clang: error: clang frontend command failed with exit code 255 (use -v to see invocation)
+clang version 22.1.8
+Target: armv7l-tizen-linux-gnueabi
+Thread model: posix
+InstalledDir: /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin
+Configuration file: /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R96-armv7l-gcc-env/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/clang.cfg
+armv7l-tizen-linux-gnueabi-clang: note: diagnostic msg: Error generating preprocessed source(s) - ignoring input from stdin.

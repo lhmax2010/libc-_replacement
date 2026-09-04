@@ -1,0 +1,459 @@
+  400 docs/progress/R111/BASE_LIBCXX_ADAPTATION_METHOD.md
+   54 docs/progress/R111/REPORT.md
+   29 docs/progress/R111/EVIDENCE_INDEX.tsv
+  483 total
+# Base Toolchain 层 libc++ 适配判定方法
+
+## 1. 目的与结论边界
+
+本文说明如何从 Base Toolchain 的全部源码包中识别 C++ 候选，并进一步判断哪些
+包需要随平台代码一起切换到 libc++。本文描述的是已经执行过的方法，不把计划中
+但未执行的检查写成既成事实。
+
+固定输入中共有 254 个去重源码包。四类候选证据的并集得到 73 个 C++ 候选；逐包
+核对运行期、静态链接和工具链约束后，最终分类为：
+
+| 分类 | 全部源码包数 | 其中 C++ 候选数 |
+|---|---:|---:|
+| 需要适配 libc++ | 11 | 11 |
+| 不需要适配 | 237 | 56 |
+| 当前不能直接适配 | 6 | 6 |
+| 未定 | 0 | 0 |
+
+其余 181 个“不需要适配”包没有命中本次采用的四类 C++ 候选证据。这里的结论
+始终限定于下述固定快照、已发布产物、六份镜像清单和可见依赖关系；它不是对未来
+revision、其他产品 profile 或运行时动态装载关系的永久断言。
+
+## 2. 数据来源与身份固定
+
+### 2.1 成对快照
+
+Base 输入为：
+
+```text
+https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/
+```
+
+配对的 Unified 输入为：
+
+```text
+https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/
+```
+
+选用这组输入是因为二者有明确的配对关系，且 Unified 同时提供 boot、headed、
+headless 三种 profile 的 armv7l 与 aarch64 镜像清单。没有把其他日期的 Base
+快照与这一版 Unified 拼接使用。
+
+### 2.2 数据量
+
+| 数据 | Base Toolchain | Unified Toolchain |
+|---|---:|---:|
+| binary RPM 元数据记录 | 1,705 | 9,607 |
+| source RPM 元数据记录 | 292 | 1,061 |
+| 去重源码包名 | 254 | 1,061 |
+| Base 成功构建日志 | 749 | 不用于 Base 候选分母 |
+
+Base 的 1,705 条 binary 记录对应 650 个去重二进制包名。292 条 source 记录按
+源码包名去重后得到本次逐包判定的 254 个分母。749 份成功构建日志按架构分为
+aarch64 250、armv7l 247、x86_64 252 份；日志 URL 全部来自同一 Base 快照。
+
+为做精确边界与静态归档分析，没有镜像整个仓库，而是按元数据选择 RPM：三个核心
+清单合并后为 297 个不同 SHA256 的 RPM，其中 Base 215 个、Unified 82 个，合计
+792,462,840 字节。静态链接补查又核验了五个指定消费源码包的全部 144 个二进制
+RPM 和 571 个 ELF；这 144 个与前述集合可能重叠，故不把二者直接相加冒充唯一
+下载总数。
+
+### 2.3 完整性校验
+
+仓库元数据先从 `repomd.xml` 取得目标文件名和 SHA256，再校验下载文件。关键摘要
+如下：
+
+| 输入 | SHA256 |
+|---|---|
+| Base packages primary | `ba2bf090e651196a558fe76d2329ea8e236b785cff2657cd3858943bd81355ed` |
+| Base packages filelists | `3424a99cb2db9778df1fa7b4a2b82b57c91b1fa902480411106941be42a5afb6` |
+| Base source primary | `eccde3e46dcba072b65538935eb3707f95a35d2d85feaa75b492a23669a72f53` |
+| Unified packages primary | `0763dc003092f4596c0fa009202dd8a72ffaacdaf300be963cc6c49b84de2786` |
+| Unified packages filelists | `68c38a4baf6f9b8694ccb9b21dd7aca4dfab88988930534957d9d8f4408f5438` |
+| Unified source primary | `03f33db06942346eac0045861d3939769505ebc224554b8b13be10a2c758f5d1` |
+
+每个被下载的 RPM 都以仓库元数据给出的 SHA256 为门禁；校验失败的文件不会进入
+解包或符号分析。六份镜像清单和关键派生表的哈希列在随附证据索引中。
+
+这种做法能证明分析对象与固定快照一致；它不能弥补上游快照本身元数据错误，也
+不能把没有下载的 RPM payload 说成已经逐字节检查。
+
+## 3. 如何识别 C++ 候选
+
+没有使用“包名看起来像 C++”这一规则。源码包在任一架构命中下列任一实际信号，
+即进入候选并集。
+
+### 3.1 成功构建日志中的 C++ 动作
+
+扫描同一快照的成功构建日志，匹配以下正面证据：CMake 的 CXX compiler
+identification、CXX object/executable/library 动作、Autoconf/Meson 的 C++
+编译器识别、真实 `clang++`/`g++`/`c++` 命令，或编译 `.cc/.cpp/.cxx/.C`
+翻译单元的命令。
+
+最终 749/749 份日志均成功读取，规范化后 69 个源码包命中。URL 编码的
+`libsigc%2B%2B` 被还原为 `libsigc++`；三个按目标架构拆分的 qemu 构建标签合并
+到实际源码包名。
+
+扫描器曾用大小写不敏感规则匹配 `.C`，从而把普通 `.c` 文件误算成 C++；该结果
+被废弃。修正为仅大写 `.C` 后，原始命中标签从 112 降到 71，规范化后为 69。
+
+该证据能证明构建过程实际执行了 C++ 动作。它不能单独证明最终包保留 C++ 代码，
+也不能证明标准库对象跨过包边界。阳性日志在收集到最多五条证据后停止读取；阴性
+日志读到结尾，因此归档的是判定证据而非所有构建日志全文。
+
+### 3.2 已发布二进制包的 C++ runtime 依赖
+
+解析 packages primary 元数据的 `Requires`，查找以 `libstdc++.so`、
+`libc++.so` 或 `libc++abi.so` 开头的 capability，再映射回 source RPM。36 个
+Base 源码包命中。
+
+这能证明仓库把相应二进制包声明为 C++ runtime consumer；但元数据依赖不是
+API 形态证明，不能据此断定它传递标准库类型。精确边界分类另见第 5 节。
+
+### 3.3 静态归档中的外部 C++ 符号
+
+先从 filelists 找出 `.a`，按 SHA256 下载对应 RPM，解包后对每个归档执行：
+
+```bash
+nm -g -A --defined-only ARCHIVE
+```
+
+只保留外部可见定义，再把以 `_Z` 开头的候选交给 `c++filt`；只有确实能被解码的
+符号才算 C++ 阳性。136 个 RPM 全部通过校验，2,218 个归档条目中 805 个阳性，
+归属于 10 个源码包。
+
+初扫曾把局部 fortify 包装符号和 `_ZGV*` 向量 ABI 名称计为 C++，后以 `nm -g`
+和实际 demangle 收紧；最终候选只使用收紧后的结果。
+
+此方法能找到有外部可见 C++ 定义的普通目标成员；它可能漏掉仅含局部符号、LTO
+中间码、被 strip 的信息或非 Itanium ABI 编码。
+
+### 3.4 交付的 C++ 头文件载体
+
+从 filelists 查找 `.hpp`、`.hxx`、`.hh`、`.ipp`、`.tcc`，以及路径中包含
+`/include/c++/` 的文件。12 个源码包命中。
+
+头文件-only 包也进入审计候选，因为它们可能承载模板 API；但头文件由消费方用
+自己的编译器与标准库实例化，不能仅凭“有 C++ 头文件”判为需要修改提供包。
+
+该规则没有解析头文件语言，且不会自动识别放在普通 `.h` 中、路径也不含
+`include/c++` 的 C++ API，这是明确的漏检边界。
+
+### 3.5 为什么取并集
+
+四种证据互补：构建日志能看到最终未交付的构建期 C++；runtime dependency 能
+看到动态运行时关系；静态符号能覆盖没有 `DT_NEEDED` 的 `.a`；filelists 能覆盖
+尚未实例化的头文件 API。任一单项都不能覆盖另外三类。
+
+四组分别为 69、36、10、12 个源码包，集合有重叠，并集为 73。此次没有对 Base
+的全部 1,705 条 binary 记录另做一次“所有 ELF 中是否存在 mangled C++ 符号”
+的全覆盖扫描；因此“73”是上述四项机械口径的结果，不应改写为绝对完整的 C++
+源码包全集。
+
+## 4. 逐包判定规则与执行顺序
+
+### 4.1 需要适配
+
+满足以下任一条件：
+
+1. Base 包与计划切换到 libc++ 的代码之间存在实际同进程调用边，且符号/API
+   证明传递、返回或拥有布局敏感的标准库类型；
+2. 已证明存在 C++ ABI 耦合，但现有符号不足以排除对象布局、异常、回调或所有权
+   耦合；这类未知不能因符号中没出现显式 `std::` 而当作安全；
+3. 有镜像、插件或源码证据证明双方在同一进程交换 C++ 对象、异常、allocator
+   所有权或 C++ 回调。
+
+单纯“包是 C++”“双方在同一镜像”“存在 `DT_NEEDED`”或“有 BuildRequires”
+均不足以命中。
+
+### 4.2 不需要适配
+
+只在不命中上述风险边、且已有正面隔离证据时使用：
+
+1. 只在构建机以独立进程运行，交付物不形成设备运行期 C++ 边；
+2. 实际运行期 consumer/provider 都留在 Base 内部同一闭包，没有通向迁移集合的
+   C++ 边；
+3. 实际动态符号交集与源码 API 共同表明跨包边界只有 C 接口；
+4. 以独立进程运行，只通过命令行、文件、socket/IPC 等字节协议交互；
+5. 只提供由消费方实例化的头文件；
+6. 对静态归档，最终消费 ELF 与实际链接命令证明其 C++ 成员没有被拉入。
+
+最终 237 个“不需要适配”中，181 个不命中四类 C++ 候选证据，56 个虽含 C++，
+但按上述已测边界不需要切换。
+
+### 4.3 当前不能直接适配
+
+精确 spec 或产品角色要求 GCC/GNU runtime 的包先标为当前受限。最终六个是
+`gcc`、`gcc-aarch64`、`gcc-armv7hl`、`gcc-armv7l`、`gcc-riscv64`、`glibc`。
+这描述当前配置和职责，不声称它们永远不能迁移。
+
+### 4.4 证据冲突与不足
+
+若一个包既有需要适配的边又有当前 GCC 约束，应单列冲突，不能让任一标签覆盖
+另一事实。若没有足够的风险证据，也没有正面隔离证据，则标为“未定”，不默认塞入
+“不需要适配”。最初两个未定项经最终产物反查后闭合：`gmp` 为不需要适配，
+`tensorflow2` 为需要适配，故最终未定数为 0。
+
+执行顺序是：先建 254 包分母和 73 候选；再检查当前 GCC 约束；随后检查动态、
+Base 内部、静态和同进程 C++ 边；最后才在正面隔离证据足够时判“不需要适配”。
+
+## 5. 如何确认跨边界传递 C++ 语义
+
+### 5.1 动态依赖边
+
+先用 RPM metadata 的 `Requires`/`Provides` 生成候选包边，再对实际 RPM 解包：
+
+1. 用 `readelf -d -W` 取得 consumer ELF 的 `DT_NEEDED`；
+2. 以 provider ELF 的 `DT_SONAME` 做唯一对应，不按库文件名猜测；
+3. 用 `readelf --dyn-syms -W` 分别取得 consumer 的未定义符号和 provider 的已定义
+   符号；去掉版本后缀后求 `consumer UND ∩ provider DEF`；
+4. `_Z` 符号经 `c++filt` 解码；交集只有非 `_Z` 符号时记为“仅 C 接口”，无交集
+   时单列，不能假定还有不可见的 C++ 调用；
+5. 对含 C++ 交集的边，根据解码后参数/返回类型分类。
+
+精确动态符号边只在 armv7l 上执行。Unified→Base 共解析 1,034 条 ELF 边、66 个
+源码包对，未解析 0；按源码包对分为 28 个布局敏感、19 个 C++ ABI 耦合但布局
+未排除、17 个仅 C 接口、2 个无符号交集。Base 内部解析 257 条 ELF 边、25 个
+源码包对，未解析 0；对应分类为 4、1、19、1。
+
+若 demangle 后的接口直接包含 `std::` 类型，记为直接布局敏感。对已单独确认会
+隐藏标准库布局的 Boost.Filesystem、Boost.Iostreams、Boost.Program_options
+接口使用“隐藏布局敏感”分类。其余真实 C++ 交集若无法证明只传 C 数据，保守记为
+“C++ ABI 耦合、布局未排除”，而不是宣称已证明具体布局错误。
+
+### 5.2 静态归档边
+
+静态链接后没有指向 `.a` 的 `DT_NEEDED`。实际做法是：
+
+1. 对 provider 归档执行 `nm -A -P -g --defined-only`，保留符号到归档成员的
+   归属；
+2. 对 consumer 最终 ELF 同时读取静态/动态符号表；
+3. 找出同名强定义符号，并把最终 ELF 中的定义反查到归档成员；
+4. 再以真实成功构建日志的链接命令、构建描述和源码 API 交叉确认；
+5. 检查最终 ELF 的 `DT_NEEDED`，排除“其实由共享库提供”的解释。
+
+stripped、LTO、内联、dead stripping 和 ICF 会使可见成员数偏低，因此成员数只报
+下界，不声称恢复了全部 link map。
+
+### 5.3 从原始数据到判定的两个例子
+
+**动态库例：Abseil。** armv7l 的 `grpc` 二进制 `libgpr.so.51.0.0` 实际需要
+`libabsl_flags_marshalling.so.2508.0.0`。consumer RPM 与 provider RPM 均按
+SHA256 校验，SONAME 唯一对应；UND/DEF 交集中能解码出：
+
+```text
+absl::lts_20250814::flags_internal::AbslParseFlag(
+  std::basic_string_view<char, std::char_traits<char>>,
+  std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char>>*,
+  ...)
+```
+
+该接口直接把标准库字符串/字符串视图带过 DSO 边界。consumer 属于计划迁移侧，
+若 Abseil 保持 libstdc++，就会形成跨标准库对象边，因此 Abseil 被判为需要适配。
+
+**静态库例：TensorFlow Lite。** 对三个真实消费方、三架构的最终 ELF 反查，20 个
+ELF/架构组合都实际吸收 `libtensorflow2-lite.a` 的代码；合并后命中 5,312 个
+不同强符号、至少 546 个归档成员。核心结果包括：
+
+```text
+tflite::impl::Interpreter::SetOutputs(std::vector<int, std::allocator<int>>)
+tflite::impl::Interpreter::AddProfiler(std::unique_ptr<tflite::Profiler, ...>)
+tflite::impl::Interpreter::SetMetadata(std::map<std::__cxx11::basic_string<...>, ...> const&)
+```
+
+最终库没有 TensorFlow Lite 共享库依赖，构建日志又明确链接该静态库；消费源码还
+持有 `std::unique_ptr<tflite::Interpreter>` 和
+`std::unique_ptr<tflite::FlatBufferModel>`。因此这不是“链接命令列出 `.a` 但
+没有成员被拉入”，也不是纯 C 接口，TensorFlow 被判为需要适配。
+
+### 5.4 11 个需要适配包的证据来源
+
+- `abseil-cpp`、`boost`、`icu`、`jsoncpp`、`libsigc++`、`llvm`、`pcre`、
+  `taglib`：存在精确的 Unified→Base 动态 C++ 符号边；
+- `bcc-tools`、`bpftrace`：Base 内部到 LLVM 的布局敏感 C++ 边使它们必须进入
+  同一标准库闭包；
+- `tensorflow2`：最终 ELF 反查证明其静态归档成员和布局敏感 C++ API 实际进入
+  三个消费方。
+
+## 6. 如何确认设备镜像归属
+
+使用六份实际 `.packages` 清单：boot/headed/headless × armv7l/aarch64。每行
+包含 `binary-name.arch`、`version-release` 和源码 VCS 标识。分析把 manifest 中
+的完整 VCS 标识与 Base source metadata 的 VCS 字段关联到源码包；不是按包名
+模糊匹配，也不从“通常会进镜像”推测。
+
+六份清单共 4,399 行（逐文件实际行数相加，其中不同镜像会重复同一包）；93 个 Base
+源码包至少命中一份清单。镜像共存只证明安装集合，不证明同进程。需要同进程结论
+时还必须有 `DT_NEEDED`、插件加载配置、进程归属或源码 API 等额外证据。
+
+此方法不覆盖其他产品 profile、临时测试镜像、人工安装包或运行时下载的插件。
+
+## 7. 全局注入选项的实际探针
+
+被检查的配置组选项为：
+
+```text
+CXXFLAGS: -stdlib=libc++
+LDFLAGS:  -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed
+```
+
+在已有 Tizen buildroot 中，用目标三元组的 GCC 14.2.0 和 Clang 22.1.8，分别以
+C 与 C++ 输入运行 `--version`、仅编译、仅链接及 `-###` driver trace。核心命令
+形态为：
+
+```bash
+TARGET-g++ -stdlib=libc++ -x c++ -c -o /dev/null -
+TARGET-clang++ -### -stdlib=libc++ \
+  -Wl,--no-as-needed -lc++abi -Wl,--as-needed -x c++ -o OUTPUT -
+```
+
+实际观察为：
+
+- armv7l、x86_64 的 GCC/G++ 明确报
+  `unrecognized command-line option '-stdlib=libc++'`，不是静默忽略；
+- aarch64 GCC 在执行 `--version` 时即退出 139，故该架构的 GCC 选项语义是
+  `NOT_OBSERVED`，不能拿退出 139 当作“拒绝该选项”的证据；
+- 三架构 Clang++ 都接受，`-###` 显示 C++ 标准库选择为 `-lc++`，说明不是静默
+  丢弃；Clang C 编译对 `-stdlib=libc++` 给出 unused-argument 警告。
+
+这个探针能证明 driver 对选项的接受/拒绝及 Clang 的标准库选择。它没有逐个完整
+构建 6 个 GCC 角色包或 55 个不需要适配的 Clang C++ 包，也没有穷尽各包构建系统
+是否转发、覆盖或丢弃环境变量。因此可复核的准确表述是：“当该选项到达 GCC 时，
+已测两架构明确失败；当它到达 Clang++ 时，三架构会选择 libc++。”不能把它扩大
+成 61 个包的逐包构建实测。
+
+## 8. 方法可靠性与已知局限
+
+### 8.1 能证明什么
+
+- 固定快照中 254 个源码包的完整元数据分母；
+- 按已声明四类信号得到的 73 个 C++ 候选；
+- armv7l 已发布动态 ELF 之间可见的 `DT_NEEDED` 与 UND/DEF 交集；
+- 指定静态归档在指定消费方最终 ELF 中的实际吸收下界；
+- 六份固定镜像清单中的精确源码 VCS 归属；
+- 目标 compiler driver 对全局选项的实际反应。
+
+### 8.2 不能证明什么
+
+1. 动态符号精确分类只做了 armv7l；aarch64、x86_64 是否存在额外架构专属边为
+   `NOT_OBSERVED`。
+2. `UND ∩ DEF` 只覆盖动态符号可见边，不能看到 `dlopen` 后由字符串查找的全部
+   符号、隐藏可见性、JIT、跨进程协议内部结构或未发布插件。
+3. “仅 C 接口”是对已测符号交集的描述；若另有未观测的回调、异常或 allocator
+   所有权边，结论需要重开。
+4. 静态归档成员数是下界，没有 link map 时不能恢复所有局部、内联、LTO 或被折叠
+   的代码。
+5. `gmp` 的否定结论只覆盖已指定的 `eigen`、`python-pycrypto` 消费关系；未来
+   新消费者可能改变结论。TensorFlow 的 XLA runtime 归档零命中也只限三个指定
+   消费方；Lite 归档的阳性已足以支持其需要适配。
+6. 头文件扫描是文件名/路径规则，不解析所有普通 `.h`；构建日志扫描只覆盖成功
+   日志和已列识别形态。
+7. 镜像只有六份标准 profile，不能代表全部设备、测试镜像和人工加装场景。
+8. 数据锚定 2026-08-28/29 快照；源码 revision、spec、依赖或镜像变化后必须重新
+   生成，不能只复用结论。
+9. 全局选项探针是 driver 级，不是全部相关包的完整构建验证。
+
+### 8.3 不同工具为何可能得到不同数字
+
+- 按 binary RPM 计数会把一个源码包的多个子包分别计算；本文按去重源码包名；
+- 按 metadata `Requires` 统计与解包后按 ELF `DT_NEEDED` 统计对象不同；自动依赖
+  生成、subpackage 和 noarch 内容会造成差异；
+- 把 release 或架构记录分别计数，会把 254 个源码名扩成 292 条 source 记录；
+- 仅扫描 `.so` 会漏静态归档、可执行文件和头文件；仅扫描 `libstdc++.so` 会漏
+  仅在构建期出现的 C++；
+- 把任意 `_Z` 前缀当 C++ 会误计 `_ZGV*` 向量 ABI 或局部包装符号；本文要求
+  外部可见且 `c++filt` 真正解码；
+- 直接搜索解码后的 `std::` 会漏掉 Boost 等在公开类型内部隐藏标准库布局的接口；
+- 用包名匹配镜像会混淆同名、架构和版本；本文用完整 VCS 标识；
+- 使用滚动仓或另一日期的 Base/Unified 会因为包集合和 release 漂移得到不同结果。
+
+## 9. 读者如何复核单个包
+
+建议按以下顺序复核，而不是只看最终标签：
+
+1. 在完整 254 包表中取得源码名、source VCS、C++ 候选证据和最终理由；
+2. 在构建日志证据表中核对架构、URL、命中行和扫描状态；
+3. 在 RPM metadata 中核对 source RPM、binary RPM、Requires/Provides、checksum；
+4. 若有动态边，核对 consumer/provider RPM SHA256、consumer ELF 的
+   `DT_NEEDED`、provider `DT_SONAME` 和逐符号交集；
+5. 若有静态边，核对归档符号到成员的映射、最终 ELF 强定义交集、真实链接命令和
+   consumer 源码 API；
+6. 若声称进入镜像，以 manifest 的完整 VCS 字段反查，不能只搜相似包名；
+7. 最后检查结论是否仍严格限定于相同快照、架构和 consumer 范围。
+
+可提供的原始材料包括：完整 254 包 TSV、73 候选证据表、749 份日志的逐条判定、
+RPM 下载/校验清单、armv7l 的逐 ELF 与逐源码包对符号表、静态归档成员匹配、六份
+镜像清单、driver 原始输出，以及生成这些表的脚本。随附证据索引给出这些材料的
+仓内路径、大小和 SHA256，便于取得后先验证文件身份。
+
+## 10. 对现有汇报措辞的一处校正
+
+现有一页汇总中的“6 个 GCC 包会直接失败、55 个包会被静默切换”容易被理解为
+61 个包均已做完整包构建。实际证据不是这样：执行的是目标 compiler driver 小
+探针；armv7l/x86_64 GCC 拒绝、aarch64 GCC 未观测，三架构 Clang++ 的 `-###`
+确认选择 libc++。包级环境变量是否传入最终命令并未逐包构建验证。
+
+因此，方法与既有判定本身不变，但对外表述应限定为条件句：“全局注入会把 6 个
+当前 GCC 角色包和 55 个无迁移需求的 Clang C++ 包置于影响范围；在选项实际到达
+driver 时，已测 GCC 会报错，Clang++ 会切换到 libc++。逐包构建系统的传播结果
+尚未全部实测。”
+=== report ===
+# R111 执行报告
+
+## 结果
+
+已产出面向总部、可独立阅读的 Base Toolchain libc++ 适配判定方法说明：
+
+- `BASE_LIBCXX_ADAPTATION_METHOD.md`
+- `EVIDENCE_INDEX.tsv`
+
+方法说明只描述磁盘上已有证据和实际执行步骤，没有更改 254 包的任何判定。最终
+计数仍为：需要改 11、不需要改 237、当前不能改 6、未定 0。
+
+## 复核中发现的表述差异
+
+发现一处既有一页汇总的措辞超过实际证据范围：其“6 个 GCC 包会直接失败、55 个
+包会被静默切换”容易被理解为 61 个包逐包构建实测。实际执行的是 driver 小探针：
+
+- armv7l、x86_64 GCC 14.2.0 明确拒绝 `-stdlib=libc++`；
+- aarch64 GCC 在 `--version` 即退出 139，选项语义为 `NOT_OBSERVED`；
+- 三架构 Clang++ 22.1.8 接受选项，`-###` 显示选择 `-lc++`；
+- 没有完整构建全部 6/55 个包来证明每个构建系统都会转发这些环境变量。
+
+这不改变 11 包判定，但对外应使用方法正文第 10 节给出的条件式表述。
+
+复核还发现旧分析报告曾把六份镜像清单合计写成 4,393 行；对当前归档文件逐个
+`wc -l`/逐行读取所得实际合计是 4,399（194+194+1262+1265+742+742）。最终对外
+汇总没有使用该总行数，源码 VCS 关联也逐文件执行，因此 6 行差异不改变镜像归属
+或包分类；方法正文使用实际值 4,399。
+
+另有一项方法边界需要显式保留：73 候选的构建日志、RPM metadata 和 filelists 覆盖
+三架构；精确动态符号边分类只覆盖 armv7l。既有详细报告已披露该点，方法说明没有
+把它扩写为三架构符号实测。
+
+## 自行判断
+
+1. 将“内部编号不得出现在对外说明”解释为方法正文不使用内部任务代号；证据索引
+   为了让仓内材料可定位，保留真实仓库路径。这些路径只是存储位置，不作为方法名。
+2. 将 297 个核心 RPM 报为三个清单按 SHA256 去重后的集合；静态链接补查的 144 个
+   consumer RPM 不与其相加，因为两集合可能重叠。
+3. 将“73 个 C++ 候选”严格写成四项机械口径的并集，不把它扩写成对全部 1,705 条
+   binary 记录进行过全 ELF mangled-symbol 扫描。
+
+## 尚存疑问与未覆盖
+
+- 没有新疑问需要人工裁决。
+- aarch64/x86_64 的逐符号动态边、其他产品 profile、未显式依赖的动态加载关系和
+  全部包的全局 flags 传播仍未观测；已在方法正文列明。
+
+## 纪律确认
+
+- 未改变任何既有判定；
+- 未修改配置或平台源码；
+- 未向 Gerrit 推送；
+- 本轮命令、stdout、stderr 和退出码保存在 `raw/`；技术性失败和修正均保留。

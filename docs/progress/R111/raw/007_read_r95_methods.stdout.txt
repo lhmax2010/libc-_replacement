@@ -1,0 +1,300 @@
+# R95：确定 Tizen-Base 层是否需要迁移到 libc++
+
+## 结论摘要
+
+本报告只给出事实和可选范围，不选择路线、不排序。
+
+1. 本轮严格使用实际 `Tizen-Base` 快照，而不是 `Tizen-Base-Toolchain`。实际 Base 有 412 条 source-RPM 记录（251 个去重源码名）和 1,710 条 binary-RPM 记录（646 个去重二进制名）。1,710/1,710 个 RPM 均完成 SHA256 校验、解包与 ELF 盘点，分析失败为 0。
+2. 按“包内存在 runtime ELF，且该 ELF 有 Itanium C++ 符号或依赖 C++ runtime”这一可复核口径，Base 有 38 个去重源码名（65 条 source-RPM 记录）、106 个去重二进制名（276 条 binary-RPM 记录）产出 C++ runtime ELF。实际直接依赖 `libstdc++.so*` 的是 35 个源码名（59 条记录）、96 个二进制名（245 条记录）。
+3. 在核对的 14 个标准设备镜像中，存在 11 个 Base C++ 源码名、15 个二进制名；若把只作为 `libstdc++` 运行库来源的 `gcc` 单独列出，则其余为 10 个源码名。
+4. 实际 Unified→Base 动态依赖形成 65 条去重“consumer 源码名→provider 源码名”逻辑边，涉及 58 个 Unified consumer 和 11 个 Base provider。其中 29 条已由动态符号证据证明传递布局敏感的标准库类型，涉及 26 个 consumer 和 5 个 provider；另有 18 条确有 C++ ABI 耦合、但现有符号证据不能证明或排除隐藏布局，不能归为安全边；17 条只有 C 接口符号交集；1 条虽有 `DT_NEEDED`，但没有动态符号交集。
+5. 历史所谓“483 个待迁移包”是 483 条 source-RPM 记录、455 个去重 `package_name`，其原始语料已经同时包含 `Tizen-Base-Toolchain` 与 `Tizen-Unified-Toolchain`。按名称映射到本轮实际快照，63 条历史记录（38 个名字）落入 Base，416 条（414 个名字）落入 Unified，4 条（3 个名字）因快照漂移在两边均无同名项。因此 Base 不是应再加到 483 上的新范围；按历史口径加入 Base 的增量为 0。当前快照的精确总迁移量不能把本轮 Base 实测数直接与历史 Unified 数相加，记为 `NOT_AVAILABLE`，需对当前 Unified 快照用同一口径重扫后才能给出。
+
+本轮不回答“应该迁”或“不用迁”。调查证明 Base/Unified 间确实存在 29 条布局敏感逻辑边，但迁移范围由人工在第五节所列选项中裁决。
+
+## 1. 范围、数据身份与方法
+
+### 1.1 冻结输入
+
+- Base：`Tizen/Tizen-Base/tizen-base_20260827.214809`。
+- Unified：`Tizen/Tizen-Unified/tizen-unified_20260829.123409`。
+- 设备镜像：上述 Unified 快照 `images/standard/` 下 14 份 `.packages` 清单，涵盖 generic-hal、boot、headed、headless 的 armv7l/aarch64 变体。
+
+完整 URL 见 `inputs/actual_repositories.tsv`，14 份清单原文见 `inputs/image_packages/`。
+
+历史 R11/R22 使用的是 `Tizen-Base-Toolchain` 与 `Tizen-Unified-Toolchain` 的工具链项目语料。本任务讨论 `Tizen-Base`，因此没有把工具链项目结论外推到 Base，而是下载实际 Base 仓全部 1,710 个 RPM 重扫。
+
+### 1.2 “C++ 内容”的操作定义
+
+扫描器对每个 RPM：解包；以 ELF type 识别运行时 ELF（可执行文件或共享对象）；读取动态段、符号表及 unwind 段。满足下列任一条件的 runtime ELF 记为 C++：
+
+- 存在 Itanium ABI 的 `_Z...` mangled 符号；
+- 动态依赖 C++ runtime。
+
+这个定义与此前平台迁移盘点的运行时二进制口径一致。它不把仅含头文件、源码或静态归档成员而不产出 runtime ELF 的包计入“C++ 二进制”。因此 38 是 runtime ELF 口径，不是“任何形式包含 C++ 文本/静态对象”的上界；这是本任务中的一个明确口径决定。
+
+### 1.3 完整性门禁
+
+- Base 仓 metadata：1,710 条 binary-RPM 记录。
+- 下载及 SHA256 校验：1,710/1,710。
+- 解包/扫描记录：1,710/1,710，非 PASS 为 0。
+- runtime ELF：9,853。
+- C++ runtime ELF：2,292。
+- 完整扫描重算出的 Base C++ provider 集与先行跨层扫描使用的非工具链 provider 核心集合逐字节一致（`cmp=0`）。
+
+## 2. Base 中的 C++ 内容
+
+### 2.1 包总量与 C++ 数量
+
+“包总数”可能指源码包或二进制包，为避免自行替用户选口径，两套均申报：
+
+| 口径 | 全部 Base | 产出 C++ runtime ELF | 其中直接链接 libstdc++ |
+| --- | ---: | ---: | ---: |
+| source-RPM 记录 | 412 | 65 | 59 |
+| 去重源码名 | 251 | 38 | 35 |
+| binary-RPM 记录 | 1,710 | 276 | 245 |
+| 去重二进制名 | 646 | 106 | 96 |
+| runtime ELF | 9,853 | 2,292 | 由逐 ELF 表给出 |
+
+38 个去重源码名为：
+
+`abseil-cpp, bcc-tools, binutils, binutils-aarch64, binutils-armv7l, boost, bpftrace, ccache, cmake, db4, doxygen, elfutils, gcc, gcc-aarch64, gcc-armv7l, gcc-riscv64, gdb, gettext, gmp, gn, golang, groff, icecream, icu, jsoncpp, libsigc++, llvm, ncurses, nghttp2, ninja, openfst, patchelf, pbzip2, pcre, qemu-accel, taglib, tiff, tinyxml2`。
+
+未直接依赖 libstdc++ 的 3 个源码名是交叉编译器包 `gcc-aarch64`、`gcc-armv7l`、`gcc-riscv64`；其 ELF 仍有 C++ 指标，但不是动态链接 `libstdc++.so*`。逐记录清单见：
+
+- `tables/base_cpp_source_records_exact.tsv`
+- `tables/base_cpp_binary_records_exact.tsv`
+- `tables/base_cpp_runtime_elfs_exact.tsv`
+
+## 3. 哪些 Base C++ 包进入设备镜像
+
+### 3.1 判定依据
+
+对 14 份标准镜像 `.packages` 清单的 5,995 条记录，用 `name + arch + version-release + VCS` 与 Base repository metadata 精确关联，再以 RPM SHA256 与实际 C++ ELF 扫描表相交。没有用包名猜测镜像归属。
+
+结果：1,272 条镜像成员记录属于 Base，涉及 134 个 Base 二进制名；其中 114 条是 Base C++ 成员记录，涉及 15 个二进制名、17 条 source-RPM 记录、11 个源码名。
+
+### 3.2 完整名单
+
+| 源码名 | 镜像中的二进制包 |
+| --- | --- |
+| abseil-cpp | abseil-cpp |
+| boost | boost-atomic, boost-filesystem, boost-program-options, boost-system, boost-thread |
+| gcc | libstdc++ |
+| icu | libicu |
+| jsoncpp | jsoncpp |
+| ncurses | libncurses6 |
+| nghttp2 | nghttp2 |
+| patchelf | patchelf |
+| pcre | libpcrecpp |
+| taglib | taglib |
+| tiff | libtiff |
+
+逐镜像、架构、版本、源码包、RPM SHA256 和 ELF 路径见 `tables/base_cpp_image_membership_exact.tsv`。
+
+### 3.3 基准测试/功能测试工具
+
+在这 14 份清单中，显式测试/基准工具名以及已知 Base C++ 工具 `bcc-tools`、`boost-test`、`gdb`、`gdb-server`、`lldb`、`llvm`、`openfst-tools`、`nghttp2-tools`、`doxygen` 均未出现。`patchelf` 在 headed armv7l/aarch64 镜像中出现，但它是通用 ELF 修改工具，现有 metadata 不能证明它被基准或功能测试调用。
+
+`libicu` 的 payload 含 `libicutest.so.78.1` 和若干 ICU 数据/转换工具，但清单只能证明安装，不能证明镜像测试实际调用。因此对“镜像中是否实际用 Base C++ 工具执行基准/功能测试”的回答是 `NOT_OBSERVED`；要进一步确认需要对应镜像测试计划、测试脚本或运行时进程/调用记录。
+
+## 4. Unified 对 Base C++ 库的使用
+
+### 4.1 检索方法
+
+1. 从实际 Unified/Base repository metadata 建立 capability/requirement 候选边。
+2. 只下载相关 233 个 consumer RPM 与 45 个 provider RPM，共 278 个；全部按 repository SHA256 校验后解包。
+3. 对 1,934 个 ELF 读取 `DT_NEEDED` 和 provider `DT_SONAME`，把包级依赖解析到具体 consumer/provider ELF。
+4. 对每条具体 ELF 边求 consumer 动态未定义符号与 provider 动态定义符号的交集，并独立 demangle。
+5. 含直接 `std::` 类型，或属于已知把标准库布局隐藏在 Boost API 后的边，记为布局敏感；有 C++ 符号但未看到标准库布局证据的单列，不能据零显式类型推断安全；仅 C 符号交集的记纯 C。
+
+结果有 807 个唯一包+SONAME 候选，解析为 1,317 条具体 ELF 边，未解析 SONAME 为 0；符号探针覆盖 669 个唯一 ELF。
+
+### 4.2 分类计数
+
+| 粒度 | 布局敏感 | C++ ABI、布局未证明 | 纯 C | 无符号交集 | 合计 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 具体 ELF 边 | 429（411 直接 + 18 Boost 隐藏） | 609 | 97 | 182 | 1,317 |
+| source-RPM 边 | 66 | 31 | 25 | 2 | 124 |
+| 去重源码名逻辑边 | 29 | 18 | 17 | 1 | 65 |
+
+65 条逻辑边涉及 58 个 Unified consumer、11 个 Base provider：
+
+`abseil-cpp, boost, db4, icu, jsoncpp, libsigc++, ncurses, nghttp2, pcre, taglib, tiff`。
+
+已证明布局敏感的 5 个 provider 为：
+
+`abseil-cpp, boost, icu, jsoncpp, pcre`。
+
+29 条布局敏感边涉及 26 个 consumer：
+
+`Open3D, aurum, capi-appfw-capmgr, capi-base-utils, capi-context, cert-svc, chromium-efl, context-app-history, context-job-scheduler, docker-launcher, dotnet-launcher, esplusplayer, grpc, key-manager, libwebappenc, ncnn, nnstreamer, nsjail, org.tizen.multi-assistant-service, protobuf, re2, security-manager, tizen-action, tizen-theme-manager, webapi-plugins, xwalk-extensions-common`。
+
+完整 65 条逐边结果和实际 mangled/demangled 证据见 `tables/actual_cross_logical_edge_classification.tsv`；source-RPM 与 ELF 粒度分别见同目录对应表。
+
+### 4.3 对“跨过去的是什么”的回答
+
+- 29 条逻辑边：已有实际符号证据证明跨过布局敏感标准库类型，属于已实测机制所覆盖的风险形态。
+- 18 条逻辑边：确有 C++ ABI 符号交集，但仅凭动态符号不能断定是否传递布局敏感对象；尤其 Itanium ABI 通常不把非模板函数返回类型编码进名称，且私有成员可能隐藏标准库类型。结论为“布局未证明”，不是“仅名字修饰且安全”。
+- 17 条逻辑边：实际符号交集只有 C 接口。
+- 1 条逻辑边：有 `DT_NEEDED`，但扫描到的动态符号没有交集。
+
+## 5. “483”分布与口径
+
+### 5.1 原统计是什么
+
+历史表 `progress/R22/tables/migration_packages_full.tsv` 有 483 行，但按 `package_name` 去重为 455 个名字；同名包可因架构/Release/source-RPM 记录出现多行。因此“483 个包”实际是历史 source-RPM 记录数，并非 483 个去重源码名。
+
+历史语料明确来自 `Tizen-Base-Toolchain` 与 `Tizen-Unified-Toolchain`，所以已包含当时所谓 Base/工具链侧，不是 Unified-only 计数。
+
+### 5.2 映射到本轮实际快照
+
+| 当前快照归属 | 历史记录行 | 去重 package_name |
+| --- | ---: | ---: |
+| 仅实际 Tizen-Base | 63 | 38 |
+| 仅实际 Tizen-Unified | 416 | 414 |
+| 两边均无同名项 | 4 | 3 |
+| 两边同时存在 | 0 | 0 |
+| 合计 | 483 | 455 |
+
+本轮实际 Base 的 38 个 C++ 源码名全部已经出现在历史 483 表中，缺失数为 0。故在历史口径下，“若 Base 也迁移”的总量仍是 483 条历史记录（455 个去重名），不能再加 38 或 65。
+
+但实际 Base 当前有 65 条 source-RPM 记录，而历史映射为 63 条，这是快照和 Release 漂移的直接体现。要给出“当前 Base + 当前 Unified”的精确总量，必须对当前 Unified 也按本轮同一 ELF 口径完整重算；本任务没有执行该扩展，故该数为 `NOT_AVAILABLE`。
+
+## 6. 可供人工裁决的方向
+
+以下只列作用范围、工作量和残余风险，不作推荐或优先级排序。精确集合见 `OPTIONS.tsv`。
+
+### 方向 A：Base 全部迁移
+
+- 范围：38 个源码名、65 条当前 source-RPM 记录、106 个二进制名、276 条 binary-RPM 记录。
+- 行为：重建实际 Base 中所有产出 C++ runtime ELF 的源码包。
+- 剩余风险：本轮 runtime ELF 范围内不再保留 Base/Unified 混合边；但静态归档、仅头文件及动态加载未形成当前 `DT_NEEDED` 的边不在 38 的定义内。
+- 实测依据：1,710/1,710 RPM 全量扫描。
+
+### 方向 B：只迁移进入镜像的 C++ 包
+
+- 范围：11 个源码名；若把 `gcc` 仅作为 `libstdc++` 运行库载体单列，则为 10 个应用/库源码名。
+- 剩余风险：至少仍有 Unified 实际使用而不在所核镜像集合内的 `db4`、`libsigc++`，以及非镜像工具/库边界。
+- 实测依据：14 个标准镜像清单与实际 RPM SHA256 精确映射。
+
+### 方向 C：只迁移被 Unified 使用的 C++ 库
+
+- 范围：11 个 Base provider 源码名；关联 58 个 Unified consumer、65 条逻辑边。
+- 剩余风险：镜像中只出现在“镜像范围”而不在当前 Unified provider 集的 `gcc`、`patchelf`，以及当前快照未形成动态依赖的其他 Base C++ 内容仍不迁移。
+- 实测依据：实际 ELF `DT_NEEDED`、SONAME 与动态符号交集。
+
+### 方向 D：只迁移已证明布局敏感的 provider
+
+- 范围：5 个 provider：`abseil-cpp, boost, icu, jsoncpp, pcre`。
+- 剩余风险：18 条“C++ ABI、布局未证明”的逻辑边以及其余 Base C++ 边仍存在；“未证明”不能解释为“已证明安全”。
+- 实测依据：29 条逻辑边已出现直接标准库类型或已知 Boost 隐藏标准库布局。
+
+### 方向 E：Base 不迁移，接受并记录边界
+
+- 范围：不改 Base。
+- 剩余风险：29 条已证明布局敏感逻辑边、18 条确有 C++ ABI 耦合但布局未证明的逻辑边，以及 11 个镜像内 Base C++ 源码名继续处于混合运行时范围。
+- 实测依据：本轮边界扫描；此前跨运行时容器最小用例证明链接器不会阻止静默错读。
+
+## 7. 无法查清、盲区与自行判断
+
+### 7.1 无法查清/仍需材料
+
+1. `NOT_OBSERVED`：镜像中 Base C++ 工具是否被具体基准测试或功能测试实际调用。需要测试计划、执行脚本或运行时追踪。
+2. `NOT_AVAILABLE`：当前两个实际快照按完全一致口径重算后的总迁移包数。需要完整扫描当前 Unified 的所有 RPM；本任务没有自行扩大范围。
+3. 18 条逻辑边有真实 C++ ABI 耦合，但动态符号证据不足以判断隐藏布局。要收口需逐 provider API/头文件与 consumer 调用点做源码级审计，或做跨运行时实测。
+4. runtime ELF 口径不覆盖只存在于 `.a` 成员或仅头文件中的 C++ 内容。若人工把“产出 C++ 二进制”定义为包括静态归档，需要追加 archive-member 扫描；本轮没有把它混入既有 483/runtime 口径。
+5. 动态加载且没有静态 `DT_NEEDED` 的跨层使用不在本轮边界表内；需要源码/dlopen 或运行时装载追踪才能覆盖。
+
+### 7.2 本任务中的自行判断
+
+1. 为避免“Base 包总数”的歧义，同时报告 source-RPM 记录、去重源码名、binary-RPM 记录和去重二进制名，不自行选一种充当唯一分母。
+2. 使用 runtime ELF + Itanium 符号/C++ runtime 依赖作为“产出 C++ 二进制”的操作定义，与此前迁移盘点保持一致；静态归档明确列为盲区。
+3. 对 18 条只有 C++ ABI 证据的边保留独立分类，不因符号名中未见 `std::` 就判为“仅名字修饰”。
+4. `gcc` 在设备镜像范围内是 `libstdc++` 运行库的源码载体，因此同时给出含它的 11 和单列它后的 10，避免把两种政策口径混为一谈。
+5. 没有把本轮实际 Base 数和历史 Unified 数相加；快照、项目和记录粒度不同，混算会产生不可复核的总量。
+
+### 7.3 尚存疑问
+
+- 人工裁决迁移范围时，是否要把静态归档/仅头文件包纳入“Base C++ 内容”的政策定义？本报告的 38 是 runtime ELF 口径。
+- 哪一套设备镜像测试计划代表发布验收范围？当前只核对快照中的 14 个 `standard` 镜像。
+- 是否需要另开任务对 18 条“C++ ABI、布局未证明”边做源码级收口？
+
+## 8. 纪律确认
+
+- 未修改任何 project_config、平台源码或补丁。
+- 未实施迁移。
+- 未向 Gerrit 或任何外部源码仓推送；最终只提交并推送本项目仓的 R95 调查材料。
+- 原始命令、stdout、stderr 与退出码在 `progress/R95/raw/`，归档副本在本目录 `raw/`。
+## repos
+repo_id	base_url
+actual_base	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base/tizen-base_20260827.214809/repos/standard/packages
+actual_unified	https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified/tizen-unified_20260829.123409/repos/standard/packages
+## counts
+section	metric	count	unit	note
+base_inventory	source_records	412	source_RPM_records	251 unique source names
+base_inventory	binary_records	1710	binary_RPM_records	646 unique binary names
+base_cpp	cpp_runtime_elf	2292	ELF	operational C++ indicator
+base_cpp	cpp_binary_records	276	binary_RPM_records	106 unique binary names
+base_cpp	cpp_source_records	65	source_RPM_records	38 unique source names
+base_cpp	libstdcpp_binary_records	245	binary_RPM_records	96 unique binary names
+base_cpp	libstdcpp_source_records	59	source_RPM_records	35 unique source names
+images	standard_images	14	images	5995 aggregate manifest rows
+images	base_cpp_membership	114	image-package rows	15 binary names; 17 source records; 11 source names
+cross_layer	resolved_elf_edges	1317	ELF_edges	0 unresolved package SONAMEs
+cross_layer	logical_edges	65	consumer-provider_source_name_edges	58 consumers; 11 providers
+cross_layer	layout_sensitive	29	logical_edges	26 distinct consumers; 5 providers
+cross_layer	cpp_abi_layout_not_proven	18	logical_edges	cannot be called layout-safe
+cross_layer	pure_c	17	logical_edges	C symbol intersection only
+cross_layer	no_symbol_intersection	1	logical_edge	DT_NEEDED exists but no dynamic-symbol intersection
+historical_483	records	483	historical_source_RPM_rows	455 unique package names
+historical_483	base_only	63	historical_rows	38 unique names
+historical_483	unified_only	416	historical_rows	414 unique names
+historical_483	neither_current_snapshot	4	historical_rows	3 unique names
+## evidence
+# R95 关键证据索引
+
+## 身份与资源
+
+- `raw/001_startup_and_resource_gate.*`：工作区、资源门禁原始结果，`gate_result=PASS`。
+- `inputs/actual_repositories.tsv`：本轮使用的实际 Tizen-Base 与 Tizen-Unified 冻结快照 URL。
+- `raw/010_verify_r11_repository_identity.*`、`raw/011_confirm_r11_base_identity.*`：确认历史 R11/R22 语料不是本任务所指的实际 `Tizen-Base`，因此重新取数。
+
+## Base 全量盘点
+
+- `raw/060`–`raw/087`：1,710 个 Base RPM 的下载、SHA256 校验、分批解包、ELF 扫描和最终汇总。
+- `raw/093_validate_complete_base_cpp_tables.*`：`FULL_EXTRACTION_RECORDS=1710`、`FULL_EXTRACTION_NONPASS=0`、源码名闭合检查为 0 缺口。
+- `tables/base_cpp_source_records_exact.tsv`：完整 C++ 源码记录清单。
+- `tables/base_cpp_binary_records_exact.tsv`：完整 C++ 二进制 RPM 清单。
+- `tables/base_cpp_runtime_elfs_exact.tsv`：2,292 个 C++ runtime ELF 清单。
+
+## 设备镜像
+
+- `inputs/image_packages/`：14 份标准镜像 `.packages` 原文。
+- `raw/030_map_base_cpp_packages_to_images.*`、`raw/087_summarize_complete_base_elf_scan.*`：镜像映射与精确重算。
+- `tables/base_cpp_image_membership_exact.tsv`：每个镜像、包、架构、版本、源码包、RPM SHA256 与 ELF 路径。
+- `raw/094_check_benchmark_and_function_test_tools_in_images.*`：测试/基准工具名称核查。
+
+## Unified → Base 边界
+
+- `raw/048`–`raw/059`：相关 RPM 下载、SHA256 校验、1,934 个 ELF 扫描、SONAME 解析、动态符号交集和聚合。
+- `raw/091_verify_cross_edge_input_completeness.*`：用完整 Base 扫描复核 provider 输入，核心集合逐字节一致，`CMP_EXIT_CODE=0`。
+- `tables/actual_cross_elf_edge_evidence.tsv`：逐 ELF 的 UND/DEF 交集、mangled 与 demangled 符号。
+- `tables/actual_cross_source_edge_classification.tsv`：逐 source-RPM 边分类。
+- `tables/actual_cross_logical_edge_classification.tsv`：逐去重源码名边分类。
+- `tables/actual_cross_edge_unresolved.tsv`：表头之外无未解析记录。
+
+## 历史 483 口径
+
+- `raw/043`–`raw/045`、`raw/072`、`raw/089`：历史集合到实际两快照的映射和最终闭合。
+- `tables/migration_483_actual_project_mapping.tsv`：483 条历史记录逐条映射。
+
+## 技术性非零与恢复
+
+- `raw/002`：过宽只读检索主动终止，退出 143；恢复说明同名前缀的 `recovery_note.txt`。
+- `raw/022`：两个猜测的镜像路径返回 404，退出 22；随后改用已确认的 `images/standard/<image>/.packages`。
+- `raw/037`、`raw/039`：Python CSV 字段上限导致退出 1；增加解析器字段上限后分别在 `raw/038`、`raw/040` 成功重跑，未改变判定逻辑。
+- `raw/075`、`raw/097`：日志包装器参数顺序错误，退出 127；分别在 `raw/076`、`raw/098` 按正确接口重跑。
+- `raw/050`：校验命令中的 awk 写法有误，但外层命令退出码被后续命令遮蔽；`raw/051` 用独立、可检查退出码的校验重跑通过。
+
+这些均为命令或日志包装的技术性问题，不是调查判据不成立；失败原文保留，后续成功重跑可逐一对应。
