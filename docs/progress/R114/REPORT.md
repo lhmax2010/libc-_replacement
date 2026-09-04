@@ -9,6 +9,9 @@ R113 的 8 项必改已全部处理；7 项建议改逐项评估后全部采纳�
 - `docs/progress/R114/hq_deliverables_20260904_corrected.tar.gz`
 - SHA256：`8b2ddb0de1b6e8e9ab78f1dcaab4a902fb9cdf6c2bb8f6a407ad805c85f66de7`
 
+材料提交：`1255e73dfd4c733370bb91912b22eb39d1755959`，已普通推送到项目仓
+`codex/r5-ehabi-diagnosis`；首次推送后的远端 SHA 与本地一致。
+
 ## 2. 输入与版本选择
 
 使用工作区根目录 `hq_deliverables_20260904.tar.gz`，SHA256 为：
