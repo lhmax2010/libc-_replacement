@@ -180,6 +180,10 @@ AArch32 汇编，而当前 armv7l GCC/assembler 组合拒绝这些指令。
 完整 candidate diff 为 `tensorflow2_candidate.diff`；远端前后快照和机械比较
 在 `tensorflow_remote_*.tsv`、`verify_tensorflow_remote.sh` 与 `raw/027_*`。
 
+本项目材料首次提交为 `6e75c29c4a70aa3605f3d062e9b5c8d6c6c2e727`，普通
+推送至 `codex/r5-ehabi-diagnosis` 后，本地与远端一致、其他项目分支未变。
+补录推送证据的最终材料提交及再次核验记录见 `PROJECT_PUSH.md`。
+
 ## 8. 技术性错误、自行判断与尚存疑问
 
 技术性错误均发生在判据执行之外或已修正重跑：

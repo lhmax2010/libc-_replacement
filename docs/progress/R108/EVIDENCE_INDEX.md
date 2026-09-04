@@ -15,6 +15,8 @@
   `tensorflow2_candidate.diff`、`raw/023_*`--`raw/027_*`、
   `tensorflow_remote_*.tsv`、`verify_tensorflow_remote.sh`。
 - 可比性机器表：`COMPARABILITY.tsv`。
+- 项目材料提交、普通推送与远端核验：`raw/030_*`--`raw/034_*`、
+  `project_remote_*.tsv`、`verify_project_remote.sh`、`PROJECT_PUSH.md`。
 
 `raw/020_*` 因只读检索的输出管道被 `head` 提前关闭，没有包装器 exitcode；
 恢复说明和替代的有界取证位于 `raw/021_*`。所有裁决所依赖的命令均有独立
