@@ -1,0 +1,134 @@
+--- generator ---
+#!/usr/bin/env python3
+import argparse
+import hashlib
+from pathlib import Path
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--header", required=True, type=Path)
+    parser.add_argument("--source", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+    target_header = args.output / "include/__condition_variable/condition_variable.h"
+    target_source = args.output / "condition_variable_removed.cpp"
+    target_header.parent.mkdir(parents=True, exist_ok=True)
+    header = args.header.read_text()
+    source = args.source.read_text()
+    header_replacements = 0
+    source_replacements = 0
+    for old, new in (
+        ("void wait(unique_lock<mutex>& __lk) _NOEXCEPT;",
+         "void wait(unique_lock<mutex>& __lk);"),
+        ("__do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>) _NOEXCEPT;",
+         "__do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>);"),
+        ("__do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>) _NOEXCEPT;",
+         "__do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>);"),
+        ("__do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>) _NOEXCEPT;",
+         "__do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>);"),
+        ("chrono::time_point<chrono::steady_clock, chrono::nanoseconds> __tp) _NOEXCEPT {",
+         "chrono::time_point<chrono::steady_clock, chrono::nanoseconds> __tp) {"),
+        ("chrono::time_point<_Clock, chrono::nanoseconds> __tp) _NOEXCEPT {",
+         "chrono::time_point<_Clock, chrono::nanoseconds> __tp) {"),
+    ):
+        count = header.count(old)
+        header_replacements += count
+        header = header.replace(old, new)
+    for old, new in (
+        ("void condition_variable::wait(unique_lock<mutex>& lk) noexcept {",
+         "void condition_variable::wait(unique_lock<mutex>& lk) {"),
+        ("chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) noexcept {",
+         "chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) {"),
+    ):
+        count = source.count(old)
+        source_replacements += count
+        source = source.replace(old, new)
+    if header_replacements != 6 or source_replacements != 2:
+        raise SystemExit(f"unexpected replacement counts: header={header_replacements} source={source_replacements}")
+    target_header.write_text(header)
+    target_source.write_text(source)
+    print(f"header_replacements={header_replacements}")
+    print(f"source_replacements={source_replacements}")
+    print(f"input_header_sha256={digest(args.header)}")
+    print(f"output_header_sha256={digest(target_header)}")
+    print(f"input_source_sha256={digest(args.source)}")
+    print(f"output_source_sha256={digest(target_source)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+--- header diff ---
+--- /home/toolchain/development/libc++_replacement/tmp/R68/build-baseline-x86_64/libcxx/test-suite-install/include/c++/v1/__condition_variable/condition_variable.h	2026-08-27 09:28:58.000000000 +0800
++++ docs/progress/R109/build/w1/removed_overlay/include/__condition_variable/condition_variable.h	2026-09-04 22:43:25.448261131 +0800
+@@ -104,7 +104,7 @@
+   void notify_one() _NOEXCEPT;
+   void notify_all() _NOEXCEPT;
+ 
+-  void wait(unique_lock<mutex>& __lk) _NOEXCEPT;
++  void wait(unique_lock<mutex>& __lk);
+ 
+   template <class _Predicate>
+   _LIBCPP_HIDE_FROM_ABI void wait(unique_lock<mutex>& __lk, _Predicate __pred) {
+@@ -174,14 +174,14 @@
+ 
+ private:
+   void
+-  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>) _NOEXCEPT;
++  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>);
+ #  if _LIBCPP_HAS_COND_CLOCKWAIT
+   _LIBCPP_HIDE_FROM_ABI void
+-  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>) _NOEXCEPT;
++  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>);
+ #  endif
+   template <class _Clock>
+   _LIBCPP_HIDE_FROM_ABI void
+-  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>) _NOEXCEPT;
++  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>);
+ };
+ #endif // _LIBCPP_HAS_THREADS
+ 
+@@ -195,7 +195,7 @@
+ 
+ #  if _LIBCPP_HAS_COND_CLOCKWAIT
+ inline void condition_variable::__do_timed_wait(
+-    unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds> __tp) _NOEXCEPT {
++    unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds> __tp) {
+   using namespace chrono;
+   if (!__lk.owns_lock())
+     std::__throw_system_error(EPERM, "condition_variable::timed wait: mutex not locked");
+@@ -219,7 +219,7 @@
+ 
+ template <class _Clock>
+ inline void condition_variable::__do_timed_wait(unique_lock<mutex>& __lk,
+-                                                chrono::time_point<_Clock, chrono::nanoseconds> __tp) _NOEXCEPT {
++                                                chrono::time_point<_Clock, chrono::nanoseconds> __tp) {
+   wait_for(__lk, __tp - _Clock::now());
+ }
+ 
+--- source diff ---
+--- codes/llvm/libcxx/src/condition_variable.cpp	2026-08-05 11:41:57.701719952 +0800
++++ docs/progress/R109/build/w1/removed_overlay/condition_variable_removed.cpp	2026-09-04 22:43:25.448311243 +0800
+@@ -30,7 +30,7 @@
+ 
+ void condition_variable::notify_all() noexcept { __libcpp_condvar_broadcast(&__cv_); }
+ 
+-void condition_variable::wait(unique_lock<mutex>& lk) noexcept {
++void condition_variable::wait(unique_lock<mutex>& lk) {
+   if (!lk.owns_lock())
+     std::__throw_system_error(EPERM, "condition_variable::wait: mutex not locked");
+   int ec = __libcpp_condvar_wait(&__cv_, lk.mutex()->native_handle());
+@@ -39,7 +39,7 @@
+ }
+ 
+ void condition_variable::__do_timed_wait(unique_lock<mutex>& lk,
+-                                         chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) noexcept {
++                                         chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) {
+   using namespace chrono;
+   if (!lk.owns_lock())
+     std::__throw_system_error(EPERM, "condition_variable::timed wait: mutex not locked");
