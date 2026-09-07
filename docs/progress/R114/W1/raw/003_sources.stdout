@@ -1,0 +1,576 @@
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	
+     9	#include <mutex>
+    10	#include <shared_mutex>
+    11	#if defined(__ELF__) && defined(_LIBCPP_LINK_PTHREAD_LIB)
+    12	#  pragma comment(lib, "pthread")
+    13	#endif
+    14	
+    15	_LIBCPP_BEGIN_NAMESPACE_STD
+    16	
+    17	// Shared Mutex Base
+    18	__shared_mutex_base::__shared_mutex_base() : __state_(0) {}
+    19	
+    20	// Exclusive ownership
+    21	
+    22	void __shared_mutex_base::lock() {
+    23	  unique_lock<mutex> lk(__mut_);
+    24	  while (__state_ & __write_entered_)
+    25	    __gate1_.wait(lk);
+    26	  __state_ |= __write_entered_;
+    27	  while (__state_ & __n_readers_)
+    28	    __gate2_.wait(lk);
+    29	}
+    30	
+    31	bool __shared_mutex_base::try_lock() {
+    32	  unique_lock<mutex> lk(__mut_);
+    33	  if (__state_ == 0) {
+    34	    __state_ = __write_entered_;
+    35	    return true;
+    36	  }
+    37	  return false;
+    38	}
+    39	
+    40	void __shared_mutex_base::unlock() {
+    41	  {
+    42	    lock_guard<mutex> _(__mut_);
+    43	    __state_ = 0;
+    44	  }
+    45	  __gate1_.notify_all();
+    46	}
+    47	
+    48	// Shared ownership
+    49	
+    50	void __shared_mutex_base::lock_shared() {
+    51	  unique_lock<mutex> lk(__mut_);
+    52	  while ((__state_ & __write_entered_) || (__state_ & __n_readers_) == __n_readers_)
+    53	    __gate1_.wait(lk);
+    54	  unsigned num_readers = (__state_ & __n_readers_) + 1;
+    55	  __state_ &= ~__n_readers_;
+    56	  __state_ |= num_readers;
+    57	}
+    58	
+    59	bool __shared_mutex_base::try_lock_shared() {
+    60	  unique_lock<mutex> lk(__mut_);
+    61	  unsigned num_readers = __state_ & __n_readers_;
+    62	  if (!(__state_ & __write_entered_) && num_readers != __n_readers_) {
+    63	    ++num_readers;
+    64	    __state_ &= ~__n_readers_;
+    65	    __state_ |= num_readers;
+    66	    return true;
+    67	  }
+    68	  return false;
+    69	}
+    70	
+    71	void __shared_mutex_base::unlock_shared() {
+    72	  unique_lock<mutex> lk(__mut_);
+    73	  unsigned num_readers = (__state_ & __n_readers_) - 1;
+    74	  __state_ &= ~__n_readers_;
+    75	  __state_ |= num_readers;
+    76	  if (__state_ & __write_entered_) {
+    77	    if (num_readers == 0) {
+    78	      lk.unlock();
+    79	      __gate2_.notify_one();
+    80	    }
+    81	  } else {
+    82	    if (num_readers == __n_readers_ - 1) {
+    83	      lk.unlock();
+    84	      __gate1_.notify_one();
+    85	    }
+    86	  }
+    87	}
+    88	
+    89	// Shared Timed Mutex
+    90	// These routines are here for ABI stability
+    91	shared_timed_mutex::shared_timed_mutex() : __base_() {}
+    92	void shared_timed_mutex::lock() { return __base_.lock(); }
+    93	bool shared_timed_mutex::try_lock() { return __base_.try_lock(); }
+    94	void shared_timed_mutex::unlock() { return __base_.unlock(); }
+    95	void shared_timed_mutex::lock_shared() { return __base_.lock_shared(); }
+    96	bool shared_timed_mutex::try_lock_shared() { return __base_.try_lock_shared(); }
+    97	void shared_timed_mutex::unlock_shared() { return __base_.unlock_shared(); }
+    98	
+    99	_LIBCPP_END_NAMESPACE_STD
+   180	  void unlock_shared();
+   181	
+   182	  //     typedef implementation-defined native_handle_type; // See 30.2.3
+   183	  //     native_handle_type native_handle(); // See 30.2.3
+   184	};
+   185	
+   186	#      if _LIBCPP_STD_VER >= 17
+   187	class _LIBCPP_EXPORTED_FROM_ABI _LIBCPP_CAPABILITY("shared_mutex") shared_mutex {
+   188	  __shared_mutex_base __base_;
+   189	
+   190	public:
+   191	  _LIBCPP_HIDE_FROM_ABI shared_mutex() : __base_() {}
+   192	  _LIBCPP_HIDE_FROM_ABI ~shared_mutex() = default;
+   193	
+   194	  shared_mutex(const shared_mutex&)            = delete;
+   195	  shared_mutex& operator=(const shared_mutex&) = delete;
+   196	
+   197	  // Exclusive ownership
+   198	  _LIBCPP_ACQUIRE_CAPABILITY() _LIBCPP_HIDE_FROM_ABI void lock() { return __base_.lock(); }
+   199	  _LIBCPP_TRY_ACQUIRE_CAPABILITY(true) _LIBCPP_HIDE_FROM_ABI bool try_lock() { return __base_.try_lock(); }
+   200	  _LIBCPP_RELEASE_CAPABILITY _LIBCPP_HIDE_FROM_ABI void unlock() { return __base_.unlock(); }
+   201	
+   202	  // Shared ownership
+   203	  _LIBCPP_ACQUIRE_SHARED_CAPABILITY _LIBCPP_HIDE_FROM_ABI void lock_shared() { return __base_.lock_shared(); }
+   204	  _LIBCPP_TRY_ACQUIRE_SHARED_CAPABILITY(true) _LIBCPP_HIDE_FROM_ABI bool try_lock_shared() {
+   205	    return __base_.try_lock_shared();
+   206	  }
+   207	  _LIBCPP_RELEASE_SHARED_CAPABILITY _LIBCPP_HIDE_FROM_ABI void unlock_shared() { return __base_.unlock_shared(); }
+   208	
+   209	  //     typedef __shared_mutex_base::native_handle_type native_handle_type;
+   210	  //     _LIBCPP_HIDE_FROM_ABI native_handle_type native_handle() { return __base::unlock_shared(); }
+   211	};
+   212	#      endif
+   213	
+   214	class _LIBCPP_EXPORTED_FROM_ABI _LIBCPP_CAPABILITY("shared_timed_mutex") shared_timed_mutex {
+   215	  __shared_mutex_base __base_;
+   216	
+   217	public:
+   218	  shared_timed_mutex();
+   219	  _LIBCPP_HIDE_FROM_ABI ~shared_timed_mutex() = default;
+   220	
+   221	  shared_timed_mutex(const shared_timed_mutex&)            = delete;
+   222	  shared_timed_mutex& operator=(const shared_timed_mutex&) = delete;
+   223	
+   224	  // Exclusive ownership
+   225	  void lock() _LIBCPP_ACQUIRE_CAPABILITY();
+   226	  _LIBCPP_TRY_ACQUIRE_CAPABILITY(true) bool try_lock();
+   227	  template <class _Rep, class _Period>
+   228	  _LIBCPP_TRY_ACQUIRE_CAPABILITY(true) _LIBCPP_HIDE_FROM_ABI bool
+   229	  try_lock_for(const chrono::duration<_Rep, _Period>& __rel_time) {
+   230	    return try_lock_until(chrono::steady_clock::now() + __rel_time);
+   231	  }
+   232	
+   233	  template <class _Clock, class _Duration>
+   234	  _LIBCPP_TRY_ACQUIRE_CAPABILITY(true) _LIBCPP_HIDE_FROM_ABI bool
+   235	  try_lock_until(const chrono::time_point<_Clock, _Duration>& __abs_time) {
+   236	    unique_lock<mutex> __lk(__base_.__mut_);
+   237	    if (__base_.__state_ & __base_.__write_entered_) {
+   238	      while (true) {
+   239	        cv_status __status = __base_.__gate1_.wait_until(__lk, __abs_time);
+   240	        if ((__base_.__state_ & __base_.__write_entered_) == 0)
+   241	          break;
+   242	        if (__status == cv_status::timeout)
+   243	          return false;
+   244	      }
+   245	    }
+   246	    __base_.__state_ |= __base_.__write_entered_;
+   247	    if (__base_.__state_ & __base_.__n_readers_) {
+   248	      while (true) {
+   249	        cv_status __status = __base_.__gate2_.wait_until(__lk, __abs_time);
+   250	        if ((__base_.__state_ & __base_.__n_readers_) == 0)
+   251	          break;
+   252	        if (__status == cv_status::timeout) {
+   253	          __base_.__state_ &= ~__base_.__write_entered_;
+   254	          __base_.__gate1_.notify_all();
+   255	          return false;
+   256	        }
+   257	      }
+   258	    }
+   259	    return true;
+   260	  }
+   261	
+   262	  _LIBCPP_RELEASE_CAPABILITY void unlock();
+   263	
+   264	  // Shared ownership
+   265	  _LIBCPP_ACQUIRE_SHARED_CAPABILITY void lock_shared();
+   266	  _LIBCPP_TRY_ACQUIRE_SHARED_CAPABILITY(true) bool try_lock_shared();
+   267	  template <class _Rep, class _Period>
+   268	  _LIBCPP_TRY_ACQUIRE_SHARED_CAPABILITY(true) _LIBCPP_HIDE_FROM_ABI bool
+   269	  try_lock_shared_for(const chrono::duration<_Rep, _Period>& __rel_time) {
+   270	    return try_lock_shared_until(chrono::steady_clock::now() + __rel_time);
+   271	  }
+   272	
+   273	  template <class _Clock, class _Duration>
+   274	  _LIBCPP_TRY_ACQUIRE_SHARED_CAPABILITY(true) _LIBCPP_HIDE_FROM_ABI bool
+   275	  try_lock_shared_until(const chrono::time_point<_Clock, _Duration>& __abs_time) {
+   276	    unique_lock<mutex> __lk(__base_.__mut_);
+   277	    if ((__base_.__state_ & __base_.__write_entered_) ||
+   278	        (__base_.__state_ & __base_.__n_readers_) == __base_.__n_readers_) {
+   279	      while (true) {
+   280	        cv_status __status = __base_.__gate1_.wait_until(__lk, __abs_time);
+   281	        if ((__base_.__state_ & __base_.__write_entered_) == 0 &&
+   282	            (__base_.__state_ & __base_.__n_readers_) < __base_.__n_readers_)
+   283	          break;
+   284	        if (__status == cv_status::timeout)
+   285	          return false;
+   286	      }
+   287	    }
+   288	    unsigned __num_readers = (__base_.__state_ & __base_.__n_readers_) + 1;
+   289	    __base_.__state_ &= ~__base_.__n_readers_;
+   290	    __base_.__state_ |= __num_readers;
+   291	    return true;
+   292	  }
+   293	
+   294	  _LIBCPP_RELEASE_SHARED_CAPABILITY void unlock_shared();
+   295	};
+   296	
+   297	template <class _Mutex>
+   298	class shared_lock {
+   299	public:
+   300	  typedef _Mutex mutex_type;
+   301	
+   302	private:
+   303	  mutex_type* __m_;
+   304	  bool __owns_;
+   305	
+   306	public:
+   307	  _LIBCPP_HIDE_FROM_ABI shared_lock() _NOEXCEPT : __m_(nullptr), __owns_(false) {}
+   308	
+   309	  _LIBCPP_HIDE_FROM_ABI explicit shared_lock(mutex_type& __m) : __m_(std::addressof(__m)), __owns_(true) {
+   310	    __m_->lock_shared();
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	
+     9	#include <future>
+    10	#include <string>
+    11	
+    12	_LIBCPP_BEGIN_NAMESPACE_STD
+    13	
+    14	class _LIBCPP_HIDDEN __future_error_category : public __do_message {
+    15	public:
+    16	  virtual const char* name() const noexcept;
+    17	  virtual string message(int ev) const;
+    18	};
+    19	
+    20	const char* __future_error_category::name() const noexcept { return "future"; }
+    21	
+    22	_LIBCPP_DIAGNOSTIC_PUSH
+    23	_LIBCPP_CLANG_DIAGNOSTIC_IGNORED("-Wswitch")
+    24	_LIBCPP_GCC_DIAGNOSTIC_IGNORED("-Wswitch")
+    25	
+    26	string __future_error_category::message(int ev) const {
+    27	  switch (static_cast<future_errc>(ev)) {
+    28	  case future_errc(0): // For backwards compatibility with C++11 (LWG 2056)
+    29	  case future_errc::broken_promise:
+    30	    return string("The associated promise has been destructed prior "
+    31	                  "to the associated state becoming ready.");
+    32	  case future_errc::future_already_retrieved:
+    33	    return string("The future has already been retrieved from "
+    34	                  "the promise or packaged_task.");
+    35	  case future_errc::promise_already_satisfied:
+    36	    return string("The state of the promise has already been set.");
+    37	  case future_errc::no_state:
+    38	    return string("Operation not permitted on an object without "
+    39	                  "an associated state.");
+    40	  }
+    41	  return string("unspecified future_errc value\n");
+    42	}
+    43	
+    44	_LIBCPP_DIAGNOSTIC_POP
+    45	
+    46	const error_category& future_category() noexcept {
+    47	  union AvoidDestroyingFutureCategory {
+    48	    __future_error_category future_error_category;
+    49	    constexpr explicit AvoidDestroyingFutureCategory() : future_error_category() {}
+    50	    ~AvoidDestroyingFutureCategory() {}
+    51	  };
+    52	  constinit static AvoidDestroyingFutureCategory helper;
+    53	  return helper.future_error_category;
+    54	}
+    55	
+    56	future_error::future_error(error_code __ec) : logic_error(__ec.message()), __ec_(__ec) {}
+    57	
+    58	future_error::~future_error() noexcept {}
+    59	
+    60	void __assoc_sub_state::__on_zero_shared() noexcept { delete this; }
+    61	
+    62	void __assoc_sub_state::set_value() {
+    63	  unique_lock<mutex> __lk(__mut_);
+    64	  if (__has_value())
+    65	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    66	  __state_ |= __constructed | ready;
+    67	  __cv_.notify_all();
+    68	}
+    69	
+    70	void __assoc_sub_state::set_value_at_thread_exit() {
+    71	  unique_lock<mutex> __lk(__mut_);
+    72	  if (__has_value())
+    73	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    74	  __state_ |= __constructed;
+    75	  __thread_local_data()->__make_ready_at_thread_exit(this);
+    76	}
+    77	
+    78	void __assoc_sub_state::set_exception(exception_ptr __p) {
+    79	  unique_lock<mutex> __lk(__mut_);
+    80	  if (__has_value())
+    81	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    82	  __exception_ = __p;
+    83	  __state_ |= ready;
+    84	  __cv_.notify_all();
+    85	}
+    86	
+    87	void __assoc_sub_state::set_exception_at_thread_exit(exception_ptr __p) {
+    88	  unique_lock<mutex> __lk(__mut_);
+    89	  if (__has_value())
+    90	    std::__throw_future_error(future_errc::promise_already_satisfied);
+    91	  __exception_ = __p;
+    92	  __thread_local_data()->__make_ready_at_thread_exit(this);
+    93	}
+    94	
+    95	void __assoc_sub_state::__make_ready() {
+    96	  unique_lock<mutex> __lk(__mut_);
+    97	  __state_ |= ready;
+    98	  __cv_.notify_all();
+    99	}
+   100	
+   101	void __assoc_sub_state::copy() {
+   102	  unique_lock<mutex> __lk(__mut_);
+   103	  __sub_wait(__lk);
+   104	  if (__exception_ != nullptr)
+   105	    rethrow_exception(__exception_);
+   106	}
+   107	
+   108	void __assoc_sub_state::wait() {
+   109	  unique_lock<mutex> __lk(__mut_);
+   110	  __sub_wait(__lk);
+   111	}
+   112	
+   113	void __assoc_sub_state::__sub_wait(unique_lock<mutex>& __lk) {
+   114	  if (!__is_ready()) {
+   115	    if (__state_ & static_cast<unsigned>(deferred)) {
+   116	      __state_ &= ~static_cast<unsigned>(deferred);
+   117	      __lk.unlock();
+   118	      __execute();
+   119	    } else
+   120	      while (!__is_ready())
+   121	        __cv_.wait(__lk);
+   122	  }
+   123	}
+   124	
+   125	void __assoc_sub_state::__execute() { std::__throw_future_error(future_errc::no_state); }
+   126	
+   127	future<void>::future(__assoc_sub_state* __state) : __state_(__state) { __state_->__attach_future(); }
+   128	
+   129	future<void>::~future() {
+   130	  if (__state_)
+   131	    __state_->__release_shared();
+   132	}
+   133	
+   134	void future<void>::get() {
+   135	  unique_ptr<__shared_count, __release_shared_count> __(__state_);
+   136	  __assoc_sub_state* __s = __state_;
+   137	  __state_               = nullptr;
+   138	  __s->copy();
+   139	}
+   140	
+   141	promise<void>::promise() : __state_(new __assoc_sub_state) {}
+   142	
+   143	promise<void>::~promise() {
+   144	  if (__state_) {
+   145	#if _LIBCPP_HAS_EXCEPTIONS
+   146	    if (!__state_->__has_value() && __state_->use_count() > 1)
+   147	      __state_->set_exception(make_exception_ptr(future_error(future_errc::broken_promise)));
+   148	#endif // _LIBCPP_HAS_EXCEPTIONS
+   149	    __state_->__release_shared();
+   150	  }
+   151	}
+   152	
+   153	future<void> promise<void>::get_future() {
+   154	  if (__state_ == nullptr)
+   155	    std::__throw_future_error(future_errc::no_state);
+   156	  return future<void>(__state_);
+   157	}
+   158	
+   159	void promise<void>::set_value() {
+   160	  if (__state_ == nullptr)
+   161	    std::__throw_future_error(future_errc::no_state);
+   162	  __state_->set_value();
+   163	}
+   164	
+   165	void promise<void>::set_exception(exception_ptr __p) {
+   166	  if (__state_ == nullptr)
+   167	    std::__throw_future_error(future_errc::no_state);
+   168	  __state_->set_exception(__p);
+   169	}
+   170	
+   171	void promise<void>::set_value_at_thread_exit() {
+   172	  if (__state_ == nullptr)
+   173	    std::__throw_future_error(future_errc::no_state);
+   174	  __state_->set_value_at_thread_exit();
+   175	}
+   176	
+   177	void promise<void>::set_exception_at_thread_exit(exception_ptr __p) {
+   178	  if (__state_ == nullptr)
+   179	    std::__throw_future_error(future_errc::no_state);
+   180	  __state_->set_exception_at_thread_exit(__p);
+   181	}
+   182	
+   183	shared_future<void>::~shared_future() {
+   184	  if (__state_)
+   185	    __state_->__release_shared();
+   186	}
+   187	
+   188	shared_future<void>& shared_future<void>::operator=(const shared_future& __rhs) {
+   189	  if (__rhs.__state_)
+   190	    __rhs.__state_->__add_shared();
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	
+     9	#include <__config>
+    10	#include <__mutex/once_flag.h>
+    11	#include <__utility/exception_guard.h>
+    12	
+    13	#if _LIBCPP_HAS_THREADS
+    14	#  include <__thread/support.h>
+    15	#endif
+    16	
+    17	#include "include/atomic_support.h"
+    18	
+    19	_LIBCPP_BEGIN_NAMESPACE_STD
+    20	
+    21	// If dispatch_once_f ever handles C++ exceptions, and if one can get to it
+    22	// without illegal macros (unexpected macros not beginning with _UpperCase or
+    23	// __lowercase), and if it stops spinning waiting threads, then call_once should
+    24	// call into dispatch_once_f instead of here. Relevant radar this code needs to
+    25	// keep in sync with:  7741191.
+    26	
+    27	#if _LIBCPP_HAS_THREADS
+    28	static constinit __libcpp_mutex_t mut  = _LIBCPP_MUTEX_INITIALIZER;
+    29	static constinit __libcpp_condvar_t cv = _LIBCPP_CONDVAR_INITIALIZER;
+    30	#endif
+    31	
+    32	void __call_once(volatile once_flag::_State_type& flag, void* arg, void (*func)(void*)) {
+    33	#if !_LIBCPP_HAS_THREADS
+    34	
+    35	  if (flag == once_flag::_Unset) {
+    36	    auto guard = std::__make_exception_guard([&flag] { flag = once_flag::_Unset; });
+    37	    flag       = once_flag::_Pending;
+    38	    func(arg);
+    39	    flag = once_flag::_Complete;
+    40	    guard.__complete();
+    41	  }
+    42	
+    43	#else // !_LIBCPP_HAS_THREADS
+    44	
+    45	  __libcpp_mutex_lock(&mut);
+    46	  while (flag == once_flag::_Pending)
+    47	    __libcpp_condvar_wait(&cv, &mut);
+    48	  if (flag == once_flag::_Unset) {
+    49	    auto guard = std::__make_exception_guard([&flag] {
+    50	      __libcpp_mutex_lock(&mut);
+    51	      __libcpp_relaxed_store(&flag, once_flag::_Unset);
+    52	      __libcpp_mutex_unlock(&mut);
+    53	      __libcpp_condvar_broadcast(&cv);
+    54	    });
+    55	
+    56	    __libcpp_relaxed_store(&flag, once_flag::_Pending);
+    57	    __libcpp_mutex_unlock(&mut);
+    58	    func(arg);
+    59	    __libcpp_mutex_lock(&mut);
+    60	    __libcpp_atomic_store(&flag, once_flag::_Complete, _AO_Release);
+    61	    __libcpp_mutex_unlock(&mut);
+    62	    __libcpp_condvar_broadcast(&cv);
+    63	    guard.__complete();
+    64	  } else {
+    65	    __libcpp_mutex_unlock(&mut);
+    66	  }
+    67	
+    68	#endif // !_LIBCPP_HAS_THREADS
+    69	}
+    70	
+    71	_LIBCPP_END_NAMESPACE_STD
+codes/llvm/libcxx/include/__cxx03/future:305:        wait_for(const chrono::duration<Rep, Period>& rel_time) const;
+codes/llvm/libcxx/include/__cxx03/future:308:        wait_until(const chrono::time_point<Clock, Duration>& abs_time) const;
+codes/llvm/libcxx/include/__cxx03/future:501:  void wait();
+codes/llvm/libcxx/include/__cxx03/future:503:  future_status _LIBCPP_HIDE_FROM_ABI wait_for(const chrono::duration<_Rep, _Period>& __rel_time) const;
+codes/llvm/libcxx/include/__cxx03/future:506:  wait_until(const chrono::time_point<_Clock, _Duration>& __abs_time) const;
+codes/llvm/libcxx/include/__cxx03/future:512:future_status __assoc_sub_state::wait_until(const chrono::time_point<_Clock, _Duration>& __abs_time) const {
+codes/llvm/libcxx/include/__cxx03/future:517:    __cv_.wait_until(__lk, __abs_time);
+codes/llvm/libcxx/include/__cxx03/future:524:inline future_status __assoc_sub_state::wait_for(const chrono::duration<_Rep, _Period>& __rel_time) const {
+codes/llvm/libcxx/include/__cxx03/future:525:  return wait_until(chrono::steady_clock::now() + __rel_time);
+codes/llvm/libcxx/include/__cxx03/future:807:  this->wait();
+codes/llvm/libcxx/include/__cxx03/future:844:  this->wait();
+codes/llvm/libcxx/include/__cxx03/future:901:  _LIBCPP_HIDE_FROM_ABI void wait() const { __state_->wait(); }
+codes/llvm/libcxx/include/__cxx03/future:903:  _LIBCPP_HIDE_FROM_ABI future_status wait_for(const chrono::duration<_Rep, _Period>& __rel_time) const {
+codes/llvm/libcxx/include/__cxx03/future:904:    return __state_->wait_for(__rel_time);
+codes/llvm/libcxx/include/__cxx03/future:907:  _LIBCPP_HIDE_FROM_ABI future_status wait_until(const chrono::time_point<_Clock, _Duration>& __abs_time) const {
+codes/llvm/libcxx/include/__cxx03/future:908:    return __state_->wait_until(__abs_time);
+codes/llvm/libcxx/include/__cxx03/future:972:  _LIBCPP_HIDE_FROM_ABI void wait() const { __state_->wait(); }
+codes/llvm/libcxx/include/__cxx03/future:974:  _LIBCPP_HIDE_FROM_ABI future_status wait_for(const chrono::duration<_Rep, _Period>& __rel_time) const {
+codes/llvm/libcxx/include/__cxx03/future:975:    return __state_->wait_for(__rel_time);
+codes/llvm/libcxx/include/__cxx03/future:978:  _LIBCPP_HIDE_FROM_ABI future_status wait_until(const chrono::time_point<_Clock, _Duration>& __abs_time) const {
+codes/llvm/libcxx/include/__cxx03/future:979:    return __state_->wait_until(__abs_time);
+codes/llvm/libcxx/include/__cxx03/future:1039:  _LIBCPP_HIDE_FROM_ABI void wait() const { __state_->wait(); }
+codes/llvm/libcxx/include/__cxx03/future:1041:  _LIBCPP_HIDE_FROM_ABI future_status wait_for(const chrono::duration<_Rep, _Period>& __rel_time) const {
+codes/llvm/libcxx/include/__cxx03/future:1042:    return __state_->wait_for(__rel_time);
+codes/llvm/libcxx/include/__cxx03/future:1045:  _LIBCPP_HIDE_FROM_ABI future_status wait_until(const chrono::time_point<_Clock, _Duration>& __abs_time) const {
+codes/llvm/libcxx/include/__cxx03/future:1046:    return __state_->wait_until(__abs_time);
+codes/llvm/libcxx/include/__cxx03/future:1788:  _LIBCPP_HIDE_FROM_ABI void wait() const { __state_->wait(); }
+codes/llvm/libcxx/include/__cxx03/future:1790:  _LIBCPP_HIDE_FROM_ABI future_status wait_for(const chrono::duration<_Rep, _Period>& __rel_time) const {
+codes/llvm/libcxx/include/__cxx03/future:1791:    return __state_->wait_for(__rel_time);
+codes/llvm/libcxx/include/__cxx03/future:1794:  _LIBCPP_HIDE_FROM_ABI future_status wait_until(const chrono::time_point<_Clock, _Duration>& __abs_time) const {
+codes/llvm/libcxx/include/__cxx03/future:1795:    return __state_->wait_until(__abs_time);
+codes/llvm/libcxx/include/__cxx03/future:1844:  _LIBCPP_HIDE_FROM_ABI void wait() const { __state_->wait(); }
+codes/llvm/libcxx/include/__cxx03/future:1846:  _LIBCPP_HIDE_FROM_ABI future_status wait_for(const chrono::duration<_Rep, _Period>& __rel_time) const {
+codes/llvm/libcxx/include/__cxx03/future:1847:    return __state_->wait_for(__rel_time);
+codes/llvm/libcxx/include/__cxx03/future:1850:  _LIBCPP_HIDE_FROM_ABI future_status wait_until(const chrono::time_point<_Clock, _Duration>& __abs_time) const {
+codes/llvm/libcxx/include/__cxx03/future:1851:    return __state_->wait_until(__abs_time);
+codes/llvm/libcxx/include/__cxx03/future:1900:  _LIBCPP_HIDE_FROM_ABI void wait() const { __state_->wait(); }
+codes/llvm/libcxx/include/__cxx03/future:1902:  _LIBCPP_HIDE_FROM_ABI future_status wait_for(const chrono::duration<_Rep, _Period>& __rel_time) const {
+codes/llvm/libcxx/include/__cxx03/future:1903:    return __state_->wait_for(__rel_time);
+codes/llvm/libcxx/include/__cxx03/future:1906:  _LIBCPP_HIDE_FROM_ABI future_status wait_until(const chrono::time_point<_Clock, _Duration>& __abs_time) const {
+codes/llvm/libcxx/include/__cxx03/future:1907:    return __state_->wait_until(__abs_time);
+codes/llvm/libcxx/include/__cxx03/atomic:104:    void wait(T, memory_order = memory_order::seq_cst) const volatile noexcept;
+codes/llvm/libcxx/include/__cxx03/atomic:105:    void wait(T, memory_order = memory_order::seq_cst) const noexcept;
+codes/llvm/libcxx/include/__cxx03/atomic:187:    void wait(integral, memory_order = memory_order::seq_cst) const volatile noexcept;
+codes/llvm/libcxx/include/__cxx03/atomic:188:    void wait(integral, memory_order = memory_order::seq_cst) const noexcept;
+codes/llvm/libcxx/include/__cxx03/atomic:257:    void wait(T*, memory_order = memory_order::seq_cst) const volatile noexcept;
+codes/llvm/libcxx/include/__cxx03/atomic:258:    void wait(T*, memory_order = memory_order::seq_cst) const noexcept;
+codes/llvm/libcxx/include/__cxx03/atomic:324:  void wait(floating-point-type, memory_order = memory_order::seq_cst) const volatile noexcept;
+codes/llvm/libcxx/include/__cxx03/atomic:325:  void wait(floating-point-type, memory_order = memory_order::seq_cst) const noexcept;
+codes/llvm/libcxx/include/__cxx03/atomic:537:    void wait(bool, memory_order = memory_order::seq_cst) const volatile noexcept;
+codes/llvm/libcxx/include/__cxx03/atomic:538:    void wait(bool, memory_order = memory_order::seq_cst) const noexcept;
+codes/llvm/libcxx/include/__cxx03/__thread/support.h:57:_LIBCPP_NO_THREAD_SAFETY_ANALYSIS int __libcpp_condvar_wait(__libcpp_condvar_t*, __libcpp_mutex_t*);
+codes/llvm/libcxx/include/__cxx03/__thread/support.h:59:int __libcpp_condvar_timedwait(__libcpp_condvar_t*, __libcpp_mutex_t*, __libcpp_timespec_t*);
+codes/llvm/libcxx/include/__cxx03/__thread/this_thread.h:58:    __cv.wait_until(__lk, __t);
+codes/llvm/libcxx/include/__cxx03/__thread/support/c11.h:96:__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m) {
+codes/llvm/libcxx/include/__cxx03/__thread/support/c11.h:101:__libcpp_condvar_timedwait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m, timespec* __ts) {
+codes/llvm/libcxx/include/__cxx03/__thread/support/windows.h:69:__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m);
+codes/llvm/libcxx/include/__cxx03/__thread/support/windows.h:72:__libcpp_condvar_timedwait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m, __libcpp_timespec_t* __ts);
+codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:121:__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m) {
+codes/llvm/libcxx/include/__cxx03/__thread/support/pthread.h:126:__libcpp_condvar_timedwait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m, __libcpp_timespec_t* __ts) {
+codes/llvm/libcxx/include/__cxx03/mutex:267:    __no_timeout = __cv_.wait_until(__lk, __t) == cv_status::no_timeout;
+codes/llvm/libcxx/include/__cxx03/mutex:313:    __no_timeout = __cv_.wait_until(__lk, __t) == cv_status::no_timeout;
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:60:  void wait(unique_lock<mutex>& __lk) _NOEXCEPT;
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:62:  _LIBCPP_METHOD_TEMPLATE_IMPLICIT_INSTANTIATION_VIS void wait(unique_lock<mutex>& __lk, _Predicate __pred);
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:66:  wait_until(unique_lock<mutex>& __lk, const chrono::time_point<_Clock, _Duration>& __t);
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:70:  wait_until(unique_lock<mutex>& __lk, const chrono::time_point<_Clock, _Duration>& __t, _Predicate __pred);
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:74:  wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d);
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:78:  wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d, _Predicate __pred);
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:85:  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>) _NOEXCEPT;
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:88:  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>) _NOEXCEPT;
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:92:  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>) _NOEXCEPT;
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:145:void condition_variable::wait(unique_lock<mutex>& __lk, _Predicate __pred) {
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:147:    wait(__lk);
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:151:cv_status condition_variable::wait_until(unique_lock<mutex>& __lk, const chrono::time_point<_Clock, _Duration>& __t) {
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:161:  __do_timed_wait(__lk, __t_ns);
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:166:bool condition_variable::wait_until(
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:169:    if (wait_until(__lk, __t) == cv_status::timeout)
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:176:cv_status condition_variable::wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d) {
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:194:    __do_timed_wait(__lk, __clock_tp_ns::max());
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:196:    __do_timed_wait(__lk, __clock_tp_ns(nanoseconds(__now_count_ns + __d_ns_count)));
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:204:condition_variable::wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d, _Predicate __pred) {
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:205:  return wait_until(__lk, chrono::steady_clock::now() + __d, std::move(__pred));
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:209:inline void condition_variable::__do_timed_wait(
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:233:inline void condition_variable::__do_timed_wait(unique_lock<mutex>& __lk,
+codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:235:  wait_for(__lk, __tp - _Clock::now());
