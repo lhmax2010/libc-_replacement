@@ -1,0 +1,95 @@
+diff --git a/sys-devel/gcc/gcc-10.2.0-r33.ebuild b/sys-devel/gcc/gcc-10.2.0-r34.ebuild
+similarity index 100%
+rename from sys-devel/gcc/gcc-10.2.0-r33.ebuild
+rename to sys-devel/gcc/gcc-10.2.0-r34.ebuild
+diff --git a/sys-devel/llvm/files/compiler_wrapper/README b/sys-devel/llvm/files/compiler_wrapper/README
+index 48b0da9..2535c46 100644
+--- a/sys-devel/llvm/files/compiler_wrapper/README
++++ b/sys-devel/llvm/files/compiler_wrapper/README
+@@ -15,4 +15,4 @@
+ - modify third_party/toolchain_utils/compiler_wrapper
+ - run third_party/toolchain_utils/compiler_wrapper/bundle.py --output_dir=...
+ 
+-Source: https://chromium-review.googlesource.com/q/Ia972537114629ed5157c47681734a0a2bce22e9f
++Source: https://chromium-review.googlesource.com/q/I4f814b39334147631a0fdcb67ad1f0e067e1d674
+diff --git a/sys-devel/llvm/files/compiler_wrapper/VERSION b/sys-devel/llvm/files/compiler_wrapper/VERSION
+index bb805ea..79f7656 100644
+--- a/sys-devel/llvm/files/compiler_wrapper/VERSION
++++ b/sys-devel/llvm/files/compiler_wrapper/VERSION
+@@ -1 +1 @@
+-Ia972537114629ed5157c47681734a0a2bce22e9f
+\ No newline at end of file
++I4f814b39334147631a0fdcb67ad1f0e067e1d674
+\ No newline at end of file
+diff --git a/sys-devel/llvm/files/compiler_wrapper/sysroot_flag.go b/sys-devel/llvm/files/compiler_wrapper/sysroot_flag.go
+index 597153a..0256abc 100644
+--- a/sys-devel/llvm/files/compiler_wrapper/sysroot_flag.go
++++ b/sys-devel/llvm/files/compiler_wrapper/sysroot_flag.go
+@@ -9,19 +9,37 @@
+ 	"strings"
+ )
+ 
++const skipSysrootAutodetectionFlag = "--cros-skip-wrapper-sysroot-autodetection"
++
+ func processSysrootFlag(builder *commandBuilder) {
++	hadSkipSysrootMagicFlag := false
+ 	fromUser := false
+ 	userSysroot := ""
+-	for _, arg := range builder.args {
+-		if arg.fromUser && strings.HasPrefix(arg.value, "--sysroot=") {
++	builder.transformArgs(func(arg builderArg) string {
++		switch {
++		// In rare cases (e.g., glibc), we want all sysroot autodetection logic to be
++		// disabled. This flag can be passed to disable that.
++		case arg.value == skipSysrootAutodetectionFlag:
++			hadSkipSysrootMagicFlag = true
++			return ""
++
++		case arg.fromUser && strings.HasPrefix(arg.value, "--sysroot="):
+ 			fromUser = true
+ 			sysrootArg := strings.Split(arg.value, "=")
+ 			if len(sysrootArg) == 2 {
+ 				userSysroot = sysrootArg[1]
+ 			}
+-			break
++			return arg.value
++
++		default:
++			return arg.value
+ 		}
++	})
++
++	if hadSkipSysrootMagicFlag {
++		return
+ 	}
++
+ 	sysroot, syrootPresent := builder.env.getenv("SYSROOT")
+ 	if syrootPresent {
+ 		builder.updateEnv("SYSROOT=")
+diff --git a/sys-devel/llvm/llvm-17.0_pre496208_p20230501-r13.ebuild b/sys-devel/llvm/llvm-17.0_pre496208_p20230501-r14.ebuild
+similarity index 100%
+rename from sys-devel/llvm/llvm-17.0_pre496208_p20230501-r13.ebuild
+rename to sys-devel/llvm/llvm-17.0_pre496208_p20230501-r14.ebuild
+diff --git a/sys-libs/glibc/glibc-2.35-r21.ebuild b/sys-libs/glibc/glibc-2.35-r22.ebuild
+similarity index 98%
+rename from sys-libs/glibc/glibc-2.35-r21.ebuild
+rename to sys-libs/glibc/glibc-2.35-r22.ebuild
+index fd45cd7..d198a52 100644
+--- a/sys-libs/glibc/glibc-2.35-r21.ebuild
++++ b/sys-libs/glibc/glibc-2.35-r22.ebuild
+@@ -292,6 +292,15 @@
+ 		export SYSROOT=""
+ 	fi
+ 
++	# CrOS' compiler wrapper automatically infers `--sysroot=` and a few
++	# other args, like library paths. We want to skip this, as it may lead
++	# to us using libraries we don't want to use with glibc (e.g.,
++	# llvm-libunwind): b/290144273
++	#
++	# Only add this flag for cross-compilation, since the host wrapper
++	# doesn't do any of this.
++	is_crosscompile && append-flags "--cros-skip-wrapper-sysroot-autodetection"
++
+ 	case $(tc-arch) in
+ 		x86)
+ 			# -march needed for #185404 #199334

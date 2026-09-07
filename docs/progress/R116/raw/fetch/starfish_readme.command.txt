@@ -1,0 +1,4 @@
+cwd: /home/toolchain/development/libcxx_runtime_validation
+command: curl --fail-with-body --location --max-time 45 --retry 1 --output docs/progress/R116/sources/starfish_readme.raw --write-out 'HTTP_CODE=%{http_code}
+EFFECTIVE_URL=%{url_effective}
+' https://raw.githubusercontent.com/Samsung/Starfish/master/README.md

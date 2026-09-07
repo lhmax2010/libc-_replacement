@@ -1,0 +1,583 @@
+.. llvm-libgcc:
+
+===========
+llvm-libgcc
+===========
+
+.. contents::
+  :local:
+
+**Note that these instructions assume a Linux and bash-friendly environment.
+YMMV if you’re on a non Linux-based platform.**
+
+.. _introduction:
+
+Motivation
+============
+
+Enabling libunwind as a replacement for libgcc on Linux has proven to be
+challenging since libgcc_s.so is a required dependency in the [Linux standard
+base][5]. Some software is transitively dependent on libgcc because glibc makes
+hardcoded calls to functions in libgcc_s. For example, the function
+``__GI___backtrace`` eventually makes its way to a [hardcoded dlopen to libgcc_s'
+_Unwind_Backtrace][1]. Since libgcc_{eh.a,s.so} and libunwind have the same ABI,
+but different implementations, the two libraries end up [cross-talking, which
+ultimately results in a segfault][2].
+
+To solve this problem, libunwind needs libgcc "front" that is, link the
+necessary functions from compiler-rt and libunwind into an archive and shared
+object that advertise themselves as ``libgcc.a``, ``libgcc_eh.a``, and
+``libgcc_s.so``, so that glibc’s baked calls are diverted to the correct objects
+in memory. Fortunately for us, compiler-rt and libunwind use the same ABI as the
+libgcc family, so the problem is solvable at the llvm-project configuration
+level: no program source needs to be edited. Thus, the end result is for a
+distro manager to configure their LLVM build with a flag that indicates they
+want to archive compiler-rt/unwind as libgcc. We achieve this by compiling
+libunwind with all the symbols necessary for compiler-rt to emulate the libgcc
+family, and then generate symlinks named for our "libgcc" that point to their
+corresponding libunwind counterparts.
+
+.. _alternatives
+
+Alternatives
+============
+
+We alternatively considered patching glibc so that the source doesn't directly
+refer to libgcc, but rather _defaults_ to libgcc, so that a system preferring
+compiler-rt/libunwind can point to these libraries at the config stage instead.
+Even if we modified the Linux standard base, this alternative won't work because
+binaries that are built using libgcc will still end up having cross-talk between
+the differing implementations.
+
+.. _target audience:
+
+Target audience
+===============
+
+llvm-libgcc is not for the casual LLVM user. It is intended to be used by distro
+managers who want to replace libgcc with compiler-rt and libunwind, but cannot
+fully abandon the libgcc family (e.g. because they are dependent on glibc). Such
+managers must have worked out their compatibility requirements ahead of using
+llvm-libgcc.
+
+.. _cmake options:
+
+CMake options
+=============
+
+.. option:: `LLVM_LIBGCC_EXPLICIT_OPT_IN`
+
+  **Required**
+
+  Since llvm-libgcc is such a fundamental, low-level component, we have made it
+  difficult to accidentally build, by requiring you to set an opt-in flag.
+
+.. _Building llvm-libgcc
+
+Building llvm-libgcc
+--------------------
+
+The first build tree is a mostly conventional build tree and gets you a Clang
+build with these compiler-rt symbols exposed.
+
+.. code-block:: bash
+  # Assumes $(PWD) is /path/to/llvm-project
+  $ cmake -GNinja -S llvm -B build-primary                    \
+      -DCMAKE_BUILD_TYPE=Release                              \
+      -DCMAKE_CROSSCOMPILING=On                               \
+      -DCMAKE_INSTALL_PREFIX=/tmp/aarch64-unknown-linux-gnu   \
+      -DLLVM_ENABLE_PROJECTS='clang'                          \
+      -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;llvm-libgcc"   \
+      -DLLVM_TARGETS_TO_BUILD=AArch64                         \
+      -DLLVM_DEFAULT_TARGET_TRIPLE=aarch64-unknown-linux-gnu  \
+      -DLLVM_LIBGCC_EXPLICIT_OPT_IN=Yes
+  $ ninja -C build-primary install
+
+It's very important to notice that neither ``compiler-rt``, nor ``libunwind``,
+are listed in ``LLVM_ENABLE_RUNTIMES``. llvm-libgcc makes these subprojects, and
+adding them to this list will cause you problems due to there being duplicate
+targets. As such, configuring the runtimes build will reject explicitly mentioning
+either project with ``llvm-libgcc``.
+
+To avoid issues when building with ``-DLLVM_ENABLE_RUNTIMES=all``, ``llvm-libgcc``
+is not included, and all runtimes targets must be manually listed.
+
+## Verifying your results
+
+This gets you a copy of libunwind with the libgcc symbols. You can verify this
+using ``readelf``.
+
+.. code-block:: bash
+
+  $ llvm-readelf -W --dyn-syms "${LLVM_LIBGCC_SYSROOT}/lib/libunwind.so" | grep FUNC | grep GCC_3.0
+
+
+Roughly sixty symbols should appear, all suffixed with ``@@GCC_3.0``. You can
+replace ``GCC_3.0`` with any of the supported version names in the version
+script you’re exporting to verify that the symbols are exported.
+
+
+.. _supported platforms:
+
+Supported platforms
+===================
+
+llvm-libgcc currently supports the following target triples:
+
+* ``aarch64-*-*-*``
+* ``armv7a-*-*-gnueabihf``
+* ``i386-*-*-*``
+* ``x86_64-*-*-*``
+
+If you would like to support another triple (e.g. ``powerpc64-*-*-*``), you'll
+need to generate a new version script, and then edit ``lib/gcc_s.ver``.
+
+.. _Generating a new version script
+
+Generating a new version script
+-------------------------------
+
+To generate a new version script, we need to generate the list of symbols that
+exist in the set (``clang-builtins.a`` ∪ ``libunwind.a``) ∩ ``libgcc_s.so.1``.
+The prerequisites for generating a version script are a binaries for the three
+aforementioned libraries targeting your architecture (without having built
+llvm-libgcc).
+
+Once these libraries are in place, to generate a new version script, run the
+following command.
+
+.. code-block:: bash
+
+  /path/to/llvm-project
+  $ export ARCH=powerpc64
+  $ llvm/tools/llvm-libgcc/generate_version_script.py       \
+      --compiler_rt=/path/to/libclang_rt.builtins-${ARCH}.a \
+      --libunwind=/path/to/libunwind.a                      \
+      --libgcc_s=/path/to/libgcc_s.so.1                     \
+      --output=${ARCH}
+
+This will generate a new version script a la
+``/path/to/llvm-project/llvm/tools/llvm-libgcc/gcc_s-${ARCH}.ver``, which we use
+in the next section.
+
+.. _Editing ``lib/gcc_s.ver``
+
+Editing ``lib/gcc_s.ver``
+-------------------------
+
+Our freshly generated version script is unique to the specific architecture that
+it was generated for, but a lot of the symbols are shared among many platforms.
+As such, we don't check in unique version scripts, but rather have a single
+version script that's run through the C preprocessor to prune symbols we won't
+be using in ``lib/gcc_s.ver``.
+
+Working out which symbols are common is largely a manual process at the moment,
+because some symbols may be shared across different architectures, but not in
+the same versions of libgcc. As such, a symbol appearing in ``lib/gcc_s.ver``
+doesn't guarantee that the symbol is available for our new architecture: we need
+to verify that the versions are the same, and if they're not, add the symbol to
+the new version section, with the appropriate include guards.
+
+There are a few macros that aim to improve readability.
+
+* ``ARM_GNUEABIHF``, which targets exactly ``arm-*-*-gnueabihf``.
+* ``GLOBAL_X86``, which should be used to target both x86 and x86_64, regardless
+  of the triple.
+* ``GLOBAL_32BIT``, which is be used to target 32-bit platforms.
+* ``GLOBAL_64BIT``, which is be used to target 64-bit platforms.
+#===============================================================================
+# Setup Project
+#===============================================================================
+
+cmake_minimum_required(VERSION 3.20.0)
+set(LLVM_SUBPROJECT_TITLE "LLVM libgcc")
+
+set(LLVM_COMMON_CMAKE_UTILS "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
+
+# Check if llvm-libgcc is built as a standalone project
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR OR LLVM_LIBGCC_STANDALONE_BUILD)
+  project(llvm-libgcc LANGUAGES C CXX ASM)
+  set(COMPILER_RT_STANDALONE_BUILD ON)
+  set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+  set(LLVM_LIBGCC_COMPILER_RT_BINARY_DIR "compiler-rt")
+  set(LLVM_LIBGCC_LIBUNWIND_BINARY_DIR "libunwind")
+else()
+  set(LLVM_LIBGCC_COMPILER_RT_BINARY_DIR "../compiler-rt")
+  set(LLVM_LIBGCC_LIBUNWIND_BINARY_DIR "../libunwind")
+endif()
+
+# Add path for custom modules
+list(INSERT CMAKE_MODULE_PATH 0
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Modules"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../runtimes/cmake/Modules"
+  "${LLVM_COMMON_CMAKE_UTILS}"
+  "${LLVM_COMMON_CMAKE_UTILS}/Modules"
+)
+
+set(LLVM_LIBGCC_LIBUNWIND_PATH "${CMAKE_CURRENT_LIST_DIR}/../libunwind"
+  CACHE PATH "Specify path to libunwind source.")
+set(LLVM_LIBGCC_COMPILER_RT_PATH "${CMAKE_CURRENT_LIST_DIR}/../compiler-rt"
+  CACHE PATH "Specify path to compiler-rt source.")
+
+include(GNUInstallDirs)
+
+if(NOT LLVM_LIBGCC_EXPLICIT_OPT_IN)
+  message(FATAL_ERROR
+    "llvm-libgcc is not for the casual LLVM user. It is intended to be used by distro "
+    "managers who want to replace libgcc with compiler-rt and libunwind, but cannot "
+    "fully abandon the libgcc family (e.g. because they are dependent on glibc). Such "
+    "managers must have worked out their compatibility requirements ahead of using "
+    "llvm-libgcc. If you want to build llvm-libgcc, please add -DLLVM_LIBGCC_EXPLICIT_OPT_IN=Yes "
+    "to your CMake invocation and try again.")
+endif()
+
+if(HAVE_COMPILER_RT)
+  message(FATAL_ERROR
+    "Attempting to build both compiler-rt and llvm-libgcc will cause irreconcilable "
+    "target clashes. Please choose one or the other, but not both.")
+endif()
+
+if(HAVE_LIBUNWIND)
+  message(FATAL_ERROR
+    "Attempting to build both libunwind and llvm-libgcc will cause irreconcilable "
+    "target clashes. Please choose one or the other, but not both.")
+endif()
+
+#===============================================================================
+# Configure System
+#===============================================================================
+
+if(LLVM_ENABLE_PER_TARGET_RUNTIME_DIR AND NOT APPLE)
+  set(TARGET_SUBDIR ${LLVM_DEFAULT_TARGET_TRIPLE})
+  if(LLVM_LIBGCC_LIBDIR_SUBDIR)
+    string(APPEND TARGET_SUBDIR /${LLVM_LIBGCC_LIBDIR_SUBDIR})
+  endif()
+  set(LLVM_LIBGCC_LIBRARY_DIR ${LLVM_LIBRARY_OUTPUT_INTDIR}/${TARGET_SUBDIR})
+  set(LLVM_LIBGCC_INSTALL_LIBRARY_DIR lib${LLVM_LIBDIR_SUFFIX}/${TARGET_SUBDIR} CACHE PATH
+      "Path where built llvm-libgcc libraries should be installed.")
+  unset(TARGET_SUBDIR)
+else()
+  if(LLVM_LIBRARY_OUTPUT_INTDIR)
+    set(LLVM_LIBGCC_LIBRARY_DIR ${LLVM_LIBRARY_OUTPUT_INTDIR})
+  else()
+    set(LLVM_LIBGCC_LIBRARY_DIR ${CMAKE_BINARY_DIR}/lib${LLVM_LIBGCC_LIBDIR_SUFFIX})
+  endif()
+  set(LLVM_LIBGCC_INSTALL_LIBRARY_DIR lib${LLVM_LIBGCC_LIBDIR_SUFFIX} CACHE PATH
+      "Path where built llvm-libgcc libraries should be installed.")
+endif()
+
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${LLVM_LIBGCC_LIBRARY_DIR})
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${LLVM_LIBGCC_LIBRARY_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LLVM_LIBGCC_LIBRARY_DIR})
+
+#===============================================================================
+# Build libraries
+#===============================================================================
+
+set(COMPILER_RT_BUILD_BUILTINS ON)
+set(COMPILER_RT_BUILTINS_HIDE_SYMBOLS OFF)
+add_subdirectory(${LLVM_LIBGCC_COMPILER_RT_PATH} ${LLVM_LIBGCC_COMPILER_RT_BINARY_DIR})
+
+set(LIBUNWIND_ENABLE_STATIC ON)
+set(LIBUNWIND_ENABLE_SHARED ON)
+set(LIBUNWIND_USE_COMPILER_RT OFF)
+set(LIBUNWIND_HAS_GCC_LIB OFF)
+set(LIBUNWIND_HAS_GCC_S_LIB OFF)
+add_subdirectory(${LLVM_LIBGCC_LIBUNWIND_PATH} ${LLVM_LIBGCC_LIBUNWIND_BINARY_DIR})
+
+add_custom_target(gcc_s.ver
+  SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/gcc_s.ver.in
+  COMMAND ${CMAKE_C_COMPILER} -E
+    -xc ${CMAKE_CURRENT_SOURCE_DIR}/gcc_s.ver.in
+    -o ${CMAKE_CURRENT_BINARY_DIR}/gcc_s.ver
+)
+
+add_dependencies(unwind_shared gcc_s.ver)
+
+construct_compiler_rt_default_triple()
+
+target_link_options(unwind_shared PUBLIC
+  -Wl,--version-script,${CMAKE_CURRENT_BINARY_DIR}/gcc_s.ver
+)
+
+target_link_libraries(unwind_shared PUBLIC
+  $<TARGET_OBJECTS:clang_rt.builtins-${COMPILER_RT_DEFAULT_TARGET_ARCH}>
+  m
+)
+
+#===============================================================================
+# Install Symlinks
+#===============================================================================
+
+get_compiler_rt_install_dir(${COMPILER_RT_DEFAULT_TARGET_ARCH} install_dir_builtins)
+string(REGEX REPLACE "^lib/" "" install_dir_builtins "${install_dir_builtins}")
+string(FIND "${install_dir_builtins}" "clang" install_path_contains_triple)
+if(install_path_contains_triple EQUAL -1)
+  set(builtins_suffix "-${COMPILER_RT_DEFAULT_TARGET_ARCH}")
+else()
+  string(PREPEND install_dir_builtins "../")
+endif()
+set(LLVM_LIBGCC_COMPILER_RT ${install_dir_builtins}/libclang_rt.builtins${builtins_suffix}.a)
+
+add_custom_target(llvm-libgcc ALL
+  DEPENDS unwind_shared unwind_static clang_rt.builtins-${COMPILER_RT_DEFAULT_TARGET_ARCH}
+  COMMAND ${CMAKE_COMMAND} -E create_symlink ${LLVM_LIBGCC_COMPILER_RT} libgcc.a
+  COMMAND ${CMAKE_COMMAND} -E create_symlink libunwind.a libgcc_eh.a
+  COMMAND ${CMAKE_COMMAND} -E create_symlink libunwind.so libgcc_s.so.1.0
+  COMMAND ${CMAKE_COMMAND} -E create_symlink libgcc_s.so.1.0 libgcc_s.so.1
+  COMMAND ${CMAKE_COMMAND} -E create_symlink libgcc_s.so.1 libgcc_s.so
+)
+
+install(TARGETS unwind_shared unwind_static
+  LIBRARY DESTINATION ${LLVM_LIBGCC_INSTALL_LIBRARY_DIR} COMPONENT llvm-libgcc
+  ARCHIVE DESTINATION ${LLVM_LIBGCC_INSTALL_LIBRARY_DIR} COMPONENT llvm-libgcc
+  RUNTIME DESTINATION ${LLVM_LIBGCC_INSTALL_RUNTIME_DIR} COMPONENT llvm-libgcc)
+
+install(TARGETS clang_rt.builtins-${COMPILER_RT_DEFAULT_TARGET_ARCH}
+  LIBRARY DESTINATION ${LLVM_LIBGCC_INSTALL_LIBRARY_DIR}/${install_dir_builtins} COMPONENT llvm-libgcc
+  ARCHIVE DESTINATION ${LLVM_LIBGCC_INSTALL_LIBRARY_DIR}/${install_dir_builtins} COMPONENT llvm-libgcc
+  RUNTIME DESTINATION ${LLVM_LIBGCC_INSTALL_RUNTIME_DIR}/${install_dir_builtins} COMPONENT llvm-libgcc)
+
+foreach(VAR libgcc.a libgcc_eh.a libgcc_s.so.1.0 libgcc_s.so.1 libgcc_s.so)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${VAR}
+    DESTINATION ${LLVM_LIBGCC_INSTALL_LIBRARY_DIR}
+    COMPONENT llvm-libgcc)
+endforeach()
+// Detect if we're using arm-*-*-gnueabihf
+#if defined(__arm__) && \
+    defined(__ARM_ARCH_7A__) && defined(__ARM_EABI__) && \
+    defined(__ARM_FP) && (__ARM_FP >= 0x04)
+  #define ARM_GNUEABIHF
+#endif
+
+#if !defined(__x86_64__)  && \
+    !defined(__aarch64__) && \
+    !defined(__i386__)    && \
+    !defined(ARM_GNUEABIHF)
+  #error The only platforms that are currently supported are x86_64, i386, arm-gnueabihf, and aarch64.
+#endif
+
+#if defined(__x86_64__) || defined(__i386__)
+  #define GLOBAL_X86
+#endif
+
+#if __SIZEOF_POINTER__ >= 8
+  #define GLOBAL_64BIT
+#else
+  #define GLOBAL_32BIT
+#endif
+
+GCC_3.0 {
+  __absvdi2;    __absvsi2;    __addvdi3; __addvsi3; __clear_cache; __ffsdi2;
+  __fixunsdfdi; __fixunssfdi; __mulvdi3; __mulvsi3; __negvdi2;     __negvsi2;
+  __subvdi3;    __subvsi3;
+  _Unwind_DeleteException;
+  _Unwind_ForcedUnwind;
+  _Unwind_GetDataRelBase;
+  _Unwind_GetLanguageSpecificData;
+  _Unwind_GetRegionStart;
+  _Unwind_GetTextRelBase;
+  _Unwind_RaiseException;
+  _Unwind_Resume;
+};
+
+GCC_3.3   { _Unwind_GetCFA; _Unwind_Resume_or_Rethrow;                    };
+GCC_3.3.1 { __gcc_personality_v0;                                         };
+GCC_3.4   { __clzdi2; __ctzdi2; __paritydi2; __popcountdi2;               };
+GCC_3.4.2 { __enable_execute_stack;                                       };
+GCC_4.0.0 { __divdc3; __divsc3; __muldc3; __mulsc3; __powidf2; __powisf2; };
+GCC_4.3.0 { __bswapdi2; __bswapsi2; __emutls_get_address;                 };
+
+#if defined(GLOBAL_32BIT)
+  GCC_3.0 {
+    __ashldi3;    __ashrdi3;   __cmpdi2;    __fixdfdi; __fixsfdi; __fixunsdfsi;
+    __fixunssfsi; __floatdidf; __floatdisf; __lshrdi3; __muldi3;  __negdi2;
+    __ucmpdi2;    __udivmoddi4;
+  };
+
+  GCC_3.4   { __clzsi2;      __ctzsi2;      __paritysi2; __popcountsi2; };
+  GCC_4.2.0 { __floatundidf; __floatundisf;                             };
+  GCC_4.3.0 { __ffssi2;                                                 };
+  GCC_7.0.0 { __divmoddi4;                                              };
+  GLIBC_2.0 { __divdi3;     __moddi3;       __udivdi3; __umoddi3;       };
+#elif defined(GLOBAL_64BIT)
+  GCC_3.0 {
+    __ashlti3; __ashrti3;    __cmpti2;     __divti3;  __ffsti2;  __fixdfti;
+    __fixsfti; __fixunssfti; __floattidf;  __lshrti3; __modti3;  __multi3;
+    __negti2;  __ucmpti2;    __udivmodti4; __udivti3; __umodti3; __fixunsdfti;
+    __floattisf;
+  };
+
+  GCC_3.4   { __clzti2;      __ctzti2;  __parityti2; __popcountti2;           };
+  GCC_3.4.4 { __absvti2;     __addvti3; __mulvti3;   __negvti2;    __subvti3; };
+  GCC_4.2.0 { __floatuntidf; __floatuntisf;                                   };
+  GCC_7.0.0 { __divmodti4;                                                    };
+#endif
+
+#if defined(GLOBAL_X86)
+  GCC_3.0 { __fixunsxfdi; };
+  GCC_4.0.0 { __divxc3; __mulxc3; __powixf2; };
+  GCC_4.8.0 { __cpu_indicator_init;          };
+#endif
+
+#if !defined(ARM_GNUEABIHF)
+  GCC_3.0 {
+    _Unwind_Find_FDE; _Unwind_GetGR; _Unwind_GetIP; _Unwind_SetGR; _Unwind_SetIP;
+  };
+
+  GCC_3.3   { _Unwind_Backtrace; _Unwind_FindEnclosingFunction; };
+  GCC_4.2.0 { _Unwind_GetIPInfo; };
+#else // defined(ARM_GNUEABIHF)
+  GCC_3.0 {
+    __adddf3;  __addsf3;      __divdf3;  __divsf3;    __divsi3;    __eqdf2;
+    __eqsf2;   __extendsfdf2; __fixdfsi; __fixsfsi;   __floatsidf; __floatsisf;
+    __gedf2;   __gesf2;       __gtdf2;   __gtsf2;     __ledf2;     __lesf2;
+    __ltdf2;   __ltsf2;       __modsi3;  __muldf3;    __mulsf3;    __nedf2;
+    __negdf2;  __negsf2;      __nesf2;   __subdf3;    __subsf3;    __truncdfsf2;
+    __udivsi3; __umodsi3;
+  };
+
+  GCC_3.3.4 { __unorddf2; __unordsf2; };
+
+  GCC_3.5 {
+    __aeabi_cdcmpeq; __aeabi_cdcmple;  __aeabi_cdrcmple;       __aeabi_cfcmpeq;
+    __aeabi_cfcmple; __aeabi_cfrcmple; __aeabi_d2f;            __aeabi_d2iz;
+    __aeabi_d2lz;    __aeabi_d2uiz;    __aeabi_d2ulz;          __aeabi_dadd;
+    __aeabi_dcmpeq;  __aeabi_dcmpge;   __aeabi_dcmpgt;         __aeabi_dcmple;
+    __aeabi_dcmplt;  __aeabi_dcmpun;   __aeabi_ddiv;           __aeabi_dmul;
+    __aeabi_dneg;    __aeabi_drsub;    __aeabi_dsub;           __aeabi_f2d;
+    __aeabi_f2iz;    __aeabi_f2lz;     __aeabi_f2uiz;          __aeabi_f2ulz;
+    __aeabi_fadd;    __aeabi_fcmpeq;   __aeabi_fcmpge;         __aeabi_fcmpgt;
+    __aeabi_fcmple;  __aeabi_fcmplt;   __aeabi_fcmpun;         __aeabi_fdiv;
+    __aeabi_fmul;    __aeabi_fneg;     __aeabi_frsub;          __aeabi_fsub;
+    __aeabi_i2d;     __aeabi_i2f;      __aeabi_idiv;           __aeabi_idiv0;
+    __aeabi_idivmod; __aeabi_l2d;      __aeabi_l2f;            __aeabi_lasr;
+    __aeabi_lcmp;    __aeabi_ldiv0;    __aeabi_ldivmod;        __aeabi_llsl;
+    __aeabi_llsr;    __aeabi_lmul;     __aeabi_ui2d;           __aeabi_ui2f;
+    __aeabi_uidiv;   __aeabi_uidivmod; __aeabi_ul2d;           __aeabi_ul2f;
+    __aeabi_ulcmp;   __aeabi_uldivmod; __aeabi_unwind_cpp_pr0;
+    __aeabi_unwind_cpp_pr1;            __aeabi_unwind_cpp_pr2;
+    __gnu_unwind_frame;
+    _Unwind_Complete;
+    _Unwind_VRS_Get;
+    _Unwind_VRS_Pop;
+    _Unwind_VRS_Set;
+  };
+
+  GCC_4.2.0 { __floatunsidf; __floatunsisf; };
+  GCC_4.3.0 { _Unwind_Backtrace;            };
+#endif
+
+#if defined(__aarch64__)
+  GCC_3.0 {
+    __addtf3;     __divtf3;     __eqtf2;     __extenddftf2; __extendsftf2;
+    __fixtfdi;    __fixtfsi;    __fixtfti;   __fixunstfdi;  __fixunstfsi;
+    __fixunstfti; __floatditf;  __floatsitf; __floattitf;   __getf2;
+    __gttf2;      __letf2;      __lttf2;     __multf3;      __netf2;
+    __subtf3;     __trunctfdf2; __trunctfsf2;
+  };
+
+  GCC_4.0.0 { __powitf2;     __divtc3;      __multc3; };
+  GCC_4.2.0 { __floatunditf; __floatunsitf; __floatuntitf; };
+  GCC_4.5.0 { __unordtf2; };
+#endif
+
+#if defined(__aarch64__) || defined(__i386__)
+  GLIBC_2.0 { __deregister_frame; __register_frame; };
+#endif
+
+#if defined(__i386__)
+  GCC_3.0   { __fixunsxfsi; __fixxfdi; __floatdixf; };
+  GCC_4.2.0 { __floatundixf; };
+#endif
+
+#if defined(__x86_64__)
+  GCC_3.0 {
+    __deregister_frame;    __register_frame;
+    __fixunsxfti;          __fixxfti;                   __floattixf;
+  };
+
+  GCC_4.2.0 { __floatuntixf; };
+  GCC_4.3.0 { __divtc3; __multc3; };
+#endif
+# R73 联网调研记录
+
+本文件是检索结果的事实摘录，不是处置建议。精确检索未命中时以 `NOT_FOUND` 记录，并保留检索范围，不把它外推为“互联网不存在”。
+
+## libc++
+
+- 官方 `noexcept` policy 自 libc++ 13 起使用的是 “may mark”，并明示强化异常规格可能导致用户回调抛出的异常不再传播。
+- D95821 的评审明确把 “will” 改为 “may”：目的是允许实现使用这项权利，但不要求逐项机械应用。因此政策本身容许例外，但文档没有给出 pthread cancellation 专用例外表或宏。
+- 对 llvm-project GitHub issues 的三个精确查询及本地历史 `git log -S pthread_cancel -- libcxx` 均未命中本场景。没有找到“提出后被维护者拒绝”的直接材料，结论为 `NOT_FOUND`，不能写成“上游拒绝过”。
+
+## GCC PR103382
+
+- 初版补丁直接说明：NPTL cancellation 使用的 `__forced_unwind` 穿过 `condition_variable::wait noexcept` 会终止进程，因此 wait 应允许异常穿过。
+- 讨论确认存在 ABI 风险：旧头文件已把调用记录为不抛异常；仅替换共享库定义可能与旧调用方的异常元数据不一致。
+- 最终 commit `9e18a25331fa25c3907249fede65a02c6817b06e` 使用新版本 `@@GLIBCXX_3.4.30` 提供可取消行为，并为旧 `@GLIBCXX_3.4.11` 保留 `noexcept` wrapper。也就是说，GCC 同时处理了语义和旧 ABI，而不是静默覆盖旧符号。
+- 变更覆盖 public `condition_variable::wait`、内部普通/定时/clock wait；测试覆盖 wait、predicate wait、wait_for 和 wait_until。
+
+## 其他项目与平台
+
+- Android/Bionic 官方状态页明确不提供 `pthread_cancel`。这是平台级取消能力取舍，不是修补 libc++ 边界。
+- Chromium 的公开 `base::Thread` 以投递退出任务和 join 实现停止；公开条件变量是自有 pthread wrapper。限定检索中未找到 `pthread_cancel` 或该 libc++ 边界的本地补丁。这只能支撑“未命中”和“常用封装采用协作退出”，不能证明 Chromium 全仓永久禁用取消。
+- 对 Debian、Fedora、FreeBSD、Alpine 的 libc++ packaging 做了定向检索，未找到该精确冲突的本地补丁，记 `NOT_FOUND`。
+- WG21 P3085R0 明确提到 C++ 视角不能抛出的 `fclose` 在 POSIX 线程取消中可参与展开，说明这一冲突已进入一般 `noexcept` 政策讨论；该文档是 R0 提案，不冒充已采纳标准政策。
+docs/progress/R73/REPORT.md:9:1. 接受现状时，D01–D04 的共同触发条件是：Linux/glibc 线程取消可用、目标线程启用取消、线程正阻塞于 libc++ `condition_variable` 的普通或定时等待路径、另一线程在该窗口调用 `pthread_cancel`。D05 还要求 `wbuffer_convert` 析构的 `sync()` 通过 wrapped streambuf 进入输出取消点，条件明显更窄。
+docs/progress/R73/REPORT.md:11:3. 在这 9 个显式使用者中，**确认的生产代码“目标线程在相关设施中等待且被 `pthread_cancel`”为 0**；GCC 源包中有 1 个与 D01 完全同形的上游自测。其余包未观察到设施等待点与取消请求的源码内关联。这个“0”不是安全证明：取消可来自其他翻译单元、依赖库或进程宿主，因此这 9 个包仍是潜在暴露面。
+docs/progress/R73/REPORT.md:12:4. libc++ 官方政策使用“may”，允许但不强制把 “Throws: Nothing” 强化为 `noexcept`；没有找到该政策内的 pthread-cancellation 专用例外，也没有找到 LLVM 对这一精确冲突的 issue、维护者拒绝或处置表态，均按限定检索范围记 `NOT_FOUND`。
+docs/progress/R73/REPORT.md:14:6. 定向检索未发现 Chromium 或常见 libc++ 发行版对此边界的本地补丁。Chromium 的公开线程封装采用投递退出任务后 join；Android/Bionic 则不提供 `pthread_cancel`。这些是不同层次的规避事实，不是 libc++ 边界的等价修复。
+docs/progress/R73/REPORT.md:53:“常见/罕见”没有运行遥测支撑，本报告只按附加前置条件陈述：D01 是最直接的常规阻塞形态；D02/D03 需在定时窗口取消；D04 再要求自定义 Clock；D05 同时要求已弃用设施、析构同步和虚拟输出取消点。是否真的频繁发生，仍取决于平台代码是否使用 `pthread_cancel` 终止这些等待线程。
+docs/progress/R73/REPORT.md:63:随后在这些源码树中检索 `pthread_cancel`、取消状态/类型配置和 `pthread_exit`，再人工核对取消请求文件与标准设施文件是否属于同一实现路径。结果见 `tables/package_risk_review.tsv`。
+docs/progress/R73/REPORT.md:68:- binutils 的显式设施位于 GDB support thread pool；唯一 `pthread_cancel` 请求在 CRIS simulator 测试，未观察到与生产 thread pool 的关联。4 个架构/包名变体同源。
+docs/progress/R73/REPORT.md:69:- Boost 的标准设施命中分布于公共头、示例和测试；取消请求位于 `libs/core/test/yield_prim_pthread_cancel_test.cpp`，未观察到与这些等待路径的生产关联。
+docs/progress/R73/REPORT.md:78:无法把后一个数字解释为“不会触发”。`pthread_cancel` 可以由包外宿主、插件管理器、运行框架或未扫描二进制发起；源码共现只能证明正关联，不能证明无关联。35/26 仍作为宽上界保留，11/9 是显式 C++ 设施使用的较可信近似，0 是本轮能在源码内部闭合的生产风险形态数。
+docs/progress/R73/REPORT.md:90:触发难度方面，D01 的技术窗口并不苛刻，但平台包是否采用 pthread cancellation 是决定因素；D04/D05 的附加条件更窄。影响面方面，现有证据只支持“显式设施使用者少于宽扫上界”，不支持把潜在外部取消排除。归因方面，两类问题都可能以 134 和 foreign-exception 文本出现；本轮问题还需识别 `__clang_call_terminate` 所在边界，因此不能声称定位代价更低。是否“相当”没有工时数据，记为定性相近而非量化结论。
+docs/progress/R73/REPORT.md:98:[libc++ 官方政策](https://libcxx.llvm.org/DesignDocs/NoexceptPolicy.html)写的是自版本 13 起“may”强化 “Throws: Nothing”，并明确这种做法可能阻止用户提供函数的异常传播。D95821 的[评审记录](https://reviews.llvm.org/D95821)特意把 “will” 改为 “may”，理由是允许实现这么做但不要求逐项遵守。因此存在的是**实现裁量空间**，不是一个已经定义好的 pthread-cancellation 例外机制。
+docs/progress/R73/REPORT.md:100:对 LLVM GitHub issue、本地 llvm-project 历史进行精确检索，没有找到 `pthread_cancel + condition_variable/noexcept` 或 `forced_unwind + condition_variable` 的 issue/讨论，也没有找到“提出后被拒”的维护者表态，结论为 `NOT_FOUND`。这只覆盖记录在 `search_scope.tsv` 的查询，不代表不存在换词、未索引或线下讨论。
+docs/progress/R73/REPORT.md:112:### 5.3 Chromium、Android 与其他项目
+docs/progress/R73/REPORT.md:114:- Chromium 的公开 [`Thread::StopSoon/Stop`](https://chromium.googlesource.com/chromium/src.git/+/refs/heads/main/base/threading/thread.cc)使用投递退出任务和 join；其[自有条件变量封装](https://chromium.googlesource.com/chromium/src/+/HEAD/base/synchronization/condition_variable.h)直接包 pthread condition variable。定向检索未找到 `pthread_cancel` 用法或该 libc++ 边界的本地补丁，记 `NOT_FOUND`。这说明公开主干呈现协作式退出形态，不证明所有 Chromium 衍生代码都禁用取消。
+docs/progress/R73/REPORT.md:115:- Android/Bionic 的[官方状态页](https://android.googlesource.com/platform/bionic/+/refs/heads/android11-dev/docs/status.md)明确不实现 `pthread_cancel`，理由是实现成本和正确使用难度。这从 libc 层消除了触发能力，但改变了平台提供的 API，不是标准库局部修复。
+docs/progress/R73/REPORT.md:162:2. **按平台能力条件化异常规格**：仅在 glibc/pthread-cancellation 配置下允许展开，其他 ABI runtime 保持原状。仍涉及头文件和消费者重编，也引入条件配置矩阵；是否可被上游接受未有直接材料。
+docs/progress/R73/REPORT.md:166:6. **应用层协作退出而不使用 `pthread_cancel`**：需要修改应用/框架；Chromium 的公开线程封装呈现这一形态。它避开触发而非改变 libc++，与本项目此前“迁移不改消费者语义”的目标是不同性质的工作。
+docs/progress/R73/REPORT.md:195:- libc++ 维护者是否在未被精确关键词命中的讨论中表达过 POSIX cancellation 例外立场：`NOT_FOUND`。
+docs/progress/R73/REPORT.md:203:- **业界如何处理？** GCC 移除异常规格并以新符号版本处理 ABI；Android 不提供取消；Chromium 公开线程封装采用协作退出。没有找到 LLVM 的精确 issue/拒绝记录或其他发行版的本地补丁。
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:42:progress/R72/raw/direct_cancel_calls.tsv:2:wbuffer_convert::__close	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:410-418	NOT_MARKED	sync	POSIX_MAY
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:43:progress/R72/raw/direct_cancel_calls.tsv:100:wbuffer_convert::seekoff	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:296-306	NOT_MARKED	sync	POSIX_MAY
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:44:progress/R72/raw/direct_cancel_calls.tsv:101:wbuffer_convert::seekpos	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:310-316	NOT_MARKED	sync	POSIX_MAY
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:45:progress/R72/raw/direct_cancel_calls.tsv:107:condition_variable::wait	codes/llvm/libcxx/include/__condition_variable/condition_variable.h:110-113	NOT_MARKED	wait	POSIX_REQUIRED
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:46:progress/R72/raw/direct_cancel_calls.tsv:108:condition_variable::wait	codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:145-148	NOT_MARKED	wait	POSIX_REQUIRED
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:47:docs/progress/R72/raw/direct_cancel_calls.tsv:2:wbuffer_convert::__close	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:410-418	NOT_MARKED	sync	POSIX_MAY
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:48:docs/progress/R72/raw/direct_cancel_calls.tsv:100:wbuffer_convert::seekoff	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:296-306	NOT_MARKED	sync	POSIX_MAY
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:49:docs/progress/R72/raw/direct_cancel_calls.tsv:101:wbuffer_convert::seekpos	codes/llvm/libcxx/include/__locale_dir/wbuffer_convert.h:310-316	NOT_MARKED	sync	POSIX_MAY
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:50:docs/progress/R72/raw/direct_cancel_calls.tsv:107:condition_variable::wait	codes/llvm/libcxx/include/__condition_variable/condition_variable.h:110-113	NOT_MARKED	wait	POSIX_REQUIRED
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:51:docs/progress/R72/raw/direct_cancel_calls.tsv:108:condition_variable::wait	codes/llvm/libcxx/include/__cxx03/__condition_variable/condition_variable.h:145-148	NOT_MARKED	wait	POSIX_REQUIRED
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:64:docs/progress/R72/tables/sample_results.tsv:3:wait	D01	libstdc++	0	0	0	1	clean cancellation
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:66:docs/progress/R72/tables/sample_results.tsv:5:wait_for	D03	libstdc++	0	0	0	1	clean cancellation
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:68:docs/progress/R72/tables/sample_results.tsv:7:custom_clock	D04	libstdc++	0	0	0	1	clean cancellation
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:70:progress/R72/tables/sample_results.tsv:3:wait	D01	libstdc++	0	0	0	1	clean cancellation
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:72:progress/R72/tables/sample_results.tsv:5:wait_for	D03	libstdc++	0	0	0	1	clean cancellation
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:74:progress/R72/tables/sample_results.tsv:7:custom_clock	D04	libstdc++	0	0	0	1	clean cancellation
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:85:docs/progress/R72/tables/verified_boundaries.tsv:2:D01	ACTUAL_BEHAVIOR_DIFFERENCE	std::condition_variable::wait	codes/llvm/libcxx/src/condition_variable.cpp:33-39 + include/__condition_variable/condition_variable.h:107	EXPLICIT	__libcpp_condvar_wait -> pthread_cond_wait	2	codes/gcc/libstdc++-v3/src/c++11/condition_variable.cc:38-42 + include/std/condition_variable:97-98	NO	YES	wait	libc++ terminates; libstdc++ cleanly cancels
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:100:progress/R72/tables/verified_boundaries.tsv:2:D01	ACTUAL_BEHAVIOR_DIFFERENCE	std::condition_variable::wait	codes/llvm/libcxx/src/condition_variable.cpp:33-39 + include/__condition_variable/condition_variable.h:107	EXPLICIT	__libcpp_condvar_wait -> pthread_cond_wait	2	codes/gcc/libstdc++-v3/src/c++11/condition_variable.cc:38-42 + include/std/condition_variable:97-98	NO	YES	wait	libc++ terminates; libstdc++ cleanly cancels
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:105:progress/R72/code/noexcept_cancel_samples.cpp:74:  // The worker holds this mutex until condition_variable::wait* has entered
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:123:docs/progress/R72/code/noexcept_cancel_samples.cpp:74:  // The worker holds this mutex until condition_variable::wait* has entered
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:173:$ rg -n "pthread_cancel" codes/llvm/libcxx codes/llvm/libcxxabi
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:174:codes/llvm/libcxxabi/test/forced_unwind4.pass.cpp:12:// pthread_cancel in case of glibc calls _Unwind_ForcedUnwind from a signal on
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:175:codes/llvm/libcxxabi/test/forced_unwind4.pass.cpp:18:// Android/Bionic does not support pthread_cancel.
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:176:codes/llvm/libcxxabi/test/forced_unwind4.pass.cpp:54:  pthread_cancel(child_thread);
+docs/progress/R73/commands/010_r72_and_policy_evidence.log:177:codes/llvm/libcxxabi/test/forced_unwind3.pass.cpp:10:// what pthread_cancel does.
+R104
+askuser
+cynara
+gcc
+libcynara-commons
+libcynara-dbus
+llvm
+qb
+security-manager
+tensorflow2-mlgo-aot-temp
+tensorflow2-mlgo-aot-v3
+/home/toolchain/.local/bin/cmake
+/home/toolchain/.local/bin/ninja

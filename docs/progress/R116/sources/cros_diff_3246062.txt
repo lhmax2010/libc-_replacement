@@ -1,0 +1,74 @@
+diff --git a/sys-libs/llvm-libunwind/llvm-libunwind-13.0_pre433403-r1.ebuild b/sys-libs/llvm-libunwind/llvm-libunwind-13.0_pre433403-r2.ebuild
+similarity index 100%
+rename from sys-libs/llvm-libunwind/llvm-libunwind-13.0_pre433403-r1.ebuild
+rename to sys-libs/llvm-libunwind/llvm-libunwind-13.0_pre433403-r2.ebuild
+diff --git a/sys-libs/llvm-libunwind/llvm-libunwind-13.0_pre433403.ebuild b/sys-libs/llvm-libunwind/llvm-libunwind-13.0_pre433403.ebuild
+index 118e41d..b9b40ad 100644
+--- a/sys-libs/llvm-libunwind/llvm-libunwind-13.0_pre433403.ebuild
++++ b/sys-libs/llvm-libunwind/llvm-libunwind-13.0_pre433403.ebuild
+@@ -109,7 +109,7 @@
+ multilib_src_install() {
+ 	cmake-utils_src_install
+ 
+-	# Generate libunwind.so
++	# Generate libunwind.so or libgcc_s.so.
+ 	local myabi=$(get_abi_CTARGET)
+ 	if [[ ${myabi} == *armv7a* ]]; then
+ 		LIBGCC_ARCH="armhf"
+@@ -125,29 +125,44 @@
+ 
+ 	local COMPILER_RT_BUILTINS=$($(tc-getCC) -print-libgcc-file-name -rtlib=compiler-rt)
+ 	local my_installdir="${D%/}${PREFIX}/$(get_libdir)"
+-	$(tc-getCC) -o "${my_installdir}"/libunwind.so.1.0                              \
++	local out_file soname
++
++	if use synth_libgcc; then
++		out_file=libgcc_s.so.1
++		soname=libgcc_s.so.1
++	else
++		out_file=libunwind.so.1.0
++		soname=libunwind.so.1
++	fi
++
++	echo "Creating ${out_file} using libunwind.a + compiler-rt".
++	$(tc-getCC) -o "${my_installdir}"/"${out_file}"                                 \
+ 		${CFLAGS}                                                                   \
+ 		${LDFLAGS}                                                                  \
+ 		-shared                                                                     \
+ 		-nostdlib                                                                   \
+ 		-Wl,--whole-archive                                                         \
+ 		-Wl,--version-script,"${FILESDIR}/version-scripts/gcc_s-${LIBGCC_ARCH}.ver" \
+-		-Wl,-soname,libunwind.so.1                                                  \
++		-Wl,-soname,"${soname}"                                                     \
+ 		"${COMPILER_RT_BUILTINS}"                                                   \
+ 		"${my_installdir}"/libunwind.a                                              \
+ 		-Wl,--no-whole-archive                                                      \
+ 		-lm                                                                         \
+ 		-lc                                                                         \
+-	|| die
++	|| die "Failed to create ${out_file}".
+ 
+-	ln -s libunwind.so.1.0                  "${my_installdir}"/libunwind.so.1 || die
+-	ln -s libunwind.so.1                    "${my_installdir}"/libunwind.so || die
+-	# Generate libgcc{,_eh,_s}
+-	if ! use synth_libgcc; then
+-		return
++	# Point libunwind.so.1 and libunwind.so to libunwind.so.1.0.
++	ln -s libunwind.so.1.0 "${my_installdir}"/libunwind.so.1 || die
++	ln -s libunwind.so.1   "${my_installdir}"/libunwind.so || die
++
++	# Generate libgcc{,_eh,_s} if requested.
++	if use synth_libgcc; then
++		# We already created libgcc_s.so.1 if we are here.
++		# Point libunwind.so.1.0 and libgcc_s.so to it.
++		# Also make sure that libgcc.a and libgcc_eh.a point to compiler-rt/libunwind.
++		ln -s libgcc_s.so.1 "${my_installdir}"/libunwind.so.1.0 || die
++		ln -s libgcc_s.so.1 "${my_installdir}"/libgcc_s.so || die
++		ln -s libunwind.a "${my_installdir}"/libgcc_eh.a || die
++		cp ${COMPILER_RT_BUILTINS} "${my_installdir}"/libgcc.a || die
+ 	fi
+-	ln -s libunwind.so                      "${my_installdir}"/libgcc_s.so || die
+-	ln -s libunwind.so.1                    "${my_installdir}"/libgcc_s.so.1 || die
+-	ln -s    libunwind.a                       "${my_installdir}"/libgcc_eh.a || die
+-	cp    ${COMPILER_RT_BUILTINS}           "${my_installdir}"/libgcc.a || die
+ }

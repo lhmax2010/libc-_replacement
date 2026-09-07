@@ -1,0 +1,465 @@
+  if (atomic_load_acquire (&global_libgcc_handle) != NULL)
+   return &global;
+
+  /* Initialize a copy of the data, so that we do not need about
+     unlocking in case the dynamic loader somehow triggers
+     unwinding.  */
+  void *local_libgcc_handle = __libc_dlopen (LIBGCC_S_SO);
+  if (local_libgcc_handle == NULL)
+    {
+      __libc_lock_unlock (lock);
+      return NULL;
+    }
+
+  struct unwind_link local;
+  local.ptr__Unwind_Backtrace
+    = __libc_dlsym (local_libgcc_handle, "_Unwind_Backtrace");
+  local.ptr__Unwind_ForcedUnwind
+    = __libc_dlsym (local_libgcc_handle, "_Unwind_ForcedUnwind");
+  local.ptr__Unwind_GetCFA
+    = __libc_dlsym (local_libgcc_handle, "_Unwind_GetCFA");
+#if UNWIND_LINK_GETIP
+  local.ptr__Unwind_GetIP
+    = __libc_dlsym (local_libgcc_handle, "_Unwind_GetIP");
+#endif
+  local.ptr__Unwind_Resume
+    = __libc_dlsym (local_libgcc_handle, "_Unwind_Resume");
+#if UNWIND_LINK_FRAME_STATE_FOR
+  local.ptr___frame_state_for
+    = __libc_dlsym (local_libgcc_handle, "__frame_state_for");
+#endif
+  local.ptr_personality
+    = __libc_dlsym (local_libgcc_handle, "__gcc_personality_v0");
+  UNWIND_LINK_EXTRA_INIT
+
+  /* If a symbol is missing, libgcc_s has somehow been corrupted.  */
+  assert (local.ptr__Unwind_Backtrace != NULL);
+  assert (local.ptr__Unwind_ForcedUnwind != NULL);
+  assert (local.ptr__Unwind_GetCFA != NULL);
+#if UNWIND_LINK_GETIP
+  assert (local.ptr__Unwind_GetIP != NULL);
+#endif
+  assert (local.ptr__Unwind_Resume != NULL);
+  assert (local.ptr_personality != NULL);
+
+  PTR_MANGLE (local.ptr__Unwind_Backtrace);
+  PTR_MANGLE (local.ptr__Unwind_ForcedUnwind);
+  PTR_MANGLE (local.ptr__Unwind_GetCFA);
+#if UNWIND_LINK_GETIP
+  PTR_MANGLE (local.ptr__Unwind_GetIP);
+#endif
+  PTR_MANGLE (local.ptr__Unwind_Resume);
+#if UNWIND_LINK_FRAME_STATE_FOR
+  PTR_MANGLE (local.ptr___frame_state_for);
+#endif
+  PTR_MANGLE (local.ptr_personality);
+
+  __libc_lock_lock (lock);
+  if (atomic_load_relaxed (&global_libgcc_handle) != NULL)
+    /* This thread lost the race.  Clean up.  */
+    __libc_dlclose (local_libgcc_handle);
+  else
+    {
+      global = local;
+
+      /* Completes the double-checked locking idiom.  */
+      atomic_store_release (&global_libgcc_handle, local_libgcc_handle);
+    }
+
+  __libc_lock_unlock (lock);
+  ((uintptr_t) frame - adj >= (uintptr_t) other - adj)
+#elif _STACK_GROWS_UP
+# define FRAME_LEFT(frame, other, adj) \
+  ((uintptr_t) frame - adj <= (uintptr_t) other - adj)
+#else
+# error "Define either _STACK_GROWS_DOWN or _STACK_GROWS_UP"
+#endif
+
+static _Unwind_Reason_Code
+unwind_stop (int version, _Unwind_Action actions,
+	     _Unwind_Exception_Class exc_class,
+	     struct _Unwind_Exception *exc_obj,
+	     struct _Unwind_Context *context, void *stop_parameter)
+{
+  struct pthread_unwind_buf *buf = stop_parameter;
+  struct pthread *self = THREAD_SELF;
+  struct _pthread_cleanup_buffer *curp = THREAD_GETMEM (self, cleanup);
+  int do_longjump = 0;
+
+  /* Adjust all pointers used in comparisons, so that top of thread's
+     stack is at the top of address space.  Without that, things break
+     if stack is allocated above the main stack.  */
+  uintptr_t adj = (uintptr_t) self->stackblock + self->stackblock_size;
+
+  /* Do longjmp if we're at "end of stack", aka "end of unwind data".
+     We assume there are only C frame without unwind data in between
+     here and the jmp_buf target.  Otherwise simply note that the CFA
+     of a function is NOT within it's stack frame; it's the SP of the
+     previous frame.  */
+  if ((actions & _UA_END_OF_STACK)
+      || ! _JMPBUF_CFA_UNWINDS_ADJ (buf->cancel_jmp_buf[0].jmp_buf, context,
+				    adj))
+    do_longjump = 1;
+
+  if (__glibc_unlikely (curp != NULL))
+    {
+      /* Handle the compatibility stuff.  Execute all handlers
+	 registered with the old method which would be unwound by this
+	 step.  */
+      struct _pthread_cleanup_buffer *oldp = buf->priv.data.cleanup;
+      void *cfa = (void *) (_Unwind_Ptr) _Unwind_GetCFA (context);
+
+      if (curp != oldp && (do_longjump || FRAME_LEFT (cfa, curp, adj)))
+	{
+	  do
+	    {
+	      /* Pointer to the next element.  */
+	      struct _pthread_cleanup_buffer *nextp = curp->__prev;
+
+	      /* Call the handler.  */
+	      curp->__routine (curp->__arg);
+
+	      /* To the next.  */
+	      curp = nextp;
+	    }
+	  while (curp != oldp
+		 && (do_longjump || FRAME_LEFT (cfa, curp, adj)));
+
+	  /* Mark the current element as handled.  */
+	  THREAD_SETMEM (self, cleanup, curp);
+	}
+    }
+
+  DIAG_PUSH_NEEDS_COMMENT;
+#if __GNUC_PREREQ (7, 0)
+  /* This call results in a -Wstringop-overflow warning because struct
+     pthread_unwind_buf is smaller than jmp_buf.  setjmp and longjmp
+     do not use anything beyond the common prefix (they never access
+     the saved signal mask), so that is a false positive.  */
+  DIAG_IGNORE_NEEDS_COMMENT (11, "-Wstringop-overflow=");
+#endif
+  if (do_longjump)
+    __libc_unwind_longjmp ((struct __jmp_buf_tag *) buf->cancel_jmp_buf, 1);
+  DIAG_POP_NEEDS_COMMENT;
+
+  return _URC_NO_REASON;
+}
+
+
+static void
+unwind_cleanup (_Unwind_Reason_Code reason, struct _Unwind_Exception *exc)
+{
+  /* When we get here a C++ catch block didn't rethrow the object.  We
+     cannot handle this case and therefore abort.  */
+  __libc_fatal ("FATAL: exception not rethrown\n");
+}
+
+
+void
+__cleanup_fct_attribute __attribute ((noreturn))
+__pthread_unwind (__pthread_unwind_buf_t *buf)
+{
+  struct pthread_unwind_buf *ibuf = (struct pthread_unwind_buf *) buf;
+  struct pthread *self = THREAD_SELF;
+
+  /* This is not a catchable exception, so don't provide any details about
+     the exception type.  We do need to initialize the field though.  */
+  THREAD_SETMEM (self, exc.exception_class, 0);
+  THREAD_SETMEM (self, exc.exception_cleanup, &unwind_cleanup);
+
+  _Unwind_ForcedUnwind (&self->exc, unwind_stop, ibuf);
+  /* NOTREACHED */
+
+  /* We better do not get here.  */
+  abort ();
+}
+libc_hidden_def (__pthread_unwind)
+
+void
+__cleanup_fct_attribute __attribute ((noreturn))
+___pthread_unwind_next (__pthread_unwind_buf_t *buf)
+{
+  struct pthread_unwind_buf *ibuf = (struct pthread_unwind_buf *) buf;
+
+  __pthread_unwind ((__pthread_unwind_buf_t *) ibuf->priv.data.prev);
+}
+versioned_symbol (libc, ___pthread_unwind_next, __pthread_unwind_next,
+		  GLIBC_2_34);
+#if OTHER_SHLIB_COMPAT (libpthread, GLIBC_2_3_3, GLIBC_2_34)
+compat_symbol (libpthread, ___pthread_unwind_next, __pthread_unwind_next,
+	       GLIBC_2_3_3);
+#endif
+static _Unwind_Reason_Code
+unwind_phase2_forced(unw_context_t *uc, unw_cursor_t *cursor,
+                     _Unwind_Exception *exception_object, _Unwind_Stop_Fn stop,
+                     void *stop_parameter) {
+  __unw_init_local(cursor, uc);
+
+  // uc is initialized by __unw_getcontext in the parent frame. The first stack
+  // frame walked is unwind_phase2_forced.
+  unsigned framesWalked = 1;
+  // Walk each frame until we reach where search phase said to stop
+  while (__unw_step_stage2(cursor) > 0) {
+
+    // Update info about this frame.
+    unw_proc_info_t frameInfo;
+    if (__unw_get_proc_info(cursor, &frameInfo) != UNW_ESUCCESS) {
+      _LIBUNWIND_TRACE_UNWINDING(
+          "unwind_phase2_forced(ex_obj=%p): __unw_get_proc_info "
+          "failed => _URC_END_OF_STACK",
+          (void *)exception_object);
+      return _URC_FATAL_PHASE2_ERROR;
+    }
+
+#ifndef NDEBUG
+    // When tracing, print state information.
+    if (_LIBUNWIND_TRACING_UNWINDING) {
+      char functionBuf[512];
+      const char *functionName = functionBuf;
+      unw_word_t offset;
+      if ((__unw_get_proc_name(cursor, functionBuf, sizeof(functionBuf),
+                               &offset) != UNW_ESUCCESS) ||
+          (frameInfo.start_ip + offset > frameInfo.end_ip))
+        functionName = ".anonymous.";
+      _LIBUNWIND_TRACE_UNWINDING(
+          "unwind_phase2_forced(ex_obj=%p): start_ip=0x%" PRIxPTR
+          ", func=%s, lsda=0x%" PRIxPTR ", personality=0x%" PRIxPTR,
+          (void *)exception_object, frameInfo.start_ip, functionName,
+          frameInfo.lsda, frameInfo.handler);
+    }
+#endif
+
+    // Call stop function at each frame.
+    _Unwind_Action action =
+        (_Unwind_Action)(_UA_FORCE_UNWIND | _UA_CLEANUP_PHASE);
+    _Unwind_Reason_Code stopResult =
+        (*stop)(1, action, exception_object->exception_class, exception_object,
+                (struct _Unwind_Context *)(cursor), stop_parameter);
+    _LIBUNWIND_TRACE_UNWINDING(
+        "unwind_phase2_forced(ex_obj=%p): stop function returned %d",
+        (void *)exception_object, stopResult);
+    if (stopResult != _URC_NO_REASON) {
+      _LIBUNWIND_TRACE_UNWINDING(
+          "unwind_phase2_forced(ex_obj=%p): stopped by stop function",
+          (void *)exception_object);
+      return _URC_FATAL_PHASE2_ERROR;
+    }
+
+    ++framesWalked;
+    // If there is a personality routine, tell it we are unwinding.
+    if (frameInfo.handler != 0) {
+      _Unwind_Personality_Fn p = get_handler_function(&frameInfo);
+      _LIBUNWIND_TRACE_UNWINDING(
+          "unwind_phase2_forced(ex_obj=%p): calling personality function %p",
+          (void *)exception_object, (void *)(uintptr_t)p);
+      _Unwind_Reason_Code personalityResult =
+          (*p)(1, action, exception_object->exception_class, exception_object,
+               (struct _Unwind_Context *)(cursor));
+      switch (personalityResult) {
+      case _URC_CONTINUE_UNWIND:
+        _LIBUNWIND_TRACE_UNWINDING("unwind_phase2_forced(ex_obj=%p): "
+                                   "personality returned "
+                                   "_URC_CONTINUE_UNWIND",
+                                   (void *)exception_object);
+        // Destructors called, continue unwinding
+        break;
+      case _URC_INSTALL_CONTEXT:
+        _LIBUNWIND_TRACE_UNWINDING("unwind_phase2_forced(ex_obj=%p): "
+                                   "personality returned "
+                                   "_URC_INSTALL_CONTEXT",
+                                   (void *)exception_object);
+        // We may get control back if landing pad calls _Unwind_Resume().
+        __unw_phase2_resume(cursor, framesWalked);
+        break;
+      default:
+        // Personality routine returned an unknown result code.
+        _LIBUNWIND_TRACE_UNWINDING("unwind_phase2_forced(ex_obj=%p): "
+                                   "personality returned %d, "
+                                   "_URC_FATAL_PHASE2_ERROR",
+                                   (void *)exception_object, personalityResult);
+        return _URC_FATAL_PHASE2_ERROR;
+      }
+    }
+  }
+
+  // Call stop function one last time and tell it we've reached the end
+  // of the stack.
+  _LIBUNWIND_TRACE_UNWINDING("unwind_phase2_forced(ex_obj=%p): calling stop "
+                             "function with _UA_END_OF_STACK",
+                             (void *)exception_object);
+  _Unwind_Action lastAction =
+      (_Unwind_Action)(_UA_FORCE_UNWIND | _UA_CLEANUP_PHASE | _UA_END_OF_STACK);
+  (*stop)(1, lastAction, exception_object->exception_class, exception_object,
+          (struct _Unwind_Context *)(cursor), stop_parameter);
+
+  // Clean up phase did not resume at the frame that the search phase said it
+/// Not used by C++.
+/// Unwinds stack, calling "stop" function at each frame.
+/// Could be used to implement longjmp().
+_LIBUNWIND_EXPORT _Unwind_Reason_Code
+_Unwind_ForcedUnwind(_Unwind_Exception *exception_object,
+                     _Unwind_Stop_Fn stop, void *stop_parameter) {
+  _LIBUNWIND_TRACE_API("_Unwind_ForcedUnwind(ex_obj=%p, stop=%p)",
+                       (void *)exception_object, (void *)(uintptr_t)stop);
+  unw_context_t uc;
+  unw_cursor_t cursor;
+  __unw_getcontext(&uc);
+
+  // Mark that this is a forced unwind, so _Unwind_Resume() can do
+  // the right thing.
+  exception_object->private_1 = (uintptr_t) stop;
+  exception_object->private_2 = (uintptr_t) stop_parameter;
+
+  // do it
+  return unwind_phase2_forced(&uc, &cursor, exception_object, stop, stop_parameter);
+}
+
+
+/// Called by personality handler during phase 2 to get LSDA for current frame.
+_LIBUNWIND_EXPORT uintptr_t
+unwind_phase2_forced(unw_context_t *uc, unw_cursor_t *cursor,
+                     _Unwind_Exception *exception_object, _Unwind_Stop_Fn stop,
+                     void *stop_parameter) {
+  bool endOfStack = false;
+  // See comment at the start of unwind_phase1 regarding VRS integrity.
+  __unw_init_local(cursor, uc);
+  _LIBUNWIND_TRACE_UNWINDING("unwind_phase2_force(ex_ojb=%p)",
+                             static_cast<void *>(exception_object));
+  // Walk each frame until we reach where search phase said to stop
+  while (!endOfStack) {
+    // Update info about this frame.
+    unw_proc_info_t frameInfo;
+    if (__unw_get_proc_info(cursor, &frameInfo) != UNW_ESUCCESS) {
+      _LIBUNWIND_TRACE_UNWINDING("unwind_phase2_forced(ex_ojb=%p): __unw_get_proc_info "
+                                 "failed => _URC_END_OF_STACK",
+                                 (void *)exception_object);
+      return _URC_FATAL_PHASE2_ERROR;
+    }
+
+#ifndef NDEBUG
+    // When tracing, print state information.
+    if (_LIBUNWIND_TRACING_UNWINDING) {
+      char functionBuf[512];
+      const char *functionName = functionBuf;
+      unw_word_t offset;
+      if ((__unw_get_proc_name(cursor, functionBuf, sizeof(functionBuf),
+                               &offset) != UNW_ESUCCESS) ||
+          (frameInfo.start_ip + offset > frameInfo.end_ip))
+        functionName = ".anonymous.";
+      _LIBUNWIND_TRACE_UNWINDING(
+          "unwind_phase2_forced(ex_ojb=%p): start_ip=0x%" PRIxPTR
+          ", func=%s, lsda=0x%" PRIxPTR ", personality=0x%" PRIxPTR,
+          (void *)exception_object, frameInfo.start_ip, functionName,
+          frameInfo.lsda, frameInfo.handler);
+    }
+#endif
+
+    // Call stop function at each frame.
+    _Unwind_Action action =
+        (_Unwind_Action)(_UA_FORCE_UNWIND | _UA_CLEANUP_PHASE);
+    _Unwind_Reason_Code stopResult =
+        (*stop)(1, action, exception_object->exception_class, exception_object,
+                (_Unwind_Context *)(cursor), stop_parameter);
+    _LIBUNWIND_TRACE_UNWINDING(
+        "unwind_phase2_forced(ex_ojb=%p): stop function returned %d",
+        (void *)exception_object, stopResult);
+    if (stopResult != _URC_NO_REASON) {
+      _LIBUNWIND_TRACE_UNWINDING(
+          "unwind_phase2_forced(ex_ojb=%p): stopped by stop function",
+          (void *)exception_object);
+      return _URC_FATAL_PHASE2_ERROR;
+    }
+
+    // If there is a personality routine, tell it we are unwinding.
+    if (frameInfo.handler != 0) {
+      _Unwind_Personality_Fn p =
+          (_Unwind_Personality_Fn)(uintptr_t)(frameInfo.handler);
+      struct _Unwind_Context *context = (struct _Unwind_Context *)(cursor);
+      // EHABI #7.2
+      exception_object->pr_cache.fnstart = frameInfo.start_ip;
+      exception_object->pr_cache.ehtp =
+          (_Unwind_EHT_Header *)frameInfo.unwind_info;
+      exception_object->pr_cache.additional = frameInfo.flags;
+      _Unwind_Reason_Code personalityResult =
+          (*p)(_US_FORCE_UNWIND | _US_UNWIND_FRAME_STARTING, exception_object,
+               context);
+      switch (personalityResult) {
+      case _URC_CONTINUE_UNWIND:
+        _LIBUNWIND_TRACE_UNWINDING("unwind_phase2_forced(ex_ojb=%p): "
+                                   "personality returned "
+                                   "_URC_CONTINUE_UNWIND",
+                                   (void *)exception_object);
+        // Destructors called, continue unwinding
+        break;
+      case _URC_INSTALL_CONTEXT:
+        _LIBUNWIND_TRACE_UNWINDING("unwind_phase2_forced(ex_ojb=%p): "
+                                   "personality returned "
+                                   "_URC_INSTALL_CONTEXT",
+                                   (void *)exception_object);
+        // We may get control back if landing pad calls _Unwind_Resume().
+        __unw_resume(cursor);
+        break;
+      case _URC_END_OF_STACK:
+        _LIBUNWIND_TRACE_UNWINDING("unwind_phase2_forced(ex_ojb=%p): "
+                                   "personality returned "
+                                   "_URC_END_OF_STACK",
+                                   (void *)exception_object);
+        // Personalty routine did the step and it can't step forward.
+        endOfStack = true;
+        break;
+      default:
+        // Personality routine returned an unknown result code.
+        _LIBUNWIND_TRACE_UNWINDING("unwind_phase2_forced(ex_ojb=%p): "
+                                   "personality returned %d, "
+                                   "_URC_FATAL_PHASE2_ERROR",
+                                   (void *)exception_object, personalityResult);
+        return _URC_FATAL_PHASE2_ERROR;
+      }
+    }
+  }
+
+  // Call stop function one last time and tell it we've reached the end
+  // of the stack.
+  _LIBUNWIND_TRACE_UNWINDING("unwind_phase2_forced(ex_ojb=%p): calling stop "
+                             "function with _UA_END_OF_STACK",
+                             (void *)exception_object);
+  _Unwind_Action lastAction =
+      (_Unwind_Action)(_UA_FORCE_UNWIND | _UA_CLEANUP_PHASE | _UA_END_OF_STACK);
+  (*stop)(1, lastAction, exception_object->exception_class, exception_object,
+          (struct _Unwind_Context *)(cursor), stop_parameter);
+
+  // Clean up phase did not resume at the frame that the search phase said it
+  // would.
+  return _URC_FATAL_PHASE2_ERROR;
+}
+
+/// Called by __cxa_throw.  Only returns if there is a fatal error.
+53:      match_handler = (uw_identify_context (context) == exc->private_2
+132:  exc->private_1 = 0;
+133:  exc->private_2 = uw_identify_context (&cur_context);
+144:/* Subroutine of _Unwind_ForcedUnwind also invoked from _Unwind_Resume.  */
+147:_Unwind_ForcedUnwind_Phase2 (struct _Unwind_Exception *exc,
+151:  _Unwind_Stop_Fn stop = (_Unwind_Stop_Fn) (_Unwind_Ptr) exc->private_1;
+152:  void *stop_argument = (void *) (_Unwind_Ptr) exc->private_2;
+205:_Unwind_ForcedUnwind (struct _Unwind_Exception *exc,
+215:  exc->private_1 = (_Unwind_Ptr) stop;
+216:  exc->private_2 = (_Unwind_Ptr) stop_argument;
+218:  code = _Unwind_ForcedUnwind_Phase2 (exc, &cur_context, &frames);
+240:     or _Unwind_ForcedUnwind.  */
+241:  if (exc->private_1 == 0)
+244:    code = _Unwind_ForcedUnwind_Phase2 (exc, &cur_context, &frames);
+263:     or _Unwind_ForcedUnwind.  */
+264:  if (exc->private_1 == 0)
+270:  code = _Unwind_ForcedUnwind_Phase2 (exc, &cur_context, &frames);
+-rw-r--r-- 1 root root 179440 Aug  4 23:02 /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R32-candidates-libcxx-x86_64-20260813-02/local/BUILD-ROOTS/scratch.x86_64.0/usr/lib64/libgcc_s.so.1
+docs/progress/R115/W3/raw/024_live_loader.stdout:34:     10382:	find library=libgcc_s.so.1 [0]; searching
+docs/progress/R115/W3/raw/024_live_loader.stdout:36:     10382:	  trying file=/var/tmp/r115_20260907/libgcc_s.so.1
+docs/progress/R115/W3/raw/024_live_loader.stdout:38:     10382:	  trying file=/lib/libgcc_s.so.1
+docs/progress/R115/W3/raw/024_live_loader.stdout:39:     10382:	Found entry: /lib/libgcc_s.so.1 for /opt/var/tmp/r115_20260907/old_fno_bounded libgcc_s.so.1
+docs/progress/R115/W3/raw/024_live_loader.stdout:65:     10382:	calling init: /lib/libgcc_s.so.1
+docs/progress/R115/W3/raw/024_live_loader.stdout:122:     10382:	calling fini: /lib/libgcc_s.so.1 [0]
+docs/progress/R115/W3/raw/024_live_loader.stdout:137:0eba387a1e9bbed6ecc903e426a84ed3aa4b7f848f547d19b08d151072c19335  /usr/lib/libgcc_s.so.1
+docs/progress/R116/raw/runs/llvm_unpatched_api_rethrow_3: exit=-6
+docs/progress/R116/raw/runs/llvm_unpatched_api_rethrow_4: exit=-6
+docs/progress/R116/raw/runs/llvm_unpatched_api_rethrow_5: exit=-6
+runs=150 mismatches=0

@@ -1,0 +1,44 @@
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <dlfcn.h>
+#include <execinfo.h>
+#include <pthread.h>
+#include <atomic>
+#include <unistd.h>
+extern "C" void r116_identity();
+std::atomic<int> ready{0},caught{0},cleaned{0};
+int pipes[2];
+void* worker(void*) {
+  struct G{~G(){++cleaned;}} g;
+  ready=1;
+  try {char c;read(pipes[0],&c,1);}
+  catch(...){++caught;puts("caught_foreign=1 rethrowing=1");throw;}
+  return nullptr;
+}
+int main(int argc,char**argv) {
+  if(argc!=2)return 64;
+  if(!strcmp(argv[1],"rethrow")) {
+    if(pipe(pipes))return 65;
+    pthread_t t; if(pthread_create(&t,nullptr,worker,nullptr))return 66;
+    while(!ready.load())usleep(1000);
+    if(pthread_cancel(t))return 67;
+    void* result=nullptr;int j=pthread_join(t,&result);
+    printf("join=%d canceled=%d caught=%d cleaned=%d\n",j,result==PTHREAD_CANCELED,caught.load(),cleaned.load());
+    r116_identity();close(pipes[0]);close(pipes[1]);
+    bool ok=!j && result==PTHREAD_CANCELED && caught==1 && cleaned==1;
+    printf("ASSERTIONS=%s\n",ok?"PASS":"FAIL");return ok?0:68;
+  }
+  void* frames[32];int n=backtrace(frames,32);if(n<3)return 69;
+  void* plugin=dlopen("libr116_plugin.so",RTLD_NOW|RTLD_LOCAL);
+  if(!plugin){printf("dlerror=%s\n",dlerror());return 70;}
+  auto trace=reinterpret_cast<int(*)()>(dlsym(plugin,"plugin_trace"));
+  auto raise=reinterpret_cast<void(*)(int*)>(dlsym(plugin,"plugin_throw"));
+  if(!trace||!raise)return 71;
+  int pn=trace(),count=0,exact=0;
+  try {raise(&count);}catch(int x){exact=x;}
+  if(dlclose(plugin))return 72;
+  printf("backtrace_frames=%d plugin_frames=%d exception_value=%d cleanup_count=%d dlclose=0\n",n,pn,exact,count);
+  r116_identity();bool ok=pn>=3&&exact==42&&count==1;
+  printf("ASSERTIONS=%s\n",ok?"PASS":"FAIL");return ok?0:73;
+}
