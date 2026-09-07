@@ -1,0 +1,154 @@
+   340	
+   341	  /* Can this frame be unwound at all?  */
+   342	  if (eitp->content == EXIDX_CANTUNWIND)
+   343	    {
+   344	#if __FDPIC__
+   345	      /* If we are unwinding a signal handler then perhaps we have
+   346		 reached a trampoline.  Try to detect jump to restorer
+   347		 sequence.  */
+   348	      _uw *pc = (_uw *)((return_address+2) & ~1);
+   349	      if ((pc[0] == FDPIC_LDR_R12_WITH_FUNCDESC
+   350		   && pc[1] == FDPIC_LDR_R9_WITH_GOT
+   351		   && pc[2] == FDPIC_LDR_PC_WITH_RESTORER)
+   352		  || (pc[0] == FDPIC_T2_LDR_R12_WITH_FUNCDESC
+   353		      && pc[1] == FDPIC_T2_LDR_R9_WITH_GOT
+   354		      && pc[2] == FDPIC_T2_LDR_PC_WITH_RESTORER))
+   355		{
+   356		  struct funcdesc_t *funcdesc
+   357		    = (struct funcdesc_t *) &__gnu_personality_sigframe_fdpic;
+   358	
+   359		  UCB_PR_ADDR (ucbp) = funcdesc->ptr;
+   360		  UCB_PR_GOT (ucbp) = funcdesc->got;
+   361	
+   362		  return _URC_OK;
+   363		}
+   364	#endif
+   365	      UCB_PR_ADDR (ucbp) = 0;
+   366	      return _URC_END_OF_STACK;
+   367	    }
+   368	
+   369	  /* Obtain the address of the "real" __EHT_Header word.  */
+   370	
+   371	  if (eitp->content & uint32_highbit)
+   372	    {
+   373	      /* It is immediate data.  */
+   374	      ucbp->pr_cache.ehtp = (_Unwind_EHT_Header *)&eitp->content;
+   375	      ucbp->pr_cache.additional = 1;
+   376	    }
+   377	  else
+   378	    {
+   379	      /* The low 31 bits of the content field are a self-relative
+   380		 offset to an _Unwind_EHT_Entry structure.  */
+   381	      ucbp->pr_cache.ehtp =
+   382		(_Unwind_EHT_Header *) selfrel_offset31 (&eitp->content);
+   383	      ucbp->pr_cache.additional = 0;
+   384	    }
+   385	
+   386	  /* Discover the personality routine address.  */
+   452	#endif
+   453	    }
+   454	  while (pr_result == _URC_CONTINUE_UNWIND);
+   455	  
+   456	  if (pr_result != _URC_INSTALL_CONTEXT)
+   457	    abort();
+   458	
+   459	#if __FDPIC__
+   460	  /* r9 could have been lost due to PLT jump.  Restore correct value.  */
+   461	  vrs->core.r[FDPIC_REGNUM] = _Unwind_gnu_Find_got (VRS_PC (vrs));
+   462	#endif
+   463	
+   464	  uw_restore_core_regs (vrs, &vrs->core);
+   465	}
+   466	
+   467	/* Perform phase2 forced unwinding.  */
+   468	
+   469	static _Unwind_Reason_Code
+   470	unwind_phase2_forced (_Unwind_Control_Block *ucbp, phase2_vrs *entry_vrs,
+   471			      int resuming)
+   472	{
+   473	  _Unwind_Stop_Fn stop_fn = (_Unwind_Stop_Fn) UCB_FORCED_STOP_FN (ucbp);
+   474	  void *stop_arg = (void *)UCB_FORCED_STOP_ARG (ucbp);
+   475	  _Unwind_Reason_Code pr_result = 0;
+   476	  /* We use phase1_vrs here even though we do not demand save, for the
+   477	     prev_sp field.  */
+   478	  phase1_vrs saved_vrs, next_vrs;
+   479	
+   480	  /* Save the core registers.  */
+   481	  saved_vrs.core = entry_vrs->core;
+   482	  /* We don't need to demand-save the non-core registers, because we
+   483	     unwind in a single pass.  */
+   484	  saved_vrs.demand_save_flags = 0;
+   485	
+   486	  /* Unwind until we reach a propagation barrier.  */
+   487	  do
+   488	    {
+   489	      _Unwind_State action;
+   490	      _Unwind_Reason_Code entry_code;
+   491	      _Unwind_Reason_Code stop_code;
+   492	
+   493	      /* Find the entry for this routine.  */
+   494	      entry_code = get_eit_entry (ucbp, VRS_PC (&saved_vrs));
+   495	
+   496	      if (resuming)
+   497		{
+   498		  action = _US_UNWIND_FRAME_RESUME | _US_FORCE_UNWIND;
+   499		  resuming = 0;
+   500		}
+   501	      else
+   502		action = _US_UNWIND_FRAME_STARTING | _US_FORCE_UNWIND;
+   503	
+   504	      if (entry_code == _URC_OK)
+   505		{
+   506		  UCB_SAVED_CALLSITE_ADDR (ucbp) = VRS_PC (&saved_vrs);
+   507	
+   508		  next_vrs = saved_vrs;
+   509	
+   510		  /* Call the pr to decide what to do.  */
+   511	#if __FDPIC__
+   512		  {
+   513		    volatile struct funcdesc_t funcdesc;
+   514		    funcdesc.ptr = UCB_PR_ADDR (ucbp);
+   515		    funcdesc.got = UCB_PR_GOT (ucbp);
+   516		    pr_result = ((personality_routine) &funcdesc)
+   517		      (action, ucbp, (void *) &next_vrs);
+   518		  }
+   519	#else
+   520		  pr_result = ((personality_routine) UCB_PR_ADDR (ucbp))
+   521		    (action, ucbp, (void *) &next_vrs);
+   522	#endif
+   523	
+   524		  saved_vrs.prev_sp = VRS_SP (&next_vrs);
+   525		}
+   526	      else
+   527		{
+   528		  /* Treat any failure as the end of unwinding, to cope more
+   529		     gracefully with missing EH information.  Mixed EH and
+   530		     non-EH within one object will usually result in failure,
+   531		     because the .ARM.exidx tables do not indicate the end
+   532		     of the code to which they apply; but mixed EH and non-EH
+   533		     shared objects should return an unwind failure at the
+   534		     entry of a non-EH shared object.  */
+   535		  action |= _US_END_OF_STACK;
+   536	
+   537		  saved_vrs.prev_sp = VRS_SP (&saved_vrs);
+   538		}
+   539	
+   540	      stop_code = stop_fn (1, action, ucbp->exception_class, ucbp,
+   541				   (void *)&saved_vrs, stop_arg);
+   542	      if (stop_code != _URC_NO_REASON)
+   543		return _URC_FAILURE;
+   544	
+   545	      if (entry_code != _URC_OK)
+   546		return entry_code;
+   547	
+   548	      saved_vrs = next_vrs;
+   549	    }
+   550	  while (pr_result == _URC_CONTINUE_UNWIND);
+   551	
+   552	  if (pr_result != _URC_INSTALL_CONTEXT)
+   553	    {
+   554	      /* Some sort of failure has occurred in the pr and probably the
+   555		 pr returned _URC_FAILURE.  */
+   556	      return _URC_FAILURE;
+   557	    }
+6a543c2081390f57b5452cf11b308f0a49a90e42e4e992ed32924251b9c11338  codes/gcc/libgcc/unwind-arm-common.inc
