@@ -1,0 +1,268 @@
+52-namespace std _GLIBCXX_VISIBILITY(default)
+53-{
+54-_GLIBCXX_BEGIN_NAMESPACE_VERSION
+55-
+56-  /**
+57-   * @addtogroup mutexes
+58-   * @{
+59-   */
+60-
+61-#ifdef _GLIBCXX_HAS_GTHREADS
+62-
+63-#ifdef __cpp_lib_shared_mutex // C++ >= 17 && hosted && gthread
+64:  class shared_mutex;
+65-#endif
+66-
+67:  class shared_timed_mutex;
+68-
+69-  /// @cond undocumented
+70-
+71-#if _GLIBCXX_USE_PTHREAD_RWLOCK_T
+72-#ifdef __gthrw
+73-#define _GLIBCXX_GTHRW(name) \
+74-  __gthrw(pthread_ ## name); \
+75-  static inline int \
+76-  __glibcxx_ ## name (pthread_rwlock_t *__rwlock) \
+77-  { \
+78-    if (__gthread_active_p ()) \
+79-      return __gthrw_(pthread_ ## name) (__rwlock); \
+--
+147-				const timespec *__ts)
+148-  { return pthread_rwlock_timedrdlock (__rwlock, __ts); }
+149-  static inline int
+150-  __glibcxx_rwlock_timedwrlock (pthread_rwlock_t *__rwlock,
+151-				const timespec *__ts)
+152-  { return pthread_rwlock_timedwrlock (__rwlock, __ts); }
+153-# endif
+154-#endif
+155-
+156-  /// A shared mutex type implemented using pthread_rwlock_t.
+157-  class __shared_mutex_pthread
+158-  {
+159:    friend class shared_timed_mutex;
+160-
+161-#ifdef PTHREAD_RWLOCK_INITIALIZER
+162-    pthread_rwlock_t	_M_rwlock = PTHREAD_RWLOCK_INITIALIZER;
+163-
+164-  public:
+165-    __shared_mutex_pthread() = default;
+166-    ~__shared_mutex_pthread() = default;
+167-#else
+168-    pthread_rwlock_t	_M_rwlock;
+169-
+170-  public:
+171-    __shared_mutex_pthread()
+--
+257-    {
+258-      unlock();
+259-    }
+260-
+261-    void* native_handle() { return &_M_rwlock; }
+262-  };
+263-#endif
+264-
+265-#if ! (_GLIBCXX_USE_PTHREAD_RWLOCK_T && _GTHREAD_USE_MUTEX_TIMEDLOCK)
+266-  /// A shared mutex type implemented using std::condition_variable.
+267-  class __shared_mutex_cv
+268-  {
+269:    friend class shared_timed_mutex;
+270-
+271-    // Based on Howard Hinnant's reference implementation from N2406.
+272-
+273-    // The high bit of _M_state is the write-entered flag which is set to
+274-    // indicate a writer has taken the lock or is queuing to take the lock.
+275-    // The remaining bits are the count of reader locks.
+276-    //
+277-    // To take a reader lock, block on gate1 while the write-entered flag is
+278-    // set or the maximum number of reader locks is held, then increment the
+279-    // reader lock count.
+280-    // To release, decrement the count, then if the write-entered flag is set
+281-    // and the count is zero then signal gate2 to wake a queued writer,
+--
+289-    // blocked readers and writers.
+290-    //
+291-    // This means that when no reader locks are held readers and writers get
+292-    // equal priority. When one or more reader locks is held a writer gets
+293-    // priority and no more reader locks can be taken while the writer is
+294-    // queued.
+295-
+296-    // Only locked when accessing _M_state or waiting on condition variables.
+297-    mutex		_M_mut;
+298-    // Used to block while write-entered is set or reader count at maximum.
+299-    condition_variable	_M_gate1;
+300-    // Used to block queued writers while reader count is non-zero.
+301:    condition_variable	_M_gate2;
+302-    // The write-entered flag and reader count.
+303-    unsigned		_M_state;
+304-
+305-    static constexpr unsigned _S_write_entered
+306-      = 1U << (sizeof(unsigned)*__CHAR_BIT__ - 1);
+307-    static constexpr unsigned _S_max_readers = ~_S_write_entered;
+308-
+309-    // Test whether the write-entered flag is set. _M_mut must be locked.
+310:    bool _M_write_entered() const { return _M_state & _S_write_entered; }
+311-
+312-    // The number of reader locks currently held. _M_mut must be locked.
+313-    unsigned _M_readers() const { return _M_state & _S_max_readers; }
+314-
+315-  public:
+316-    __shared_mutex_cv() : _M_state(0) {}
+317-
+318-    ~__shared_mutex_cv()
+319-    {
+320-      __glibcxx_assert( _M_state == 0 );
+321-    }
+322-
+323-    __shared_mutex_cv(const __shared_mutex_cv&) = delete;
+324-    __shared_mutex_cv& operator=(const __shared_mutex_cv&) = delete;
+325-
+326-    // Exclusive ownership
+327-
+328-    void
+329-    lock()
+330-    {
+331-      unique_lock<mutex> __lk(_M_mut);
+332-      // Wait until we can set the write-entered flag.
+333:      _M_gate1.wait(__lk, [=]{ return !_M_write_entered(); });
+334-      _M_state |= _S_write_entered;
+335-      // Then wait until there are no more readers.
+336:      _M_gate2.wait(__lk, [=]{ return _M_readers() == 0; });
+337-    }
+338-
+339-    bool
+340-    try_lock()
+341-    {
+342-      unique_lock<mutex> __lk(_M_mut, try_to_lock);
+343-      if (__lk.owns_lock() && _M_state == 0)
+344-	{
+345-	  _M_state = _S_write_entered;
+346-	  return true;
+347-	}
+348-      return false;
+349-    }
+350-
+351-    void
+352-    unlock()
+353-    {
+354-      lock_guard<mutex> __lk(_M_mut);
+355:      __glibcxx_assert( _M_write_entered() );
+356-      _M_state = 0;
+357-      // call notify_all() while mutex is held so that another thread can't
+358-      // lock and unlock the mutex then destroy *this before we make the call.
+359-      _M_gate1.notify_all();
+360-    }
+361-
+362-    // Shared ownership
+363-
+364-    void
+365-    lock_shared()
+366-    {
+367-      unique_lock<mutex> __lk(_M_mut);
+--
+380-	  ++_M_state;
+381-	  return true;
+382-	}
+383-      return false;
+384-    }
+385-
+386-    void
+387-    unlock_shared()
+388-    {
+389-      lock_guard<mutex> __lk(_M_mut);
+390-      __glibcxx_assert( _M_readers() > 0 );
+391-      auto __prev = _M_state--;
+392:      if (_M_write_entered())
+393-	{
+394-	  // Wake the queued writer if there are no more readers.
+395-	  if (_M_readers() == 0)
+396:	    _M_gate2.notify_one();
+397-	  // No need to notify gate1 because we give priority to the queued
+398-	  // writer, and that writer will eventually notify gate1 after it
+399-	  // clears the write-entered flag.
+400-	}
+401-      else
+402-	{
+403-	  // Wake any thread that was blocked on reader overflow.
+404-	  if (__prev == _S_max_readers)
+405-	    _M_gate1.notify_one();
+406-	}
+407-    }
+408-  };
+409-#endif
+410-  /// @endcond
+411-
+412-#ifdef __cpp_lib_shared_mutex
+413-  /// The standard shared mutex type.
+414:  class shared_mutex
+415-  {
+416-  public:
+417-    shared_mutex() = default;
+418-    ~shared_mutex() = default;
+419-
+420-    shared_mutex(const shared_mutex&) = delete;
+421-    shared_mutex& operator=(const shared_mutex&) = delete;
+422-
+423-    // Exclusive ownership
+424-
+425-    void lock() { _M_impl.lock(); }
+426-    [[nodiscard]] bool try_lock() { return _M_impl.try_lock(); }
+--
+445-  };
+446-#endif // __cpp_lib_shared_mutex
+447-
+448-  /// @cond undocumented
+449-#if _GLIBCXX_USE_PTHREAD_RWLOCK_T && _GTHREAD_USE_MUTEX_TIMEDLOCK
+450-  using __shared_timed_mutex_base = __shared_mutex_pthread;
+451-#else
+452-  using __shared_timed_mutex_base = __shared_mutex_cv;
+453-#endif
+454-  /// @endcond
+455-
+456-  /// The standard shared timed mutex type.
+457:  class shared_timed_mutex
+458-  : private __shared_timed_mutex_base
+459-  {
+460-    using _Base = __shared_timed_mutex_base;
+461-
+462-    // Must use the same clock as condition_variable for __shared_mutex_cv.
+463-#ifdef _GLIBCXX_USE_PTHREAD_RWLOCK_CLOCKLOCK
+464-    using __clock_t = chrono::steady_clock;
+465-#else
+466-    using __clock_t = chrono::system_clock;
+467-#endif
+468-
+469-  public:
+--
+679-
+680-#else // ! (_GLIBCXX_USE_PTHREAD_RWLOCK_T && _GTHREAD_USE_MUTEX_TIMEDLOCK)
+681-
+682-    // Exclusive ownership
+683-
+684-    template<typename _Clock, typename _Duration>
+685-      _GLIBCXX_NODISCARD
+686-      bool
+687-      try_lock_until(const chrono::time_point<_Clock, _Duration>& __abs_time)
+688-      {
+689-	unique_lock<mutex> __lk(_M_mut);
+690-	if (!_M_gate1.wait_until(__lk, __abs_time,
+691:				 [=]{ return !_M_write_entered(); }))
+692-	  {
+693-	    return false;
+694-	  }
+695-	_M_state |= _S_write_entered;
+696:	if (!_M_gate2.wait_until(__lk, __abs_time,
+697-				 [=]{ return _M_readers() == 0; }))
+698-	  {
+699-	    _M_state ^= _S_write_entered;
+700-	    // Wake all threads blocked while the write-entered flag was set.
+701-	    _M_gate1.notify_all();
+702-	    return false;
+703-	  }
+704-	return true;
+705-      }
+706-
+707-    // Shared ownership
+708-
+--- source identity ---
+49c5060508ce8a6ed6beca375233688a6bdd9140
+5ed6c77278dfa7a470667cf1a137723d3c96fe60

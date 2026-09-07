@@ -1,0 +1,371 @@
+--- Boost.Test actual-direction probe ---
+#include <cstdio>
+#include <cstring>
+#include <dlfcn.h>
+#include <string>
+
+namespace {
+bool maps_contains(const char* token) {
+  std::FILE* maps = std::fopen("/proc/self/maps", "r");
+  if (!maps) return false;
+  char line[4096];
+  while (std::fgets(line, sizeof(line), maps)) {
+    if (std::strstr(line, token)) {
+      std::fclose(maps);
+      return true;
+    }
+  }
+  std::fclose(maps);
+  return false;
+}
+
+// Boost 1.83 basic_cstring<const char> consists of two pointers in the
+// provider source and headers inspected by the earlier R110 probe.
+struct input_type {
+  const char* m_begin;
+  const char* m_end;
+  input_type(const char* begin, const char* end) : m_begin(begin), m_end(end) {}
+  input_type(const input_type& other) : m_begin(other.m_begin), m_end(other.m_end) {}
+};
+static_assert(sizeof(input_type) == 2 * sizeof(const char*));
+static_assert(alignof(input_type) == alignof(const char*));
+}
+
+int main(int argc, char** argv) {
+  if (argc != 2) return 2;
+  void* handle = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+  if (!handle) {
+    std::printf("dlopen_ok=0 error=%s\n", dlerror());
+    return 3;
+  }
+  // The libc++-built provider does not use libstdc++'s B5cxx11 return tag.
+  constexpr const char* symbol_name =
+      "_ZN5boost9unit_test9ut_detail24normalize_test_case_nameENS0_13basic_cstringIKcEE";
+  void* symbol = dlsym(handle, symbol_name);
+  if (!symbol) {
+    std::printf("dlsym_ok=0 error=%s\n", dlerror());
+    return 4;
+  }
+  Dl_info info{};
+  const int address_ok = dladdr(symbol, &info);
+  std::printf("runtime_maps=libcxx:%d,libstdcxx:%d,provider:%d dladdr=%d\n",
+              maps_contains("libc++.so.1") ? 1 : 0,
+              maps_contains("libstdc++.so.6") ? 1 : 0,
+              maps_contains("libboost_unit_test_framework.so.1.83.0") ? 1 : 0,
+              address_ok ? 1 : 0);
+  std::printf("provider_path=%s\n",
+              address_ok && info.dli_fname ? info.dli_fname : "NOT_OBSERVED");
+  std::fflush(stdout);
+
+  using return_function = std::string (*)(input_type);
+  auto function = reinterpret_cast<return_function>(symbol);
+  const char input[] = "& alpha/beta+gamma ";
+  const char expected[] = "alpha_beta_gamma";
+  bool value_ok = false;
+  {
+    std::string value = function(input_type(input, input + sizeof(input) - 1));
+    std::puts("provider_constructed=YES");
+    std::fflush(stdout);
+    const std::size_t observed_size = value.size();
+    if (observed_size == sizeof(expected) - 1)
+      value_ok = std::memcmp(value.data(), expected, sizeof(expected) - 1) == 0;
+    std::printf("observed_size=%zu expected_size=%zu value_ok=%d\n",
+                observed_size, sizeof(expected) - 1, value_ok ? 1 : 0);
+    std::puts("consumer_destroy_begin=YES");
+    std::fflush(stdout);
+  }
+  std::puts("consumer_destroy_completed=YES");
+  std::fflush(stdout);
+  dlclose(handle);
+  std::puts("dlclose_completed=YES");
+  return value_ok ? 0 : 41;
+}
+--- build and runner ---
+#!/bin/bash
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/../../../.." && pwd)
+out="$root/docs/progress/R112/build/item4_boost_test"
+source="$root/docs/progress/R112/code/item4_boost_test_actual_direction.cpp"
+buildroot=/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R105-boost-aarch64/local/BUILD-ROOTS/scratch.aarch64.0
+clang_root=/home/toolchain/development/libc++_replacement/progress/R80/build/cached-clang
+input_root=/tmp/r110_w3_build/root
+gcc_headers="$input_root/usr/lib64/gcc/aarch64-tizen-linux-gnu/14.2.0/include/c++"
+libcxx="$buildroot/usr/lib64"
+libstdcxx="$input_root/usr/lib64"
+libgcc="$input_root/usr/lib64"
+provider=/home/toolchain/development/libc++_replacement/progress/R105/artifacts/boost_aarch64_libcxx/boost-test-1.83.0-105.10.5.aarch64/usr/lib64/libboost_unit_test_framework.so.1.83.0
+clang="$clang_root/usr/bin/clang++"
+mkdir -p "$out"
+
+for input in "$clang" "$source" "$provider" "$libcxx/libc++.so.1.0" \
+  "$libcxx/libc++abi.so.1.0" "$libstdcxx/libstdc++.so.6.0.33" \
+  "$libgcc/libgcc_s.so.1" "$gcc_headers/string"; do
+  test -r "$input"
+done
+
+common=(env "LD_LIBRARY_PATH=$clang_root/usr/lib64" "$clang" --no-default-config
+  --target=aarch64-tizen-linux-gnu --sysroot="$buildroot" -fuse-ld=lld
+  -resource-dir=/tmp/r110_w3_build/clang_resource -std=c++20 -O0 -g0
+  -nostdinc++ -nostdlib++ -pthread)
+
+"${common[@]}" -isystem "$gcc_headers" -isystem "$gcc_headers/aarch64-tizen-linux-gnu" \
+  -isystem "$gcc_headers/backward" "$source" "$libstdcxx/libstdc++.so.6.0.33" \
+  "$libgcc/libgcc_s.so.1" -ldl -o "$out/libstd_consumer_libcxx_provider"
+
+"${common[@]}" -isystem "$buildroot/usr/include/c++/v1" "$source" \
+  "$libcxx/libc++.so.1.0" "$libcxx/libc++abi.so.1.0" "$libgcc/libgcc_s.so.1" \
+  -ldl -o "$out/libcxx_consumer_libcxx_provider"
+
+file "$out"/*consumer_libcxx_provider
+for file in "$out"/*consumer_libcxx_provider "$provider"; do
+  echo "FILE=$file"
+  readelf -d "$file" | grep -E "NEEDED|BIND_NOW|FLAGS"
+done
+sha256sum "$out"/*consumer_libcxx_provider "$provider" "$source"
+#!/usr/bin/env python3
+import csv
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[4]
+OUT = ROOT / "docs/progress/R112/build/item4_boost_test"
+RUNS = OUT / "runs"
+TABLES = ROOT / "docs/progress/R112/tables"
+EXTRACTED = Path("/home/toolchain/development/libc++_replacement/tmp/R11/extracted")
+QEMU = EXTRACTED / "41/4154ea903c230bf1f887ef759c43e5f7dcb48de108fd2445550ce1eaff3af553/usr/bin/qemu-aarch64"
+GLIBC = EXTRACTED / "76/7606e2955a44b9255ca19db9bfc1ff9b96c047c5dd1aee7a85472a0a67af84a7"
+LIBCXX = Path("/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R105-boost-aarch64/local/BUILD-ROOTS/scratch.aarch64.0/usr/lib64")
+LIBSTD = Path("/tmp/r110_w3_build/root/usr/lib64")
+PROVIDER = Path("/home/toolchain/development/libc++_replacement/progress/R105/artifacts/boost_aarch64_libcxx/boost-test-1.83.0-105.10.5.aarch64/usr/lib64/libboost_unit_test_framework.so.1.83.0")
+
+def main() -> int:
+    RUNS.mkdir(parents=True, exist_ok=True)
+    loader = GLIBC / "lib64/ld-linux-aarch64.so.1"
+    library_path = ":".join(map(str, (PROVIDER.parent, LIBCXX, LIBSTD, GLIBC / "lib64")))
+    rows = []
+    for cell in ("libstd_consumer_libcxx_provider", "libcxx_consumer_libcxx_provider"):
+        for repeat in range(1, 6):
+            command = [str(QEMU), str(loader), "--library-path", library_path,
+                       str(OUT / cell), str(PROVIDER)]
+            completed = subprocess.run(command, cwd=ROOT, text=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       timeout=10)
+            stem = RUNS / f"{cell}_{repeat}"
+            stem.with_suffix(".stdout").write_text(completed.stdout)
+            stem.with_suffix(".stderr").write_text(completed.stderr)
+            stem.with_suffix(".exitcode").write_text(f"{completed.returncode}\n")
+            stem.with_suffix(".command.txt").write_text(
+                f"cwd: {ROOT}\ncommand: {' '.join(command)}\n")
+            rows.append({
+                "cell": cell, "repeat": repeat, "returncode": completed.returncode,
+                "maps_libcxx": int("runtime_maps=libcxx:1" in completed.stdout),
+                "maps_libstdcxx": int("libstdcxx:1" in completed.stdout),
+                "maps_provider": int("provider:1" in completed.stdout),
+                "exact_value": int("observed_size=16 expected_size=16 value_ok=1" in completed.stdout),
+                "destruction_completed": int("consumer_destroy_completed=YES" in completed.stdout),
+            })
+    with (TABLES / "item4_boost_test_actual_direction_matrix.tsv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]), delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+    for cell in sorted({row["cell"] for row in rows}):
+        selected = [row for row in rows if row["cell"] == cell]
+        print(cell, "returncodes", sorted({row["returncode"] for row in selected}),
+              "maps", [(row["maps_libcxx"], row["maps_libstdcxx"], row["maps_provider"]) for row in selected],
+              "exact", sum(row["exact_value"] for row in selected),
+              "destroy", sum(row["destruction_completed"] for row in selected))
+    controls = [row for row in rows if row["cell"].startswith("libcxx_consumer")]
+    assert all(row["returncode"] == 0 and row["maps_libcxx"] and
+               not row["maps_libstdcxx"] and row["maps_provider"] and
+               row["exact_value"] and row["destruction_completed"] for row in controls)
+    mixed = [row for row in rows if row["cell"].startswith("libstd_consumer")]
+    assert all(row["maps_libcxx"] and row["maps_libstdcxx"] and
+               row["maps_provider"] for row in mixed)
+    print("ASSERTIONS=PASS architecture=aarch64_qemu repeats=5 control=PASS maps=PASS")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+--- partial binding probe and conclusions ---
+#!/usr/bin/env python3
+import csv
+import os
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[4]
+OUT = ROOT / "docs/progress/R112/build/item4_partial"
+RUNS = OUT / "runs"
+TABLE = ROOT / "docs/progress/R112/tables/item4_partial_binding_matrix.tsv"
+
+def main() -> int:
+    RUNS.mkdir(parents=True, exist_ok=True)
+    cells = (
+        ("lazy_profile_load_without_missing_call", "consumer_lazy_profile", False),
+        ("lazy_profile_first_missing_call", "consumer_lazy_profile", True),
+        ("now_control_without_missing_call", "consumer_now_control", False),
+    )
+    rows = []
+    env = dict(os.environ, LD_LIBRARY_PATH=str(OUT / "new"))
+    for cell, binary, invoke_missing in cells:
+        for repeat in range(1, 6):
+            command = [str(OUT / binary)] + (["call-missing"] if invoke_missing else [])
+            completed = subprocess.run(command, cwd=ROOT, env=env, text=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       timeout=10)
+            stem = RUNS / f"{cell}_{repeat}"
+            stem.with_suffix(".stdout").write_text(completed.stdout)
+            stem.with_suffix(".stderr").write_text(completed.stderr)
+            stem.with_suffix(".exitcode").write_text(f"{completed.returncode}\n")
+            stem.with_suffix(".command.txt").write_text(
+                f"cwd: {ROOT}\ncommand: LD_LIBRARY_PATH={OUT / 'new'} {' '.join(command)}\n")
+            rows.append({"cell": cell, "repeat": repeat,
+                         "returncode": completed.returncode,
+                         "main_entered": int("main_entered=YES" in completed.stdout),
+                         "before_missing": int("before_missing=YES" in completed.stdout),
+                         "symbol_lookup_error": int("symbol lookup error" in completed.stderr and
+                                                    "missing" in completed.stderr)})
+    with TABLE.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]), delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+    for cell, _, _ in cells:
+        selected = [row for row in rows if row["cell"] == cell]
+        print(cell, "returncodes", sorted({r["returncode"] for r in selected}),
+              "main", sum(r["main_entered"] for r in selected),
+              "before_missing", sum(r["before_missing"] for r in selected),
+              "lookup_error", sum(r["symbol_lookup_error"] for r in selected))
+    assert all(r["returncode"] == 0 and r["main_entered"] for r in rows
+               if r["cell"] == "lazy_profile_load_without_missing_call")
+    assert all(r["returncode"] == 127 and r["main_entered"] and r["before_missing"] and
+               r["symbol_lookup_error"] for r in rows
+               if r["cell"] == "lazy_profile_first_missing_call")
+    assert all(r["returncode"] == 127 and not r["main_entered"] and
+               r["symbol_lookup_error"] for r in rows
+               if r["cell"] == "now_control_without_missing_call")
+    print("ASSERTIONS=PASS repeats=5 lazy_first_call_and_now_load_control=PASS")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+10-总判定如下：
+11-
+12-| 论断 | 判定 | 证据性质 |
+13-|---|---|---|
+14-| 旧调用方解除规格后必然静默死锁 | **按“必然”表述不成立；在无可用清理表的旧帧中成立** | 源码核查 + x86_64 实测 |
+15-| 混合目标文件发生 COMDAT 折叠，语义受链接顺序影响 | **成立**；但 ABI 标签“只随版本变化”的解释不成立 | 源码核查 + x86_64 实测 |
+16-| 去掉 `wbuffer_convert` 析构同步后，约 4095 字符以内一字不留 | **不成立**；本用例保留首字符，其余大量丢失 | 源码核查 + x86_64 实测 |
+17-| 既有 Boost 失败实验全部是过渡期反方向，实际方向未测 | **在本轮前成立**；本轮已补两类实际方向 | 材料核查 + aarch64 QEMU 实测 |
+18:| 部分符号缺失在无 `BIND_NOW` 时首次调用才失败 | **机制成立，举例的 33→21 成立；对该产品进程的最终结果仍有条件** | ELF 核查 + x86_64 机制实测 |
+19-| `async` 最后一个共享状态释放路径还有不抛帧 | **成立** | 静态核查 |
+20-| 四类 libc++ 内部消费路径存在且此前未运行时测试 | **成立** | 静态核查 + 既有探针范围核查 |
+21-| C++03 镜像也须同步改变才会改变 C++03 调用方 | **成立** | 静态核查 + 编译包含链核查 |
+22-| N4861 对 `wbuffer_convert` 析构只列出删除 `cvtptr` | **成立** | 标准原文核查 |
+23-| 601 是可见外联消费记录，不含内联与外部产品 | **成立** | 既有材料原文核查 |
+24-| 平台发布/允许静态链接 `libc++.a`，形成 601 的现实盲区 | **发布这一前提不成立；组织策略不可得；机制假设成立** | 打包规格 + 冻结清单核查 |
+25-
+26-## 2. 旧调用方在取消路径上的实际结局
+--
+139-- “静态归档是这种混合的一种来源”成立；
+140-- “8,911 个归档都是这种混合来源”不成立；
+141-- 实际包含目标实例的归档数为 `NOT_AVAILABLE`。
+142-
+143-## 4. `wbuffer_convert` 的实际丢失量
+144-
+145-### 4.1 源码路径
+146-
+147:当前构造函数调用 `setbuf(nullptr, 4096)`。首次输出进入 `overflow`；首个宽字符
+148-先被转换并写到底层 byte streambuf，随后 `__write_mode` 才把内部缓冲的
+149-`__ibs_-1`（4095）个元素设为 put 区。后续写满时再由 `overflow` 刷出。
+150-相关源码在 `raw/023_inspect_wbuffer_sources.*` 和
+151-`raw/028_inspect_wbuffer_first_write_path.*`。
+152-
+153-这解释了评审推理漏掉的首字符：put 区不是在第一个字符写入前就已建立。
+154-
+155-### 4.2 300 次实测
+--
+186-既有材料见 `raw/030_inspect_existing_boost_direction_tests.*`。
+187-
+188-本轮在 aarch64 QEMU 用户态用真实 R105 libc++ Boost provider 补了两类实际方向。
+189-每格 5 次，并由 `/proc/self/maps` 断言 provider 与两套 C++ 运行库同时加载：
+190-
+191-| 边 | 同库 libc++ 对照 | libstdc++ 消费方 → libc++ provider |
+192-|---|---|---|
+193-| Boost.Filesystem `path/status/read_symlink` | 5/5 精确值 `payload.txt`，销毁完成 | 5/5 返回空值、状态和值断言失败，销毁完成，退出 41 |
+194:| Boost.Test `normalize_test_case_name`，`std::string` 返回 | 5/5 精确值 `alpha_beta_gamma`，销毁完成 | 5/5 先读出异常巨大 size，随后在销毁路径前 `SIGSEGV` |
+195-
+196-矩阵见 `tables/item4_actual_direction_matrix.tsv` 和
+197:`item4_boost_test_actual_direction_matrix.tsv`。首次 Boost.Test 尝试使用旧
+198-`B5cxx11` 名称时，真实新 provider 不定义该名称，`dlsym` 失败；该失败记录保留在
+199-`raw/040_*`。随后用新 provider 实际导出的同语义名称调用，才进入 ABI 传值实测。
+200-
+201-与反方向相比，宏观上都能出现 ABI 值损坏；具体形态并不相同。既有反方向
+202:Boost.Test 是静默错值且完成销毁，本轮实际方向为 `SIGSEGV`；Filesystem 两向
+203-都是值错误，但具体 size/值不同。因此“失败形态完全相同”不成立。
+204-
+205-### 5.2 `RELRO`、`NOW` 与延迟绑定
+206-
+207-对 90 边材料解析到的 84 个按“架构+RPM 哈希+ELF 路径”去重的真实消费 ELF
+208-逐个检查：
+209-
+210:| 架构 | ELF | `GNU_RELRO` | `BIND_NOW` | `JMPREL`/`.plt` |
+211-|---|---:|---:|---:|---:|
+212-| aarch64 | 28 | 25 | 0 | 28/28 |
+213-| armv7l | 28 | 25 | 0 | 28/28 |
+214-| x86_64 | 28 | 25 | 0 | 28/28 |
+215-
+216-因此“没有 `-z now`”对这 84 个文件成立；“都只有 `-z relro`”若理解为每个文件
+217-都有 RELRO 则不成立，因为每架构有 3 个没有 `GNU_RELRO`。E029 的
+218-`security-manager-cmd` 在三架构均为 RELRO=1、NOW=0、JMPREL=1、PLT=1。
+219-逐文件表见 `tables/item4_consumer_binding_tags.tsv`。
+220-
+221-部分缺失机制实测使用两个同 SONAME provider：旧版定义 `present` 和 `missing`，
+222:运行时替换为只定义 `present` 的新版。匹配上述产品 ELF 动态标签的 lazy 格和
+223-`-z now` 正向对照各跑 5 次：
+224-
+225-| 形态 | 结果 |
+226-|---|---|
+227:| lazy，未调用缺失符号 | 5/5 进入 `main` 并正常退出 |
+228:| lazy，首次调用缺失符号 | 5/5 先进入 `main` 和调用点，再以 127 及 `symbol lookup error` 退出 |
+229-| NOW 对照，即使不调用缺失符号 | 5/5 在 `main` 前以 127 及同类错误退出 |
+230-
+231-所以评审关于延迟绑定机制的论断成立。该机制用 x86_64 动态加载器实测，真实产品
+232-ELF只做静态标签核查，未把主机实验外推为对每个产品进程的直接运行观测。
+233-
+234:### 5.3 33→21 示例
+235-
+236-E029 是 aarch64 `security-manager-cmd` → Boost.Program_options。对记录的 33 个
+237-旧交集符号重新逐个查真实旧 provider 和 R105 libc++ provider：旧 provider
+238:33/33 定义，新 provider 只有 21/33 保留相同 mangled name，缺 12 个。论断成立，
+239-逐符号表见 `tables/item4_e029_symbol_retention.tsv`。
+240-
+241:“该生产进程一定在首次调用退出”仍是条件性陈述：需要缺失符号没有被进程中其他
+242-DSO解析，且执行实际到达该 PLT 项。本轮没有完整产品运行闭包，二者为
+243:`NOT_OBSERVED`；不能仅由 33→21 推断发生频率。
+244-
+245-## 6. 其余论断
+246-
+247-### 6.1 `std::async` 最后共享状态释放路径
+248-
+249-**成立（静态核查）。** `future<T>::~future()` 调用 `__release_shared()`；异步共享
+250-状态最后一次释放进入头文件模板
+251-`__async_assoc_state<T,F>::__on_zero_shared() _NOEXCEPT`，其中先调用 `wait()`。
+--
+328-平台是否允许外部产品自行构建/携带静态 libc++ 的组织策略为 `NOT_AVAILABLE`；
+329-外部 BOM、构建日志和 link map 也不可得。因此外部自带静态实例的规模为
+330-`NOT_AVAILABLE`，不能从冻结发布仓的 0 推成全平台 0。
+331-
+332-## 7. 自行判断、限制与疑问
+333-
+334-- 将旧调用方分成“带邻近可抛调用”和 quiet 两种，是为验证评审推理中代码布局
+335-  是否为必要条件；没有把任何一种人为指定为全部产品调用方的代表。
+336:- Boost.Test 的新 provider 不再导出旧 `B5cxx11` 名称；为分开验证“缺符号”和
+337-  “同名 ABI 传递”两种机制，先保留 dlsym 失败记录，再按新 provider 的真实导出
+338-  名称做传值实验。
+339-- 84 个 ELF 是从 90 边表按架构、RPM 内容哈希和路径去重所得，不替换其他材料中
+340-  不同口径的“75 个二进制”数字。
+341-- 平台全量逐编译单元 `-fno-exceptions` 使用数、外部静态 libc++ 使用数和 E029
+342-  完整运行闭包均缺材料，分别标为 `NOT_AVAILABLE` 或 `NOT_OBSERVED`。
+343-- 本轮不作处置建议或优先级排序。
+344-

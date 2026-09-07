@@ -1,0 +1,545 @@
+#!/bin/bash
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/../../../.." && pwd)
+build="$root/docs/progress/R111/build/item3"
+overlay="$build/removed_overlay"
+compiler=/home/toolchain/development/libc++_replacement/progress/R33/tools/tizen-clang++
+headers=/home/toolchain/development/libc++_replacement/tmp/R68/build-baseline-x86_64/libcxx/test-suite-install/include/c++/v1
+runtime=/home/toolchain/development/libc++_replacement/tmp/R69/build-x86_64/lib
+
+mkdir -p "$build"
+python3 "$root/docs/progress/R111/code/make_removed_overlay.py" \
+  --header "$headers/__condition_variable/condition_variable.h" \
+  --source "$root/codes/llvm/libcxx/src/condition_variable.cpp" \
+  --output "$overlay"
+
+common=(
+  -std=c++20 -O0 -g -fno-inline -fPIC -nostdinc++ -nostdlib++
+  -I "$headers"
+  -L "$runtime" -Wl,-rpath,"$runtime"
+  -lc++ -lc++abi -latomic -pthread
+)
+
+"$compiler" -std=c++20 -O0 -g -fno-inline -fPIC -shared -nostdinc++ \
+  -I "$overlay/include" -I "$headers" -nostdlib++ \
+  "$overlay/condition_variable_removed.cpp" \
+  -L "$runtime" -Wl,-rpath,"$runtime" -lc++ -lc++abi -latomic -pthread \
+  -Wl,-soname,libcv_removed_r111.so -o "$build/libcv_removed_r111.so"
+
+for source in condition_cancel_probe uncaught_error_probe; do
+  "$compiler" "$root/docs/progress/R111/code/${source}.cpp" "${common[@]}" \
+    -Wl,-export-dynamic -o "$build/${source}_retained"
+  "$compiler" -I "$overlay/include" -I "$headers" \
+    "$root/docs/progress/R111/code/${source}.cpp" \
+    -std=c++20 -O0 -g -fno-inline -fPIC -nostdinc++ -nostdlib++ \
+    -L "$build" -Wl,--no-as-needed -lcv_removed_r111 \
+    -L "$runtime" -Wl,-rpath,"$build:$runtime" \
+    -lc++ -lc++abi -latomic -pthread -Wl,-export-dynamic \
+    -o "$build/${source}_removed"
+done
+
+file "$build"/libcv_removed_r111.so "$build"/condition_cancel_probe_* "$build"/uncaught_error_probe_*
+sha256sum "$build"/libcv_removed_r111.so "$build"/condition_cancel_probe_* "$build"/uncaught_error_probe_*
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <cstring>
+#include <exception>
+#include <mutex>
+#include <pthread.h>
+#include <ratio>
+#include <unistd.h>
+
+namespace {
+
+std::mutex mutex;
+std::condition_variable cv;
+std::atomic<bool> ready{false};
+std::atomic<int> cleanup_count{0};
+
+enum class Mode { wait, system_clock, steady_clock, custom_clock };
+
+const char* mode_name(Mode mode) {
+  switch (mode) {
+  case Mode::wait:
+    return "wait";
+  case Mode::system_clock:
+    return "system_clock";
+  case Mode::steady_clock:
+    return "steady_clock";
+  case Mode::custom_clock:
+    return "custom_clock";
+  }
+  return "unknown";
+}
+
+struct CustomClock {
+  using rep        = long long;
+  using period     = std::ratio<1>;
+  using duration   = std::chrono::duration<rep, period>;
+  using time_point = std::chrono::time_point<CustomClock>;
+  static constexpr bool is_steady = false;
+  static time_point now() noexcept { return time_point(duration(0)); }
+};
+
+struct CleanupProbe {
+  ~CleanupProbe() {
+    cleanup_count.fetch_add(1, std::memory_order_relaxed);
+    constexpr char marker[] = "event=cleanup\n";
+    (void)!write(STDOUT_FILENO, marker, sizeof(marker) - 1);
+  }
+};
+
+void terminate_marker() {
+  char buffer[96];
+  const int length = std::snprintf(buffer,
+                                   sizeof(buffer),
+                                   "event=terminate cleanup_count=%d\n",
+                                   cleanup_count.load(std::memory_order_relaxed));
+  if (length > 0)
+    (void)!write(STDOUT_FILENO, buffer, static_cast<size_t>(length));
+  _Exit(86);
+}
+
+void* worker(void* argument) {
+  const Mode mode = *static_cast<Mode*>(argument);
+  (void)pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, nullptr);
+  (void)pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, nullptr);
+  std::unique_lock<std::mutex> lock(mutex);
+  CleanupProbe cleanup;
+  ready.store(true, std::memory_order_release);
+  std::printf("event=worker_ready mode=%s\n", mode_name(mode));
+  std::fflush(stdout);
+
+  switch (mode) {
+  case Mode::wait:
+    cv.wait(lock);
+    break;
+  case Mode::system_clock:
+    cv.wait_until(lock, std::chrono::system_clock::now() + std::chrono::hours(1));
+    break;
+  case Mode::steady_clock:
+    cv.wait_until(lock, std::chrono::steady_clock::now() + std::chrono::hours(1));
+    break;
+  case Mode::custom_clock:
+    cv.wait_until(lock, CustomClock::now() + CustomClock::duration(3600));
+    break;
+  }
+
+  std::printf("event=unexpected_return mode=%s\n", mode_name(mode));
+  return reinterpret_cast<void*>(0x55);
+}
+
+bool parse_mode(const char* text, Mode& mode) {
+  if (std::strcmp(text, "wait") == 0)
+    mode = Mode::wait;
+  else if (std::strcmp(text, "system_clock") == 0)
+    mode = Mode::system_clock;
+  else if (std::strcmp(text, "steady_clock") == 0)
+    mode = Mode::steady_clock;
+  else if (std::strcmp(text, "custom_clock") == 0)
+    mode = Mode::custom_clock;
+  else
+    return false;
+  return true;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  std::set_terminate(terminate_marker);
+  Mode mode;
+  if (argc != 2 || !parse_mode(argv[1], mode))
+    return 64;
+
+  pthread_t thread;
+  const int create_rc = pthread_create(&thread, nullptr, worker, &mode);
+  std::printf("event=create rc=%d\n", create_rc);
+  if (create_rc != 0)
+    return 65;
+
+  while (!ready.load(std::memory_order_acquire))
+    usleep(1000);
+
+  mutex.lock();
+  mutex.unlock();
+  std::printf("event=wait_confirmed mode=%s\n", mode_name(mode));
+
+  const int cancel_rc = pthread_cancel(thread);
+  void* result        = nullptr;
+  const int join_rc   = pthread_join(thread, &result);
+  const bool canceled = result == PTHREAD_CANCELED;
+  const int cleaned   = cleanup_count.load(std::memory_order_relaxed);
+  std::printf("event=joined cancel_rc=%d join_rc=%d canceled=%d cleanup_count=%d\n",
+              cancel_rc,
+              join_rc,
+              canceled ? 1 : 0,
+              cleaned);
+  return cancel_rc == 0 && join_rc == 0 && canceled && cleaned == 1 ? 0 : 66;
+}
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import csv
+import os
+import subprocess
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[4]
+BUILD = ROOT / "docs/progress/R111/build/item3"
+OUT = ROOT / "docs/progress/R111/tables"
+RUNS = BUILD / "runs"
+RUNTIME = Path("/home/toolchain/development/libc++_replacement/tmp/R69/build-x86_64/lib")
+MODES = ("wait", "system_clock", "steady_clock", "custom_clock")
+
+
+def run_one(binary: Path, argument: str, stem: str) -> tuple[int, str, str]:
+    env = os.environ.copy()
+    env["LD_LIBRARY_PATH"] = f"{BUILD}:{RUNTIME}"
+    completed = subprocess.run(
+        [str(binary), argument],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    (RUNS / f"{stem}.stdout").write_text(completed.stdout, encoding="utf-8")
+    (RUNS / f"{stem}.stderr").write_text(completed.stderr, encoding="utf-8")
+    (RUNS / f"{stem}.exitcode").write_text(f"{completed.returncode}\n", encoding="utf-8")
+    (RUNS / f"{stem}.command.txt").write_text(
+        f"cwd: {ROOT}\ncommand: LD_LIBRARY_PATH={BUILD}:{RUNTIME} {binary} {argument}\n",
+        encoding="utf-8",
+    )
+    return completed.returncode, completed.stdout, completed.stderr
+
+
+def main() -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    RUNS.mkdir(parents=True, exist_ok=True)
+    cancel_rows: list[dict[str, object]] = []
+    for build_kind in ("retained", "removed"):
+        binary = BUILD / f"condition_cancel_probe_{build_kind}"
+        for mode in MODES:
+            for repeat in range(1, 6):
+                stem = f"cancel_{build_kind}_{mode}_{repeat}"
+                rc, stdout, stderr = run_one(binary, mode, stem)
+                row = {
+                    "build": build_kind,
+                    "mode": mode,
+                    "repeat": repeat,
+                    "returncode": rc,
+                    "wait_confirmed": int("event=wait_confirmed" in stdout),
+                    "terminate": int("event=terminate" in stdout),
+                    "cleanup": int("event=cleanup\n" in stdout),
+                    "joined_canceled": int("canceled=1 cleanup_count=1" in stdout),
+                    "unexpected_return": int("event=unexpected_return" in stdout),
+                    "stderr_nonempty": int(bool(stderr)),
+                }
+                cancel_rows.append(row)
+                if build_kind == "retained":
+                    assert rc == 86 and row["wait_confirmed"] and row["terminate"] and not row["cleanup"]
+                else:
+                    assert rc == 0 and row["wait_confirmed"] and not row["terminate"] and row["cleanup"] and row["joined_canceled"]
+                assert not row["unexpected_return"]
+
+    with (OUT / "item3_cancel_matrix.tsv").open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(cancel_rows[0]), delimiter="\t")
+        writer.writeheader()
+        writer.writerows(cancel_rows)
+
+    ordinary_rows: list[dict[str, object]] = []
+    for build_kind in ("retained", "removed"):
+        binary = BUILD / f"uncaught_error_probe_{build_kind}"
+        for handler in ("instrumented", "default"):
+            for repeat in range(1, 6):
+                stem = f"ordinary_{build_kind}_{handler}_{repeat}"
+                rc, stdout, stderr = run_one(binary, handler, stem)
+                ordinary_rows.append(
+                    {
+                        "build": build_kind,
+                        "handler": handler,
+                        "repeat": repeat,
+                        "returncode": rc,
+                        "terminate_marker": int("event=terminate" in stdout),
+                        "cleanup_marker": int("event=cleanup\n" in stdout),
+                        "system_error_diagnostic": int("system_error" in stderr),
+                        "mutex_not_locked_diagnostic": int("mutex not locked" in stderr),
+                        # backtrace_symbols() can only name exported dynamic symbols.
+                        # Record the two directly observable frame shapes; raw/038
+                        # resolves their offsets against the unstripped binaries.
+                        "retained_noexcept_frame": int("libc++.so.1(+0x507fb)" in stderr),
+                        "removed_wait_frame": int(
+                            "_ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE" in stderr
+                        ),
+                    }
+                )
+
+    with (OUT / "item3_uncaught_error_matrix.tsv").open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(ordinary_rows[0]), delimiter="\t")
+        writer.writeheader()
+        writer.writerows(ordinary_rows)
+
+    print("ASSERTIONS=PASS cancel_cases=8 repeats=5 retained_terminate=20 removed_clean_cancel=20")
+    for build_kind in ("retained", "removed"):
+        for handler in ("instrumented", "default"):
+            rows = [row for row in ordinary_rows if row["build"] == build_kind and row["handler"] == handler]
+            print(
+                f"ORDINARY build={build_kind} handler={handler} repeats={len(rows)} "
+                f"returncodes={sorted({row['returncode'] for row in rows})} "
+                f"cleanup={sum(int(row['cleanup_marker']) for row in rows)} "
+                f"system_error_diagnostic={sum(int(row['system_error_diagnostic']) for row in rows)} "
+                f"retained_noexcept_frame={sum(int(row['retained_noexcept_frame']) for row in rows)} "
+                f"removed_wait_frame={sum(int(row['removed_wait_frame']) for row in rows)}"
+            )
+
+
+if __name__ == "__main__":
+    main()
+--- built libs and compilers ---
+docs/progress/R111/build/item3/condition_cancel_probe_removed
+docs/progress/R111/build/item3/condition_cancel_probe_retained
+docs/progress/R111/build/item3/libcv_removed_r111.so
+docs/progress/R111/build/item3/removed_overlay/condition_variable_removed.cpp
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_1.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_1.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_1.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_1.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_2.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_2.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_2.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_2.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_3.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_3.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_3.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_3.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_4.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_4.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_4.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_4.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_5.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_5.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_5.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_custom_clock_5.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_1.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_1.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_1.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_1.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_2.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_2.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_2.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_2.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_3.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_3.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_3.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_3.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_4.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_4.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_4.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_4.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_5.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_5.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_5.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_steady_clock_5.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_1.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_1.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_1.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_1.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_2.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_2.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_2.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_2.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_3.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_3.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_3.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_3.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_4.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_4.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_4.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_4.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_5.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_5.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_5.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_system_clock_5.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_wait_1.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_wait_1.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_wait_1.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_wait_1.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_wait_2.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_wait_2.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_wait_2.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_wait_2.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_wait_3.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_wait_3.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_wait_3.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_wait_3.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_wait_4.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_wait_4.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_wait_4.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_wait_4.stdout
+docs/progress/R111/build/item3/runs/cancel_removed_wait_5.command.txt
+docs/progress/R111/build/item3/runs/cancel_removed_wait_5.exitcode
+docs/progress/R111/build/item3/runs/cancel_removed_wait_5.stderr
+docs/progress/R111/build/item3/runs/cancel_removed_wait_5.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_1.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_1.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_1.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_1.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_2.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_2.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_2.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_2.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_3.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_3.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_3.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_3.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_4.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_4.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_4.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_4.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_5.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_5.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_5.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_custom_clock_5.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_1.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_1.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_1.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_1.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_2.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_2.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_2.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_2.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_3.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_3.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_3.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_3.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_4.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_4.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_4.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_4.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_5.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_5.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_5.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_steady_clock_5.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_1.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_1.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_1.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_1.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_2.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_2.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_2.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_2.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_3.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_3.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_3.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_3.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_4.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_4.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_4.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_4.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_5.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_5.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_5.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_system_clock_5.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_wait_1.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_wait_1.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_wait_1.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_wait_1.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_wait_2.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_wait_2.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_wait_2.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_wait_2.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_wait_3.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_wait_3.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_wait_3.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_wait_3.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_wait_4.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_wait_4.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_wait_4.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_wait_4.stdout
+docs/progress/R111/build/item3/runs/cancel_retained_wait_5.command.txt
+docs/progress/R111/build/item3/runs/cancel_retained_wait_5.exitcode
+docs/progress/R111/build/item3/runs/cancel_retained_wait_5.stderr
+docs/progress/R111/build/item3/runs/cancel_retained_wait_5.stdout
+docs/progress/R111/build/item3/runs/ordinary_removed_default_1.command.txt
+docs/progress/R111/build/item3/runs/ordinary_removed_default_1.exitcode
+docs/progress/R111/build/item3/runs/ordinary_removed_default_1.stderr
+docs/progress/R111/build/item3/runs/ordinary_removed_default_1.stdout
+docs/progress/R111/build/item3/runs/ordinary_removed_default_2.command.txt
+docs/progress/R111/build/item3/runs/ordinary_removed_default_2.exitcode
+docs/progress/R111/build/item3/runs/ordinary_removed_default_2.stderr
+docs/progress/R111/build/item3/runs/ordinary_removed_default_2.stdout
+docs/progress/R111/build/item3/runs/ordinary_removed_default_3.command.txt
+docs/progress/R111/build/item3/runs/ordinary_removed_default_3.exitcode
+docs/progress/R111/build/item3/runs/ordinary_removed_default_3.stderr
+docs/progress/R111/build/item3/runs/ordinary_removed_default_3.stdout
+docs/progress/R111/build/item3/runs/ordinary_removed_default_4.command.txt
+docs/progress/R111/build/item3/runs/ordinary_removed_default_4.exitcode
+docs/progress/R111/build/item3/runs/ordinary_removed_default_4.stderr
+docs/progress/R111/build/item3/runs/ordinary_removed_default_4.stdout
+docs/progress/R111/build/item3/runs/ordinary_removed_default_5.command.txt
+docs/progress/R111/build/item3/runs/ordinary_removed_default_5.exitcode
+docs/progress/R111/build/item3/runs/ordinary_removed_default_5.stderr
+docs/progress/R111/build/item3/runs/ordinary_removed_default_5.stdout
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_1.command.txt
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_1.exitcode
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_1.stderr
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_1.stdout
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_2.command.txt
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_2.exitcode
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_2.stderr
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_2.stdout
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_3.command.txt
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_3.exitcode
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_3.stderr
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_3.stdout
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_4.command.txt
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_4.exitcode
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_4.stderr
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_4.stdout
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_5.command.txt
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_5.exitcode
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_5.stderr
+docs/progress/R111/build/item3/runs/ordinary_removed_instrumented_5.stdout
+docs/progress/R111/build/item3/runs/ordinary_retained_default_1.command.txt
+docs/progress/R111/build/item3/runs/ordinary_retained_default_1.exitcode
+docs/progress/R111/build/item3/runs/ordinary_retained_default_1.stderr
+docs/progress/R111/build/item3/runs/ordinary_retained_default_1.stdout
+docs/progress/R111/build/item3/runs/ordinary_retained_default_2.command.txt
+docs/progress/R111/build/item3/runs/ordinary_retained_default_2.exitcode
+docs/progress/R111/build/item3/runs/ordinary_retained_default_2.stderr
+docs/progress/R111/build/item3/runs/ordinary_retained_default_2.stdout
+docs/progress/R111/build/item3/runs/ordinary_retained_default_3.command.txt
+docs/progress/R111/build/item3/runs/ordinary_retained_default_3.exitcode
+docs/progress/R111/build/item3/runs/ordinary_retained_default_3.stderr
+docs/progress/R111/build/item3/runs/ordinary_retained_default_3.stdout
+docs/progress/R111/build/item3/runs/ordinary_retained_default_4.command.txt
+docs/progress/R111/build/item3/runs/ordinary_retained_default_4.exitcode
+docs/progress/R111/build/item3/runs/ordinary_retained_default_4.stderr
+docs/progress/R111/build/item3/runs/ordinary_retained_default_4.stdout
+docs/progress/R111/build/item3/runs/ordinary_retained_default_5.command.txt
+docs/progress/R111/build/item3/runs/ordinary_retained_default_5.exitcode
+docs/progress/R111/build/item3/runs/ordinary_retained_default_5.stderr
+docs/progress/R111/build/item3/runs/ordinary_retained_default_5.stdout
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_1.command.txt
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_1.exitcode
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_1.stderr
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_1.stdout
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_2.command.txt
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_2.exitcode
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_2.stderr
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_2.stdout
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_3.command.txt
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_3.exitcode
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_3.stderr
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_3.stdout
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_4.command.txt
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_4.exitcode
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_4.stderr
+docs/progress/R111/build/item3/runs/ordinary_retained_instrumented_4.stdout
+/usr/bin/g++

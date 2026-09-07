@@ -1,0 +1,139 @@
+=== codes/R104/boost/boost/fiber/algo/shared_work.hpp ===
+40-    static rqueue_type     	rqueue_;
+41-    static std::mutex   	rqueue_mtx_;
+42-
+43-    lqueue_type            	lqueue_{};
+44-    std::mutex              mtx_{};
+45:    std::condition_variable cnd_{};
+46-    bool                    flag_{ false };
+47-    bool                    suspend_{ false };
+48-
+49-public:
+50-    shared_work() = default;
+=== codes/R104/boost/boost/fiber/algo/round_robin.hpp ===
+34-private:
+35-    typedef scheduler::ready_queue_type rqueue_type;
+36-
+37-    rqueue_type                 rqueue_{};
+38-    std::mutex                  mtx_{};
+39:    std::condition_variable     cnd_{};
+40-    bool                        flag_{ false };
+41-
+42-public:
+43-    round_robin() = default;
+44-
+=== codes/R104/boost/boost/fiber/algo/work_stealing.hpp ===
+45-    detail::context_spmc_queue                              rqueue_{};
+46-#else
+47-    detail::context_spinlock_queue                          rqueue_{};
+48-#endif
+49-    std::mutex                                              mtx_{};
+50:    std::condition_variable                                 cnd_{};
+51-    bool                                                    flag_{ false };
+52-    bool                                                    suspend_;
+53-
+54-    static void init_( std::uint32_t, std::vector< intrusive_ptr< work_stealing > > &);
+55-
+=== codes/R104/boost/boost/fiber/numa/algo/work_stealing.hpp ===
+47-    detail::context_spmc_queue                              rqueue_{};
+48-#else
+49-    detail::context_spinlock_queue                          rqueue_{};
+50-#endif
+51-    std::mutex                                              mtx_{};
+52:    std::condition_variable                                 cnd_{};
+53-    bool                                                    flag_{ false };
+54-    bool                                                    suspend_;
+55-
+56-    static void init_( std::vector< boost::fibers::numa::node > const&,
+57-                       std::vector< intrusive_ptr< work_stealing > > &);
+=== codes/R104/boost/boost/fiber/detail/thread_barrier.hpp ===
+28-private:
+29-	std::size_t             initial_;
+30-	std::size_t             current_;
+31-	bool                    cycle_{ true };
+32-    std::mutex              mtx_{};
+33:    std::condition_variable cond_{};
+34-
+35-public:
+36-	explicit thread_barrier( std::size_t initial) :
+37-        initial_{ initial },
+38-        current_{ initial_ } {
+--
+50-            current_ = initial_;
+51-            lk.unlock(); // no pessimization
+52-            cond_.notify_all();
+53-            return true;
+54-        }
+55:        cond_.wait( lk, [&](){ return cycle != cycle_; });
+56-        return false;
+57-    }
+58-};
+59-
+60-}}}
+=== codes/R104/boost/boost/asio/detail/std_event.hpp ===
+117-    BOOST_ASIO_ASSERT(lock.locked());
+118-    unique_lock_adapter u_lock(lock);
+119-    while ((state_ & 1) == 0)
+120-    {
+121-      waiter w(state_);
+122:      cond_.wait(u_lock.unique_lock_);
+123-    }
+124-  }
+125-
+126-  // Timed wait for the event to become signalled.
+127-  template <typename Lock>
+--
+130-    BOOST_ASIO_ASSERT(lock.locked());
+131-    unique_lock_adapter u_lock(lock);
+132-    if ((state_ & 1) == 0)
+133-    {
+134-      waiter w(state_);
+135:      cond_.wait_for(u_lock.unique_lock_, std::chrono::microseconds(usec));
+136-    }
+137-    return (state_ & 1) != 0;
+138-  }
+139-
+140-private:
+141-  // Helper class to temporarily adapt a scoped_lock into a unique_lock so that
+142:  // it can be passed to std::condition_variable::wait().
+143-  struct unique_lock_adapter
+144-  {
+145-    template <typename Lock>
+146-    explicit unique_lock_adapter(Lock& lock)
+147-      : unique_lock_(lock.mutex().mutex_, std::adopt_lock)
+--
+173-
+174-  private:
+175-    std::size_t& state_;
+176-  };
+177-
+178:  std::condition_variable cond_;
+179-  std::size_t state_;
+180-};
+181-
+182-} // namespace detail
+183-} // namespace asio
+=== codes/R104/boost/boost/compat/latch.hpp ===
+19-
+20-class latch {
+21-private:
+22-  std::ptrdiff_t n_;
+23-  mutable std::mutex m_;
+24:  mutable std::condition_variable cv_;
+25-
+26-public:
+27-  explicit latch(std::ptrdiff_t expected) : n_{expected}, m_{}, cv_{} {
+28-    BOOST_ASSERT(n_ >= 0);
+29-    BOOST_ASSERT(n_ <= max());
+--
+74-
+75-    return true;
+76-  }
+77-
+78-  void wait_impl(std::unique_lock<std::mutex> &lk) const {
+79:    cv_.wait(lk, [this] { return this->is_ready(); });
+80-  }
+81-};
+82-
+83-} // namespace compat
+84-} // namespace boost
