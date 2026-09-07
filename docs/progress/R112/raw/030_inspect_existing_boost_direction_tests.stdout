@@ -1,0 +1,223 @@
+# W3 Boost 边界其余各条实测
+
+## 结论
+
+`PARTIAL`。90 条真实 Boost C++ 语义边已逐条分类并标记测量状态；按“该边包含被测代表符号，且该架构确实执行”计，R82 已测 12 条，本轮新增 x86_64 15 条，合计 27/90。其余 63 条没有被标成已测：39 条是同一代表符号组但该架构未执行，24 条属于未选符号组。每条边可能包含多个 C++ 符号，因此 27 也只表示边上的代表符号组，不表示边内所有符号逐个动态执行。
+
+## 1. 90 条边分类
+
+| 用户要求的分类 | 边数 | R82 对应口径 |
+|---|---:|---|
+| 布局敏感 | 63 | 33 `HIDDEN_STD_LAYOUT` + 6 `HIDDEN_STD_LAYOUT+DIRECT_STD_SIGNATURE` + 24 `DIRECT_STD_SIGNATURE` |
+| C++ ABI 耦合但布局未证明 | 27 | 27 `NO_STD_LAYOUT_EVIDENCE` |
+| 仅 C 接口 | 0 | 输入集合本身限定为 `TRUE_CPP_ABI_COUPLING` |
+| 无交集 | 0 | 同上 |
+
+分类是对全部 90 行机械生成，逐行见 `tables/w3_edges_90_results.tsv`。布局未证明不是安全证明。
+
+## 2. 已有实测及精确映射
+
+R82 的三个代表用例在实际执行过的架构上对应 12 条边：
+
+- Boost.Filesystem 8 条：`E020,E021,E073,E074,E076,E077,E089,E090`；x86_64/armv7l 均观察到静默错值，消费方销毁路径到达；
+- Boost.Iostreams 2 条：`E005,E057`；x86_64/armv7l 均在取得可断言值前终止，销毁完成标记未到达；
+- Boost.Program_options 2 条：`E034,E053`；x86_64 在访问 provider 构造对象时终止，销毁完成标记未到达。
+
+同符号组的 aarch64 边以及 Program_options 的 armv7l 边仍记 `NOT_OBSERVED_FOR_ARCHITECTURE`，没有把其他架构结果外推。
+
+## 3. 本轮选取与理由
+
+### 3.1 Boost.Test
+
+Boost.Test 占 42 条边，是此前未动态覆盖的最大 provider。`ut_detail::normalize_test_case_name` 出现在 36 条跨架构边中，由平台 provider 构造并按值返回 libstdc++ `std::string`；consumer 可以检查规范化后的确切文本，并自行调用 libc++ 的 `std::string` 析构。因此它同时覆盖公开布局传递、具体值断言和异侧销毁。
+
+本轮实际执行 x86_64，对应 12 条边：`E018,E031,E037,E044,E045,E046,E048,E054,E055,E058,E059,E080`。另外 24 条同符号组的 armv7l/aarch64 边没有执行。
+
+### 3.2 Boost.Thread
+
+Boost.Thread 的 9 条边全部属于“C++ ABI 耦合但布局未证明”，并共同包含 `enter_once_region`、`rollback_once_region`、`commit_once_region`。它是检验“未见 std 布局不等于未经测试也可判安全”的直接样本；用例断言 once 状态的完整转换，而不是只看退出码。
+
+本轮实际执行 x86_64，对应 3 条边：`E014,E065,E067`；另 6 条 armv7l/aarch64 边未执行。该接口接收调用方构造的 `once_flag&`，provider 不构造返回对象；所以“消费方销毁 provider 构造对象”在此结构上 `NOT_APPLICABLE`。用例仍记录 flag 作用域退出，且该类型在当前头文件下为 trivial destructor。
+
+## 4. 构建与运行时身份
+
+consumer 使用平台 Clang、平台 libc++/libc++abi 头与 DSO构建；provider 是 R11 冻结的真实 x86_64 Boost.Test/Boost.Thread DSO。provider 的 `DT_NEEDED` 含 `libstdc++.so.6`，consumer 的动态依赖含 `libc++.so.1`/`libc++abi.so.1`。每次新测试的 `/proc/self/maps` 均明确观察到 libc++、libstdc++ 和目标 Boost provider 同时加载，两个用例均为 5/5。
+
+Boost.Test 通过原始导出符号和 x86_64 Itanium sret 调用形态，让 provider 在对齐的额外存储中构造返回对象，再由 consumer 解释并析构。为排除该 raw 调用方式本身错误，同一源码另以 libstdc++ 构建正向对照；两组使用同一个平台 provider。
+
+## 5. 新实测结果
+
+| 格 | 重复 | 具体值断言 | 消费方销毁/作用域退出 | 结果 |
+|---|---:|---|---|---|
+| libstdc++ consumer + Boost.Test provider 对照 | 5 | 5/5 精确为 `alpha_beta_gamma`，长度 16 | 5/5 析构完成 | 5/5 通过 |
+| libc++ consumer + Boost.Test provider | 5 | 5/5 观察长度 24，预期 16，值不相等 | 5/5 显式 libc++ 析构和 `dlclose` 完成 | 5/5 静默错值，退出 41 |
+| libc++ consumer + Boost.Thread provider | 5 | 5/5 状态序列精确为 `1,1,0` | 5/5 作用域退出完成 | 5/5 该样本通过，退出 0 |
+
+Boost.Test 首轮二进制也做了 5 次：当时 consumer 解释出的长度为 16，但具体 16 字节仍 5/5 不等于预期，且析构完成。增加固定值观测后重编，权威重跑得到表中稳定的长度 24。两个构建共同说明对象布局解释依赖 consumer 生成的具体栈/对象形态，不能因某次“长度碰巧正确”或析构未崩溃而判兼容。首轮材料保留在 `w3_runtime_matrix.tsv`，权威重跑为 `w3_runtime_matrix_retry.tsv`。
+
+Boost.Thread 的成功仅证明当前单线程 once 状态转换样本；没有覆盖并发竞争、异常回滚压力、其他符号或其他架构，不能升级为该 provider 安全。
+
+## 6. 未测部分与风险
+
+未按本任务实际架构口径测量的 63 条边完整列于 `tables/w3_unmeasured_edges.tsv`：
+
+- 44 条布局敏感：23 条是已选符号组的未执行架构，21 条是未选符号组。相同 provider 家族的已测样本已经出现静默错值或终止，风险评为高；不能据家族结果替代逐条值和销毁观察。
+- 19 条 C++ ABI 耦合但布局未证明：16 条是本轮符号组的 armv7l/aarch64 未执行边，3 条为 Boost.Test 未选符号组。风险保持未知；Boost.Thread x86_64 成功不能外推。
+
+若按“不区分架构，只看代表符号是否被某处测试”计，R82 三组触及 21 条、本轮两组触及 45 条、未选符号组 24 条；该口径只用于说明选择覆盖面，不用于 `ALL_MEASURED` 判定。权威结论采用 27 已测、63 未测。
+
+## 7. 证据索引
+
+- 全 90 条分类、代表符号及结果：`tables/w3_edges_90_results.tsv`；
+- 未测 63 条：`tables/w3_unmeasured_edges.tsv`；
+- 分类与最终统计：`tables/w3_edge_classification_summary.tsv`、`w3_final_summary.tsv`；
+- 新混合矩阵：`tables/w3_runtime_matrix_retry.tsv`、`w3_runtime_summary_retry.tsv`；
+- libstdc++ 正向对照：`tables/w3_libstdcxx_reference.tsv`；
+- R82 既有矩阵：`docs/progress/R82/tables/mixed_runtime_matrix.tsv`；
+- 构建、符号、动态依赖、SHA256、命令原文、stdout、stderr 与退出码：`raw/`。
+
+本轮没有修改平台源码或四个补丁，没有使用开发板，没有把“未崩溃”当作“没有问题”。
+# Boost 剩余符号边实测（本轮）
+
+## 结论边界
+
+本轮结论为 **`PARTIAL`**。在既有 27/90 条已测边基础上，本轮在
+**aarch64、QEMU 用户态**新增测到 22 条边，累计为 **49/90**；仍有
+**41/90** 未在其对应架构和符号组上实测。本轮没有把 QEMU aarch64
+结果外推到物理 aarch64、x86_64、armv7l，也没有把一个代表符号组的
+结果外推到同一边上的所有 C++ 符号。
+
+## 选取及理由
+
+沿用上一轮的 90 条边分类，并严格按以下次序选择：
+
+1. 先补 aarch64 上已有同符号组、但该架构尚未观测的布局敏感边：
+   Boost.Test 7 条、Boost.Filesystem 4 条、Boost.Iostreams 1 条、
+   Boost.Program Options 2 条，共 14 条。
+2. 再补“C++ ABI 耦合但布局未证明”：Boost.Test 5 条、Boost.Thread
+   3 条，共 8 条。Boost.Thread 在 x86_64 通过只能说明该架构和该符号
+   组的实测结果，不能代替 aarch64 实测；Boost.Test 在这一分类中也
+   不能因分类名含“未证明”而默认安全。
+
+逐边清单见 `tables/w3_selected_edges.tsv`，更新后的完整 90 条表见
+`tables/w3_edges_90_results.tsv`。
+
+## 方法和正向对照
+
+- provider 均来自 R11 Base aarch64 二进制 RPM，实际加载的是平台的
+  Boost 1.83.0 DSO，不是模拟 provider。五个 provider 的 SHA256 记录在
+  `raw/080_extract_selected_r11_boost_providers.stdout`。
+- consumer 以 aarch64 目标编译，使用 R11 的 libc++ 22.1.8 或
+  libstdc++ 14.2.0 头文件和运行库。构建产物经 `file` 确认为 aarch64
+  ELF；混合格的动态依赖包含 libc++、libc++abi 与 libstdc++。
+- 每个混合格执行 5 次；每个对应的 libstdc++ 同库正向对照也执行
+  5 次，共 10 格、50 次。
+- 每次由进程自身读取 `/proc/self/maps`。所有 25 次混合格均确认
+  `libc++.so.1`、`libstdc++.so.6` 与相应 provider 同时加载；所有 25 次
+  对照格确认仅有 libstdc++ 和 provider（没有 libc++）。
+- 每格断言具体状态或具体值；同时观察析构。Boost.Thread 的
+  `once_flag` 是平凡析构类型，故销毁路径标为 `COMPLETED_TRIVIAL`，
+  不是把“不适用”伪装成非平凡析构已测。
+- Boost.Test 的输入使用平台 Boost 头文件中已核对的两个指针布局，
+  并保留用户声明拷贝构造所导致的“非平凡按值参数”调用属性；源定义
+  证据在 `raw/086`、`raw/088`。这一步用于让目标编译器生成正确的
+  AArch64 参数与隐藏返回值约定，而不是沿用 x86_64 的寄存器假设。
+
+执行环境是 QEMU 用户态而非物理板。它足以观测本轮确定性的对象布局、
+返回值、状态转换与析构结果；不据此声明真实内核时序、信号交付或设备
+行为已覆盖。
+
+## 实测结果
+
+| provider / 调用形态 | 混合运行库 5 轮 | libstdc++ 对照 5 轮 | 析构观察 |
+|---|---|---|---|
+| Boost.Test `normalize_test_case_name`，provider 返回 `std::string` | 5/5 返回后读取为长度 56，期望长度 16；具体值断言失败，退出 41 | 5/5 长度 16，十六进制为 `616c7068615f626574615f67616d6d61`（`alpha_beta_gamma`），退出 0 | 混合侧 5/5 consumer 析构完成且 `dlclose` 完成 |
+| Boost.Filesystem `status` + `read_symlink` | 5/5 `status_ok=0`、`value_ok=0`；返回路径长度 8 且文本损坏，退出 41 | 5/5 `status_ok=1`，精确返回 `payload.txt`（长度 11），退出 0 | 两格均 5/5 完成 provider 构造对象的 consumer 析构 |
+| Boost.Iostreams `mapped_file_source::open` | 5/5 在给出值断言前抛出 `std::length_error` 并终止，退出 134 | 5/5 打开成功、长度 19、内容精确匹配，退出 0 | 混合侧 5/5 析构未观测；对照 5/5 完成 |
+| Boost.Program Options `variables_map` | 5/5 初始大小 0、插入后大小 1、值 82 精确通过；随后在作用域退出的析构阶段 SIGSEGV，退出 139 | 5/5 值与析构均通过，退出 0 | 混合侧 5/5 值正确但析构未完成；对照 5/5 完成 |
+| Boost.Thread `enter/rollback/commit_once_region` | 5/5 精确状态 `1,1,0`，退出 0 | 5/5 精确状态 `1,1,0`，退出 0 | `once_flag` 为平凡析构，5/5 作用域退出完成 |
+
+完整逐轮结构化结果为 `build/w3/runtime_results.tsv`；逐轮命令与退出码
+为 `build/w3/runtime_commands.tsv`；逐轮 stdout/stderr 均在
+`build/w3/`。最终矩阵自校验输出
+`ASSERTIONS=PASS architecture=aarch64 cases=10 repeats_per_case=5 controls=PASS maps=PASS`。
+
+这些结果同时给出三种不同形态：静默错值但析构完成、值正确但析构
+崩溃、以及精确通过。因此不能用“没有崩溃”替代值与所有权正确性判断，
+也不能用“值正确”替代销毁路径正确性判断。
+
+## 覆盖变化
+
+| 分类 | 本轮新增 | 累计已测 | 本轮后仍未测 |
+|---|---:|---:|---:|
+| 布局敏感 | 14 | 33 | 30 |
+| C++ ABI 耦合但布局未证明 | 8 | 16 | 11 |
+| 合计 | 22 | 49 | 41 |
+
+累计数字中的“已测”表示该边上选定的代表符号组已在该架构实测，仍不
+表示该边的全部 C++ 符号均逐个测试。
+
+## 剩余 41 条及风险说明
+
+- 布局敏感 30 条：其中 21 条仍没有被选中的符号组，2 条是既有
+  Filesystem 代表组在 armv7l 之外的架构尚缺，7 条是 Boost.Test
+  代表组在 armv7l 尚缺。已有多个家族和架构出现错值、异常终止或
+  析构失败，但未测条目仍记 `NOT_OBSERVED`，不以家族结果代填。
+- C++ ABI 耦合但布局未证明 11 条：3 条仍未选符号组，8 条为已选
+  Boost.Test/Boost.Thread 组在 armv7l 尚缺。Boost.Test 本轮出错而
+  Boost.Thread 本轮通过，实测再次表明这一分类内部不能统一推定
+  “安全”或“必然失败”。
+- 逐条剩余清单和原风险字段见 `tables/w3_remaining_edges.tsv`；分类和
+  状态计数见 `tables/w3_edge_status_summary.tsv`。
+
+## 失败尝试与测法校准
+
+- 最初复用 x86_64 的显式隐藏返回指针写法；AArch64 ABI 不同，该构建
+  被主动停止，不能算运行时结果（`raw/042`、`raw/045`）。
+- 外部挂载目录读取头文件发生长时间块等待；已保存进程状态后停止，
+  改从同一 R11 RPM 在 `/tmp/r110_w3_build` 展开头文件和运行库，最终
+  构建命令仍逐条记录（`raw/093`、`raw/095`、`raw/101`）。
+- 第一版最小 `basic_cstring` 只复现两指针数据布局，遗漏其非平凡拷贝
+  构造导致的 AArch64 间接传参属性，混合格和对照格均 5/5 `bad_alloc`。
+  因正向对照同时失败，该批结果被判定为测法错误并修正；最终对照
+  5/5 通过（`raw/107`、`raw/110`）。
+- Filesystem 与 Iostreams 首轮因 provider 的运行时依赖未加入搜索路径
+  而退出 127；补入同一 R11 的 Boost.Atomic、zlib、libbz2 后重跑，
+  最终矩阵通过自校验（`raw/114`、`raw/117`、`raw/121`、`raw/122`）。
+
+## 可复核产物
+
+- `code/w3_build_aarch64.sh`：最终 SHA256
+  `0755ff2995c9629eeef555b0b176cf6057bb0596f6db7872ebb4235f26e04bd7`。
+- `code/w3_run_aarch64_matrix.sh`：最终 SHA256
+  `b8c95a889773ebd4d55f14f703061caebecedf0bf31bd82e90a1a3310c4a1925`。
+- `code/w3_boost_test_portable.cpp`：最终 SHA256
+  `d96176991dd35fc47485f0fe94dc05c88e1ea02f5a748fdba40f9955c289567b`。
+- `code/w3_maps_probe.hpp`：SHA256
+  `2c1a37f58a2b3a10d76595f43d23785a251ed65b537e4b97d87347e6a6d29a33`。
+- `code/w3_update_edges.py`：SHA256
+  `cf1099bdc74b43b0873168b8dcb981634e19302f24e1c0fca99015618723cdcf`。
+- 原始命令、stdout、stderr、退出码：`raw/040` 至 `raw/124`；构建与逐轮
+  运行的子命令分别在 `build/w3/build_commands.tsv` 和
+  `build/w3/runtime_commands.tsv`。
+
+本报告只补充事实，不对迁移方案、优先级或是否接受风险作决定。
+R109_CODE
+docs/progress/R109/code/validate_w3.py
+docs/progress/R109/code/w3_run_matrix.py
+docs/progress/R109/code/w3_boost_thread_boundary.cpp
+docs/progress/R109/code/w3_run_reference.py
+docs/progress/R109/code/w3_finalize.py
+docs/progress/R109/code/w3_classify_edges.py
+docs/progress/R109/code/w3_boost_test_boundary.cpp
+R110_CODE
+docs/progress/R110/code/w3_build_aarch64.sh
+docs/progress/R110/code/w3_update_edges.py
+docs/progress/R110/code/w3_maps_probe.hpp
+docs/progress/R110/code/w3_run_aarch64_matrix.sh
+docs/progress/R110/code/w3_validate.py
+docs/progress/R110/code/w3_boost_test_portable.cpp
+TABLE_COLUMNS
+edge_id	consumer_source_rpm	arch	consumer_binary	consumer_elf	provider_binary	provider_elf	requested_class	r82_class	runtime_status	tested_symbol_group	selection_reason	representative_symbol_measured_on_arch	observed_result	unmeasured_risk	measurement_extent
+E001	key-manager-0.1.90-1.src.rpm	aarch64	key-manager-unit-tests	/usr/bin/ckm-unit-tests	boost-test	/usr/lib64/libboost_unit_test_framework.so.1.83.0	LAYOUT_SENSITIVE	DIRECT_STD_SIGNATURE	MEASURED_R110_AARCH64	ut_detail::normalize_test_case_name	R110 used the real R11 aarch64 provider under QEMU user mode; five mixed and five same-runtime control repetitions	YES	SILENT_WRONG_VALUE_SIZE_56;DESTRUCTION_COMPLETED_5_OF_5	MEASURED_FOR_THIS_SYMBOL_GROUP_AND_ARCHITECTURE_ONLY;OTHER_SYMBOLS_AND_ARCHITECTURES_NOT_INFERRED	ONE_REPRESENTATIVE_SYMBOL_GROUP_ON_EDGE_NOT_ALL_CPP_SYMBOLS
+E002	device-certificate-manager-3.0.1-0.src.rpm	aarch64	device-certificate-manager-tests	/usr/bin/device-certificate-manager-tests	boost-test	/usr/lib64/libboost_unit_test_framework.so.1.83.0	CPP_ABI_COUPLED_LAYOUT_UNPROVEN	NO_STD_LAYOUT_EVIDENCE	MEASURED_R110_AARCH64	ut_detail::normalize_test_case_name	R110 used the real R11 aarch64 provider under QEMU user mode; five mixed and five same-runtime control repetitions	YES	SILENT_WRONG_VALUE_SIZE_56;DESTRUCTION_COMPLETED_5_OF_5	MEASURED_FOR_THIS_SYMBOL_GROUP_AND_ARCHITECTURE_ONLY;OTHER_SYMBOLS_AND_ARCHITECTURES_NOT_INFERRED	ONE_REPRESENTATIVE_SYMBOL_GROUP_ON_EDGE_NOT_ALL_CPP_SYMBOLS

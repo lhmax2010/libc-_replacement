@@ -1,0 +1,256 @@
+5ed6c77278dfa7a470667cf1a137723d3c96fe60
+    90	  seekpos(pos_type __sp, ios_base::openmode __wch = ios_base::in | ios_base::out);
+    91	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL virtual int sync();
+    92	
+    93	private:
+    94	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL bool __read_mode();
+    95	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __write_mode();
+    96	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL wbuffer_convert* __close();
+    97	};
+    98	
+    99	_LIBCPP_SUPPRESS_DEPRECATED_PUSH
+   100	template <class _Codecvt, class _Elem, class _Tr>
+   101	wbuffer_convert<_Codecvt, _Elem, _Tr>::wbuffer_convert(streambuf* __bytebuf, _Codecvt* __pcvt, state_type __state)
+   102	    : __extbuf_(nullptr),
+   103	      __extbufnext_(nullptr),
+   104	      __extbufend_(nullptr),
+   105	      __ebs_(0),
+   106	      __intbuf_(0),
+   107	      __ibs_(0),
+   108	      __bufptr_(__bytebuf),
+   109	      __cv_(__pcvt),
+   110	      __st_(__state),
+   111	      __cm_(0),
+   112	      __owns_eb_(false),
+   113	      __owns_ib_(false),
+   114	      __always_noconv_(__cv_ ? __cv_->always_noconv() : false) {
+   115	  setbuf(0, 4096);
+   116	}
+   117	
+   118	template <class _Codecvt, class _Elem, class _Tr>
+   119	wbuffer_convert<_Codecvt, _Elem, _Tr>::~wbuffer_convert() {
+   120	  __close();
+   121	  delete __cv_;
+   122	  if (__owns_eb_)
+   123	    delete[] __extbuf_;
+   124	  if (__owns_ib_)
+   125	    delete[] __intbuf_;
+   126	}
+   127	
+   128	template <class _Codecvt, class _Elem, class _Tr>
+   129	typename wbuffer_convert<_Codecvt, _Elem, _Tr>::int_type wbuffer_convert<_Codecvt, _Elem, _Tr>::underflow() {
+   130	  _LIBCPP_SUPPRESS_DEPRECATED_POP
+   131	  if (__cv_ == 0 || __bufptr_ == nullptr)
+   132	    return traits_type::eof();
+   133	  bool __initial = __read_mode();
+   134	  char_type __1buf;
+   135	  if (this->gptr() == 0)
+   270	    }
+   271	  } else {
+   272	    __extbuf_  = __extbuf_min_;
+   273	    __ebs_     = sizeof(__extbuf_min_);
+   274	    __owns_eb_ = false;
+   275	  }
+   276	  if (!__always_noconv_) {
+   277	    __ibs_ = max<streamsize>(__n, sizeof(__extbuf_min_));
+   278	    if (__s && __ibs_ >= sizeof(__extbuf_min_)) {
+   279	      __intbuf_  = __s;
+   280	      __owns_ib_ = false;
+   281	    } else {
+   282	      __intbuf_  = new char_type[__ibs_];
+   283	      __owns_ib_ = true;
+   284	    }
+   285	  } else {
+   286	    __ibs_     = 0;
+   287	    __intbuf_  = 0;
+   288	    __owns_ib_ = false;
+   289	  }
+   290	  return this;
+   291	}
+   292	
+   293	_LIBCPP_SUPPRESS_DEPRECATED_PUSH
+   294	template <class _Codecvt, class _Elem, class _Tr>
+   295	typename wbuffer_convert<_Codecvt, _Elem, _Tr>::pos_type
+   296	wbuffer_convert<_Codecvt, _Elem, _Tr>::seekoff(off_type __off, ios_base::seekdir __way, ios_base::openmode __om) {
+   297	  int __width = __cv_->encoding();
+   298	  if (__cv_ == 0 || !__bufptr_ || (__width <= 0 && __off != 0) || sync())
+   299	    return pos_type(off_type(-1));
+   300	  // __width > 0 || __off == 0, now check __way
+   301	  if (__way != ios_base::beg && __way != ios_base::cur && __way != ios_base::end)
+   302	    return pos_type(off_type(-1));
+   303	  pos_type __r = __bufptr_->pubseekoff(__width * __off, __way, __om);
+   304	  __r.state(__st_);
+   305	  return __r;
+   306	}
+   307	
+   308	template <class _Codecvt, class _Elem, class _Tr>
+   309	typename wbuffer_convert<_Codecvt, _Elem, _Tr>::pos_type
+   310	wbuffer_convert<_Codecvt, _Elem, _Tr>::seekpos(pos_type __sp, ios_base::openmode __wch) {
+   311	  if (__cv_ == 0 || !__bufptr_ || sync())
+   312	    return pos_type(off_type(-1));
+   313	  if (__bufptr_->pubseekpos(__sp, __wch) == pos_type(off_type(-1)))
+   314	    return pos_type(off_type(-1));
+   315	  return __sp;
+   316	}
+   317	
+   318	template <class _Codecvt, class _Elem, class _Tr>
+   319	int wbuffer_convert<_Codecvt, _Elem, _Tr>::sync() {
+   320	  _LIBCPP_SUPPRESS_DEPRECATED_POP
+   321	  if (__cv_ == 0 || !__bufptr_)
+   322	    return 0;
+   323	  if (__cm_ & ios_base::out) {
+   324	    if (this->pptr() != this->pbase())
+   325	      if (overflow() == traits_type::eof())
+   326	        return -1;
+   327	    codecvt_base::result __r;
+   328	    do {
+   329	      char* __extbe;
+   330	      __r                = __cv_->unshift(__st_, __extbuf_, __extbuf_ + __ebs_, __extbe);
+   350	          std::reverse(this->gptr(), this->egptr());
+   351	          codecvt_base::result __r;
+   352	          const char_type* __e = this->gptr();
+   353	          char* __extbe;
+   354	          do {
+   355	            __r = __cv_->out(__st_, __e, this->egptr(), __e, __extbuf_, __extbuf_ + __ebs_, __extbe);
+   356	            switch (__r) {
+   357	            case codecvt_base::noconv:
+   358	              __c += this->egptr() - this->gptr();
+   359	              break;
+   360	            case codecvt_base::ok:
+   361	            case codecvt_base::partial:
+   362	              __c += __extbe - __extbuf_;
+   363	              break;
+   364	            default:
+   365	              return -1;
+   366	            }
+   367	          } while (__r == codecvt_base::partial);
+   368	        }
+   369	      }
+   370	    }
+   371	    if (__bufptr_->pubseekoff(-__c, ios_base::cur, __cm_) == pos_type(off_type(-1)))
+   372	      return -1;
+   373	    this->setg(0, 0, 0);
+   374	    __cm_ = 0;
+   375	  }
+   376	  return 0;
+   377	}
+   378	
+   379	_LIBCPP_SUPPRESS_DEPRECATED_PUSH
+   380	template <class _Codecvt, class _Elem, class _Tr>
+   381	bool wbuffer_convert<_Codecvt, _Elem, _Tr>::__read_mode() {
+   382	  if (!(__cm_ & ios_base::in)) {
+   383	    this->setp(0, 0);
+   384	    if (__always_noconv_)
+   385	      this->setg((char_type*)__extbuf_, (char_type*)__extbuf_ + __ebs_, (char_type*)__extbuf_ + __ebs_);
+   386	    else
+   387	      this->setg(__intbuf_, __intbuf_ + __ibs_, __intbuf_ + __ibs_);
+   388	    __cm_ = ios_base::in;
+   389	    return true;
+   390	  }
+   391	  return false;
+   392	}
+   393	
+   394	template <class _Codecvt, class _Elem, class _Tr>
+   395	void wbuffer_convert<_Codecvt, _Elem, _Tr>::__write_mode() {
+   396	  if (!(__cm_ & ios_base::out)) {
+   397	    this->setg(0, 0, 0);
+   398	    if (__ebs_ > sizeof(__extbuf_min_)) {
+   399	      if (__always_noconv_)
+   400	        this->setp((char_type*)__extbuf_, (char_type*)__extbuf_ + (__ebs_ - 1));
+   401	      else
+   402	        this->setp(__intbuf_, __intbuf_ + (__ibs_ - 1));
+   403	    } else
+   404	      this->setp(0, 0);
+   405	    __cm_ = ios_base::out;
+   406	  }
+   407	}
+   408	
+   409	template <class _Codecvt, class _Elem, class _Tr>
+   410	wbuffer_convert<_Codecvt, _Elem, _Tr>* wbuffer_convert<_Codecvt, _Elem, _Tr>::__close() {
+   411	  wbuffer_convert* __rt = nullptr;
+   412	  if (__cv_ != nullptr && __bufptr_ != nullptr) {
+   413	    __rt = this;
+   414	    if ((__cm_ & ios_base::out) && sync())
+   415	      __rt = nullptr;
+   416	  }
+   417	  return __rt;
+   418	}
+   419	
+   420	_LIBCPP_SUPPRESS_DEPRECATED_POP
+   421	
+   422	_LIBCPP_END_NAMESPACE_STD
+   423	
+   424	_LIBCPP_POP_MACROS
+   425	
+BASIC_OSTREAM_DESTRUCTOR
+codes/llvm/libcxx/include/ostream-26-    typedef typename traits_type::off_type off_type;
+codes/llvm/libcxx/include/ostream-27-
+codes/llvm/libcxx/include/ostream-28-    // 27.7.2.2 Constructor/destructor:
+codes/llvm/libcxx/include/ostream-29-    explicit basic_ostream(basic_streambuf<char_type,traits>* sb);
+codes/llvm/libcxx/include/ostream-30-    basic_ostream(basic_ostream&& rhs);
+codes/llvm/libcxx/include/ostream:31:    virtual ~basic_ostream();
+codes/llvm/libcxx/include/ostream-32-
+codes/llvm/libcxx/include/ostream-33-    // 27.7.2.3 Assign/swap
+codes/llvm/libcxx/include/ostream-34-    basic_ostream& operator=(const basic_ostream& rhs) = delete; // C++14
+codes/llvm/libcxx/include/ostream-35-    basic_ostream& operator=(basic_ostream&& rhs);
+codes/llvm/libcxx/include/ostream-36-    void swap(basic_ostream& rhs);
+--
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-54-
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-55-  // 27.7.2.2 Constructor/destructor:
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-56-  inline _LIBCPP_HIDE_FROM_ABI_SINCE_LLVM8 explicit basic_ostream(basic_streambuf<char_type, traits_type>* __sb) {
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-57-    this->init(__sb);
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-58-  }
+codes/llvm/libcxx/include/__ostream/basic_ostream.h:59:  ~basic_ostream() override;
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-60-
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-61-  basic_ostream(const basic_ostream& __rhs)            = delete;
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-62-  basic_ostream& operator=(const basic_ostream& __rhs) = delete;
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-63-
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-64-protected:
+--
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-230-  swap(__rhs);
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-231-  return *this;
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-232-}
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-233-
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-234-template <class _CharT, class _Traits>
+codes/llvm/libcxx/include/__ostream/basic_ostream.h:235:basic_ostream<_CharT, _Traits>::~basic_ostream() {}
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-236-
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-237-template <class _CharT, class _Traits>
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-238-basic_ostream<_CharT, _Traits>&
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-239-basic_ostream<_CharT, _Traits>::operator<<(basic_streambuf<char_type, traits_type>* __sb) {
+codes/llvm/libcxx/include/__ostream/basic_ostream.h-240-#  if _LIBCPP_HAS_EXCEPTIONS
+LIBSTDCXX_COUNTERPART
+401-      bool			_M_with_strings = false;
+402-    };
+403-
+404-_GLIBCXX_END_NAMESPACE_CXX11
+405-
+406-  /// Buffer conversions
+407-  template<typename _Codecvt, typename _Elem = wchar_t,
+408-	   typename _Tr = char_traits<_Elem>>
+409:    class wbuffer_convert : public basic_streambuf<_Elem, _Tr>
+410-    {
+411-      typedef basic_streambuf<_Elem, _Tr> _Wide_streambuf;
+412-
+413-    public:
+414-      typedef typename _Codecvt::state_type state_type;
+415-
+416-      /// Default constructor.
+417-      wbuffer_convert() : wbuffer_convert(nullptr) { }
+--
+434-	  {
+435-	    this->setp(_M_put_area, _M_put_area + _S_buffer_length);
+436-	    this->setg(_M_get_area + _S_putback_length,
+437-		       _M_get_area + _S_putback_length,
+438-		       _M_get_area + _S_putback_length);
+439-	  }
+440-      }
+441-
+442:      ~wbuffer_convert() = default;
+443-
+444-      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+445-      // 2176. Special members for wstring_convert and wbuffer_convert
+446-      wbuffer_convert(const wbuffer_convert&) = delete;
+447-      wbuffer_convert& operator=(const wbuffer_convert&) = delete;
+448-
+449-      streambuf* rdbuf() const noexcept { return _M_buf; }
+450-

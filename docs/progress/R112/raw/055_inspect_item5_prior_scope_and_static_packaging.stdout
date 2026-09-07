@@ -1,0 +1,79 @@
+601_SCOPE_REPORTS
+    20	
+    21	宽收集表中另有 311 条不能仅凭词法把对象归属于 `std::condition_variable` 的候选。这些行保留为 `UNRESOLVED_CANDIDATE`，不计入 92 条，也不据此推断其锁状态。源码结论是“直接可归因的现有调用未发现违规”，不是语义完备证明。
+    22	
+    23	### 1.2 已发布 ELF 调用
+    24	
+    25	对 R11 的 11,332 个包记录、39,166 个 ELF 逐个解析符号表，解析失败 0；正向对照同时命中 D01/D02 两个预期符号。平台侧得到：
+    26	
+    27	- 612 条未定义符号记录；
+    28	- 601 个按“仓库、包、架构、ELF 路径”区分的消费记录；
+    29	- 若只按“架构、路径”去重则为 568 个；
+    30	- 131 个二进制包，映射到 80 个 source RPM。
+    31	
+    32	601 个消费记录全部映射到 R24 的迁移重编计划，source RPM 下载状态全部为 `PASS`。因此，在当前发布仓清单内，D01/D02 的调用方属于“会随既定迁移重编”的一类。D03/D04 是头文件内联路径，动态符号表不能给出其完整实例化消费面；外部产品/应用组件不在 R11/R24 分母内，数量和重编策略均为 `NOT_AVAILABLE`。
+    33	
+    34	## 2. 两条错误路径何时发生
+    35	
+    36	当前 libc++ 源码在普通等待入口先检查 `unique_lock::owns_lock()`，不持锁时显式生成 `EPERM`；随后若 `pthread_cond_wait` 返回非零，再按该错误码生成 `system_error`。定时等待有同类检查和底层错误处理。
+    37	
+    38	glibc 2.40 源码列出的底层非超时错误包括：递归互斥量不由调用线程持有时的 `EPERM`；健壮互斥量重新获取时的 `EOWNERDEAD`/`ENOTRECOVERABLE`；优先级保护互斥量的优先级变更错误。定时入口还会对非法纳秒值或不支持的 clock id 返回 `EINVAL`。
+    70	- 重新编译的调用方会收到 `system_error`。若希望恢复或记录后继续，需要在能定义恢复策略的位置增加针对性处理；若异常最终逃出线程入口、析构函数或其他 non-throwing 边界，进程仍可能终止，只是问题现场和清理轨迹改变。
+    71	- `catch (...)`、通用任务执行器或未来值封装可能捕获并吞掉异常，使原先在错误现场终止的缺陷延后或被掩盖。这是可能变差的场景。
+    72	- 展开期间可运行局部清理、记录上下文、由上层决定重试或降级；对于可恢复的底层故障，这比无条件终止提供更多选择，是可能变好的场景。
+    73	- glibc 明确说明某些 priority-protect 错误返回时 mutex 已释放。因此异常处理代码不能笼统假定锁仍由调用方持有。受控 `EINVAL` 格中锁仍显示持有，只代表该注入格。
+    74	- 同一进程混用新旧调用点时，同一实现抛出的异常在新调用点可传播、在旧调用点终止，形成可观察的不一致。当前 R24 范围内 601 个发布消费记录都会重编，可消除此集合内的调用点差异；外部和预编译消费方是否存在、是否淘汰为 `NOT_AVAILABLE`。
+    75	
+    76	## 5. 人工裁决所需事实边界
+    77	
+    78	现有证据支持以下有限结论：当前已发布仓的 D01/D02 消费方都在重编计划内；直接可归因源码调用没有发现未持锁的产品路径；变化在故障路径上真实存在，且旧调用方不会自动获得新语义。证据不支持“平台上没有外部旧调用方”或“底层错误永不可能发生”。是否接受这项从现场终止到可传播异常的策略变化，留给人工裁决。
+    79	
+    80	## 6. 缺口与证据索引
+    81	
+    82	缺口：外部产品/应用 BOM、最终 ELF 和重编声明 `NOT_AVAILABLE`；D03/D04 内联实例的全平台语义消费面 `NOT_AVAILABLE`；通过复杂宏、模板或跨文件别名形成的 311 条源码候选为 `NOT_DETERMINABLE`；自然底层错误在平台产品运行中的发生率为 `NOT_OBSERVED`。
+    83	
+    84	主要证据：
+    85	
+    86	- `tables/w1_source_callers.tsv`、`w1_source_callers_summary.tsv`：92 条直接调用及逐条锁状态复核；
+    44	  和底层故障仍可能触发；产品中的自然发生率为 `NOT_OBSERVED`。
+    45	- **静态核查**：在 371 个既有源码包的条件变量专项扫描中，92 处调用可直接
+    46	  归属于 `std::condition_variable`；其中生产代码或交付头文件 8 处，源码均表明
+    47	  等待时持锁。另有 311 条词法候选不能只凭现有材料确认对象类型，不能据此判断
+    48	  锁状态。
+    49	- **静态核查**：冻结发布仓中 11,332 个包记录、39,166 个 ELF 均完成符号解析，
+    50	  正向对照命中预期符号。普通和 system-clock 等待得到 601 个消费记录，全部映射
+    51	  到既定迁移重编计划。头文件内联路径和外部产品/应用不在这个分母内。
+    52	- **实测，x86_64**：保留异常规格时，未持锁和受控注入的 `EINVAL` 各 5/5 进入
+    53	  `std::terminate`；默认终止处理器下各 5/5 为 `SIGABRT`。
+    54	- **实测，x86_64**：移除异常规格并重新编译调用方后，未持锁 5/5 抛出
+    55	  `system_error`，code 为 1，消息指向 mutex 未锁；底层 `EINVAL` 5/5 抛出
+    56	  `system_error`，code 为 22，消息指向无效参数。
+   116	- **静态核查**：steady-clock 定时 helper、generic Clock 模板和
+   117	  `wbuffer_convert` 析构是隐藏的头文件实现，没有可由更新共享库替换的统一动态
+   118	  符号。它们已经编进消费者；无论选择哪种共享库方案，旧对象都不会被库更新
+   119	  修正。
+   120	- **静态核查**：C++03 兼容头也有相应镜像，实际变更不能只处理主头文件。
+   121	- **静态核查**：冻结发布仓中可见的 601 个普通/system-clock 等待消费记录都在
+   122	  迁移重编计划内。这个结论不覆盖隐藏内联实例和外部组件。
+   123	- **静态核查**：不重编候选已量化为 5 个确认只复制安装的共享 DSO、另 1,027
+   124	  个源码包内共享库候选、8,911 个已发布静态归档和 3,236 个源码包内对象文件；
+   125	  这些集合中可见目标符号为零，但内联、LTO、剥离和类型擦除使“符号零命中”不能
+   126	  排除旧实现。外部组件分母为 `NOT_AVAILABLE`，各类数量也不能直接相加。
+   127	
+   128	### libstdc++ 的对应行为
+   129	
+   130	- **静态核查**：libstdc++ 只为公开普通等待保留旧 `GLIBCXX_3.4.11` 和新默认
+601_SUMMARY_TABLE
+metric	value
+consumer_elfs	601
+consumer_binary_packages	131
+consumer_source_rpms	80
+consumer_elfs_R24_REBUILD_PLAN	601
+binary_packages_R24_REBUILD_PLAN	131
+source_rpms_R24_REBUILD_PLAN	80
+source_mapping_missing	0
+source_download_not_pass	0
+STATIC_ARCHIVE_UNIVERSE
+8912 docs/progress/R108/tables/w2_static_inventory.tsv
+class	package	arch	path	cpp_indicator	target_symbol_visible	nm_exit	diagnostic
+PUBLISHED_STATIC_ARCHIVE	connectedhomeip-devel	armv7l	/home/toolchain/development/libc++_replacement/tmp/R11/extracted/00/00458dc2923c19443b7fb8e8554e8a6264ad34395ff78cc973eaf37e4f298f3e/usr/lib/chip/examples/shell/shell_common/lib/shell_common.a	YES	NO	0	NONE

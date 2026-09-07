@@ -1,0 +1,560 @@
+5ed6c77278dfa7a470667cf1a137723d3c96fe60
+codes/llvm/libcxxabi/src/cxa_personality.cpp
+codes/llvm/llvm/lib/CodeGen/AsmPrinter/EHStreamer.cpp
+32-#include <vector>
+33-
+34-using namespace llvm;
+35-
+36-EHStreamer::EHStreamer(AsmPrinter *A) : Asm(A), MMI(Asm->MMI) {}
+37-
+38-EHStreamer::~EHStreamer() = default;
+39-
+40:/// How many leading type ids two landing pads have in common.
+41-unsigned EHStreamer::sharedTypeIDs(const LandingPadInfo *L,
+42-                                   const LandingPadInfo *R) {
+43-  const std::vector<int> &LIds = L->TypeIds, &RIds = R->TypeIds;
+44-  return std::mismatch(LIds.begin(), LIds.end(), RIds.begin(), RIds.end())
+45-             .first -
+46-         LIds.begin();
+47-}
+48-
+49:/// Compute the actions table and gather the first action index for each landing
+50-/// pad site.
+51-void EHStreamer::computeActionsTable(
+52-    const SmallVectorImpl<const LandingPadInfo *> &LandingPads,
+53-    SmallVectorImpl<ActionEntry> &Actions,
+54-    SmallVectorImpl<unsigned> &FirstActions) {
+55:  // The action table follows the call-site table in the LSDA. The individual
+56-  // records are of two types:
+57-  //
+58-  //   * Catch clause
+59-  //   * Exception specification
+60-  //
+61-  // The two record kinds have the same format, with only small differences.
+62-  // They are distinguished by the "switch value" field: Catch clauses
+63-  // (TypeInfos) have strictly positive switch values, and exception
+--
+89-
+90-  int FirstAction = 0;
+91-  unsigned SizeActions = 0; // Total size of all action entries for a function
+92-  const LandingPadInfo *PrevLPI = nullptr;
+93-
+94-  for (const LandingPadInfo *LPI : LandingPads) {
+95-    const std::vector<int> &TypeIds = LPI->TypeIds;
+96-    unsigned NumShared = PrevLPI ? sharedTypeIDs(LPI, PrevLPI) : 0;
+97:    unsigned SizeSiteActions = 0; // Total size of all entries for a landingpad
+98-
+99-    if (NumShared < TypeIds.size()) {
+100-      // Size of one action entry (typeid + next action)
+101-      unsigned SizeActionEntry = 0;
+102-      unsigned PrevAction = (unsigned)-1;
+103-
+104-      if (NumShared) {
+105-        unsigned SizePrevIds = PrevLPI->TypeIds.size();
+--
+128-        SizeActionEntry = SizeTypeID + getSLEB128Size(NextAction);
+129-        SizeSiteActions += SizeActionEntry;
+130-
+131-        ActionEntry Action = { ValueForTypeID, NextAction, PrevAction };
+132-        Actions.push_back(Action);
+133-        PrevAction = Actions.size() - 1;
+134-      }
+135-
+136:      // Record the first action of the landing pad site.
+137-      FirstAction = SizeActions + SizeSiteActions - SizeActionEntry + 1;
+138-    } // else identical - re-use previous FirstAction
+139-
+140-    // Information used when creating the call-site table. The action record
+141-    // field of the call site record is the offset of the first associated
+142-    // action record, relative to the start of the actions table. This value is
+143-    // biased by 1 (1 indicating the start of the actions table), and 0
+144-    // indicates that there are no actions.
+--
+146-
+147-    // Compute this sites contribution to size.
+148-    SizeActions += SizeSiteActions;
+149-
+150-    PrevLPI = LPI;
+151-  }
+152-}
+153-
+154:/// Return `true' if this is a call to a function marked `nounwind'. Return
+155-/// `false' otherwise.
+156-bool EHStreamer::callToNoUnwindFunction(const MachineInstr *MI) {
+157-  assert(MI->isCall() && "This should be a call instruction!");
+158-
+159-  bool MarkedNoUnwind = false;
+160-  bool SawFunc = false;
+161-
+162-  for (const MachineOperand &MO : MI->operands()) {
+--
+181-  }
+182-
+183-  return MarkedNoUnwind;
+184-}
+185-
+186-void EHStreamer::computePadMap(
+187-    const SmallVectorImpl<const LandingPadInfo *> &LandingPads,
+188-    RangeMapType &PadMap) {
+189:  // Invokes and nounwind calls have entries in PadMap (due to being bracketed
+190-  // by try-range labels when lowered).  Ordinary calls do not, so appropriate
+191:  // try-ranges for them need be deduced so we can put them in the LSDA.
+192-  for (unsigned i = 0, N = LandingPads.size(); i != N; ++i) {
+193-    const LandingPadInfo *LandingPad = LandingPads[i];
+194-    for (unsigned j = 0, E = LandingPad->BeginLabels.size(); j != E; ++j) {
+195-      MCSymbol *BeginLabel = LandingPad->BeginLabels[j];
+196-      MCSymbol *EndLabel = LandingPad->BeginLabels[j];
+197-      // If we have deleted the code for a given invoke after registering it in
+198-      // the LandingPad label list, the associated symbols will not have been
+199-      // emitted. In that case, ignore this callsite entry.
+200-      if (!BeginLabel->isDefined() || !EndLabel->isDefined())
+201-        continue;
+202:      assert(!PadMap.count(BeginLabel) && "Duplicate landing pad labels!");
+203-      PadRange P = { i, j };
+204-      PadMap[BeginLabel] = P;
+205-    }
+206-  }
+207-}
+208-
+209-/// Compute the call-site table.  The entry for an invoke has a try-range
+210:/// containing the call, a non-zero landing pad, and an appropriate action.  The
+211-/// entry for an ordinary call has a try-range containing the call and zero for
+212:/// the landing pad and the action.  Calls marked 'nounwind' have no entry and
+213-/// must not be contained in the try-range of any entry - they form gaps in the
+214-/// table.  Entries must be ordered by try-range address.
+215-///
+216-/// Call-sites are split into one or more call-site ranges associated with
+217-/// different sections of the function.
+218-///
+219-///   - Without -basic-block-sections, all call-sites are grouped into one
+220-///     call-site-range corresponding to the function section.
+221-///
+222-///   - With -basic-block-sections, one call-site range is created for each
+223-///     section, with its FragmentBeginLabel and FragmentEndLabel respectively
+224-//      set to the beginning and ending of the corresponding section and its
+225-//      ExceptionLabel set to the exception symbol dedicated for this section.
+226://      Later, one LSDA header will be emitted for each call-site range with its
+227-//      call-sites following. The action table and type info table will be
+228-//      shared across all ranges.
+229:void EHStreamer::computeCallSiteTable(
+230:    SmallVectorImpl<CallSiteEntry> &CallSites,
+231:    SmallVectorImpl<CallSiteRange> &CallSiteRanges,
+232-    const SmallVectorImpl<const LandingPadInfo *> &LandingPads,
+233-    const SmallVectorImpl<unsigned> &FirstActions) {
+234-  RangeMapType PadMap;
+235-  computePadMap(LandingPads, PadMap);
+236-
+237:  // The end label of the previous invoke or nounwind try-range.
+238-  MCSymbol *LastLabel = Asm->getFunctionBegin();
+239-
+240-  // Whether there is a potentially throwing instruction (currently this means
+241-  // an ordinary call) between the end of the previous try-range and now.
+242-  bool SawPotentiallyThrowing = false;
+243-
+244:  // Whether the last CallSite entry was for an invoke.
+245-  bool PreviousIsInvoke = false;
+246-
+247-  bool IsSJLJ = Asm->MAI->getExceptionHandlingType() == ExceptionHandling::SjLj;
+248-
+249-  // Visit all instructions in order of address.
+250-  for (const auto &MBB : *Asm->MF) {
+251-    if (&MBB == &Asm->MF->front() || MBB.isBeginSection()) {
+252-      // We start a call-site range upon function entry and at the beginning of
+253-      // every basic block section.
+254-      auto &Range = Asm->MBBSectionRanges[MBB.getSectionID()];
+255:      CallSiteRanges.push_back({Range.BeginLabel, Range.EndLabel,
+256-                                Asm->getMBBExceptionSym(MBB),
+257:                                CallSites.size()});
+258-      PreviousIsInvoke = false;
+259-      SawPotentiallyThrowing = false;
+260-      LastLabel = nullptr;
+261-    }
+262-
+263-    if (MBB.isEHPad())
+264:      CallSiteRanges.back().IsLPRange = true;
+265-
+266-    for (const auto &MI : MBB) {
+267-      if (!MI.isEHLabel()) {
+268-        if (MI.isCall())
+269-          SawPotentiallyThrowing |= !callToNoUnwindFunction(&MI);
+270-        continue;
+271-      }
+272-
+--
+279-      RangeMapType::const_iterator L = PadMap.find(BeginLabel);
+280-      if (L == PadMap.end())
+281-        // Nope, it was just some random label.
+282-        continue;
+283-
+284-      const PadRange &P = L->second;
+285-      const LandingPadInfo *LandingPad = LandingPads[P.PadIndex];
+286-      assert(BeginLabel == LandingPad->BeginLabels[P.RangeIndex] &&
+287:             "Inconsistent landing pad map!");
+288-
+289-      // For Dwarf and AIX exception handling (SjLj handling doesn't use this).
+290-      // If some instruction between the previous try-range and this one may
+291:      // throw, create a call-site entry with no landing pad for the region
+292-      // between the try-ranges.
+293-      if (SawPotentiallyThrowing &&
+294-          (Asm->MAI->usesCFIForEH() ||
+295-           Asm->MAI->getExceptionHandlingType() == ExceptionHandling::AIX)) {
+296:        CallSites.push_back({LastLabel, BeginLabel, nullptr, 0});
+297-        PreviousIsInvoke = false;
+298-      }
+299-
+300-      LastLabel = LandingPad->EndLabels[P.RangeIndex];
+301:      assert(BeginLabel && LastLabel && "Invalid landing pad!");
+302-
+303-      if (!LandingPad->LandingPadLabel) {
+304-        // Create a gap.
+305-        PreviousIsInvoke = false;
+306-      } else {
+307-        // This try-range is for an invoke.
+308:        CallSiteEntry Site = {
+309-          BeginLabel,
+310-          LastLabel,
+311-          LandingPad,
+312-          FirstActions[P.PadIndex]
+313-        };
+314-
+315-        // Try to merge with the previous call-site. SJLJ doesn't do this
+316-        if (PreviousIsInvoke && !IsSJLJ) {
+317:          CallSiteEntry &Prev = CallSites.back();
+318-          if (Site.LPad == Prev.LPad && Site.Action == Prev.Action) {
+319-            // Extend the range of the previous entry.
+320-            Prev.EndLabel = Site.EndLabel;
+321-            continue;
+322-          }
+323-        }
+324-
+325-        // Otherwise, create a new call-site.
+326-        if (!IsSJLJ)
+327:          CallSites.push_back(Site);
+328-        else {
+329-          // SjLj EH must maintain the call sites in the order assigned
+330-          // to them by the SjLjPrepare pass.
+331:          unsigned SiteNo = Asm->MF->getCallSiteBeginLabel(BeginLabel);
+332:          if (CallSites.size() < SiteNo)
+333:            CallSites.resize(SiteNo);
+334:          CallSites[SiteNo - 1] = Site;
+335-        }
+336-        PreviousIsInvoke = true;
+337-      }
+338-    }
+339-
+340-    // We end the call-site range upon function exit and at the end of every
+341-    // basic block section.
+342-    if (&MBB == &Asm->MF->back() || MBB.isEndSection()) {
+343-      // If some instruction between the previous try-range and the end of the
+344:      // function may throw, create a call-site entry with no landing pad for
+345-      // the region following the try-range.
+346-      if (SawPotentiallyThrowing && !IsSJLJ) {
+347:        CallSiteEntry Site = {LastLabel, CallSiteRanges.back().FragmentEndLabel,
+348-                              nullptr, 0};
+349:        CallSites.push_back(Site);
+350-        SawPotentiallyThrowing = false;
+351-      }
+352:      CallSiteRanges.back().CallSiteEndIdx = CallSites.size();
+353-    }
+354-  }
+355-}
+356-
+357:/// Emit landing pads and actions.
+358-///
+359-/// The general organization of the table is complex, but the basic concepts are
+360-/// easy.  First there is a header which describes the location and organization
+361-/// of the three components that follow.
+362-///
+363:///  1. The landing pad site information describes the range of code covered by
+364-///     the try.  In our case it's an accumulation of the ranges covered by the
+365:///     invokes in the try.  There is also a reference to the landing pad that
+366-///     handles the exception once processed.  Finally an index into the actions
+367-///     table.
+368-///  2. The action table, in our case, is composed of pairs of type IDs and next
+369:///     action offset.  Starting with the action index from the landing pad
+370-///     site, each type ID is checked for a match to the current exception.  If
+371:///     it matches then the exception and type id are passed on to the landing
+372:///     pad.  Otherwise the next action is looked up.  This chain is terminated
+373-///     with a next action of zero.  If no type id is found then the frame is
+374-///     unwound and handling continues.
+375-///  3. Type ID table contains references to all the C++ typeinfo for all
+376-///     catches in the function.  This tables is reverse indexed base 1.
+377-///
+378-/// Returns the starting symbol of an exception table.
+379-MCSymbol *EHStreamer::emitExceptionTable() {
+380-  const MachineFunction *MF = Asm->MF;
+381-  const std::vector<const GlobalValue *> &TypeInfos = MF->getTypeInfos();
+382-  const std::vector<unsigned> &FilterIds = MF->getFilterIds();
+383-  const std::vector<LandingPadInfo> &PadInfos = MF->getLandingPads();
+384-
+385:  // Sort the landing pads in order of their type ids.  This is used to fold
+386-  // duplicate actions.
+387-  SmallVector<const LandingPadInfo *, 64> LandingPads;
+388-  LandingPads.reserve(PadInfos.size());
+389-
+390-  for (const LandingPadInfo &LPI : PadInfos) {
+391:    // If a landing-pad has an associated label, but the label wasn't ever
+392:    // emitted, then skip it.  (This can occur if the landingpad's MBB was
+393-    // deleted).
+394-    if (LPI.LandingPadLabel && !LPI.LandingPadLabel->isDefined())
+395-      continue;
+396-    LandingPads.push_back(&LPI);
+397-  }
+398-
+399:  // Order landing pads lexicographically by type id.
+400-  llvm::sort(LandingPads, [](const LandingPadInfo *L, const LandingPadInfo *R) {
+401-    return L->TypeIds < R->TypeIds;
+402-  });
+403-
+404-  // Compute the actions table and gather the first action index for each
+405:  // landing pad site.
+406-  SmallVector<ActionEntry, 32> Actions;
+407-  SmallVector<unsigned, 64> FirstActions;
+408-  computeActionsTable(LandingPads, Actions, FirstActions);
+409-
+410-  // Compute the call-site table and call-site ranges. Normally, there is only
+411-  // one call-site-range which covers the whole function. With
+412-  // -basic-block-sections, there is one call-site-range per basic block
+413-  // section.
+414:  SmallVector<CallSiteEntry, 64> CallSites;
+415:  SmallVector<CallSiteRange, 4> CallSiteRanges;
+416:  computeCallSiteTable(CallSites, CallSiteRanges, LandingPads, FirstActions);
+417-
+418-  bool IsSJLJ = Asm->MAI->getExceptionHandlingType() == ExceptionHandling::SjLj;
+419-  bool IsWasm = Asm->MAI->getExceptionHandlingType() == ExceptionHandling::Wasm;
+420-  bool HasLEB128Directives = Asm->MAI->hasLEB128Directives();
+421:  unsigned CallSiteEncoding =
+422-      IsSJLJ ? static_cast<unsigned>(dwarf::DW_EH_PE_udata4) :
+423:               Asm->getObjFileLowering().getCallSiteEncoding();
+424-  bool HaveTTData = !TypeInfos.empty() || !FilterIds.empty();
+425-
+426-  // Type infos.
+427:  MCSection *LSDASection = Asm->getObjFileLowering().getSectionForLSDA(
+428-      MF->getFunction(), *Asm->CurrentFnSym, Asm->TM);
+429-  unsigned TTypeEncoding;
+430-
+431-  if (!HaveTTData) {
+432-    // If there is no TypeInfo, then we just explicitly say that we're omitting
+433-    // that bit.
+434-    TTypeEncoding = dwarf::DW_EH_PE_omit;
+435-  } else {
+436-    // Okay, we have actual filters or typeinfos to emit.  As such, we need to
+437-    // pick a type encoding for them.  We're about to emit a list of pointers to
+438:    // typeinfo objects at the end of the LSDA.  However, unless we're in static
+439-    // mode, this reference will require a relocation by the dynamic linker.
+440-    //
+441-    // Because of this, we have a couple of options:
+442-    //
+443-    //   1) If we are in -static mode, we can always use an absolute reference
+444:    //      from the LSDA, because the static linker will resolve it.
+445-    //
+446:    //   2) Otherwise, if the LSDA section is writable, we can output the direct
+447-    //      reference to the typeinfo and allow the dynamic linker to relocate
+448-    //      it.  Since it is in a writable section, the dynamic linker won't
+449-    //      have a problem.
+450-    //
+451-    //   3) Finally, if we're in PIC mode and the LDSA section isn't writable,
+452-    //      we need to use some form of indirection.  For example, on Darwin,
+453-    //      we can output a statically-relocatable reference to a dyld stub. The
+454-    //      offset to the stub is constant, but the contents are in a section
+--
+460-    // somewhere.  This predicate should be moved to a shared location that is
+461-    // in target-independent code.
+462-    //
+   660	    results.reason = _URC_FATAL_PHASE1_ERROR;
+   661	    // Check for consistent actions
+   662	    if (actions & _UA_SEARCH_PHASE)
+   663	    {
+   664	        // Do Phase 1
+   665	        if (actions & (_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME | _UA_FORCE_UNWIND))
+   666	        {
+   667	            // None of these flags should be set during Phase 1
+   668	            //   Client error
+   669	            results.reason = _URC_FATAL_PHASE1_ERROR;
+   670	            return;
+   671	        }
+   672	    }
+   673	    else if (actions & _UA_CLEANUP_PHASE)
+   674	    {
+   675	        if ((actions & _UA_HANDLER_FRAME) && (actions & _UA_FORCE_UNWIND))
+   676	        {
+   677	            // _UA_HANDLER_FRAME should only be set if phase 1 found a handler.
+   678	            // If _UA_FORCE_UNWIND is set, phase 1 shouldn't have happened.
+   679	            //    Client error
+   680	            results.reason = _URC_FATAL_PHASE2_ERROR;
+   681	            return;
+   682	        }
+   683	    }
+   684	    else // Neither _UA_SEARCH_PHASE nor _UA_CLEANUP_PHASE is set
+   685	    {
+   686	        // One of these should be set.
+   687	        //   Client error
+   688	        results.reason = _URC_FATAL_PHASE1_ERROR;
+   689	        return;
+   690	    }
+   691	    // Start scan by getting exception table address.
+   692	    const uint8_t *lsda = (const uint8_t *)_Unwind_GetLanguageSpecificData(context);
+   693	    if (lsda == 0)
+   694	    {
+   695	        // There is no exception table
+   696	        results.reason = _URC_CONTINUE_UNWIND;
+   697	        return;
+   698	    }
+   699	    results.languageSpecificData = lsda;
+   700	#if defined(_AIX)
+   701	    uintptr_t base = _Unwind_GetDataRelBase(context);
+   702	#else
+   703	    uintptr_t base = 0;
+   704	#endif
+   705	    // Get the current instruction pointer and offset it before next
+   706	    // instruction in the current frame which threw the exception.
+   707	    uintptr_t ip = _Unwind_GetIP(context) - 1;
+   708	    // Get beginning current frame's code (as defined by the
+   709	    // emitted dwarf code)
+   710	    uintptr_t funcStart = _Unwind_GetRegionStart(context);
+   711	#if defined(__USING_SJLJ_EXCEPTIONS__) || defined(__WASM_EXCEPTIONS__)
+   712	    if (ip == uintptr_t(-1))
+   713	    {
+   714	        // no action
+   715	        results.reason = _URC_CONTINUE_UNWIND;
+   716	        return;
+   717	    }
+   718	    else if (ip == 0)
+   719	        call_terminate(native_exception, unwind_exception);
+   720	    // ip is 1-based index into call site table
+   721	#else  // !__USING_SJLJ_EXCEPTIONS__ && !__WASM_EXCEPTIONS__
+   722	    uintptr_t ipOffset = ip - funcStart;
+   723	#endif // !__USING_SJLJ_EXCEPTIONS__ && !__WASM_EXCEPTIONS__
+   724	    const uint8_t* classInfo = NULL;
+   725	    // Note: See JITDwarfEmitter::EmitExceptionTable(...) for corresponding
+   726	    //       dwarf emission
+   727	    // Parse LSDA header.
+   728	    uint8_t lpStartEncoding = *lsda++;
+   729	    const uint8_t* lpStart = lpStartEncoding == DW_EH_PE_omit
+   730	                                 ? (const uint8_t*)funcStart
+   731	                                 : (const uint8_t*)readEncodedPointer(&lsda, lpStartEncoding, base);
+   732	    uint8_t ttypeEncoding = *lsda++;
+   733	    if (ttypeEncoding != DW_EH_PE_omit)
+   734	    {
+   735	        // Calculate type info locations in emitted dwarf code which
+   736	        // were flagged by type info arguments to llvm.eh.selector
+   737	        // intrinsic
+   738	        uintptr_t classInfoOffset = readULEB128(&lsda);
+   739	        classInfo = lsda + classInfoOffset;
+   740	    }
+   741	    // Walk call-site table looking for range that
+   742	    // includes current PC.
+   743	    uint8_t callSiteEncoding = *lsda++;
+   744	#if defined(__USING_SJLJ_EXCEPTIONS__) || defined(__WASM_EXCEPTIONS__)
+   745	    (void)callSiteEncoding;  // When using SjLj/Wasm exceptions, callSiteEncoding is never used
+   746	#endif
+   747	    uint32_t callSiteTableLength = static_cast<uint32_t>(readULEB128(&lsda));
+   748	    const uint8_t* callSiteTableStart = lsda;
+   749	    const uint8_t* callSiteTableEnd = callSiteTableStart + callSiteTableLength;
+   750	    const uint8_t* actionTableStart = callSiteTableEnd;
+   751	    const uint8_t* callSitePtr = callSiteTableStart;
+   752	    while (callSitePtr < callSiteTableEnd)
+   753	    {
+   754	        // There is one entry per call site.
+   755	#if !defined(__USING_SJLJ_EXCEPTIONS__) && !defined(__WASM_EXCEPTIONS__)
+   756	        // The call sites are non-overlapping in [start, start+length)
+   757	        // The call sites are ordered in increasing value of start
+   758	        uintptr_t start = readEncodedPointer(&callSitePtr, callSiteEncoding);
+   759	        uintptr_t length = readEncodedPointer(&callSitePtr, callSiteEncoding);
+   760	        landing_pad_t landingPad = readEncodedPointer(&callSitePtr, callSiteEncoding);
+   761	        uintptr_t actionEntry = readULEB128(&callSitePtr);
+   762	        if ((start <= ipOffset) && (ipOffset < (start + length)))
+   763	#else  // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   764	        // ip is 1-based index into this table
+   765	        landing_pad_t landingPad = readULEB128(&callSitePtr);
+   766	        uintptr_t actionEntry = readULEB128(&callSitePtr);
+   767	        if (--ip == 0)
+   768	#endif // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   769	        {
+   770	            // Found the call site containing ip.
+   771	#if !defined(__USING_SJLJ_EXCEPTIONS__) && !defined(__WASM_EXCEPTIONS__)
+   772	            if (landingPad == 0)
+   773	            {
+   774	                // No handler here
+   775	                results.reason = _URC_CONTINUE_UNWIND;
+   776	                return;
+   777	            }
+   778	            landingPad = (uintptr_t)lpStart + landingPad;
+   779	#else  // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   780	            ++landingPad;
+   781	#endif // __USING_SJLJ_EXCEPTIONS__ || __WASM_EXCEPTIONS__
+   782	            results.landingPad = landingPad;
+   783	            if (actionEntry == 0)
+   784	            {
+   785	                // Found a cleanup
+   786	                results.reason = (actions & _UA_SEARCH_PHASE) ? _URC_CONTINUE_UNWIND : _URC_HANDLER_FOUND;
+   787	                return;
+   788	            }
+   789	            // Convert 1-based byte offset into
+   790	            const uint8_t* action = actionTableStart + (actionEntry - 1);
+   791	            bool hasCleanup = false;
+   792	            // Scan action entries until you find a matching handler, cleanup, or the end of action list
+   793	            while (true)
+   794	            {
+   795	                const uint8_t* actionRecord = action;
+   796	                int64_t ttypeIndex = readSLEB128(&action);
+   797	                if (ttypeIndex > 0)
+   798	                {
+   799	                    // Found a catch, does it actually catch?
+   800	                    // First check for catch (...)
+   801	                    const __shim_type_info* catchType =
+   802	                        get_shim_type_info(static_cast<uint64_t>(ttypeIndex),
+   803	                                           classInfo, ttypeEncoding,
+   804	                                           native_exception, unwind_exception,
+   805	                                           base);
+   806	                    if (catchType == 0)
+   807	                    {
+   808	                        // Found catch (...) catches everything, including
+   809	                        // foreign exceptions. This is search phase, cleanup
+   810	                        // phase with foreign exception, or forced unwinding.
+   890	                }
+   891	                const uint8_t* temp = action;
+   892	                int64_t actionOffset = readSLEB128(&temp);
+   893	                if (actionOffset == 0)
+   894	                {
+   895	                    // End of action list. If this is phase 2 and we have found
+   896	                    // a cleanup (ttypeIndex=0), return _URC_HANDLER_FOUND;
+   897	                    // otherwise return _URC_CONTINUE_UNWIND.
+   898	                    results.reason = hasCleanup && actions & _UA_CLEANUP_PHASE
+   899	                                         ? _URC_HANDLER_FOUND
+   900	                                         : _URC_CONTINUE_UNWIND;
+   901	                    return;
+   902	                }
+   903	                // Go to next action
+   904	                action += actionOffset;
+   905	            }  // there is no break out of this loop, only return
+   906	        }
+   907	#if !defined(__USING_SJLJ_EXCEPTIONS__) && !defined(__WASM_EXCEPTIONS__)
+   908	        else if (ipOffset < start)
+   909	        {
+   910	            // There is no call site for this ip
+   911	            // Something bad has happened.  We should never get here.
+   912	            // Possible stack corruption.
+   913	            call_terminate(native_exception, unwind_exception);
+   914	        }
+   915	#endif // !__USING_SJLJ_EXCEPTIONS__ && !__WASM_EXCEPTIONS__
+   916	    }  // there might be some tricky cases which break out of this loop
+   917	
+   918	    // It is possible that no eh table entry specify how to handle
+   919	    // this exception. By spec, terminate it immediately.
+   920	    call_terminate(native_exception, unwind_exception);
+   921	}
+   922	
+   923	// public API
+   924	
+   925	/*
+   926	The personality function branches on actions like so:
+   927	
+   928	_UA_SEARCH_PHASE
+   929	
+   930	    If _UA_CLEANUP_PHASE or _UA_HANDLER_FRAME or _UA_FORCE_UNWIND there's
+   931	      an error from above, return _URC_FATAL_PHASE1_ERROR.
+   932	
+   933	    Scan for anything that could stop unwinding:
+   934	
+   935	       1.  A catch clause that will catch this exception
