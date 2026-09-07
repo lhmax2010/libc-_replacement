@@ -1,0 +1,252 @@
+--- report locations ---
+docs/progress/R109/tables/w1_behavior_matrix.tsv
+docs/progress/R109/tables/w1_behavior_summary.tsv
+docs/progress/R109/tables/w1_binary_callers.tsv
+docs/progress/R109/tables/w1_binary_callers_summary.tsv
+docs/progress/R109/tables/w1_binary_consumers.tsv
+docs/progress/R109/tables/w1_binary_consumers_summary.tsv
+docs/progress/R109/tables/w1_caller_candidates.tsv
+docs/progress/R109/tables/w1_caller_refined.tsv
+docs/progress/R109/tables/w1_caller_refined_summary.tsv
+docs/progress/R109/tables/w1_default_terminate_matrix.tsv
+docs/progress/R109/tables/w1_implementation_evidence.tsv
+docs/progress/R109/tables/w1_source_callers.tsv
+docs/progress/R109/tables/w1_source_callers_summary.tsv
+docs/progress/R109/tables/w2_archive_status.tsv
+docs/progress/R109/tables/w2_final_summary.tsv
+docs/progress/R109/tables/w2_missing_link_audit.tsv
+docs/progress/R109/tables/w2_missing_link_summary.tsv
+docs/progress/R109/tables/w2_no_cpp_gap_manifest.tsv
+docs/progress/R109/tables/w2_no_cpp_gap_summary.tsv
+docs/progress/R109/tables/w2_partial_packages.tsv
+docs/progress/R109/tables/w2_positive_control_hits.tsv
+docs/progress/R109/tables/w2_source_coverage_rollup.tsv
+docs/progress/R109/tables/w2_source_hits.tsv
+docs/progress/R109/tables/w2_source_scan_status.tsv
+docs/progress/R109/tables/w3_edge_classification_summary.tsv
+docs/progress/R109/tables/w3_edges_90.tsv
+docs/progress/R109/tables/w3_edges_90_results.tsv
+docs/progress/R109/tables/w3_final_summary.tsv
+docs/progress/R109/tables/w3_libstdcxx_reference.tsv
+docs/progress/R109/tables/w3_runtime_matrix.tsv
+docs/progress/R109/tables/w3_runtime_matrix_retry.tsv
+docs/progress/R109/tables/w3_runtime_summary.tsv
+docs/progress/R109/tables/w3_runtime_summary_retry.tsv
+docs/progress/R109/tables/w3_unmeasured_edges.tsv
+docs/progress/R82/tables/boost_distinct_symbols.tsv
+docs/progress/R82/tables/boost_edges_90.tsv
+docs/progress/R82/tables/boost_edges_90_classified.tsv
+docs/progress/R82/tables/mixed_runtime_matrix.tsv
+--- R109 W3 ---
+# W3 Boost 边界其余各条实测
+
+## 结论
+
+`PARTIAL`。90 条真实 Boost C++ 语义边已逐条分类并标记测量状态；按“该边包含被测代表符号，且该架构确实执行”计，R82 已测 12 条，本轮新增 x86_64 15 条，合计 27/90。其余 63 条没有被标成已测：39 条是同一代表符号组但该架构未执行，24 条属于未选符号组。每条边可能包含多个 C++ 符号，因此 27 也只表示边上的代表符号组，不表示边内所有符号逐个动态执行。
+
+## 1. 90 条边分类
+
+| 用户要求的分类 | 边数 | R82 对应口径 |
+|---|---:|---|
+| 布局敏感 | 63 | 33 `HIDDEN_STD_LAYOUT` + 6 `HIDDEN_STD_LAYOUT+DIRECT_STD_SIGNATURE` + 24 `DIRECT_STD_SIGNATURE` |
+| C++ ABI 耦合但布局未证明 | 27 | 27 `NO_STD_LAYOUT_EVIDENCE` |
+| 仅 C 接口 | 0 | 输入集合本身限定为 `TRUE_CPP_ABI_COUPLING` |
+| 无交集 | 0 | 同上 |
+
+分类是对全部 90 行机械生成，逐行见 `tables/w3_edges_90_results.tsv`。布局未证明不是安全证明。
+
+## 2. 已有实测及精确映射
+
+R82 的三个代表用例在实际执行过的架构上对应 12 条边：
+
+- Boost.Filesystem 8 条：`E020,E021,E073,E074,E076,E077,E089,E090`；x86_64/armv7l 均观察到静默错值，消费方销毁路径到达；
+- Boost.Iostreams 2 条：`E005,E057`；x86_64/armv7l 均在取得可断言值前终止，销毁完成标记未到达；
+- Boost.Program_options 2 条：`E034,E053`；x86_64 在访问 provider 构造对象时终止，销毁完成标记未到达。
+
+同符号组的 aarch64 边以及 Program_options 的 armv7l 边仍记 `NOT_OBSERVED_FOR_ARCHITECTURE`，没有把其他架构结果外推。
+
+## 3. 本轮选取与理由
+
+### 3.1 Boost.Test
+
+Boost.Test 占 42 条边，是此前未动态覆盖的最大 provider。`ut_detail::normalize_test_case_name` 出现在 36 条跨架构边中，由平台 provider 构造并按值返回 libstdc++ `std::string`；consumer 可以检查规范化后的确切文本，并自行调用 libc++ 的 `std::string` 析构。因此它同时覆盖公开布局传递、具体值断言和异侧销毁。
+
+本轮实际执行 x86_64，对应 12 条边：`E018,E031,E037,E044,E045,E046,E048,E054,E055,E058,E059,E080`。另外 24 条同符号组的 armv7l/aarch64 边没有执行。
+
+### 3.2 Boost.Thread
+
+Boost.Thread 的 9 条边全部属于“C++ ABI 耦合但布局未证明”，并共同包含 `enter_once_region`、`rollback_once_region`、`commit_once_region`。它是检验“未见 std 布局不等于未经测试也可判安全”的直接样本；用例断言 once 状态的完整转换，而不是只看退出码。
+
+本轮实际执行 x86_64，对应 3 条边：`E014,E065,E067`；另 6 条 armv7l/aarch64 边未执行。该接口接收调用方构造的 `once_flag&`，provider 不构造返回对象；所以“消费方销毁 provider 构造对象”在此结构上 `NOT_APPLICABLE`。用例仍记录 flag 作用域退出，且该类型在当前头文件下为 trivial destructor。
+
+## 4. 构建与运行时身份
+
+consumer 使用平台 Clang、平台 libc++/libc++abi 头与 DSO构建；provider 是 R11 冻结的真实 x86_64 Boost.Test/Boost.Thread DSO。provider 的 `DT_NEEDED` 含 `libstdc++.so.6`，consumer 的动态依赖含 `libc++.so.1`/`libc++abi.so.1`。每次新测试的 `/proc/self/maps` 均明确观察到 libc++、libstdc++ 和目标 Boost provider 同时加载，两个用例均为 5/5。
+
+Boost.Test 通过原始导出符号和 x86_64 Itanium sret 调用形态，让 provider 在对齐的额外存储中构造返回对象，再由 consumer 解释并析构。为排除该 raw 调用方式本身错误，同一源码另以 libstdc++ 构建正向对照；两组使用同一个平台 provider。
+
+## 5. 新实测结果
+
+| 格 | 重复 | 具体值断言 | 消费方销毁/作用域退出 | 结果 |
+|---|---:|---|---|---|
+| libstdc++ consumer + Boost.Test provider 对照 | 5 | 5/5 精确为 `alpha_beta_gamma`，长度 16 | 5/5 析构完成 | 5/5 通过 |
+| libc++ consumer + Boost.Test provider | 5 | 5/5 观察长度 24，预期 16，值不相等 | 5/5 显式 libc++ 析构和 `dlclose` 完成 | 5/5 静默错值，退出 41 |
+| libc++ consumer + Boost.Thread provider | 5 | 5/5 状态序列精确为 `1,1,0` | 5/5 作用域退出完成 | 5/5 该样本通过，退出 0 |
+
+Boost.Test 首轮二进制也做了 5 次：当时 consumer 解释出的长度为 16，但具体 16 字节仍 5/5 不等于预期，且析构完成。增加固定值观测后重编，权威重跑得到表中稳定的长度 24。两个构建共同说明对象布局解释依赖 consumer 生成的具体栈/对象形态，不能因某次“长度碰巧正确”或析构未崩溃而判兼容。首轮材料保留在 `w3_runtime_matrix.tsv`，权威重跑为 `w3_runtime_matrix_retry.tsv`。
+
+Boost.Thread 的成功仅证明当前单线程 once 状态转换样本；没有覆盖并发竞争、异常回滚压力、其他符号或其他架构，不能升级为该 provider 安全。
+
+## 6. 未测部分与风险
+
+未按本任务实际架构口径测量的 63 条边完整列于 `tables/w3_unmeasured_edges.tsv`：
+
+- 44 条布局敏感：23 条是已选符号组的未执行架构，21 条是未选符号组。相同 provider 家族的已测样本已经出现静默错值或终止，风险评为高；不能据家族结果替代逐条值和销毁观察。
+- 19 条 C++ ABI 耦合但布局未证明：16 条是本轮符号组的 armv7l/aarch64 未执行边，3 条为 Boost.Test 未选符号组。风险保持未知；Boost.Thread x86_64 成功不能外推。
+
+若按“不区分架构，只看代表符号是否被某处测试”计，R82 三组触及 21 条、本轮两组触及 45 条、未选符号组 24 条；该口径只用于说明选择覆盖面，不用于 `ALL_MEASURED` 判定。权威结论采用 27 已测、63 未测。
+
+## 7. 证据索引
+
+- 全 90 条分类、代表符号及结果：`tables/w3_edges_90_results.tsv`；
+- 未测 63 条：`tables/w3_unmeasured_edges.tsv`；
+- 分类与最终统计：`tables/w3_edge_classification_summary.tsv`、`w3_final_summary.tsv`；
+- 新混合矩阵：`tables/w3_runtime_matrix_retry.tsv`、`w3_runtime_summary_retry.tsv`；
+- libstdc++ 正向对照：`tables/w3_libstdcxx_reference.tsv`；
+- R82 既有矩阵：`docs/progress/R82/tables/mixed_runtime_matrix.tsv`；
+- 构建、符号、动态依赖、SHA256、命令原文、stdout、stderr 与退出码：`raw/`。
+
+本轮没有修改平台源码或四个补丁，没有使用开发板，没有把“未崩溃”当作“没有问题”。
+--- R82 report candidates ---
+===== docs/progress/R82/REPORT.md =====
+# R82：平台 Boost 边界的跨运行时实测
+
+## 结论
+
+状态：`PARTIAL`。
+
+在 R22/R80 已确认的 90 条真实 Boost C++ 符号边中，63 条可从公开签名或 Boost 类型定义确认会传递标准库布局敏感状态，27 条在当前边界签名中未见标准库布局证据。选取的 filesystem、iostreams 两类边界在 x86_64 与 armv7l 用户态模拟环境中均稳定复现不兼容；额外选取的 program_options 边界在 x86_64 上也稳定复现。结果明确支持此前结论：两套运行时可以在同一进程中共存，但不能据此推导跨边界传递 C++ 语义是安全的。
+
+本轮没有修复或处置建议。由于执行异常退出用例时环境连续出现保护性中止提示，为避免反复触发，停止了新增异常退出实验；program_options 的 armv7l 格与物理开发板实测记为 `NOT_OBSERVED`，因此不把结论提升为 `BOUNDARY_VERIFIED`。
+
+## 1. 输入、口径与可复核材料
+
+- 输入边：`docs/progress/R22/tables/split/candidate_edge_evidence.part*.tsv` 中 `reason_class=TRUE_CPP_ABI_COUPLING` 且 provider 为 Boost 的 90 行。
+- 既有规模：13 个 consumer 源码包、75 个 `(arch, consumer ELF path)`、90 条边。
+- 本轮完整边表：`tables/boost_edges_90.tsv`。
+- 带 demangle、布局证据和分类的表：`tables/boost_edges_90_classified.tsv`。
+- 去重符号：`tables/boost_distinct_symbols.tsv`。
+- 25 次运行的逐格结果：`tables/mixed_runtime_matrix.tsv`。
+- 所有命令原文、标准输出、标准错误与退出码：`raw/`。原始输出未经摘要替换；对话中仅给短统计。
+
+75 与一度统计到的 84 的差别已经机械核对：75 的身份是 `(arch, consumer ELF path)`；若把二进制包名也计入，同一路径在 security-manager 的多个二进制包身份下重复出现，得到 84。本文沿用原始任务的 75 个 ELF 口径。
+
+## 2. 90 条边的性质分类
+
+| 分类 | 边数 | 含义 |
+| --- | ---: | --- |
+| `HIDDEN_STD_LAYOUT` | 33 | 签名显示 Boost 自有类型，但该类型内部持有 `std::string`、`std::wstring` 等标准库对象 |
+| `HIDDEN_STD_LAYOUT+DIRECT_STD_SIGNATURE` | 6 | 同时具有隐藏标准库布局和公开签名中的标准库类型 |
+| `DIRECT_STD_SIGNATURE` | 24 | 公开符号签名直接带标准库类型 |
+| `NO_STD_LAYOUT_EVIDENCE` | 27 | 从已观察签名和相关类型定义未确认跨界标准库布局；不是安全性证明 |
+| 合计 | 90 | — |
+
+按 provider 归纳：
+
+- boost-filesystem：30 条隐藏布局；`boost::filesystem::path` 的 `string_type` 是 `std::basic_string`，对象持有 `m_pathname`。
+- boost-iostreams：3 条隐藏布局；`boost::iostreams::detail::path` 持有 `std::string` 与 `std::wstring`，mapped 参数持有该 path。
+- boost-program-options：6 条隐藏布局并直接带标准库签名；相关结构持有 `std::vector`、`std::map`、`std::string`。
+- boost-test：24 条直接标准库签名，另 18 条未确认布局证据。
+- boost-thread：9 条未确认布局证据；当前 POSIX `once_flag` 证据表现为整数/原子状态。
+
+按 consumer 源码包去重：
+
+- 隐藏布局风险形态 3 包：`capi-appfw-capmgr`、`dotnet-launcher`、`security-manager`。
+- 直接标准库签名 5 包：`capi-appfw-capmgr`、`cert-svc`、`key-manager`、`libwebappenc`、`security-manager`。
+- 两类并集 6/13 包；其中 3 包属于符号名不显露标准库类型的静默风险形态。
+- 其余 7 包在这 90 条已观察边上未确认标准库布局传递；不代表包内其他路径已获证明。
+
+## 3. 实测对象及选择理由
+
+### 3.1 filesystem
+
+覆盖 30 条、数量最多，并存在生产 consumer。用例调用平台 Boost 的真实 `status(path, error_code)` 和返回 `path` 的 `read_symlink(path, error_code)`；consumer 读取具体状态、路径长度与路径值，并在自己的 libc++ 一侧销毁 provider 返回的对象。这同时覆盖输入、返回值、具体数据断言和异侧销毁。
+
+### 3.2 iostreams
+
+边界对象的 Boost 外壳内部含 `std::string/std::wstring`，适合作为“符号能匹配但隐藏布局不匹配”的代表。用例调用平台真实 `mapped_file_source::open_impl`，检查映射是否成功、长度和具体字节，并让 consumer 离开作用域执行销毁。
+
+### 3.3 program_options（额外样本）
+
+`variables_map` 持有标准容器；用例调用平台库导出的同名构造函数，由 provider 初始化对象，再由 libc++ consumer 查询、插入和销毁。x86_64 已完成；为避免连续触发执行环境的保护性中止，armv7l 未追加执行。
+
+## 4. 构建与运行时身份
+
+- consumer 使用 Clang 与 libc++/libc++abi 构建。
+- provider 是平台已发布的 Boost RPM，动态依赖 `libstdc++.so.6`。
+- x86_64 与 armv7l consumer 的动态依赖均包含 `libc++.so.1`、`libc++abi.so.1`。
+- filesystem 两个目标符号在 consumer 中为 UND、在真实 provider 中为 DEF，mangled 名逐字匹配；iostreams 的 `open_impl` 也逐架构确认 UND/DEF 匹配。
+- armv7l 使用真实 armv7l 二进制、armv7l sysroot 与 `/usr/bin/qemu-arm-static` 用户态执行；不是物理开发板结果。
+- 构建受 `nice -n 15`、`ionice -c 3` 约束，实际串行，未超过并行度 2。
+
+## 5. 运行结果
+
+每个已执行格重复 5 次；逐次输出在 `raw/030_*`、`raw/034_*`、`raw/042_*`，解析表为 `tables/mixed_runtime_matrix.tsv`。
+
+| 架构/环境 | 用例 | 5 次结果 | 数据断言 | consumer 销毁路径 |
+| --- | --- | --- | --- | --- |
+| x86_64 | filesystem | 5/5 返回 41 | 5/5 状态和值错误，返回长度在运行间变化 | 5/5 执行完成，未崩溃 |
+| armv7l / qemu-user | filesystem | 5/5 返回 41 | 5/5 状态和值错误，返回长度稳定为 108 | 5/5 执行完成，未崩溃 |
+| x86_64 | iostreams | 5/5 返回 134 | 在取得可断言数据前终止 | 未到达完成标记 |
+| armv7l / qemu-user | iostreams | 5/5 返回 139 | 在取得可断言数据前终止 | 未到达完成标记 |
+| x86_64 | program_options | 5/5 返回 139 | provider 构造后初始 size 为 0；在插入/读取完成前终止 | 未到达完成标记 |
+| armv7l | program_options | `NOT_OBSERVED` | `NOT_OBSERVED` | `NOT_OBSERVED` |
+
+这些结果同时展示了两类后果：filesystem 是链接、装载均成功且进程继续运行，但数据静默错误；iostreams/program_options 在访问布局不兼容状态时终止。filesystem 的异侧销毁路径虽然 10/10 返回，却不能据此证明这种销毁安全，只能说明该具体路径本轮未立即崩溃。
+
+非零退出在此是被测现象，不是命令门禁失败。`raw/011_*` 的退出 1 是 `rg` 无匹配与 `set -e` 组合造成，已用不改变判据的脚本重跑为 `raw/012_*`；`raw/026_*` 是符号匹配表达式错误，随后以原始 mangled 名在 `raw/036_*`、`raw/038_*` 独立确认。两者均属于命令技术性错误。
+
+### 5.1 armv7l 执行脚本版本说明（R93 收口）
+
+`raw/034_run_arm_local_matrix.*` 执行时脚本只循环 filesystem 与 iostreams；
+随后同一路径脚本被扩展为三用例，归档时未保留原文件快照。现已增加
+`code/run_arm_local_matrix.executed-034.reconstructed.sh` 作为依据原始输出和
+修改顺序重建的执行等价两用例版本，并在 `code/EXECUTED_SCRIPT_VERSIONS.md`
+说明限制。由于当时没有脚本 SHA256，不能声称该重建版本与当时文件逐字节相同；
+直接运行当前 `run_arm_local_matrix.sh` 也不会得到 raw/034 的相同执行集合。
+
+以后脚本型命令在执行前必须同步保存编号化脚本快照及 SHA256，命令直接引用
+快照，避免工作副本后续修改破坏证据对应关系。
+
+## 6. 影响评估
+
+1. 平台 Boost 边界在混合运行时下确实会出问题：已实测的三类全部出现可重复的不兼容；后果从静默错值到进程异常终止。
+2. 13 个 consumer 包中，6 个从真实符号边和类型定义可确认处于标准库布局敏感形态；其中 3 个的标准库状态隐藏在 Boost 类型内部，链接器无法从边界表面阻止误配。
+3. 其余 7 个包当前只能说“这 90 条边中未发现标准库布局证据”，不能外推为全面安全。
+4. 结果进一步支持“可以共存，但禁止跨界传递 C++ 语义”的既有边界：此前 ICU 的 C API 成功不与本轮结果矛盾；Boost 这些真实边传递的正是 C++ 对象语义。
+
+## 7. 未覆盖范围
+
+- 没有逐条动态执行 90 条边；动态样本覆盖三种代表性 provider 类别。
+- 27 条 `NO_STD_LAYOUT_EVIDENCE` 未逐条做运行期安全证明。
+- program_options 的 armv7l 格未执行。
+- armv7l 结果来自 QEMU 用户态，物理板行为 `NOT_OBSERVED`。
+- aarch64 不在本任务要求的两架构范围，未执行。
+- 未使用 ASan/Valgrind 等检查已完成销毁路径的潜在堆损坏或泄漏。
+
+## 8. 自行判断与尚存疑问
+
+自行判断：
+
+1. 分类优先使用实际边界签名；签名是 Boost 类型时，再以对应 Boost 1.83 类型定义确认是否隐藏持有标准库对象。
+2. 同一 ELF 路径被多个 RPM 身份重复承载时，按任务原有的 75 个 ELF 路径口径去重。
+3. 因执行异常退出用例后连续出现环境保护提示，停止新增异常退出实验；不尝试绕过保护，不再发起远程开发板操作，保留现有证据并将状态降为 `PARTIAL`。
+
+尚存疑问：无需要立即人工裁决的岔路。若未来继续补齐，需由人工确认允许的物理板执行窗口和不会触发环境保护的运行通道。
+
+## 9. 纪律确认
+
+- 未修改平台源码或任何补丁。
+- 未做修复或处置建议。
+- 未向 Gerrit 或外部源码仓推送。
+- 原始命令、输出和退出码均落盘。

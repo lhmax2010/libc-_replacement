@@ -1,0 +1,304 @@
+1:FILE=docs/progress/R86/FACTS.md
+2:# R86 事实查明
+4:## 1. 五处是否真的“不会抛”
+8:### D01 `condition_variable::wait`
+10:`libcxx/src/condition_variable.cpp:33-39` 在锁不属于调用者时调用 `__throw_system_error(EPERM, ...)`，底层 `__libcpp_condvar_wait` 返回错误时也调用 `__throw_system_error`。阻塞于 `pthread_cond_wait` 时还可能收到 NPTL 线程取消的 forced unwind。
+12:因此它本来就有普通 `system_error` 生成路径；当前 `noexcept` 把这些错误和 forced unwind 都转成终止。若只去掉异常规格，成功等待的锁与返回行为不变，但错误路径从“终止”变为“异常向上传播”，不是全路径无行为变化。
+14:### D02 `__do_timed_wait(system_clock)`
+16:`libcxx/src/condition_variable.cpp:41-63` 同样在锁无效时生成 `system_error(EPERM)`；`__libcpp_condvar_timedwait` 返回非 0 且非 `ETIMEDOUT` 时生成 `system_error`。底层定时等待也是取消点。
+18:所以结论与 D01 相同：成功/正常超时路径本身可以保持，错误与取消路径会改变。
+20:### D03 `__do_timed_wait(steady_clock)`
+22:`libcxx/include/__condition_variable/condition_variable.h:197-217` 在锁无效时生成 `system_error(EPERM)`，`pthread_cond_clockwait` 返回非 0 且非 `ETIMEDOUT` 时生成 `system_error`；该 pthread 调用也可承载 forced unwind。
+24:### D04 `__do_timed_wait<Clock>`
+26:`condition_variable.h:220-224` 调用 `Clock::now()`、计算 `tp - Clock::now()`，再进入 `wait_for`，后者最终进入 D02 或 D03。自定义 Clock 的 `now()` 不是由 libc++ 保证不抛的封闭实现；其操作可抛，后续 D02/D03 又有上述普通错误和 forced unwind 路径。
+28:### D05 `wbuffer_convert::~wbuffer_convert`
+30:D05 没有可直接“删除”的显式 `_NOEXCEPT`：它是派生自 `basic_streambuf` 的虚析构，当前异常规格是隐式 non-throwing。其函数体调用 `__close()`；输出模式下 `__close -> sync` 进一步调用：
+33:- wrapped streambuf 的 `sputn`/`pubsync`/`pubseekoff` 虚路径；
+36:所以 D05 也不是“函数体不会抛”。而且代表性语言规则探针确认：非抛虚基类析构的派生析构不能单独声明 `noexcept(false)`，编译器报“looser exception specification”。要放宽它，必须扩大到基类层次，或改变析构结构；这不是简单删一处标注。
+38:## 2. ABI 与已编译程序
+40:### 2.1 符号名
+42:本机 GCC 13 的最小探针显示，在当前使用的 Itanium C++ ABI 下，函数自身的顶层 `noexcept` 不进入 D01/D02/D04 这类函数符号名：移除前后 demangled/raw name 相同。当前 R85 三架构包中的 D01 与 D02 分别以同一 C++ 名称导出为 `@@LLVM_22`。
+46:### 2.2 “能链接”不等于“兼容展开”
+53:因此 D01/D02 若沿用原符号、仅换成可展开实现，旧程序通常不会“找不到符号”，但旧调用点可能没有为异常穿越准备正确的清理元数据。不能把符号名不变写成二进制完全兼容。
+55:### 2.3 out-of-line 与 header 的区别
+57:- **D01/D02**：共享库中存在真实动态符号，当前为 `@@LLVM_22`。可以在库中承载旧、新实现，但新头文件必须使新对象绑定到新默认版本；旧对象仍绑定旧版本，才能保留原契约。
+58:- **D03/D04/D05**：当前头文件带 `_LIBCPP_HIDE_FROM_ABI`，在 R85 三架构 libc++ 动态符号表中没有观察到对应符号。实现随使用者编译进入消费对象。库端双版本不能替换旧对象内已有代码。
+59:- 全量重编能让 D03/D04 的新消费者取得新异常规格和调用点元数据；不重编的预置/第三方对象仍保留旧边界。D05 即使全量重编，也还必须先选择一个语言上可行的结构方案。
+61:C++03 兼容头也有 D01-D04 的镜像声明/实现；D05 的 C++03 镜像在 `include/__cxx03/locale`。任何实际修改的范围都不能只看主头文件。本任务没有修改这些文件。
+63:## 3. 保留新旧两个版本
+65:### 3.1 现有能力与本地打包形态
+71:- 同一个 API 名可以同时导出旧 `api@LLVM_22` 与新默认 `api@@LLVM_23`；
+77:### 3.2 对各站点的可行性
+79:- **D01**：可借鉴 GCC。保留旧 non-throwing wrapper 在旧版本，让新头文件/新对象绑定可展开的新默认版本。GCC PR103382 已真实使用这一形态。
+80:- **D02**：它也是当前导出的 `@@LLVM_22` 符号，GNU 符号版本机制在技术上可承载双版本；但它是私有成员，libc++ 没有现成 wrapper，仍需设计能访问内部状态且不额外泄露 helper 的实现。本任务只确认“机制可行”，没有把具体实现视为已解决。
+81:- **D03/D04/D05**：没有可统一重定向的共享库动态符号，双版本手法不能覆盖旧实例。D03/D04 的新头文件加全量重编可解决新产物；旧对象仍需要淘汰或接受旧行为。D05 还需单独的结构决定。
+83:### 3.3 libstdc++ 的真实先例
+91:只有公开 out-of-line `condition_variable::wait` 使用旧 `@GLIBCXX_3.4.11` / 新默认 `@@GLIBCXX_3.4.30` 双版本。其回归测试覆盖 ordinary wait、predicate wait、`wait_for`、system-clock `wait_until` 的 pthread cancellation。本机系统 libstdc++ 的符号表也观察到了这两个版本。
+93:## 4. libstdc++ 五处对应形态及 future
+97:| D01 | 公开 wait 原来带 `noexcept`，PR103382 后移除；只此公开符号保留旧/新双版本。 |
+98:| D02 | 内部 system-clock wait 原来带 `noexcept`，PR103382 后移除；没有单独导出双符号。 |
+99:| D03 | 内部 monotonic-clock wait 原来带 `noexcept`，PR103382 后移除；没有单独导出双符号。 |
+100:| D04 | generic public `wait_until<Clock>` 在该修复前后都没有 `noexcept`；它调用的内部 wait 在 PR103382 中解除。 |
+101:| D05 | 析构仍是隐式 non-throwing，但 libstdc++ 将其 `= default`，析构不调用 `sync()`，故没有 libc++ 的析构输出取消路径。 |
+105:- libc++ 的导出类 `__assoc_sub_state` 内含 mutex + condition_variable；普通 `wait` 循环执行 `__cv_.wait`，定时等待执行 `__cv_.wait_until`。async/deferred 等共享状态共用这一路径。
+106:- libstdc++ `_State_baseV2::wait` 先调用 `_M_complete_async()`，async 派生实现通过 `_M_join()` 直接 `thread::join()`，随后用原子状态等待；普通原子等待在 Linux 可走 futex，另有 condition-variable fallback。
+108:所以“让 future 不经条件变量”在 libstdc++ 有结构先例，但把它移植成 libc++ 方案会牵涉 shared-state 布局、deferred 执行、定时等待、多等待者与各平台 fallback；它并不自动修复直接使用 condition_variable 的 D01-D04，也与 D05 无关。
+110:## 5. 事实边界
+112:- D01/D03/D04 的动态取消差异已由 R72 样本观察：libc++ 退出 134，libstdc++ 干净取消。D02/D05 动态样本仍为 `NOT_OBSERVED`；其可达性来自源码路径，不把 D01 表现外推成“已观测”。
+115:FILE=docs/progress/R86/VALIDATION.md
+116:# R86 小规模验证与证据索引
+118:## 本轮实际执行的验证
+122:### V1：顶层 `noexcept`、函数类型与 caller 展开元数据
+133:1. D01/D02/普通模板式函数自身的符号名在有/无顶层 `noexcept` 时相同。
+139:### V2：D05 派生虚析构异常规格约束
+145:结果：派生析构声明 `noexcept(false)` 覆盖 non-throwing 虚基类析构被 GCC 拒绝，错误原文在 stderr。因此 D05 不能单独“删标注/放宽”。
+147:### V3：GNU old/new 符号版本表达能力
+157:结果：独立共享库同时导出 `api@LLVM_22` 和 `api@@LLVM_23`；当前 Tizen `LLVM_22 { global: *; };` 形态追加继承节点也能工作。通配节点会同时导出 helper，是实际设计必须控制的副作用。
+161:## 复用的既有动态证据
+163:没有重复 R72 已完成的运行实验。`raw/024_cxx03_wbuffer_and_prior_dynamic_evidence.*` 索引了：
+165:- R72 D01：libc++ 134，libstdc++ clean cancellation；
+166:- R72 D03：libc++ 134，libstdc++ clean cancellation；
+167:- R72 D04：libc++ 134，libstdc++ clean cancellation；
+168:- D02、D05：`NOT_OBSERVED`（有静态可达路径，没有动态样本）。
+170:## 源码与历史证据索引
+176:| `003_five_site_libcxx_source` | D01-D05 当前 libc++ 源码与 future 路径。 |
+177:| `005_wbuffer_throwing_operations_corrected` | D05 的虚 `unshift`/streambuf 操作；对 004 错误路径猜测的更正。 |
+178:| `006_libstdcxx_corresponding_source` | libstdc++ 当前对应实现、compat wrapper、wbuffer。 |
+182:| `016` | GCC 取消回归测试与本机 GLIBCXX 双版本符号。 |
+183:| `017` | R85 三架构真实 libc++ D01/D02 `@@LLVM_22` 导出。 |
+184:| `020` | D03/D04/D05 无动态符号及 hidden/header 属性。 |
+189:## 保留的异常/失败记录
+197:## 未执行的推荐性验证
+200:FILE=docs/progress/R108/W2_REPORT.md
+201:# W2 不随迁移重新构建的组件清单
+203:## 结论
+207:## 四类组件
+211:| 预编译共享库、迁移时不重建 | 5 个已确认；另有 1,027 个源码包内共享候选 | 候选中 164 | 5 | 1,027（发现上界） | R66 确认 `pen-wave` 的 5 个架构 DSO 仅复制安装；其余候选不能仅凭存在即判定发布 |
+212:| 已发布静态归档 | 8,911 | 1,600 | 发布快照内 8,911 | 8,911 | 8,906 可读，5 个格式不可识别；按路径和架构计数，不是语义去重组件数 |
+213:| 源码包内对象文件 | 3,236 | 1,289 | 21 | 3,236（发现上界） | 21 个来自 LLVM，7 个逻辑对象在 3 个架构资产中出现，构建规则有明确引用 |
+218:## 符号检查解释
+220:修正路径后，8,911 个静态归档中 1,600 个出现 Itanium C++ 符号，8,906 个可由 `nm` 正常读取；5 个异常分别属于 `golang-tests`（2）、`glibc-devel-static`、`app-rootstrap-devel`、`hal-rootstrap`，均保留在保守上界中。所有静态归档、源码对象和共享候选的目标实现可见命中均为 0。
+224:## 技术问题与权威表
+228:- 合并清单首轮使用了错误的静态路径基准，导致 8,911 个静态项全部报告不存在。该段数据作废但保留；源码对象和共享候选段有效。
+231:## 证据索引
+240:FILE=docs/progress/R110/W1_REPORT.md
+241:# 外部组件缺口的性质与所需材料
+243:## 结论边界
+249:> 在 Base/Unified 冻结仓的 1,424 个源码完整记录、24 个部分记录的可见内容、39,166 个已发布 ELF 和 8,911 个已发布静态归档中，没有发现 `std::wbuffer_convert` 使用者。
+253:## 现有覆盖
+255:### 冻结仓
+263:| Base source | 1785866095 | `cf7fca47147304ec114e8e0c19f6f43353dbf973ee623d3eb5188919c509fe72` |
+266:该复合快照含 1,450 条源码 RPM 记录和 11,332 条二进制 RPM 记录；二进制载荷中读到 39,166 个 ELF，其中 36,829 个是非 debug 路径的运行时 ET_EXEC/ET_DYN。源码专项覆盖为 1,424 完整、24 部分、2 个上游源码不可得；目标可见命中为零。已发布静态归档为 8,911 个路径。
+268:对“不重编组件”的仓内清点还包括：5 个已确认复制安装的 `pen-wave` 共享对象、1,027 个含共享库候选的源码包（发现上界）、8,911 个已发布静态归档、3,236 个源码包内对象候选；其中 21 个对象有生产构建规则引用。这些计数的单位和集合会重叠，不能相加。
+270:### 可得的镜像安装清单
+279:后一组覆盖 headed/headless/boot 的 armv7l 与 aarch64；前一组还包含若干 HAL、实时和板型 boot profile。版本精确不一致说明这些清单不能与当前冻结仓拼成严格同源 BOM。它们能证明本地存在“按 profile 投影仓库包”的可行输入格式，也能提供历史规模下限，不能证明仓外组件不存在。
+283:## 覆盖不到的类别与规模
+289:## 需要索取的材料
+301:## 替代手段实测
+304:- **依赖声明反推：只适合定位，不能证明目标类型使用。** RPM Requires/BuildRequires、ELF `DT_NEEDED` 和 UND/DEF 可说明包或动态库依赖；`wbuffer_convert` 是头文件模板，依赖边不携带“是否实例化该类型”的完备信息。既有源码、ELF 和归档专项扫描比依赖名称更直接，但仍受内联/剥离等边界限制。
+310:## 证据索引
+315:- profile 中冻结仓源码不完整项：`tables/w1_image_manifest_wbuffer_unresolved.tsv`
+319:FILE=docs/progress/R110/W2_REPORT.md
+320:# aarch64 运行时覆盖可行性评估
+322:## 结论
+324:QEMU 用户态对 aarch64 **可用，已实际执行确认**。它不在宿主 PATH 中，但冻结 Base 仓的 `qemu-linux-user-9.2.3.1-3.4.x86_64` 载荷内有静态 `qemu-aarch64 9.2.3`；用它执行平台 aarch64 glibc 2.40 程序成功，并在同一进程装载、初始化和析构平台 `libc++.so.1.0` 与 `libstdc++.so.6.0.33`，精确返回 `glibc 2.40`，退出码 0。
+326:这证明现有材料可用于 aarch64 的装载共存预检和确定性用户态 ABI/布局实验；它不把既有 aarch64 缺口补全，也不替代真实目标内核上的取消、调度、信号时序、设备 provider 和产品镜像验证。
+328:## 可用执行手段
+332:- 宿主 PATH 中没有 `qemu-aarch64`，但冻结 RPM 已下载并解包，按二进制包 SHA256 精确定位后可以直接调用；模拟器是静态 x86_64 ELF，版本 9.2.3。
+333:- 平台 aarch64 glibc、libc++/libc++abi/libunwind、libstdc++ 和 libgcc 载荷都可从同一冻结仓按 RPM SHA256 定位，足以组装显式 loader/library-path。
+334:- `binfmt_misc` 报 `enabled`；本轮没有证明具体 aarch64 handler 注册，实际试跑不依赖它。
+335:- `podman`、`docker`、`systemd-nspawn` 和 `qemu-system-aarch64` 均不在 PATH。容器即使存在也只会封装文件系统，不能独立完成异构指令执行。
+336:- 小型交叉构建部分可行：宿主 `llvm-mc` 与 `qemu-accel` 载荷中的 aarch64 GNU linker 已实际生成 AArch64 ELF。完整 C++ 编译应沿用现有 buildroot；解包的 qemu-accel 工具采用 `/emul` 绝对前缀，不宜直接当普通 sysroot。
+338:### QEMU 用户态的可信边界
+340:适合：确定性指令与用户态布局、动态 loader 行为、显式值断言、析构路径、无需设备的纯用户态 C++ 调用，以及 pthread/futex/signal 的功能预检。
+342:不宜作为最终证据：目标内核取消实现、真实调度与竞争窗口、信号精确时序、自然底层错误概率、硬件/驱动交互、启动链、完整产品镜像的插件装载顺序、性能和长期压力。QEMU 用户态把目标系统调用翻译给宿主 x86_64 内核；“在 QEMU 下没有崩溃”不等于平台没有问题。
+344:## 已有结论逐项评估
+346:五项都需要在 aarch64 上单独标注结果，不能从 x86_64 或 armv7l 外推。逐项依据、可由 QEMU 完成的部分和必须使用物理板或等价完整目标环境的部分见 `tables/w2_revalidation_matrix.tsv`。
+348:其中，跨库布局的确定性值和销毁路径只依赖 aarch64 ABI、真实 provider 和两套运行库时，QEMU 用户态可形成有力运行证据，纯布局并不天然要求物理板。线程取消、五处等待/异常站点以及异步取消正交性都涉及信号、futex、unwinder 和调度；QEMU 可做功能预检，但在当前没有同内核 full-system 环境的条件下，平台级结论仍需物理 aarch64 目标。共存场景中的纯装载可用 QEMU，设备绑定 provider 和真实产品装载拓扑需要完整目标环境。
+350:## 最低成本实际试跑
+352:选取“两个 C++ 运行库在同一 aarch64 进程共存”的**装载与生命周期子集**，理由是它无需重新构建产品组件，可以同时检验：
+354:1. aarch64 指令执行；
+357:4. 两套 C++ 运行库的初始化与析构；
+362:该结果只说明“QEMU 环境能承载此类 aarch64 装载/生命周期测试”，不等于跨库对象传值安全，也不覆盖线程、异常穿越或真实 provider。
+364:### 失败尝试的解释
+366:首次自制无 C runtime 启动探针经历三步：宿主无 `clang`（退出 127）；改用 `llvm-mc` 后 linker 因共享库依赖未给 `rpath-link` 拒绝（退出 1）；允许共享库未解析后生成的非标准双 `DT_NEEDED` ELF 在 QEMU 中收到 SIGSEGV（退出 139）。该 ELF 绕过 glibc 的标准启动序列，不能作为平台共存失败证据，所以未纳入结果格；原始输出完整保留。随后改为真实平台 glibc PIE 程序和真实 loader，成功结果不覆盖前述非标准探针问题。
+370:## 后果严重性的依据（不排序）
+372:- 线程取消、等待站点和异步取消正交性若在 aarch64 不同，可能表现为进程终止、清理遗漏或锁/所有权状态异常；它们影响控制流与资源一致性。
+378:## 证据索引
+384:- 成功试跑：`raw/031_run_aarch64_preload_script.*`
+387:FILE=docs/progress/R110/W3_REPORT.md
+388:# Boost 剩余符号边实测（本轮）
+390:## 结论边界
+392:本轮结论为 **`PARTIAL`**。在既有 27/90 条已测边基础上，本轮在
+393:**aarch64、QEMU 用户态**新增测到 22 条边，累计为 **49/90**；仍有
+394:**41/90** 未在其对应架构和符号组上实测。本轮没有把 QEMU aarch64
+395:结果外推到物理 aarch64、x86_64、armv7l，也没有把一个代表符号组的
+398:## 选取及理由
+400:沿用上一轮的 90 条边分类，并严格按以下次序选择：
+402:1. 先补 aarch64 上已有同符号组、但该架构尚未观测的布局敏感边：
+403:   Boost.Test 7 条、Boost.Filesystem 4 条、Boost.Iostreams 1 条、
+404:   Boost.Program Options 2 条，共 14 条。
+405:2. 再补“C++ ABI 耦合但布局未证明”：Boost.Test 5 条、Boost.Thread
+406:   3 条，共 8 条。Boost.Thread 在 x86_64 通过只能说明该架构和该符号
+407:   组的实测结果，不能代替 aarch64 实测；Boost.Test 在这一分类中也
+410:逐边清单见 `tables/w3_selected_edges.tsv`，更新后的完整 90 条表见
+413:## 方法和正向对照
+415:- provider 均来自 R11 Base aarch64 二进制 RPM，实际加载的是平台的
+418:- consumer 以 aarch64 目标编译，使用 R11 的 libc++ 22.1.8 或
+419:  libstdc++ 14.2.0 头文件和运行库。构建产物经 `file` 确认为 aarch64
+422:  5 次，共 10 格、50 次。
+426:- 每格断言具体状态或具体值；同时观察析构。Boost.Thread 的
+427:  `once_flag` 是平凡析构类型，故销毁路径标为 `COMPLETED_TRIVIAL`，
+428:  不是把“不适用”伪装成非平凡析构已测。
+429:- Boost.Test 的输入使用平台 Boost 头文件中已核对的两个指针布局，
+432:  AArch64 参数与隐藏返回值约定，而不是沿用 x86_64 的寄存器假设。
+434:执行环境是 QEMU 用户态而非物理板。它足以观测本轮确定性的对象布局、
+435:返回值、状态转换与析构结果；不据此声明真实内核时序、信号交付或设备
+438:## 实测结果
+440:| provider / 调用形态 | 混合运行库 5 轮 | libstdc++ 对照 5 轮 | 析构观察 |
+442:| Boost.Test `normalize_test_case_name`，provider 返回 `std::string` | 5/5 返回后读取为长度 56，期望长度 16；具体值断言失败，退出 41 | 5/5 长度 16，十六进制为 `616c7068615f626574615f67616d6d61`（`alpha_beta_gamma`），退出 0 | 混合侧 5/5 consumer 析构完成且 `dlclose` 完成 |
+443:| Boost.Filesystem `status` + `read_symlink` | 5/5 `status_ok=0`、`value_ok=0`；返回路径长度 8 且文本损坏，退出 41 | 5/5 `status_ok=1`，精确返回 `payload.txt`（长度 11），退出 0 | 两格均 5/5 完成 provider 构造对象的 consumer 析构 |
+444:| Boost.Iostreams `mapped_file_source::open` | 5/5 在给出值断言前抛出 `std::length_error` 并终止，退出 134 | 5/5 打开成功、长度 19、内容精确匹配，退出 0 | 混合侧 5/5 析构未观测；对照 5/5 完成 |
+445:| Boost.Program Options `variables_map` | 5/5 初始大小 0、插入后大小 1、值 82 精确通过；随后在作用域退出的析构阶段 SIGSEGV，退出 139 | 5/5 值与析构均通过，退出 0 | 混合侧 5/5 值正确但析构未完成；对照 5/5 完成 |
+446:| Boost.Thread `enter/rollback/commit_once_region` | 5/5 精确状态 `1,1,0`，退出 0 | 5/5 精确状态 `1,1,0`，退出 0 | `once_flag` 为平凡析构，5/5 作用域退出完成 |
+451:`ASSERTIONS=PASS architecture=aarch64 cases=10 repeats_per_case=5 controls=PASS maps=PASS`。
+453:这些结果同时给出三种不同形态：静默错值但析构完成、值正确但析构
+457:## 覆盖变化
+468:## 剩余 41 条及风险说明
+471:  Filesystem 代表组在 armv7l 之外的架构尚缺，7 条是 Boost.Test
+472:  代表组在 armv7l 尚缺。已有多个家族和架构出现错值、异常终止或
+473:  析构失败，但未测条目仍记 `NOT_OBSERVED`，不以家族结果代填。
+475:  Boost.Test/Boost.Thread 组在 armv7l 尚缺。Boost.Test 本轮出错而
+476:  Boost.Thread 本轮通过，实测再次表明这一分类内部不能统一推定
+481:## 失败尝试与测法校准
+483:- 最初复用 x86_64 的显式隐藏返回指针写法；AArch64 ABI 不同，该构建
+492:- Filesystem 与 Iostreams 首轮因 provider 的运行时依赖未加入搜索路径
+496:## 可复核产物
+498:- `code/w3_build_aarch64.sh`：最终 SHA256
+500:- `code/w3_run_aarch64_matrix.sh`：最终 SHA256
+513:FILE=docs/progress/R82/REPORT.md
+514:# R82：平台 Boost 边界的跨运行时实测
+516:## 结论
+520:在 R22/R80 已确认的 90 条真实 Boost C++ 符号边中，63 条可从公开签名或 Boost 类型定义确认会传递标准库布局敏感状态，27 条在当前边界签名中未见标准库布局证据。选取的 filesystem、iostreams 两类边界在 x86_64 与 armv7l 用户态模拟环境中均稳定复现不兼容；额外选取的 program_options 边界在 x86_64 上也稳定复现。结果明确支持此前结论：两套运行时可以在同一进程中共存，但不能据此推导跨边界传递 C++ 语义是安全的。
+522:本轮没有修复或处置建议。由于执行异常退出用例时环境连续出现保护性中止提示，为避免反复触发，停止了新增异常退出实验；program_options 的 armv7l 格与物理开发板实测记为 `NOT_OBSERVED`，因此不把结论提升为 `BOUNDARY_VERIFIED`。
+524:## 1. 输入、口径与可复核材料
+527:- 既有规模：13 个 consumer 源码包、75 个 `(arch, consumer ELF path)`、90 条边。
+534:75 与一度统计到的 84 的差别已经机械核对：75 的身份是 `(arch, consumer ELF path)`；若把二进制包名也计入，同一路径在 security-manager 的多个二进制包身份下重复出现，得到 84。本文沿用原始任务的 75 个 ELF 口径。
+536:## 2. 90 条边的性质分类
+559:- 其余 7 包在这 90 条已观察边上未确认标准库布局传递；不代表包内其他路径已获证明。
+561:## 3. 实测对象及选择理由
+563:### 3.1 filesystem
+567:### 3.2 iostreams
+571:### 3.3 program_options（额外样本）
+573:`variables_map` 持有标准容器；用例调用平台库导出的同名构造函数，由 provider 初始化对象，再由 libc++ consumer 查询、插入和销毁。x86_64 已完成；为避免连续触发执行环境的保护性中止，armv7l 未追加执行。
+575:## 4. 构建与运行时身份
+579:- x86_64 与 armv7l consumer 的动态依赖均包含 `libc++.so.1`、`libc++abi.so.1`。
+581:- armv7l 使用真实 armv7l 二进制、armv7l sysroot 与 `/usr/bin/qemu-arm-static` 用户态执行；不是物理开发板结果。
+584:## 5. 运行结果
+590:| x86_64 | filesystem | 5/5 返回 41 | 5/5 状态和值错误，返回长度在运行间变化 | 5/5 执行完成，未崩溃 |
+591:| armv7l / qemu-user | filesystem | 5/5 返回 41 | 5/5 状态和值错误，返回长度稳定为 108 | 5/5 执行完成，未崩溃 |
+592:| x86_64 | iostreams | 5/5 返回 134 | 在取得可断言数据前终止 | 未到达完成标记 |
+593:| armv7l / qemu-user | iostreams | 5/5 返回 139 | 在取得可断言数据前终止 | 未到达完成标记 |
+594:| x86_64 | program_options | 5/5 返回 139 | provider 构造后初始 size 为 0；在插入/读取完成前终止 | 未到达完成标记 |
+595:| armv7l | program_options | `NOT_OBSERVED` | `NOT_OBSERVED` | `NOT_OBSERVED` |
+601:### 5.1 armv7l 执行脚本版本说明（R93 收口）
+613:## 6. 影响评估
+616:2. 13 个 consumer 包中，6 个从真实符号边和类型定义可确认处于标准库布局敏感形态；其中 3 个的标准库状态隐藏在 Boost 类型内部，链接器无法从边界表面阻止误配。
+617:3. 其余 7 个包当前只能说“这 90 条边中未发现标准库布局证据”，不能外推为全面安全。
+620:## 7. 未覆盖范围
+622:- 没有逐条动态执行 90 条边；动态样本覆盖三种代表性 provider 类别。
+624:- program_options 的 armv7l 格未执行。
+625:- armv7l 结果来自 QEMU 用户态，物理板行为 `NOT_OBSERVED`。
+626:- aarch64 不在本任务要求的两架构范围，未执行。
+629:## 8. 自行判断与尚存疑问
+634:2. 同一 ELF 路径被多个 RPM 身份重复承载时，按任务原有的 75 个 ELF 路径口径去重。
+639:## 9. 纪律确认
+645:FILE=docs/progress/R67/REPORT.md
+646:# R67：补丁集重建、两项代码缺陷修复与全量重验
+648:## 结论
+652:- M0 已关闭：最终四补丁从干净基线重放，得到的 9 个变更文件与修复后的实验树逐文件 SHA256、逐字节完全一致。
+653:- 分批已真正调整为 **头文件批 20 处 / 库内批 30 处**。S08、S16、S17、S33 位于头文件批；特别核验 S33 的 sentry 析构防护由补丁 3 加入，补丁 4 不再回删。
+654:- M1 已关闭：引用结果共享状态补齐未发布构造与强制完成路径；两架构编译运行通过，上游 `async.pass.cpp`（含引用返回用例）两架构均通过。
+655:- M2 已关闭：值类型析构移到共享状态互斥锁之外；专用探针两架构各 20/20 通过，并直接观测到析构内 `wait_for` 返回 `TIMEOUT`，证明析构期间可取得状态锁。
+656:- F1、F2、M1、M2 定向格在 x86_64 与 armv7l 上均与 libstdc++ 参考一致；F2 直接断言 `RDSTATE=1 BAD=1 FAIL=1`，M1 直接断言 callable 执行两次并返回 42。
+660:## 1. 资源与执行纪律
+670:开发板为 `192.168.108.26:26101`，`armv7l`，Tizen 11.0，build id `tizen-unified-toolchain_20260728.012216_tizen-headed-armv7l`。首次连接失败，第二次显式重试成功，未超过三次。最终清理核验：远端部署目录不存在、共享归档不存在、目标进程数为 0。
+678:## 2. M1：引用结果支持
+680:### 实现
+687:引用特化不拥有所指对象，故强制完成时不执行析构；值类型主模板拥有 placement-new 构造的对象，故必须销毁。这个差异由两种特化分别实现。
+689:### 直接判据
+691:| 架构 | 自建 `std::async` 返回 `T&` | 上游 `async.pass.cpp` | 相关竞态测试 |
+693:| x86_64 | 0 | 0 | `async_race`、`async_race.38682` 均 0 |
+694:| armv7l | 0 | 0 | `async_race`、`async_race.38682` 均 0 |
+696:## 3. M2：用户析构移出持锁区
+698:### 实现与原子性
+703:2. 释放锁：若原值存在，调用用户类型析构。
+706:在第 1、3 段之间，等待者只能看到 `ready == false`，不能读取已被移出状态机的对象；async 状态的执行线程仍持有共享状态引用，状态不会在析构期间被释放。async 状态只有该执行线程是结果写入者，因此没有第二个合法结果提交者可越过这一状态转移。
+708:用户析构外层的内层 `catch (...) {}` 保留，用于阻止用户析构抛出的异常替换正在传播的强制展开。整个 `_NOEXCEPT` 完成函数外层的 `catch (...) {}` 也保留，覆盖互斥锁/内部状态操作的异常边界，维持“不抛异常的完成接口”契约；它不再包住持锁状态下的用户代码。
+710:### 直接判据
+712:专用探针把一个 `shared_future` 句柄提供给待销毁结果对象；结果析构中调用同一共享状态的 `wait_for(0)`：
+720:如果析构仍持有状态互斥锁，`wait_for(0)` 无法取得该锁并返回。最终结果：
+724:| x86_64 | 20/20 | 20/20 |
+725:| armv7l | 20/20 | 20/20 |
+729:## 4. M0：唯一补丁集与身份核验
+731:### 上游基线
+739:### 最终补丁
+743:| 1 | `0001-Layer-A-fix-foreign-forced-unwind-resume.patch` | `09065e3b8490daf23e7e6c7eb1a50aa1b2bdb6797f9a9ac4873964200b7f2ff2` |
+744:| 2 | `0002-Layer-B-add-GNU-forced-unwind-marker.patch` | `b718648618b7e7617421dc95d70cc6cc9b03bd72a419d907b63fd16d465c4509` |
+750:### 双重身份核验
+752:从干净基线顺序 `git am` 四补丁成功，无冲突。最终有 9 个变更文件；实验树、补丁生成树、干净重放树的对应文件：
+756:- S33 最终源码存在 typed handler；库内补丁中不存在 sentry 析构 hunk。
+760:## 5. 构建
+764:| x86_64 | `2e1a750732f5615cac3293cf82d5edc0792255730aebdcdbdd966df11bc1163c` | `335ecd9ce36a71b3f9e01a70e468602086dcbcf8038b9a1040cd2bafdc92fb06` | 成功 |
+765:| armv7l | `7c62ffed71d33f80ee03dd37c14e2c8e057412e2f14bc0a60dadb9f160fc6824` | `1f58fafb1598945ed0f5966178af64f5905e7ee1c5b6dba8a2c93b27fa098666` | 成功 |
+767:最终构建日志有 x86_64 36 行、armv7l 72 行既有驱动选项 warning（`--rtlib=libgcc`，ARM 另含 `--ld-path`）；无 error，无指向 9 个被改源码文件的 warning。四个运行库中没有 `R40/R41/R42/R45` 诊断字符串。
+769:## 6. 定向、设施与回归
+771:### F1/F2/M1
+779:### 设施矩阵
+781:- `getline` 自由函数/成员、`read`、`packaged_task`、`async`：两架构最终修复版与参考侧退出 0；未打补丁基线按场景复现 134。
+783:- `cout`：armv7l 修复版/参考均 0；x86_64 两侧均 124，属于已登记的共同退出阶段超时。
+784:- 正常 `async` 返回、真实异常经 `future.get()` 传递，`packaged_task` 正常返回/真实异常，iostream 格式失败均与基线及参考一致。
+789:## 7. 上游测试
+794:- libc++ future：`async.pass.cpp`、`async_race.pass.cpp`、`async_race.38682.pass.cpp`、`wait_on_destruct.pass.cpp`、`thread_create_failure.pass.cpp`、packaged task 的 `get_future` 与 `operator()`；全部退出 0。
+800:## 8. 并发验证
+802:| 场景 | x86_64 修复/参考 | armv7l 修复/参考 |
+805:| M2 锁外析构与完成竞态探针 | 20/20，20/20 | 20/20，20/20 |
+810:标准库并发输出仍不稳定：x86_64 该组共 25 个 124，armv7l 共 33 个 143，修复版和参考侧都有成功与超时样本。完整失败样本未删除。
+812:## 9. 已验证与未覆盖范围
+814:已验证：x86_64 Itanium/DWARF 与 armv7l ARM EHABI；动态 libc++；默认 extern-template；无 LTO；单次/并发取消；deferred/async future；引用/值/void 结果；异常掩码与流状态；上游所列测试。
+818:- aarch64；
+823:- 已知 `noexcept` 不可达的 `basic_string::shrink_to_fit` forced-unwind 站点与 `basic_ostream::sentry` 析构站点的正向取消行为（维持 `NOT_OBSERVED`）。
+825:## 10. 自行判断与尚存疑问
+829:1. 引用特化仅记录指针，不取得所有权、不析构引用对象；这与 `future<T&>` 的既有语义一致。
+830:2. 值类型强制完成采用“锁内撤销可见值并保存错误—锁外析构—锁内发布 ready”，而不是移动构造临时值；后者仍会执行用户移动构造，扩大锁外用户代码与失败面。
+831:3. 保留析构周围的局部 catch 以保护原强制展开；保留完成接口最外层 catch 以满足 `_NOEXCEPT` 内部接口约束。
+834:尚存疑问：无阻断性问题。标准库并发输出的双侧不稳定与 x86_64 `cout` 双侧退出超时仍是已登记边界，不在本任务修复范围。
+835:FILE=docs/progress/R58/REPORT.md
+836:# R58 四补丁最终形态的整体复验报告
+838:## 结论
+842:R55 修订后的层 C 头文件补丁与层 A、层 B、层 C 库内补丁可按顺序无冲突应用；源码命中与文件 SHA 双重核验均确认四补丁实际进入实验副本。x86_64 与 armv7l 的 libc++abi/libc++ 均构建成功，改动源码未出现新增警告，产物中未检出 R40/R41/R42 诊断字符串。
+844:本轮最重要的新判据 `std::async` 已通过：全补丁版在 x86_64 与 armv7l 各重复 20 次，均为 **20/20 退出 0、20/20 等待方返回**；真实异常仍以 `std::runtime_error("async-real-error")` 经 `future.get()` 原样取得。四补丁当前组合未复现 R54 的等待挂起。
+848:## 1. 输入、应用与构建
+857:| 4 | Layer C 库内批 | `fdcb004ca4cb6935efdc24c366757b50cb7916f1d5ad7cc8111dfbf5fd32d7d1` |
+863:| x86_64 | `26d1c600a7c0eaec53ab45918cb03715cb0fbe5b67c6208df1e0618184fb7b52` | `4681090f94ca1bd1982af5d0acf8936cd2a57d04efc28bdd8c5db72cd8b3d9b1` |
+864:| armv7l | `1c22a77f964a4519981cf8ae76353c8897fdf0c09a1df70b9eea5efda20fdebd` | `72737d6d2dc3c0ddef7d1eb074e6235bbfedb3c2c1fd02aff0da2ebf4a3d9b2e` |
+866:x86_64 初次 libc++ 编译暴露实验副本缺少 LLVM `libc/shared/fp_bits.h`；补入同一 `codes/llvm/libc` 基线并重新配置后成功。失败与两次重试完整保留，不计为补丁源码失败。成功日志中按改动文件名检索的新警告为 0。
+868:## 2. 层间依赖复验
+879:与 R54 的层间依赖结论一致。x86_64 cout 在个别独立进程退出阶段出现 124，而同轮 libstdc++ 参考亦出现；线程取消与 join 已完成，属于已登记的退出阶段不稳定，不改变依赖判断。逐格证据见 `tables/layer_matrix.tsv`。
+881:## 3. 设施矩阵
+885:`async` 专项另按每架构、每组合重复 20 次：
+889:| x86_64 | 20/20 | 20/20 | 退出 0 且 `WAIT_RETURNED=1` |
+890:| armv7l | 20/20 | 20/20 | 退出 0 且 `WAIT_RETURNED=1` |
+892:取消后的 `get()` 返回 `future_error`，信息为共享状态在 ready 前 promise 被析构；这是 R55 既定修后语义。`std::async` 内部线程由 libc++ detach，因此 join 记 `NOT_AVAILABLE_STD_ASYNC_OWNS_DETACHED_THREAD`，未伪造 join 结果。
+894:## 4. 非取消路径
+896:两架构上未打补丁、全补丁、libstdc++ 参考均通过：async 正常取值、async 真实异常传递、packaged_task 正常取值、packaged_task 真实异常传递、getline 正常/EOF、string 正常路径、算术格式错误状态。关键观察：
+898:- async 真实异常类型为 `std::runtime_error`，内容严格为 `async-real-error`；
+902:未观察到由最终四补丁引入的非取消行为变化。
+904:## 5. 既有回归与上游测试
+906:| 测试集 | x86_64 | armv7l | 分母口径 |
+914:## 6. 并发取消
+921:- 标准库并发输出：全补丁 x86_64 16/20、armv7l 10/20；参考 x86_64 7/20、armv7l 3/20。两侧均非确定性超时，失败样本全部保留。
+925:## 7. 身份、开发板与边界
+929:已验证：x86_64 原生、armv7l 真机；DWARF 与 ARM EHABI；动态 libc++；无 LTO；指定设施、异常与四类并发模式。
+931:未覆盖：aarch64；混合运行时帧穿越；LTO；`dlopen`/插件边界；超过 4 个工作线程和长时间压力；armv7l 的 libc++ 源码测试同构集合；两个 `noexcept` 不可达站点。层 C 条件编译改造仍为已登记待办；R56 已实测“仅前置声明”在语言层不可编译，R57 材料在仓内为 `NOT_AVAILABLE`。
+935:## 8. 证据入口

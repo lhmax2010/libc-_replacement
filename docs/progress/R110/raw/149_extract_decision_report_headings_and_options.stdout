@@ -1,0 +1,163 @@
+2:# R72：libc++ 中“取消即终止”边界的枚举
+4:## 1. 范围与结论
+10:- **两套库实际行为差异：5 个边界定义，5 个均可达**。其中 4 个位于 libc++ 的 `condition_variable`：一个普通等待边界、两个时钟特化的定时等待边界、一个任意时钟模板边界；libstdc++ 的对应函数均已移除 `noexcept`。另 1 个是 `wbuffer_convert` 析构：两侧析构都隐式不抛异常，但只有 libc++ 析构会主动 `sync()`，因此只有 libc++ 把 wrapped streambuf 的取消点带入该边界。
+12:- **另有 1 个仅语法形态不同但未形成独立行为差异的内部 helper**：libc++ `FileDescriptor::close()` 显式 `noexcept`，libstdc++ 对应 helper 未显式标注；但当前唯一调用者是两侧都隐式 `noexcept` 的 RAII 析构函数，外层共同边界已经遮蔽该差异。
+16:## 2. 方法与校准
+20:1. 用 Universal Ctags 定位 libc++ `include/` 与 `src/` 中的函数定义；显式识别 `noexcept`、`_NOEXCEPT`、`_LIBCPP_NOEXCEPT`，并把析构函数列为“隐式异常规格待复核”。
+22:3. 对候选逐项人工复核重载、同名函数、条件编译、实际 libc 包装器和 libstdc++ 对应实现。自动输出只作为候选生成器，不直接作为结论。
+24:计数单位是当前配置中源码可见的函数定义；同一模板按定义计 1，不按实例化数膨胀。对仅由已计边界包裹、且源码中没有独立定义的隐式外层析构不重复计数。两库对照同时检查异常规格和调用结构；`wbuffer_convert` 说明“对应函数也隐式不抛异常”并不自动等价于“两侧同样受影响”，因为 libstdc++ 对应析构没有 libc++ 的 `sync()` 调用。
+26:校准成功：脚本重新发现了已知项 `condition_variable::wait -> __libcpp_condvar_wait -> pthread_cond_wait`（`commands/028_calibration_verified_rows.log`）。同时校准也暴露了词法图的预期假阳性，例如 `wait`、`remove`、`max` 等同名函数会串错；因此原始 882 行候选没有被当作 882 个边界。完整原始候选保留在 `raw/noexcept_candidates.tsv`。
+28:## 3. 取消点清单与平台口径
+34:POSIX “may” 不能直接冒充本平台的实际取消点。例如当前 glibc 的 `stat/lstat/mkdir/ioctl` 走非取消 syscall，`closedir` 走 `__close_nocancel`；相关 libc++ filesystem/noexcept 路径只列入 `tables/portable_only_candidates.tsv`，未计入平台实数。stdio 与自定义 streambuf 路径依赖 FILE 标志及虚调用，按条件可达处理。
+36:## 4. 实际差异与可达设施
+40:| ID | libc++ 边界 | 取消点 | 深度 | libstdc++ |
+42:| D01 | `condition_variable::wait` | `pthread_cond_wait` | 2 | 对应声明和定义均非 `noexcept` |
+43:| D02 | `__do_timed_wait(system_clock)` | `pthread_cond_timedwait` | 2 | 对应 helper 非 `noexcept` |
+44:| D03 | `__do_timed_wait(steady_clock)` | `pthread_cond_clockwait` | 1 | 对应 helper 非 `noexcept` |
+45:| D04 | `__do_timed_wait<Clock>` | 经 `wait_for` 到 D03 | 3 | 任意时钟路径非 `noexcept` |
+46:| D05 | `wbuffer_convert::~wbuffer_convert` | `sync()` 经 wrapped streambuf 到输出取消点 | 开放虚路径 | 对应析构同为不抛异常，但不调用 `sync()` |
+48:前 4 项不只影响直接使用 `condition_variable` 的代码。源码可达的设施包括 `condition_variable_any`、future/shared_future、`timed_mutex`/`recursive_timed_mutex`、`shared_mutex`/`shared_timed_mutex` 和任意时钟版 `this_thread::sleep_until`；D05 影响绑定输出 streambuf 的已弃用 `wbuffer_convert`。路径见 `tables/facility_paths.tsv`。
+50:可达性判据是：公开入口能在正常线程调用中阻塞于对应 pthread 取消点，且调用链上的该 libc++ helper 带不抛异常规格。对 D05，具体可构造条件是 wrapped streambuf 的同步输出进入取消点。普通 wait、steady 定时等待与自定义时钟等待均取得动态证据；system-clock 特化与 D05 取得静态/具体构造路径证据，本轮按“抽样 2–3 项”的任务要求未另做运行样本。
+52:## 5. 抽样验证
+54:用例 `code/noexcept_cancel_samples.cpp` 满足：工作线程非 `noexcept`、裸 `pthread_create`、应用层无 catch、取消点明确，并断言 `pthread_join` 的结果必须为 `PTHREAD_CANCELED`。
+59:- libstdc++ 三组均退出 0，`JOIN_RC=0` 且 `JOIN_CANCELED=1`。
+61:逐格原始输出在 `raw/tests/`，汇总见 `tables/sample_results.tsv`。最终二进制对应的 `commands/039_final_runtime_identity.log` 中，`ldd` 与 `LD_DEBUG=libs` 证明 libc++ 格加载指定实验构建的 `libc++.so.1`/`libc++abi.so.1`，参照格加载系统 `libstdc++.so.6`。
+63:## 6. 平台消费面
+65:消费面以 R32 已成功扫描的 371 个 source RPM 为分母，对会到达 D01–D05 的设施做源码词法命中；结果见 `raw/facility_usage_summary.tsv`，逐文件命中见 `raw/facility_usage_hits.tsv`。
+67:扫描 371/371 source RPM 成功、失败 0；它们对应 347 个去重包名。至少命中一种相关设施的有 **35 个 source RPM / 26 个去重包名**。按 source RPM / 去重包名分设施为：`condition_variable` 13/10、future 族 35/26、timed-mutex 族 3/2、shared-mutex 族 4/3、`sleep_until` 3/2、`wbuffer_convert` 2/1。同一包可同时计入多类，故分项不可相加；`wbuffer_convert` 的唯一包名是 GCC 自身源码/测试，不是独立产品消费者。
+71:## 7. 处置方向素材（不作推荐）
+73:1. **参照实现做法**：GCC PR103382 从普通 wait、内部定时 wait 和实现定义处移除了 `noexcept`，理由是 NPTL 的 `__forced_unwind` 必须能够穿过。GCC 的说明同时把旧头文件已记录的异常规格称为潜在 ABI 问题。
+74:2. **libc++ 当前政策**：libc++ 的 `noexcept` policy 允许从版本 13 起把标准写为 “Throws: Nothing” 的函数额外标成 `noexcept`，并明确承认用户提供的抛出可能不再传播。公开检索未找到 libc++ 对 pthread cancellation/condition_variable 这一精确场景的 issue 或维护者处置表态，记 `NOT_FOUND`。
+75:3. **若以移除异常规格处理**：D01/D02 有 out-of-line 定义，但异常规格也出现在头文件声明，旧消费者仍可能按 `noexcept` 生成终止路径；D03/D04 是头文件内联 helper。D05 位于头文件模板中，但其差异还包含析构是否执行 `sync()`，不是只删异常规格即可等价。其交付性质包含库重建和消费者重编两个维度。
+77:5. **在 `noexcept` 内 catch 后再普通重抛**不能消除边界：异常离开函数时仍违反异常规格。若采用运行时专用续跑机制，则属于不同于普通 C++ 重抛的实现形态。
+82:## 8. 盲区、判断与疑问
+84:### 枚举盲区
+86:- 虚函数/用户回调是开放世界：自定义 streambuf、allocator、deleter、predicate 或用户析构可以在任意隐式 `noexcept` 析构内调用取消点，无法仅靠 libc++ 源码闭合枚举。
+92:### 自行判断
+94:- 将“函数定义”作为计数单位，模板 D04 计 1 个定义，不按潜在实例化数膨胀。
+99:### 尚存疑问
+101:- libc++ 上游是否把 POSIX forced unwind 视为其 `noexcept` policy 的例外：公开检索未找到直接表态，`NOT_FOUND`。
+104:## 9. 过程异常申报
+110:- 一次在完整解包 GCC 源中做无界文本检索被终止；已有精确上游来源，未影响结论，记录在 `commands/026_stop_unbounded_gcc_search.log`。
+112:# R81：armv7l 基线补跑与测试夹具隔离
+114:状态：`FAILURES_FOUND`（全量执行完成；213 项为基线与补丁共同失败，方案引入 0 项）
+116:## 结论
+133:的回归。结论限定在本文“未覆盖范围”内。
+138:## 执行身份和夹具隔离
+148:2. 对候选项在同一补丁运行库上做 root/owner 动态对照，并对原差异项做两侧
+157:析构，留下专属临时根；正常运行则由析构和执行器清理。隔离方案为两侧使用
+170:## `offset_range.pass.cpp`
+184:## 基线补跑
+214:## 79 项和原 28 项的重新分类
+222:- 方案引入 0，无法判断 0。
+228:## 五处 `noexcept` 边界和 25 类差异
+230:五处边界逐项记录在 `tables/noexcept_boundary_coverage.tsv`。官方套件没有
+231:`pthread_cancel` 用例，因此 D01--D05 五个精确取消触发均未直接命中；只能确认
+237:- D01：libc++abi `forced_unwind1/2/3` 两侧 PASS，`forced_unwind4` 在 armv7l
+238:  UNSUPPORTED；精确 noexcept 取消边界未命中；
+239:- D02：`noexception1..4` 两侧均 UNSUPPORTED；
+240:- D03、D05、D10、D20、D21、D22：只获得表中所列的部分覆盖；
+242:- D04、D06--D09、D11--D19、D23、D25：本轮未直接验证。
+244:## 清理
+255:## 技术性错误与自行判断
+283:## 纪律与未覆盖范围
+289:  与 ABI、异步取消精确落入五处 noexcept 边界。
+291:## 材料导航
+295:- `tables/r77_79_indeterminate_resolved.tsv`：原 79 项逐项结论；
+296:- `tables/r77_28_resolved.tsv`：原 28 项逐项结论；
+299:- `tables/noexcept_boundary_coverage.tsv`、`known_25_coverage.tsv`：已知发现对照；
+304:# R86 路线评估
+308:## 路线 A：解除异常规格
+310:### A1：D01-D04 直接解除，D05 另案
+314:1. D01：主/C++03 头声明和 `src/condition_variable.cpp` 定义去掉 `_NOEXCEPT`/`noexcept`。
+315:2. D02：主/C++03 头声明和同一 `.cpp` 定义去掉异常规格。
+316:3. D03：主/C++03 头内联声明、定义去掉异常规格。
+317:4. D04：主/C++03 头模板声明、定义去掉异常规格。
+318:5. D05：不能按相同办法单独加 `noexcept(false)`；必须从 G/H/I 等 D05 路线选择结构或扩大基类契约。
+320:覆盖：直接解决 D01-D04 的 forced unwind 边界，不解决 D05。
+324:已编译程序：D01/D02 符号名不变，通常仍可解析；旧 caller 的异常元数据却可能不完整，不能把它作为兼容策略。D03/D04 需要重编使用者。D05 未解决。
+326:实现/验证量：源码行数有限，但 ABI 与平台交付验证不小。至少需要两架构 D01-D04 取消用例、无效锁与底层错误路径、system/steady/custom Clock、所有 predicate overload、libc++/libc++abi 官方套件、旧对象/新对象与旧库/新库矩阵、平台全量重编和运行抽样。
+328:### A2：D01/D02 双版本，D03/D04 头文件解除
+330:D01/D02 的旧版本保留 non-throwing 行为，新默认版本允许 forced unwind；新头文件使新对象绑定新版本。D03/D04 与 A1 一样靠新头文件和重编。
+332:覆盖：D01-D04；D05 未解决。
+334:正常路径：与 A1 相同。旧对象调用 D01/D02 仍保持旧终止契约；新对象取得新传播行为。
+336:已编译程序：它显式解决 D01/D02 的旧 caller 问题。D03/D04 没有库符号，旧对象仍含旧边界，必须淘汰、重编或接受混合行为。
+338:实现/验证量：除 A1 外，需要添加实际版本节点、旧 wrapper、新默认实现、隐藏 helper；逐架构验证 `readelf --version-info`、old/new symbol binding，并覆盖包升级与回滚。D02 私有成员 wrapper 的具体写法和版本节点命名没有在本任务中选定。
+340:## 路线 B：改变实现结构
+342:### B1：future 不经 condition_variable
+344:可设想借鉴 libstdc++：async 任务完成通过 join；状态就绪使用原子等待/futex 或等价抽象；定时等待另行实现。对 libc++，需要处理：
+347:- async、deferred、promise、packaged_task、future/shared_future 共用状态；
+352:覆盖：只减少 future 这一条通向 D01-D04 的路径。直接 condition_variable、condition_variable_any、timed/shared mutex、sleep_until 等仍到达 D01-D04；D05 不受影响。它不是五站点的完整解法。
+358:验证量：完整 future 官方套件、async/deferred 组合、多等待者/竞态/异常/析构、时钟和超时精度、取消、性能、ABI、各平台 fallback、平台全量测试。
+360:### B2：condition_variable 内部改成不产生取消展开的等待原语
+362:这一路可以减少 deferred cancellation 在 pthread wait 中送达，但会改变 condition_variable 的 native-handle、唤醒、时钟、内存序、公平性及平台抽象。异步取消仍可在任意指令点送达，所以它不能可靠保证 forced unwind 永远不跨 D01-D04；D05 完全不在覆盖内。
+364:若用“关闭取消后等待”实现，则属于路线 E 的状态/时机问题。若用 raw futex，则需要证明 mutex 释放与重新取得、通知不丢失、超时和虚假唤醒等完整语义。
+366:## 路线 C：组合处理
+368:可组合 A2（D01/D02）、新头文件重编（D03/D04）和一个 D05 结构方案（G/H/I）。这是唯一可以在不把 D01-D04 混为 D05 的前提下覆盖五处的方案族，而不是一个已经确定的具体补丁。
+370:覆盖、正常路径和验证量取决于 D05 子选择；总体是 A2 与该子选择验证集合的并集。旧 D03-D05 实例仍会保留旧行为，混合新旧产物必须单独定义支持边界。
+372:## 路线 D：产品侧取消迁移
+374:把已知程序从 `pthread_cancel`（特别是 async cancel）迁移到 cooperative stop + notify + join，可降低已知生产使用者暴露。
+380:## 路线 E：边界附近屏蔽取消
+382:在进入等待/析构前 disable cancellation、离开后恢复，可以把部分 deferred cancellation 延后。但恢复时可能立即投递 pending cancel；若恢复动作仍在 non-throwing 函数内，问题重现；若不恢复，则悄然改变调用者线程状态。async cancel 又可能命中屏蔽/恢复之外的边界。
+386:## 路线 F：在 `noexcept` 内识别 forced unwind
+388:捕获后重抛仍会穿过 `noexcept` 并终止；吞掉 forced unwind 会破坏 NPTL 强制展开协议，属于不安全行为。该方向在语义上不成立，不能解决站点。
+390:## D05 专门路线
+392:### G：析构不再同步
+394:对齐 libstdc++ 的结构，让 D05 析构不执行 `__close -> sync`，可移除 D05 的析构输出取消路径。
+396:后果：当前析构中 codecvt `unshift`、buffer `sputn`、wrapped `pubsync` 的效果会消失，可能丢失尾部编码状态或缓冲数据；这是无取消普通路径的可见变化。头文件模板要求消费方重编，旧实例不变。验证要覆盖 stateful codecvt、部分转换、短写、失败 streambuf、显式/隐式刷新和取消。
+398:### H：显式 close/sync 协议，析构不同步
+402:### I：扩大 `basic_streambuf` 析构的异常规格
+404:若把虚基类析构乃至派生层次改为 potentially-throwing，D05 才能合法声明 `noexcept(false)`。这会影响整个 streambuf 派生生态、析构函数类型 traits、第三方 override、旧 caller 展开与标准契约，远超单站点。需要全 iostream/第三方派生类/ABI/升级验证；其标准符合性也需正式条文与目标语言模式审查。本任务没有查到足以把这一路视为局部可交付改动的证据。
+406:## 路线 J：接受并记录差异
+410:## 共同验证检查点
+412:无论选择含代码变更的哪条路线，都至少要明确：
+415:- D01/D02 的动态版本绑定和旧行为是否准确保留；
+416:- D03/D04/D05 的预编译对象淘汰范围；
+417:- deferred 与 asynchronous cancellation 各自行为；
+422:# W1 闸门事项全面验证
+424:## 结论
+426:`PARTIAL`。当前平台发布仓、R24 迁移重编集合和 R72 源码覆盖范围内的材料已经足以描述行为变化及主要影响；但外部产品/应用组件清单不可得，D03/D04 的内联消费面也不能由 ELF 动态符号清查闭合。因此本报告不把“已覆盖范围内未发现违规调用”扩大为“平台上不存在违规调用”，也不替人工作闸门决定。
+428:## 1. 调用方与锁状态
+430:### 1.1 源码调用
+442:宽收集表中另有 311 条不能仅凭词法把对象归属于 `std::condition_variable` 的候选。这些行保留为 `UNRESOLVED_CANDIDATE`，不计入 92 条，也不据此推断其锁状态。源码结论是“直接可归因的现有调用未发现违规”，不是语义完备证明。
+444:### 1.2 已发布 ELF 调用
+446:对 R11 的 11,332 个包记录、39,166 个 ELF 逐个解析符号表，解析失败 0；正向对照同时命中 D01/D02 两个预期符号。平台侧得到：
+453:601 个消费记录全部映射到 R24 的迁移重编计划，source RPM 下载状态全部为 `PASS`。因此，在当前发布仓清单内，D01/D02 的调用方属于“会随既定迁移重编”的一类。D03/D04 是头文件内联路径，动态符号表不能给出其完整实例化消费面；外部产品/应用组件不在 R11/R24 分母内，数量和重编策略均为 `NOT_AVAILABLE`。
+455:## 2. 两条错误路径何时发生
+465:## 3. 行为实测
+467:实验没有修改平台源码或四个补丁。移除规格格使用探针目录中的生成覆盖层：从同一份当前 `condition_variable.cpp` 和基线头文件精确移除 6 个头文件、2 个源文件异常规格，生成内容及工具均已做 SHA256 快照。底层错误格用独立动态拦截器令 `pthread_cond_wait` 返回 `EINVAL`；每格 5 次。
+474:| 系统 libstdc++ | 返回 5/5 | 返回 5/5 |
+483:libstdc++ 未持锁格虽然 5/5 正常返回，但返回后 `unique_lock::owns_lock()==false`，而 native mutex 的 `try_lock` 仍报告 busy；这是静默的所有权状态不一致，不能记为“没有问题”。底层注入格 5/5 返回且 `owns_lock()==true`，说明当前实现没有把该返回码转成异常。
+487:## 4. 影响评估
+493:- 展开期间可运行局部清理、记录上下文、由上层决定重试或降级；对于可恢复的底层故障，这比无条件终止提供更多选择，是可能变好的场景。
+497:## 5. 人工裁决所需事实边界
+499:现有证据支持以下有限结论：当前已发布仓的 D01/D02 消费方都在重编计划内；直接可归因源码调用没有发现未持锁的产品路径；变化在故障路径上真实存在，且旧调用方不会自动获得新语义。证据不支持“平台上没有外部旧调用方”或“底层错误永不可能发生”。是否接受这项从现场终止到可传播异常的策略变化，留给人工裁决。
+501:## 6. 缺口与证据索引
+503:缺口：外部产品/应用 BOM、最终 ELF 和重编声明 `NOT_AVAILABLE`；D03/D04 内联实例的全平台语义消费面 `NOT_AVAILABLE`；通过复杂宏、模板或跨文件别名形成的 311 条源码候选为 `NOT_DETERMINABLE`；自然底层错误在平台产品运行中的发生率为 `NOT_OBSERVED`。
+517:# W1 源码与已发布文件核查
+519:## 结论
+521:`PARTIAL`。在可得平台源码、39,166 个已发布 ELF，以及既有 8,911 个静态归档证据中，未发现平台调用方使用 `std::wbuffer_convert`。这证明“已覆盖材料内为零”，但材料缺口使其不能升级为“全平台不存在”。
+523:## 方法与分母
+533:## 正向对照
+543:## 边界与误差方向
+551:## 证据索引
+559:# W2 不随迁移重新构建的组件清单
+561:## 结论
+565:## 四类组件
+576:## 符号检查解释
+582:## 技术问题与权威表
+589:## 证据索引
+599:# W3 异步取消路径与正交行为验证
+601:## 结论
+603:`CONFIRMED_ON_X86_64`。两个指定组件都存在“启用异步取消的线程可条件进入 C++/用户代码”的静态路径；独立探针进一步确认，即使完全避开本补丁修改的五个位置，仅由另一个标准库 `noexcept` 等待接口形成的库帧，也会在异步取消展开时进入 `std::terminate`。因此该性质不是四补丁引入的特例。
+607:## 两个组件的静态可达性
+609:### lightweight-web-engine 1.4.0-1
+613:结论是“条件可达”而非“固定必达”：固定框架路径本身已经操作 C++ 共享状态，而事件循环回调还能进入任意 worker 功能；是否恰好进入某个 libc++ 等待/析构点取决于当时调度的任务和取消时机。
+615:### llvm/openmp 22.1.8-18.1
+621:## 正交探针设计
+623:探针选择 C++20 `std::atomic<int>::wait`，它不属于 D01–D05，补丁头文件中仍声明为 `noexcept`。线程入口是普通的、可抛出 C++ 函数，没有用户添加的 `noexcept` 调用链帧；线程由 pthread 直接创建。
+634:## 结果
+639:| 系统 libstdc++ 基线 | 5 | 5/5 | 25/25 | 7 | PASS |
+646:动态加载清单与完整哈希均单独落盘。系统基线得到相同行为，进一步支持“标准库无抛出帧与异步取消组合的独立性质”，而不是 D01–D05 修改造成。
+648:## 证明范围
+652:## 证据索引

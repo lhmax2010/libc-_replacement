@@ -1,0 +1,684 @@
+FILE=docs/progress/R95/REPORT.md
+# R95：确定 Tizen-Base 层是否需要迁移到 libc++
+
+## 结论摘要
+
+本报告只给出事实和可选范围，不选择路线、不排序。
+
+1. 本轮严格使用实际 `Tizen-Base` 快照，而不是 `Tizen-Base-Toolchain`。实际 Base 有 412 条 source-RPM 记录（251 个去重源码名）和 1,710 条 binary-RPM 记录（646 个去重二进制名）。1,710/1,710 个 RPM 均完成 SHA256 校验、解包与 ELF 盘点，分析失败为 0。
+2. 按“包内存在 runtime ELF，且该 ELF 有 Itanium C++ 符号或依赖 C++ runtime”这一可复核口径，Base 有 38 个去重源码名（65 条 source-RPM 记录）、106 个去重二进制名（276 条 binary-RPM 记录）产出 C++ runtime ELF。实际直接依赖 `libstdc++.so*` 的是 35 个源码名（59 条记录）、96 个二进制名（245 条记录）。
+3. 在核对的 14 个标准设备镜像中，存在 11 个 Base C++ 源码名、15 个二进制名；若把只作为 `libstdc++` 运行库来源的 `gcc` 单独列出，则其余为 10 个源码名。
+4. 实际 Unified→Base 动态依赖形成 65 条去重“consumer 源码名→provider 源码名”逻辑边，涉及 58 个 Unified consumer 和 11 个 Base provider。其中 29 条已由动态符号证据证明传递布局敏感的标准库类型，涉及 26 个 consumer 和 5 个 provider；另有 18 条确有 C++ ABI 耦合、但现有符号证据不能证明或排除隐藏布局，不能归为安全边；17 条只有 C 接口符号交集；1 条虽有 `DT_NEEDED`，但没有动态符号交集。
+5. 历史所谓“483 个待迁移包”是 483 条 source-RPM 记录、455 个去重 `package_name`，其原始语料已经同时包含 `Tizen-Base-Toolchain` 与 `Tizen-Unified-Toolchain`。按名称映射到本轮实际快照，63 条历史记录（38 个名字）落入 Base，416 条（414 个名字）落入 Unified，4 条（3 个名字）因快照漂移在两边均无同名项。因此 Base 不是应再加到 483 上的新范围；按历史口径加入 Base 的增量为 0。当前快照的精确总迁移量不能把本轮 Base 实测数直接与历史 Unified 数相加，记为 `NOT_AVAILABLE`，需对当前 Unified 快照用同一口径重扫后才能给出。
+
+本轮不回答“应该迁”或“不用迁”。调查证明 Base/Unified 间确实存在 29 条布局敏感逻辑边，但迁移范围由人工在第五节所列选项中裁决。
+
+## 1. 范围、数据身份与方法
+
+### 1.1 冻结输入
+
+- Base：`Tizen/Tizen-Base/tizen-base_20260827.214809`。
+- Unified：`Tizen/Tizen-Unified/tizen-unified_20260829.123409`。
+- 设备镜像：上述 Unified 快照 `images/standard/` 下 14 份 `.packages` 清单，涵盖 generic-hal、boot、headed、headless 的 armv7l/aarch64 变体。
+
+完整 URL 见 `inputs/actual_repositories.tsv`，14 份清单原文见 `inputs/image_packages/`。
+
+历史 R11/R22 使用的是 `Tizen-Base-Toolchain` 与 `Tizen-Unified-Toolchain` 的工具链项目语料。本任务讨论 `Tizen-Base`，因此没有把工具链项目结论外推到 Base，而是下载实际 Base 仓全部 1,710 个 RPM 重扫。
+
+### 1.2 “C++ 内容”的操作定义
+
+扫描器对每个 RPM：解包；以 ELF type 识别运行时 ELF（可执行文件或共享对象）；读取动态段、符号表及 unwind 段。满足下列任一条件的 runtime ELF 记为 C++：
+
+- 存在 Itanium ABI 的 `_Z...` mangled 符号；
+- 动态依赖 C++ runtime。
+
+这个定义与此前平台迁移盘点的运行时二进制口径一致。它不把仅含头文件、源码或静态归档成员而不产出 runtime ELF 的包计入“C++ 二进制”。因此 38 是 runtime ELF 口径，不是“任何形式包含 C++ 文本/静态对象”的上界；这是本任务中的一个明确口径决定。
+
+### 1.3 完整性门禁
+
+- Base 仓 metadata：1,710 条 binary-RPM 记录。
+- 下载及 SHA256 校验：1,710/1,710。
+- 解包/扫描记录：1,710/1,710，非 PASS 为 0。
+- runtime ELF：9,853。
+- C++ runtime ELF：2,292。
+- 完整扫描重算出的 Base C++ provider 集与先行跨层扫描使用的非工具链 provider 核心集合逐字节一致（`cmp=0`）。
+
+## 2. Base 中的 C++ 内容
+
+### 2.1 包总量与 C++ 数量
+
+“包总数”可能指源码包或二进制包，为避免自行替用户选口径，两套均申报：
+
+| 口径 | 全部 Base | 产出 C++ runtime ELF | 其中直接链接 libstdc++ |
+| --- | ---: | ---: | ---: |
+| source-RPM 记录 | 412 | 65 | 59 |
+| 去重源码名 | 251 | 38 | 35 |
+| binary-RPM 记录 | 1,710 | 276 | 245 |
+| 去重二进制名 | 646 | 106 | 96 |
+| runtime ELF | 9,853 | 2,292 | 由逐 ELF 表给出 |
+
+38 个去重源码名为：
+
+`abseil-cpp, bcc-tools, binutils, binutils-aarch64, binutils-armv7l, boost, bpftrace, ccache, cmake, db4, doxygen, elfutils, gcc, gcc-aarch64, gcc-armv7l, gcc-riscv64, gdb, gettext, gmp, gn, golang, groff, icecream, icu, jsoncpp, libsigc++, llvm, ncurses, nghttp2, ninja, openfst, patchelf, pbzip2, pcre, qemu-accel, taglib, tiff, tinyxml2`。
+
+未直接依赖 libstdc++ 的 3 个源码名是交叉编译器包 `gcc-aarch64`、`gcc-armv7l`、`gcc-riscv64`；其 ELF 仍有 C++ 指标，但不是动态链接 `libstdc++.so*`。逐记录清单见：
+
+- `tables/base_cpp_source_records_exact.tsv`
+- `tables/base_cpp_binary_records_exact.tsv`
+- `tables/base_cpp_runtime_elfs_exact.tsv`
+
+## 3. 哪些 Base C++ 包进入设备镜像
+
+### 3.1 判定依据
+
+对 14 份标准镜像 `.packages` 清单的 5,995 条记录，用 `name + arch + version-release + VCS` 与 Base repository metadata 精确关联，再以 RPM SHA256 与实际 C++ ELF 扫描表相交。没有用包名猜测镜像归属。
+
+结果：1,272 条镜像成员记录属于 Base，涉及 134 个 Base 二进制名；其中 114 条是 Base C++ 成员记录，涉及 15 个二进制名、17 条 source-RPM 记录、11 个源码名。
+
+### 3.2 完整名单
+
+| 源码名 | 镜像中的二进制包 |
+| --- | --- |
+| abseil-cpp | abseil-cpp |
+| boost | boost-atomic, boost-filesystem, boost-program-options, boost-system, boost-thread |
+| gcc | libstdc++ |
+| icu | libicu |
+| jsoncpp | jsoncpp |
+| ncurses | libncurses6 |
+| nghttp2 | nghttp2 |
+| patchelf | patchelf |
+| pcre | libpcrecpp |
+| taglib | taglib |
+| tiff | libtiff |
+
+逐镜像、架构、版本、源码包、RPM SHA256 和 ELF 路径见 `tables/base_cpp_image_membership_exact.tsv`。
+
+### 3.3 基准测试/功能测试工具
+
+在这 14 份清单中，显式测试/基准工具名以及已知 Base C++ 工具 `bcc-tools`、`boost-test`、`gdb`、`gdb-server`、`lldb`、`llvm`、`openfst-tools`、`nghttp2-tools`、`doxygen` 均未出现。`patchelf` 在 headed armv7l/aarch64 镜像中出现，但它是通用 ELF 修改工具，现有 metadata 不能证明它被基准或功能测试调用。
+
+`libicu` 的 payload 含 `libicutest.so.78.1` 和若干 ICU 数据/转换工具，但清单只能证明安装，不能证明镜像测试实际调用。因此对“镜像中是否实际用 Base C++ 工具执行基准/功能测试”的回答是 `NOT_OBSERVED`；要进一步确认需要对应镜像测试计划、测试脚本或运行时进程/调用记录。
+
+## 4. Unified 对 Base C++ 库的使用
+
+### 4.1 检索方法
+
+1. 从实际 Unified/Base repository metadata 建立 capability/requirement 候选边。
+2. 只下载相关 233 个 consumer RPM 与 45 个 provider RPM，共 278 个；全部按 repository SHA256 校验后解包。
+3. 对 1,934 个 ELF 读取 `DT_NEEDED` 和 provider `DT_SONAME`，把包级依赖解析到具体 consumer/provider ELF。
+4. 对每条具体 ELF 边求 consumer 动态未定义符号与 provider 动态定义符号的交集，并独立 demangle。
+5. 含直接 `std::` 类型，或属于已知把标准库布局隐藏在 Boost API 后的边，记为布局敏感；有 C++ 符号但未看到标准库布局证据的单列，不能据零显式类型推断安全；仅 C 符号交集的记纯 C。
+
+结果有 807 个唯一包+SONAME 候选，解析为 1,317 条具体 ELF 边，未解析 SONAME 为 0；符号探针覆盖 669 个唯一 ELF。
+
+### 4.2 分类计数
+
+| 粒度 | 布局敏感 | C++ ABI、布局未证明 | 纯 C | 无符号交集 | 合计 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 具体 ELF 边 | 429（411 直接 + 18 Boost 隐藏） | 609 | 97 | 182 | 1,317 |
+| source-RPM 边 | 66 | 31 | 25 | 2 | 124 |
+| 去重源码名逻辑边 | 29 | 18 | 17 | 1 | 65 |
+
+65 条逻辑边涉及 58 个 Unified consumer、11 个 Base provider：
+
+`abseil-cpp, boost, db4, icu, jsoncpp, libsigc++, ncurses, nghttp2, pcre, taglib, tiff`。
+
+已证明布局敏感的 5 个 provider 为：
+
+`abseil-cpp, boost, icu, jsoncpp, pcre`。
+
+29 条布局敏感边涉及 26 个 consumer：
+
+`Open3D, aurum, capi-appfw-capmgr, capi-base-utils, capi-context, cert-svc, chromium-efl, context-app-history, context-job-scheduler, docker-launcher, dotnet-launcher, esplusplayer, grpc, key-manager, libwebappenc, ncnn, nnstreamer, nsjail, org.tizen.multi-assistant-service, protobuf, re2, security-manager, tizen-action, tizen-theme-manager, webapi-plugins, xwalk-extensions-common`。
+
+完整 65 条逐边结果和实际 mangled/demangled 证据见 `tables/actual_cross_logical_edge_classification.tsv`；source-RPM 与 ELF 粒度分别见同目录对应表。
+
+### 4.3 对“跨过去的是什么”的回答
+
+- 29 条逻辑边：已有实际符号证据证明跨过布局敏感标准库类型，属于已实测机制所覆盖的风险形态。
+- 18 条逻辑边：确有 C++ ABI 符号交集，但仅凭动态符号不能断定是否传递布局敏感对象；尤其 Itanium ABI 通常不把非模板函数返回类型编码进名称，且私有成员可能隐藏标准库类型。结论为“布局未证明”，不是“仅名字修饰且安全”。
+- 17 条逻辑边：实际符号交集只有 C 接口。
+- 1 条逻辑边：有 `DT_NEEDED`，但扫描到的动态符号没有交集。
+
+## 5. “483”分布与口径
+
+### 5.1 原统计是什么
+
+历史表 `progress/R22/tables/migration_packages_full.tsv` 有 483 行，但按 `package_name` 去重为 455 个名字；同名包可因架构/Release/source-RPM 记录出现多行。因此“483 个包”实际是历史 source-RPM 记录数，并非 483 个去重源码名。
+
+历史语料明确来自 `Tizen-Base-Toolchain` 与 `Tizen-Unified-Toolchain`，所以已包含当时所谓 Base/工具链侧，不是 Unified-only 计数。
+
+### 5.2 映射到本轮实际快照
+
+| 当前快照归属 | 历史记录行 | 去重 package_name |
+| --- | ---: | ---: |
+| 仅实际 Tizen-Base | 63 | 38 |
+| 仅实际 Tizen-Unified | 416 | 414 |
+| 两边均无同名项 | 4 | 3 |
+| 两边同时存在 | 0 | 0 |
+| 合计 | 483 | 455 |
+
+本轮实际 Base 的 38 个 C++ 源码名全部已经出现在历史 483 表中，缺失数为 0。故在历史口径下，“若 Base 也迁移”的总量仍是 483 条历史记录（455 个去重名），不能再加 38 或 65。
+
+但实际 Base 当前有 65 条 source-RPM 记录，而历史映射为 63 条，这是快照和 Release 漂移的直接体现。要给出“当前 Base + 当前 Unified”的精确总量，必须对当前 Unified 也按本轮同一 ELF 口径完整重算；本任务没有执行该扩展，故该数为 `NOT_AVAILABLE`。
+
+## 6. 可供人工裁决的方向
+
+以下只列作用范围、工作量和残余风险，不作推荐或优先级排序。精确集合见 `OPTIONS.tsv`。
+
+### 方向 A：Base 全部迁移
+
+- 范围：38 个源码名、65 条当前 source-RPM 记录、106 个二进制名、276 条 binary-RPM 记录。
+- 行为：重建实际 Base 中所有产出 C++ runtime ELF 的源码包。
+- 剩余风险：本轮 runtime ELF 范围内不再保留 Base/Unified 混合边；但静态归档、仅头文件及动态加载未形成当前 `DT_NEEDED` 的边不在 38 的定义内。
+- 实测依据：1,710/1,710 RPM 全量扫描。
+
+### 方向 B：只迁移进入镜像的 C++ 包
+
+- 范围：11 个源码名；若把 `gcc` 仅作为 `libstdc++` 运行库载体单列，则为 10 个应用/库源码名。
+- 剩余风险：至少仍有 Unified 实际使用而不在所核镜像集合内的 `db4`、`libsigc++`，以及非镜像工具/库边界。
+- 实测依据：14 个标准镜像清单与实际 RPM SHA256 精确映射。
+
+FILE=docs/progress/R100/REPORT.md
+# R100：Tizen-Base-Toolchain 的 libc++ 迁移判定清单
+
+## 结论摘要
+
+本轮没有修改配置、平台源码或补丁，也没有推送 Gerrit。对准确的
+`Tizen-Base-Toolchain` 快照重新生成分母后，共识别 73 个 C++ 候选源码包：
+
+| 判定 | 数量 | 含义 |
+|---|---:|---|
+| `NEED_LIBCXX` | 10 | 已有符号证据证明与将迁移的代码跨界传递 C++ ABI |
+| `NO_LIBCXX_NEEDED` | 55 | 已有正面隔离证据：纯 C 边、Base 内闭包、独立工具或仅头文件载体 |
+| `CANNOT_SWITCH_CURRENTLY` | 6 | 当前 spec/产品角色明确使用 GCC；这是当前配置状态，不是永久技术结论 |
+| `CONFLICT_NEED_BUT_CANNOT` | 0 | 没有包同时命中“需要”和“当前不能” |
+| `UNDETERMINED` | 2 | 有 C++ 静态归档及 Unified BuildRequires，但不能证明是否真实静态链接 |
+
+因此现有事实是：按包方案有 10 个已证实需要改的包，另有 2 个尚不能定性；
+全局方案会同时触及 55 个已判定不需要改的 C++ 包，并暴露 6 个当前 GCC 包。
+本报告不在两种方案之间作推荐或优先级排序。
+
+## 1. 判定规则
+
+人工确认后的规则见 `STAGE1_RULES.md`。按确认意见删除了原规则 N4
+“广泛链接”：只要已证明 C++ ABI 耦合，N2 已经给出 `NEED_LIBCXX`，N4
+不会产生独立判定。consumer 数量仍作为影响面数据保留。
+
+核心边界仍是“是否跨界传递 C++ 语义”，而不是“进程中是否同时装载两套
+运行时”。没有证据的项保留为 `UNDETERMINED`，不并入“不需要改”。
+
+## 2. 分母重新生成
+
+### 2.1 输入身份
+
+- Base：`Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647`
+- 配套 Unified：`Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247`
+- Base 元数据：292 条 source 记录、254 个去重源码名、1,705 条 binary 记录。
+- 构建日志：749 条成功日志，覆盖三个架构和 256 个日志标签；将 URL 编码的
+  `libsigc%2B%2B` 还原为 `libsigc++`，并将三个按目标拆分的
+  `qemu-accel-*` 构建标签归并到实际 source package `qemu-accel`。
+
+所有仓库身份、URL、记录数与命令见 `raw/004_*`、`006_*`、`009_*`、
+`117_*`。
+
+### 2.2 “C++ 包”的操作定义
+
+使用四种正面证据的并集：
+
+1. 实际构建日志出现 C++ 编译器识别、CXX 构建动作或真实 C++ 编译命令；
+2. 已发布 binary RPM 声明 C++ runtime 依赖；
+3. 静态归档存在外部可见、且能被 `c++filt` 实际解码的 C++ 符号；
+4. RPM 安装 `.hpp/.hh/.hxx` 或明确的 C++ include 路径。
+
+因此：仅有静态归档但没有全局 C++ 符号的不计入静态 C++；仅有头文件的包
+计入候选分母并标为 `CPP_HEADER_PAYLOAD`，但不因此自动判为需要迁移。
+
+初次构建日志扫描错误地以大小写不敏感方式匹配 `.C`，把普通 `.c` 算成
+C++；修正后由 112 个降为 71 个原始 C++ 构建标签、69 个规范化源码名。
+错误结果没有用于最终分母，修正与恢复记录见 `raw/053_*` 及脚本注释。
+
+最终证据并集为 73 个源码包：69 个有实际 C++ 构建日志，36 个有动态
+C++ runtime 信号，10 个有真实 C++ 静态归档，12 个带 C++ 头文件。
+各集合会重叠，逐包证据见 `tables/base_cpp_package_decisions.tsv`。
+
+### 2.3 与 R95 的 38 包为何不同
+
+R95 的 38 是 GCC 标准仓 `Tizen-Base` 中“产出 C++ runtime ELF”的口径；
+R100 使用的是另一个项目 `Tizen-Base-Toolchain`，且为了判断全局 flags 的
+影响，操作定义扩展到实际 C++ 构建、静态归档和头文件载体。
+
+- 共同：38；R95 的 38 个全部能映射到 R100 分母。
+- R100 新增：35。
+- R95 有而 R100 没有：0。
+
+新增 35 个为：`automake`、`binutils-armv7hl`、`binutils-riscv64`、
+`bison`、`c-ares`、`cereal`、`dejagnu`、`diffutils`、`expat`、`file`、
+`flex`、`gcc-armv7hl`、`glibc`、`keyutils`、`krb5`、`libcxx-runtimes`、
+`libdbuspolicy-header`、`libffi`、`libsndfile`、`libtool`、`libunistring`、
+`libunwind`、`lttng-ust`、`lua`、`pkg-config`、`python`、`python3`、
+`python3-base`、`rpm`、`sqlite`、`tensorflow2`、`update-alternatives`、
+`util-linux`、`v4l-utils`、`zstd`。
+
+它们的新增原因逐项记录在
+`tables/r95_r100_denominator_crosswalk.tsv`；不能把 73 与 R95 的 38
+解释为同一项目、同一口径下数量增长。
+
+## 3. 符号级边界证据
+
+为避免只凭依赖名判断，本轮对 armv7l 做了精确符号交集：
+
+- Unified→Base：98 个精确 RPM、281,751,329 字节，逐包 SHA256 通过；
+  解析 353 个 package/SONAME 候选、1,034 条实际 ELF 边，未解析项 0。
+  源码对分类为 28 个布局敏感、19 个有 C++ ABI 但布局未排除、17 个纯 C、
+  2 个无符号交集。
+- Base 内部：81 个精确 RPM、106,704,169 字节；解析 257 条 ELF 边，
+  未解析项 0。源码对为 4 个布局敏感、1 个 C++ ABI 未排除、19 个纯 C、
+  1 个无符号交集。
+- 静态归档：136 个 RPM、429,265,248 字节全部校验；2,218 个归档条目中
+  805 个含外部可见且可解码 C++ 符号，归属于 10 个源码包。
+
+静态归档初扫曾把局部 fortify 包装符号和 `_ZGV*` 向量 ABI 名称算作阳性；
+经 `nm -g` 与 `c++filt` 独立校准后重扫，最终只采用收紧后的 805 条结果。
+完整符号、demangle 和命令证据在 `tables/armv7l_*_edges/`、
+`tables/static_archive_symbols_refined.tsv` 与 `raw/*individual*`。
+
+只在 armv7l 做符号交集是本轮为控制资源作出的范围选择；构建日志、RPM
+元数据和文件清单覆盖三个架构。不能把符号交集部分表述成三架构实测。
+
+## 4. 逐包判定
+
+### 4.1 已证实需要改用 libc++：10
+
+`abseil-cpp`、`bcc-tools`、`boost`、`bpftrace`、`icu`、`jsoncpp`、
+`libsigc++`、`llvm`、`pcre`、`taglib`。
+
+其中 `abseil-cpp`、`boost`、`icu`、`jsoncpp`、`libsigc++`、`llvm`、
+`pcre`、`taglib` 具有精确 Unified→Base C++ 符号边；`bcc-tools` 与
+`bpftrace` 通过 Base 内部的布局敏感 LLVM C++ 边进入同一迁移闭包。
+
+### 4.2 当前不能切换：6
+
+`gcc`、`gcc-aarch64`、`gcc-armv7hl`、`gcc-armv7l`、`gcc-riscv64`、
+`glibc`。
+
+依据是 R98 已从精确 spec 与构建日志确认它们当前使用 GCC；其中 `gcc`
+还承担 libstdc++ provider 角色。该标签只描述当前配置/角色，未来若能改用
+Clang 或重构角色，必须重新判定。
+
+### 4.3 不需要改：55
+
+`automake`、`binutils`、`binutils-aarch64`、`binutils-armv7hl`、
+`binutils-armv7l`、`binutils-riscv64`、`bison`、`c-ares`、`ccache`、
+`cereal`、`cmake`、`db4`、`dejagnu`、`diffutils`、`doxygen`、
+`elfutils`、`expat`、`file`、`flex`、`gdb`、`gettext`、`gn`、`golang`、
+`groff`、`icecream`、`keyutils`、`krb5`、`libcxx-runtimes`、
+`libdbuspolicy-header`、`libffi`、`libsndfile`、`libtool`、`libunistring`、
+`libunwind`、`lttng-ust`、`lua`、`ncurses`、`nghttp2`、`ninja`、
+`openfst`、`patchelf`、`pbzip2`、`pkg-config`、`python`、`python3`、
+`python3-base`、`qemu-accel`、`rpm`、`sqlite`、`tiff`、`tinyxml2`、
+`update-alternatives`、`util-linux`、`v4l-utils`、`zstd`。
+
+这里的“无需改”不是“不是 C++”：具体依据分别是精确边仅有纯 C/无交集、
+独立工具或 Base 内闭包没有 Unified runtime 边、仅由 consumer 编译的头文件，
+以及没有迁移侧 consumer 的静态归档。`libcxx-runtimes` 已在自己的 spec
+中明确构建目标运行时，不需要靠 Base 全局注入再次选择自身。
+
+### 4.4 证据不足：2
+
+- `gmp`：3 个归档条目含真实 C++ 全局符号；`eigen`、
+  `python-pycrypto` 有 BuildRequires，但未证明是否链接 C++ 归档。
+- `tensorflow2`：6 个归档条目含真实 C++ 全局符号；
+  `inference-engine-tflite`、`nnstreamer`、`nntrainer` 有 BuildRequires，
+  但未证明是否链接这些归档。
+
+BuildRequires 只证明文件进入构建根，不能机械等同于链接。需取得这五个
+consumer 的实际链接命令或产物符号/对象归属后才能定性。
+
+每包的命中规则、架构、runtime consumer、BuildRequires consumer、镜像
+归属、VCS 和边分类均在 `tables/base_cpp_package_decisions.tsv`。
+
+## 5. 全局注入选项的实际驱动器探针
+
+探针使用现有 Tizen buildroot 内的目标 GCC 14.2.0 与 Clang 22.1.8，测试：
+
+```text
+CXXFLAGS: -stdlib=libc++
+LDFLAGS:  -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed
+```
+
+实际结果：
+
+- armv7l 与 x86_64 的 GCC/G++ 均明确报
+  `unrecognized command-line option '-stdlib=libc++'`；不是静默忽略。
+- Clang++ 在三个架构都无诊断接受 `-stdlib=libc++`，但这不是“静默
+  忽略”：`-###` 显示它选择 `-lc++`，并把 `--no-as-needed -lc++abi
+  --as-needed` 传给链接器。
+- Clang C driver 的编译探针对 `-stdlib=libc++` 给出
+  `argument unused during compilation` 警告，因此也不是静默忽略。
+- aarch64 GCC buildroot 中驱动器启动即退出 139，连 `--version` 都失败，
+  该格记 `NOT_OBSERVED`，不能把 139 解释为选项拒绝。GCC 选项语义由
+  armv7l 与 x86_64 两个实际 GCC 14.2.0 格确认。
+- 部分真实链接动作受复用 buildroot 的动态加载器/`ld` 依赖缺失影响；
+FILE=docs/progress/R101/REPORT.md
+# R101：Base 层 libc++ 判定完整清单与补充核查
+
+## 1. 结论摘要
+
+本轮严格沿用 R100 的判定，不重新分类 73 个 C++ 候选。把同一快照中未进入
+C++ 候选的 181 个源码包补入后，形成覆盖 `Tizen-Base-Toolchain` 全部 254 个
+去重源码包的清单：
+
+| 判定 | 全部源码包数 | 其中 R100 C++ 候选 | 说明 |
+|---|---:|---:|---|
+| 需要改 | 10 | 10 | R100 的 `NEED_LIBCXX` 原样保留 |
+| 不需要改 | 236 | 55 | 另含四路完整候选扫描均未命中的 181 个非 C++ 包 |
+| 当前不能改 | 6 | 6 | 当前 GCC 配置/产品角色，不代表永久不能迁移 |
+| 未定 | 2 | 2 | `gmp`、`tensorflow2` 的实际静态链接关系未闭合 |
+
+Base 内部 provider 补查没有发现会扩大 10 包闭包的反例：121 条布局敏感 ELF
+边归并为 4 个源码包对，consumer 与 provider 均已是 `NEED_LIBCXX`。不存在
+“`NEED_LIBCXX` 消费 `NO_LIBCXX_NEEDED` provider”的布局敏感边。
+
+## 2. 数据身份与分母
+
+- Base 快照：`Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647`。
+- 配对 Unified 快照：
+  `Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247`。
+- Base 仓元数据：292 条 source 记录，按 `name` 去重后 254 个源码包；多出的
+  38 条是同名包的不同 Release/架构仓记录，不作为新源码包计数。
+- 已发布 binary 元数据：1,705 条。
+- C++ 操作定义沿用 R100：实际 C++ 构建日志、动态 C++ runtime 信号、具有
+  可解码全局 C++ 符号的静态归档、明确 C++ 头文件载体四路证据取并集，共 73 包。
+- 181 个非 C++ 行不是以包名猜测，而是上述四路完整候选扫描均未命中；清单中
+  将此写成明确的扫描依据，不写成泛泛的“无证据”。
+
+与 R95 的关系仍按 R100 的交叉核算：R95 的 38 包来自 GCC 标准仓
+`Tizen-Base` 且只统计 runtime ELF；本任务使用 `Tizen-Base-Toolchain` 并扩展到
+构建日志、静态归档和头文件，二者不是同一项目、同一口径。R95 的 38 个全部
+映射进本轮 73 个 C++ 候选，R100/R101 另有 35 个候选。
+
+## 3. Base 内部布局敏感边的 provider 核查
+
+### 3.1 方法
+
+复用 R100 armv7l 的 257 条已解析 Base 内部 ELF 边和精确符号交集；其未解析项为
+0。细表中的 `DIRECT_STD_LAYOUT` 与 `KNOWN_HIDDEN_STD_LAYOUT` 两类合并为
+`LAYOUT_SENSITIVE_STD_TYPE`，再把 sourcerpm 精确映射回源码包，并同时连接 R100
+decision 表的 consumer/provider 判定。
+
+### 3.2 四个源码包对
+
+| consumer | provider | 具体 ELF 边数 | C++ 符号计数之和 | consumer 判定 | provider 判定 |
+|---|---|---:|---:|---|---|
+| `bcc-tools` | `llvm` | 4 | 584 | NEED | NEED |
+| `boost` | `boost` | 2 | 30 | NEED | NEED |
+| `bpftrace` | `llvm` | 2 | 201 | NEED | NEED |
+| `llvm` | `llvm` | 113 | 17,589 | NEED | NEED |
+
+具体端点包括：
+
+- `libbcc.so`、BCC 的 `PyPerf` 示例分别调用 `libLLVM.so.22.1` 与
+  `libclang-cpp.so.22.1`；
+- `libboost_log.so` / `libboost_log_setup.so` 调用 `libboost_filesystem.so`；
+- `/usr/bin/bpftrace` 调用 `libLLVM.so.22.1` 与 `libclang-cpp.so.22.1`；
+- LLVM/Clang/LLDB 工具和库的 113 条内部边调用 LLVM 自身库。
+
+完整的 4 行逻辑表与 121 行 ELF 表分别见
+`tables/base_internal_layout_sensitive_edges.tsv` 和
+`tables/base_internal_layout_sensitive_elf_edges.tsv`。
+
+### 3.3 核查回答
+
+没有发现 `NEED_LIBCXX → NO_LIBCXX_NEEDED` 的布局敏感 Base 内部边。因此按现有
+armv7l 精确边证据，仅切换既定 10 包不会因这些已知 Base 内部边新形成一个指向
+NO provider 的混合运行时边界。本结论是对 R100 provider 方向的补齐，不是重新
+判定。
+
+## 4. 254 包完整清单的口径
+
+完整 TSV 和 Markdown 表均严格一包一行，列出：源码包名、是否含 C++ 及依据、
+与 libstdc++ 的关系、判定、通俗理由、具体证据、六镜像归属、测试/诊断/基准
+工具属性。
+
+### 4.1 与 libstdc++ 的分类
+
+- `直接链接 libstdc++`：由该源码包产出的至少一个 binary RPM 的 `Requires`
+  明确含 `libstdc++.so*`，共 35 个 C++ 候选。
+- `仅通过 C 接口间接相关`：自身不直接链接 libstdc++，精确边只显示 C API。
+  当前 254 行中没有需要单独落入这一档的源码包；具有纯 C 边但自身直接链接
+  libstdc++ 的包仍放在“直接链接”，纯 C 性质写在理由中。
+- `仅构建期使用，产物不含 C++ 运行时`：构建或头文件载体命中 C++，但没有
+  已发布 C++ runtime 边界，共 31 包。
+- `含 C++ 但不与外部交换 C++ 语义`：有 C++ 载体，但 R100 正面隔离证据没有
+  通向迁移侧的 C++ 语义边，共 6 包。
+- `自身提供 libc++/libc++abi，与 libstdc++ 无直接链接`：仅
+  `libcxx-runtimes`。
+- `无关`：四路扫描未命中的 181 个非 C++ 包。
+
+### 4.2 镜像与工具属性
+
+镜像列按源码 VCS 精确关联 R98 保存的六份清单：boot/headed/headless ×
+aarch64/armv7l；93 个源码包至少进入其中一个。空集合写成“否：六个精确镜像
+清单无该 VCS”，不外推到未取得的其他产品 profile。
+
+测试/诊断/基准工具列以仓库 Summary/Description 的主要用途或明确命名的 binary
+子包为准。例如 `boost-test`、`python3-testsuite`、`libunwind-tests`、LLDB、
+GDB、BCC/bpftrace、rootstrap checker、QEMU 等记“是”。“否”表示该快照仓元数据
+没有把其主要用途或子包标成这三类，不证明源码树中没有辅助测试。
+
+## 5. 10 包实施输入
+
+10 包仍为：`abseil-cpp`、`bcc-tools`、`boost`、`bpftrace`、`icu`、
+`jsoncpp`、`libsigc++`、`llvm`、`pcre`、`taglib`。
+
+本轮通过 Gerrit SSH 只读取得其 `tizen_base`，并从 R100 快照 revision 检出
+`packaging/` 复核；随后又从 2026-09-03 实际分支 HEAD 导出当前 spec。当前
+`bcc-tools`、`boost`、`jsoncpp`、`llvm` 已较 R100 快照前移，其余六个 HEAD 与
+快照锚点相同。完整双 revision、仓库、spec 路径和 `%build` 行号见
+`tables/implementation_10_packages.tsv`。
+
+共同建议是显式增加 `libc++-devel`、`libc++abi-devel` BuildRequires，仅向
+C++ 与链接阶段加入：
+
+```sh
+export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+```
+
+包级差异：
+
+- CMake 包在 `%build` 后、CMake 配置前导出；Meson 的 `libsigc++` 在 `%meson`
+  前导出；ICU/PCRE 在 configure 前合入已有 flags。
+- Boost 的 b2 已显式消费 `CXXFLAGS`/`LDFLAGS`；除加入 flags 外，
+  `boost-devel` 的 `Requires: libstdc++-devel` 要改为 `libc++-devel`。
+- PCRE 的 `pcre-devel` 同样要把 `libstdc++-devel` Requires 改为
+  `libc++-devel`。
+- LLVM 的 CMake 命令显式设置 shared/exe linker flags，不能只导出环境变量；
+  必须把新的 `LDFLAGS` 合入这两个 `-D` 值，避免覆盖。这里改的是
+  `packaging/llvm.spec`，不是已显式构建目标运行时的
+  `packaging/libcxx-runtimes.spec`。
+
+这些是后续实施建议，不是已验证补丁。实施时先产出并发布
+`libcxx-runtimes`，再构建 LLVM，然后构建 `bcc-tools`/`bpftrace`；不能仅凭
+`Support:` 推断 QuickBuild 自动排序。
+
+每包验证至少包括：三架构日志确认 Clang 22.1.8 和 flags；所有该包 C++ ELF 的
+`DT_NEEDED` 不再含 `libstdc++.so.6`、包含目标 libc++/libc++abi 依赖；符号表无
+`GLIBCXX_*` 引用；重跑 Unified→Base/Base 内部边扫描；运行包自测及代表性 smoke
+test。具体逐包放置点见 Markdown 实施清单。
+
+## 6. 两个未定包
+
+细节见 `UNDETERMINED.md`。两者继续保持 R100 的 `UNDETERMINED`：
+
+- `gmp`：`libgmpxx.a` 三架构均含 11 个真实 C++ 全局符号；`eigen`、
+  `python-pycrypto` 仅有 BuildRequires 关系，是否实际链接 C++ 归档未知。
+- `tensorflow2`：`libtf_xla_runtime.a` 与 `libtensorflow2-lite.a` 含大量真实 C++
+  符号；`inference-engine-tflite`、`nnstreamer`、`nntrainer` 仅有 BuildRequires
+  关系，实际归档成员是否进入最终 ELF 未闭合。
+
+临时处理建议是：不要把两者降为“不需要改”；在实施排期和验证预算里按“可能
+需要改”预留，但在拿到真实链接命令/最终 ELF 归属前不直接修改 spec。这不是对
+R100 判定的变更。
+
+## 7. 为什么按人工决定采用逐包方案
+
+这里记录人工已作出的方案决定及其事实基础，不追溯修改 R100 当时“不推荐”的
+报告定位：
+
+- 逐包方案只修改 10 个已证实需要的 spec；2 个未定项不计入已确认修改数。
+- 全局 project_config 会把环境定义暴露给全部 254 个源码包，并触及 55 个已
+  判定不需要迁移的 C++ 包、6 个当前 GCC 包、2 个未定包。
+- 实际 C++ 构建日志中有 69 个规范化源码包消费 C++ 工具链；C-only 包是否把
+  LDFLAGS 继续传到 driver 未逐包穷尽，因此不能把“254 全部实际受影响”写成实测。
+- armv7l/x86_64 的 GCC 14.2.0 实测明确拒绝 `-stdlib=libc++`，未出现静默
+  忽略；aarch64 GCC buildroot 的 driver 自身退出 139，该格仍为
+  `NOT_OBSERVED`。
+- 三架构 Clang 22.1.8 无诊断接受该选项，但 `-###` 证明它实际选择 `-lc++`
+  并转发 libc++abi 链接参数，不是无害的静默忽略。
+
+## 8. 覆盖边界、自行判断与疑问
+
+### 覆盖边界
+FILE=docs/progress/R102/REPORT.md
+# R102：Base 层 libc++ 判定理由的对外说明版
+
+## 1. 结论
+
+已把 R101 清单中 254 个包的“理由”逐项改写成可独立阅读的说明。每条理由均包含：
+
+1. 包的用途；
+2. 它与 C++ 标准库的实测关系；
+3. 为什么该关系支持原有的“需要改 / 不需要改 / 当前不能改 / 未定”判定。
+
+一致性校验结果：254 个包的顺序不变，除“理由”外的七列逐字段相同，四类判定仍为：
+
+| 判定 | 数量 |
+|---|---:|
+| 需要改 | 10 |
+| 不需要改 | 236 |
+| 当前不能改 | 6 |
+| 未定 | 2 |
+
+没有发现 R100/R101 的既有判定有问题；本任务未重新分类任何包。
+
+## 2. 输入与改写边界
+
+- 原表：`docs/progress/R101/tables/base_all_source_packages.tsv`。
+- 判定证据：R100 的 73 个 C++ 候选判定、armv7l 的 Unified→Base 与 Base
+  内部精确 ELF/符号边、三架构构建与 RPM 元数据、六份标准镜像清单。
+- 包用途：沿用原表证据列保存的仓库 `Summary`；254/254 都有该字段。
+- 为避免把翻译或常识当成新证据，普通包的用途直接引用仓库原始英文摘要；10 个
+  需要改的包、两个未定包、`bison`、`cereal` 和 `libcxx-runtimes` 在中文概括后
+  仍保留原始摘要供核对。
+- 精确运行时符号边只覆盖 armv7l，因此凡依赖该证据的理由都明确写出架构，不将
+  其表述成三架构实测。
+
+“不含 C++”不是用泛泛的“没查到”作安全结论，而是复述已完成的四项候选门禁：
+实际构建日志、动态 C++ 运行时依赖、静态归档全局 C++ 符号、C++ 头文件载体均为
+否。其余“不需要改”包则引用正面的拓扑或接口分类证据。
+
+## 3. 10 个“需要改”包的改写重点
+
+| 包 | 已实测的 C++ 交互 | 不改的后果如何表述 |
+|---|---|---|
+| `abseil-cpp` | 8 个 Unified runtime consumer 有 C++ ABI 边，其中 7 个 consumer 的边含布局敏感类型 | 会保留已证明的跨标准库对象布局边 |
+| `bcc-tools` | Base 内部以布局敏感 C++ 接口调用 `llvm` | 与需迁移的 LLVM 形成混合运行时边界 |
+| `boost` | 12 个 Unified consumer 有 C++ ABI 边，其中 6 个含布局敏感类型 | 容器/所有权/析构可能被另一套实现解释 |
+| `bpftrace` | Base 内部以布局敏感 C++ 接口调用 `llvm` | 与需迁移的 LLVM 形成混合运行时边界 |
+| `icu` | 8 个 Unified consumer 有 C++ ABI 边，其中 2 个含布局敏感类型 | 会保留实测 C++ ABI 和布局边；另有纯 C consumer 不作为迁移理由 |
+| `jsoncpp` | 13 个 Unified consumer 有 C++ ABI 边，其中 11 个含布局敏感类型 | JSON C++ 对象边可能静默错读或错误析构 |
+| `libsigc++` | `glibmm`、`libzypp` 有已确认 C++ ABI 耦合 | 即使现有符号不足以证明具体布局，也不能保证跨库 ABI 语义 |
+| `llvm` | Unified 的 `rpi4-linux-kernel` 有 C++ ABI 边；Base 内 BCC、bpftrace 和 LLVM 自身存在布局敏感边 | 迁移集合内部会分裂为两套 C++ 运行时 |
+| `pcre` | `cert-svc`、`webapi-plugins` 的边含布局敏感类型 | 会保留已证明的跨标准库对象布局边 |
+| `taglib` | `capi-media-metadata-editor` 有已确认 C++ ABI 耦合 | 会保留已实测但布局细节尚不能从符号完全展开的 C++ ABI 边 |
+
+完整理由列出了相应 consumer 名称，并区分“已经证明布局敏感”与“已经证明 C++
+ABI 耦合、但不能进一步证明布局”两类证据，没有把后一类写成已证明的数据错读。
+
+## 4. 236 个“不需要改”包的分组
+
+| 分组 | 数量 | 可对外说明的共同依据 |
+|---|---:|---|
+| 不含 C++ 载体 | 181 | 三架构四项候选门禁结果均为否，没有可选择标准库的 C++ 构建或交付边界 |
+| C++ 只出现在构建或非运行时载体 | 29 | 有构建动作或少量随 consumer 编译的头文件，但没有本包固定实现的跨包 C++ runtime 边 |
+| 独立工具或仅在 Base 拓扑中运行 | 17 | 自身直接链接 libstdc++，但 armv7l 精确图中 Unified runtime 边为 0；Base 内部无 C++ 语义边或仅为 C 接口 |
+| 跨包边界只有 C 接口 | 4 | `db4`、`ncurses`、`nghttp2`、`tiff` 的实际符号交集只经过 C 接口 |
+| 含 C++ 静态归档但无消费边 | 2 | `golang`、`icecream` 的归档有 C++ 符号，但精确图中迁移侧/Base 内部 runtime consumer 均为 0 |
+| 头文件由使用方编译 | 2 | `bison`、`cereal` 的 C++ 载体由使用方按自己的标准库实例化，本包不提供 C++ runtime |
+| 已是 libc++ 运行时 | 1 | `libcxx-runtimes` 就是目标 libc++/libc++abi 提供方，不是待切换 consumer |
+
+逐包用途、镜像归属、工具属性和各组内差异见 `NO_CHANGE_GROUPS.md`。特别是 22 个
+“直接链接 libstdc++ 但不需要改”的包，没有用“看起来无风险”解释，而是分别引用
+完整 runtime 图为 0、Base 内纯 C 边或明确的 C 接口符号交集。
+
+29 个“构建或非运行时载体”中有些包确实进入设备镜像，因此没有一概写成“不进
+设备”。理由按每包实际镜像列分别写明；决定性依据是交付物不形成 C++ runtime
+边界，而不是安装位置。
+
+## 5. 6 个“当前不能改”包
+
+`gcc`、`gcc-aarch64`、`gcc-armv7hl`、`gcc-armv7l`、`gcc-riscv64`、`glibc`
+当前承担 GCC 编译器、目标工具链或 GNU C 运行库构建角色，现有 spec/产品角色要求
+使用 GCC。本轮理由明确写成“当前配置和产品职责限制，不是永久技术结论”。
+
+其中只有 `gcc` 的已发布 C++ ELF 直接依赖 libstdc++；另五包的 C++ 仅出现在构建
+动作，已发布产物没有直接 C++ runtime 依赖。armv7l 精确图中，这六包通向 Unified
+的 C++ runtime 边与 Base 内部 C++ 语义边均为 0。因而覆盖范围内没有已建立的实际
+混合标准库对象边；理由同时保留条件性风险：未来若出现同进程 C++ 对象交换，必须
+重新评估。
+
+## 6. 2 个“未定”包
+
+- `gmp`：三架构 `libgmpxx.a` 各有 11 个全局 C++ 符号，`libgmpxx` 动态库直接
+  依赖 libstdc++；只知道 `eigen`、`python-pycrypto` 有 BuildRequires，缺实际
+  link command、link map 和最终 ELF 归档成员来源。
+- `tensorflow2`：两组静态归档各有约一万至四万多个 C++ 符号并安装大量 C++
+  头文件；只知道三个 Unified consumer 有 BuildRequires，缺实际静态吸收关系和
+  最终 ELF 对象来源。
+
+两者仍为“未定”。定案前不直接修改 spec，但按“可能需要改”预留构建和验证资源；
+若实际静态链接成立却保持 libstdc++，可能把对象布局、异常或所有权语义复制进
+libc++ consumer。闭合步骤详见 `INSUFFICIENT_REASONS.md`。
+
+## 7. 前后对照与校验
+
+- `reason_before_after.tsv` / `.md` 保存 254 条原理由和新理由，便于逐包抽查。
+- 自动校验确认除理由外七列逐字段一致，判定一致 254/254。
+- 254 条理由全部改写；最短 202 字符，最长 786 字符。
+- 理由列中内部规则代号为 0；以“无证据”“未发现”作为不改理由的条目为 0。
+- Markdown 与 TSV 均为 254 个数据行。
+
+## 8. 理由仍不充分的包
+
+只有 R100 本来就标为“未定”的 `gmp`、`tensorflow2` 缺少完成最终判断所需证据。
+没有发现其余 252 项既有判定缺少原规则所需证据。这里的“充分”受既有覆盖边界
+约束，不表示已经补做其他架构的精确符号边或新 revision 验证。
+
+## 9. 自行判断与尚存疑问
+
+### 自行判断
+
+1. 为避免新增未经验证的翻译含义，普通包用途保留仓库英文 `Summary` 原文；少数
+   中文概括也同时附原文。
+2. 把 29 个构建/非运行时载体按真实镜像归属逐包说明，没有沿用“仅构建期就一定
+   不进设备”的错误等同。
+3. 对 C++ ABI 耦合但布局未证明的边，只写 ABI 风险，不写成已发生布局错读。
+4. `NOT_OBSERVED` 只用于既有覆盖之外的事实；已完成门禁的否定结果写成具体检查
+   项为 0/NO，而不是模糊的“没看到”。
+
+### 尚存疑问
+
+1. 总部对外材料是否要求把 254 条仓库英文 Summary 全部人工翻译为中文？本轮保留
+   原文以避免引入语义偏差。
+2. 精确符号边目前仅有 armv7l；其他架构是否存在额外边为 `NOT_OBSERVED`。
+3. 六份标准镜像之外的产品 profile、临时测试 rootfs 和人工安装状态为
+   `NOT_OBSERVED`。
+4. R100 快照之后的源码 revision 是否改变边界，需要在实际实施 revision 确定后
+   重新核对；本任务不据此改变既有判定。
+
+## 10. 纪律确认
+
+未修改 R100/R101、project_config、平台源码、spec 或任何补丁；未实施迁移，未推送
+Gerrit。本轮只新增 R102 说明材料。

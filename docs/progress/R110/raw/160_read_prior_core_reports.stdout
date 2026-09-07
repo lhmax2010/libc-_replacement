@@ -1,0 +1,652 @@
+
+===== docs/progress/R108/W1_REPORT.md =====
+# W1 源码与已发布文件核查
+
+## 结论
+
+`PARTIAL`。在可得平台源码、39,166 个已发布 ELF，以及既有 8,911 个静态归档证据中，未发现平台调用方使用 `std::wbuffer_convert`。这证明“已覆盖材料内为零”，但材料缺口使其不能升级为“全平台不存在”。
+
+## 方法与分母
+
+源码侧使用保留全部上下文的词法检索。它覆盖直接限定名、`using` 声明、类型别名、`typedef` 和模板参数中仍保留该标识符的写法；逐条分类表用于区分标准库实现、自测、文档和潜在平台调用方。
+
+- 本轮对 360 个低体量源码根重新执行：命中 0。
+- R87 已覆盖冻结语料的 371 个源码包；R92 对 C++ ELF 缺口补充了 136 个完整源码包和 2 个部分源码包，另有 2 个仅包装材料不可得。
+- 另有 965 个源码 RPM 因没有 C++ ELF 指标而未纳入源码深扫。它们不能被当作已证明无调用。
+
+已发布文件侧直接解析冻结 R11 清单中 ELF 的 `SYMTAB` 和 `DYNSYM`，对 Itanium 符号名检索目标类型，再统一解码。本轮分母为 11,332 个包记录、39,166 个 ELF；命中 0，解析失败 0。既有 R87 静态归档分母为 8,911，目标命中同样为 0。
+
+## 正向对照
+
+正向对照源码通过别名实例化目标类型，并生成共享库：
+
+- 同一源码扫描器得到 1 条命中；
+- 同一 ELF 扫描器得到 34 条符号表记录；
+- 独立的 `nm` 与解码检查也确认目标类型存在。
+
+因此，零命中不是空规则、错误根目录或解码器失效造成的。
+
+## 边界与误差方向
+
+源码方法会漏掉由宏在外部生成、仅存在于未获取依赖、私有产品源码、加密材料或运行时生成代码中的使用。二进制方法会漏掉完全内联且未发射符号、完全剥离、LTO 消除、类型擦除、非 Itanium ABI 或 JIT 生成的使用。因此二进制零命中只能与源码覆盖合并解读。
+
+本轮最初两次全根读取因范围过宽而技术性中止，退出码均为 130；扩展名过滤并按既有覆盖证据拆分后，最终读取成功。技术中止不计为验收失败，原始记录均保留。
+
+由于实际平台调用命中为零，没有可供逐项分析的同步行为或异常传播路径。
+
+## 证据索引
+
+- 新扫描汇总：`tables/w1_published_elf_summary.tsv`
+- 新源码分类：`tables/w1_filtered_source_classification.tsv`
+- 正向对照：`raw/009_*`、`raw/010_*`、`raw/011_*`
+- 最终扫描：`raw/012_*`、`raw/015_*`、`raw/016_*`
+- 既有证据哈希快照：`raw/017_hash_w1_prior_evidence.stdout`
+
+===== docs/progress/R108/W2_REPORT.md =====
+# W2 不随迁移重新构建的组件清单
+
+## 结论
+
+`PARTIAL`。平台已发布物和可得源码包内的三类候选已经量化，但外部产品/应用组件缺少 BOM、产物和重建策略，因而全局真实上界为 `NOT_AVAILABLE`，不能把已见文件数当成完整平台上界。
+
+## 四类组件
+
+| 类别 | 已确认/候选分母 | C++ 指标 | 确认进入产品或生产构建 | 保守上界 | 说明 |
+|---|---:|---:|---:|---:|---|
+| 预编译共享库、迁移时不重建 | 5 个已确认；另有 1,027 个源码包内共享候选 | 候选中 164 | 5 | 1,027（发现上界） | R66 确认 `pen-wave` 的 5 个架构 DSO 仅复制安装；其余候选不能仅凭存在即判定发布 |
+| 已发布静态归档 | 8,911 | 1,600 | 发布快照内 8,911 | 8,911 | 8,906 可读，5 个格式不可识别；按路径和架构计数，不是语义去重组件数 |
+| 源码包内对象文件 | 3,236 | 1,289 | 21 | 3,236（发现上界） | 21 个来自 LLVM，7 个逻辑对象在 3 个架构资产中出现，构建规则有明确引用 |
+| 外部产品/应用组件 | `NOT_AVAILABLE` | `NOT_AVAILABLE` | `NOT_AVAILABLE` | `NOT_AVAILABLE` | 缺少外部 BOM、最终产物、源代码和是否重建声明 |
+
+前三类数量不能直接相加：同一逻辑组件可能跨架构重复、静态归档与对象可能存在包含关系，源码包内残留也不等同于最终交付。由于第四类未知，全平台“可能复制旧实现”的有限真实上界无法成立。
+
+## 符号检查解释
+
+修正路径后，8,911 个静态归档中 1,600 个出现 Itanium C++ 符号，8,906 个可由 `nm` 正常读取；5 个异常分别属于 `golang-tests`（2）、`glibc-devel-static`、`app-rootstrap-devel`、`hal-rootstrap`，均保留在保守上界中。所有静态归档、源码对象和共享候选的目标实现可见命中均为 0。
+
+目标符号不可见不能降低上界，因为内联、LTO、剥离、位码、格式不兼容和类型擦除都可能消除可见名字。C++ 指标也是工作性分类，不是“包含旧实现”的证明。
+
+## 技术问题与权威表
+
+- 首轮双遍目录枚举效率不足，主动中止并保留退出码 130；随后改为单遍枚举。
+- 外部 I/O 负载一度触发资源门禁，退出码 21；W2 只读分析以 `nice 15`、`ionice idle`、并行 2 继续，构建门禁未被绕过。
+- 合并清单首轮使用了错误的静态路径基准，导致 8,911 个静态项全部报告不存在。该段数据作废但保留；源码对象和共享候选段有效。
+- `tables/w2_static_inventory.tsv` 与 `tables/w2_static_summary.tsv` 是静态归档的权威重跑结果；`tables/w2_inventory.tsv` 只用于其中两类源码候选。
+
+## 证据索引
+
+- 静态归档权威清单：`tables/w2_static_inventory.tsv`
+- 静态汇总：`tables/w2_static_summary.tsv`
+- 源码内对象/共享候选：`tables/w2_inventory.tsv`
+- 按包汇总：`tables/w2_package_rollup.tsv`
+- 生产构建引用：`tables/w2_linked_object_evidence.tsv`
+- R66/R87/R11 证据哈希：`raw/044_hash_w2_prior_evidence.stdout`
+- 失败与重试记录：`raw/020_*`、`raw/036_*`、`raw/042_*`、`raw/046_*`、`raw/046t_*`
+
+===== docs/progress/R108/W3_REPORT.md =====
+# W3 异步取消路径与正交行为验证
+
+## 结论
+
+`CONFIRMED_ON_X86_64`。两个指定组件都存在“启用异步取消的线程可条件进入 C++/用户代码”的静态路径；独立探针进一步确认，即使完全避开本补丁修改的五个位置，仅由另一个标准库 `noexcept` 等待接口形成的库帧，也会在异步取消展开时进入 `std::terminate`。因此该性质不是四补丁引入的特例。
+
+armv7l 本轮为 `NOT_OBSERVED`，属于可选架构，未影响 x86_64 验收。
+
+## 两个组件的静态可达性
+
+### lightweight-web-engine 1.4.0-1
+
+`WorkerThread` 创建 `std::promise`/future 和 `std::thread`，线程入口初始化后进入 `WorkerHost::run`；初始化设置异步取消模式，销毁路径请求取消。`WorkerHost::run` 随后执行事件循环并调度 worker 工作。
+
+结论是“条件可达”而非“固定必达”：固定框架路径本身已经操作 C++ 共享状态，而事件循环回调还能进入任意 worker 功能；是否恰好进入某个 libc++ 等待/析构点取决于当时调度的任务和取消时机。
+
+### llvm/openmp 22.1.8-18.1
+
+在 `KMP_CANCEL_THREADS` 路径下，worker 与 monitor 入口设置异步取消模式，终止路径请求取消。worker 随后进入 `__kmp_launch_thread`，该循环最终通过 `t_invoke` 调用应用 microtask；因此应用的 C++ 代码可在该可取消线程上运行。
+
+这里同样是条件可达：OpenMP 固定调度与 monitor 等待主要使用 pthread 原语，本身没有证明必经本补丁的五个位置；可达性来自应用 microtask。静态证据没有把“可能进入”提升为“每次必然进入”。
+
+## 正交探针设计
+
+探针选择 C++20 `std::atomic<int>::wait`，它不属于 D01–D05，补丁头文件中仍声明为 `noexcept`。线程入口是普通的、可抛出 C++ 函数，没有用户添加的 `noexcept` 调用链帧；线程由 pthread 直接创建。
+
+每次测试同时检查：
+
+1. 正常路径修改原子值并通知，线程必须正常返回；
+2. 取消路径在子进程中等待线程真正进入阻塞点，再发出异步取消；
+3. 自定义 terminate handler 只写固定管道标记并以 86 退出；
+4. 父进程必须同时观察到精确标记与退出码 86，意外正常返回使用不同标记和退出码。
+
+子进程隔离使一次 terminate 不会终止测试控制器。`-O0 -fno-inline` 以及二进制符号复核用于避免只依赖源码推断。
+
+## 结果
+
+| 运行时 | 独立运行 | 正常对照 | 取消判定 | 可见相关符号 | 结果 |
+|---|---:|---:|---:|---:|---|
+| R69 补丁 libc++ | 5 | 5/5 | 25/25 | 10 | PASS |
+| 系统 libstdc++ 基线 | 5 | 5/5 | 25/25 | 7 | PASS |
+
+R69 运行库身份：
+
+- `libc++.so.1.0`: `b2d8d0ee8d8e06fe5d4aaf778367f3f8d89ee8b39a89043d670f76986c24255e`
+- `libc++abi.so.1.0`: `aaea4e9d9320d229e6c947ed2d28bf87f8ef03c0658df7b8d4b0881439a73cb4`
+
+动态加载清单与完整哈希均单独落盘。系统基线得到相同行为，进一步支持“标准库无抛出帧与异步取消组合的独立性质”，而不是 D01–D05 修改造成。
+
+## 证明范围
+
+本实验确认 x86_64 上的行为性质，并确认两个组件的源码可达形状。它不证明某个具体产品工作负载一定在取消瞬间位于该接口，也不替代 armv7l 实机观测。
+
+## 证据索引
+
+- 探针源码：`code/w3_atomic_wait_probe.cpp`
+- 两组件与头文件快照：`tables/w3_source_evidence.tsv`
+- 补丁运行库加载身份：`raw/050_*`
+- 补丁运行库 5 轮结果：`raw/052_*`
+- 系统基线加载身份：`raw/054_*`
+- 系统基线 5 轮结果：`raw/056_*`
+- 运行库完整哈希：`raw/058_hash_w3_runtimes.stdout`
+- 脚本快照：`raw/047_*`、`raw/051r_*`
+
+===== docs/progress/R101/REPORT.md =====
+# R101：Base 层 libc++ 判定完整清单与补充核查
+
+## 1. 结论摘要
+
+本轮严格沿用 R100 的判定，不重新分类 73 个 C++ 候选。把同一快照中未进入
+C++ 候选的 181 个源码包补入后，形成覆盖 `Tizen-Base-Toolchain` 全部 254 个
+去重源码包的清单：
+
+| 判定 | 全部源码包数 | 其中 R100 C++ 候选 | 说明 |
+|---|---:|---:|---|
+| 需要改 | 10 | 10 | R100 的 `NEED_LIBCXX` 原样保留 |
+| 不需要改 | 236 | 55 | 另含四路完整候选扫描均未命中的 181 个非 C++ 包 |
+| 当前不能改 | 6 | 6 | 当前 GCC 配置/产品角色，不代表永久不能迁移 |
+| 未定 | 2 | 2 | `gmp`、`tensorflow2` 的实际静态链接关系未闭合 |
+
+Base 内部 provider 补查没有发现会扩大 10 包闭包的反例：121 条布局敏感 ELF
+边归并为 4 个源码包对，consumer 与 provider 均已是 `NEED_LIBCXX`。不存在
+“`NEED_LIBCXX` 消费 `NO_LIBCXX_NEEDED` provider”的布局敏感边。
+
+## 2. 数据身份与分母
+
+- Base 快照：`Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647`。
+- 配对 Unified 快照：
+  `Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247`。
+- Base 仓元数据：292 条 source 记录，按 `name` 去重后 254 个源码包；多出的
+  38 条是同名包的不同 Release/架构仓记录，不作为新源码包计数。
+- 已发布 binary 元数据：1,705 条。
+- C++ 操作定义沿用 R100：实际 C++ 构建日志、动态 C++ runtime 信号、具有
+  可解码全局 C++ 符号的静态归档、明确 C++ 头文件载体四路证据取并集，共 73 包。
+- 181 个非 C++ 行不是以包名猜测，而是上述四路完整候选扫描均未命中；清单中
+  将此写成明确的扫描依据，不写成泛泛的“无证据”。
+
+与 R95 的关系仍按 R100 的交叉核算：R95 的 38 包来自 GCC 标准仓
+`Tizen-Base` 且只统计 runtime ELF；本任务使用 `Tizen-Base-Toolchain` 并扩展到
+构建日志、静态归档和头文件，二者不是同一项目、同一口径。R95 的 38 个全部
+映射进本轮 73 个 C++ 候选，R100/R101 另有 35 个候选。
+
+## 3. Base 内部布局敏感边的 provider 核查
+
+### 3.1 方法
+
+复用 R100 armv7l 的 257 条已解析 Base 内部 ELF 边和精确符号交集；其未解析项为
+0。细表中的 `DIRECT_STD_LAYOUT` 与 `KNOWN_HIDDEN_STD_LAYOUT` 两类合并为
+`LAYOUT_SENSITIVE_STD_TYPE`，再把 sourcerpm 精确映射回源码包，并同时连接 R100
+decision 表的 consumer/provider 判定。
+
+### 3.2 四个源码包对
+
+| consumer | provider | 具体 ELF 边数 | C++ 符号计数之和 | consumer 判定 | provider 判定 |
+|---|---|---:|---:|---|---|
+| `bcc-tools` | `llvm` | 4 | 584 | NEED | NEED |
+| `boost` | `boost` | 2 | 30 | NEED | NEED |
+| `bpftrace` | `llvm` | 2 | 201 | NEED | NEED |
+| `llvm` | `llvm` | 113 | 17,589 | NEED | NEED |
+
+具体端点包括：
+
+- `libbcc.so`、BCC 的 `PyPerf` 示例分别调用 `libLLVM.so.22.1` 与
+  `libclang-cpp.so.22.1`；
+- `libboost_log.so` / `libboost_log_setup.so` 调用 `libboost_filesystem.so`；
+- `/usr/bin/bpftrace` 调用 `libLLVM.so.22.1` 与 `libclang-cpp.so.22.1`；
+- LLVM/Clang/LLDB 工具和库的 113 条内部边调用 LLVM 自身库。
+
+完整的 4 行逻辑表与 121 行 ELF 表分别见
+`tables/base_internal_layout_sensitive_edges.tsv` 和
+`tables/base_internal_layout_sensitive_elf_edges.tsv`。
+
+### 3.3 核查回答
+
+没有发现 `NEED_LIBCXX → NO_LIBCXX_NEEDED` 的布局敏感 Base 内部边。因此按现有
+armv7l 精确边证据，仅切换既定 10 包不会因这些已知 Base 内部边新形成一个指向
+NO provider 的混合运行时边界。本结论是对 R100 provider 方向的补齐，不是重新
+判定。
+
+## 4. 254 包完整清单的口径
+
+完整 TSV 和 Markdown 表均严格一包一行，列出：源码包名、是否含 C++ 及依据、
+与 libstdc++ 的关系、判定、通俗理由、具体证据、六镜像归属、测试/诊断/基准
+工具属性。
+
+### 4.1 与 libstdc++ 的分类
+
+- `直接链接 libstdc++`：由该源码包产出的至少一个 binary RPM 的 `Requires`
+  明确含 `libstdc++.so*`，共 35 个 C++ 候选。
+- `仅通过 C 接口间接相关`：自身不直接链接 libstdc++，精确边只显示 C API。
+  当前 254 行中没有需要单独落入这一档的源码包；具有纯 C 边但自身直接链接
+  libstdc++ 的包仍放在“直接链接”，纯 C 性质写在理由中。
+- `仅构建期使用，产物不含 C++ 运行时`：构建或头文件载体命中 C++，但没有
+  已发布 C++ runtime 边界，共 31 包。
+- `含 C++ 但不与外部交换 C++ 语义`：有 C++ 载体，但 R100 正面隔离证据没有
+  通向迁移侧的 C++ 语义边，共 6 包。
+- `自身提供 libc++/libc++abi，与 libstdc++ 无直接链接`：仅
+  `libcxx-runtimes`。
+- `无关`：四路扫描未命中的 181 个非 C++ 包。
+
+### 4.2 镜像与工具属性
+
+镜像列按源码 VCS 精确关联 R98 保存的六份清单：boot/headed/headless ×
+aarch64/armv7l；93 个源码包至少进入其中一个。空集合写成“否：六个精确镜像
+清单无该 VCS”，不外推到未取得的其他产品 profile。
+
+测试/诊断/基准工具列以仓库 Summary/Description 的主要用途或明确命名的 binary
+子包为准。例如 `boost-test`、`python3-testsuite`、`libunwind-tests`、LLDB、
+GDB、BCC/bpftrace、rootstrap checker、QEMU 等记“是”。“否”表示该快照仓元数据
+没有把其主要用途或子包标成这三类，不证明源码树中没有辅助测试。
+
+## 5. 10 包实施输入
+
+10 包仍为：`abseil-cpp`、`bcc-tools`、`boost`、`bpftrace`、`icu`、
+`jsoncpp`、`libsigc++`、`llvm`、`pcre`、`taglib`。
+
+本轮通过 Gerrit SSH 只读取得其 `tizen_base`，并从 R100 快照 revision 检出
+`packaging/` 复核；随后又从 2026-09-03 实际分支 HEAD 导出当前 spec。当前
+`bcc-tools`、`boost`、`jsoncpp`、`llvm` 已较 R100 快照前移，其余六个 HEAD 与
+快照锚点相同。完整双 revision、仓库、spec 路径和 `%build` 行号见
+`tables/implementation_10_packages.tsv`。
+
+共同建议是显式增加 `libc++-devel`、`libc++abi-devel` BuildRequires，仅向
+C++ 与链接阶段加入：
+
+```sh
+export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+```
+
+包级差异：
+
+- CMake 包在 `%build` 后、CMake 配置前导出；Meson 的 `libsigc++` 在 `%meson`
+  前导出；ICU/PCRE 在 configure 前合入已有 flags。
+- Boost 的 b2 已显式消费 `CXXFLAGS`/`LDFLAGS`；除加入 flags 外，
+  `boost-devel` 的 `Requires: libstdc++-devel` 要改为 `libc++-devel`。
+- PCRE 的 `pcre-devel` 同样要把 `libstdc++-devel` Requires 改为
+  `libc++-devel`。
+- LLVM 的 CMake 命令显式设置 shared/exe linker flags，不能只导出环境变量；
+  必须把新的 `LDFLAGS` 合入这两个 `-D` 值，避免覆盖。这里改的是
+  `packaging/llvm.spec`，不是已显式构建目标运行时的
+  `packaging/libcxx-runtimes.spec`。
+
+这些是后续实施建议，不是已验证补丁。实施时先产出并发布
+`libcxx-runtimes`，再构建 LLVM，然后构建 `bcc-tools`/`bpftrace`；不能仅凭
+`Support:` 推断 QuickBuild 自动排序。
+
+每包验证至少包括：三架构日志确认 Clang 22.1.8 和 flags；所有该包 C++ ELF 的
+`DT_NEEDED` 不再含 `libstdc++.so.6`、包含目标 libc++/libc++abi 依赖；符号表无
+`GLIBCXX_*` 引用；重跑 Unified→Base/Base 内部边扫描；运行包自测及代表性 smoke
+test。具体逐包放置点见 Markdown 实施清单。
+
+## 6. 两个未定包
+
+细节见 `UNDETERMINED.md`。两者继续保持 R100 的 `UNDETERMINED`：
+
+- `gmp`：`libgmpxx.a` 三架构均含 11 个真实 C++ 全局符号；`eigen`、
+  `python-pycrypto` 仅有 BuildRequires 关系，是否实际链接 C++ 归档未知。
+- `tensorflow2`：`libtf_xla_runtime.a` 与 `libtensorflow2-lite.a` 含大量真实 C++
+  符号；`inference-engine-tflite`、`nnstreamer`、`nntrainer` 仅有 BuildRequires
+  关系，实际归档成员是否进入最终 ELF 未闭合。
+
+临时处理建议是：不要把两者降为“不需要改”；在实施排期和验证预算里按“可能
+需要改”预留，但在拿到真实链接命令/最终 ELF 归属前不直接修改 spec。这不是对
+R100 判定的变更。
+
+## 7. 为什么按人工决定采用逐包方案
+
+这里记录人工已作出的方案决定及其事实基础，不追溯修改 R100 当时“不推荐”的
+报告定位：
+
+- 逐包方案只修改 10 个已证实需要的 spec；2 个未定项不计入已确认修改数。
+- 全局 project_config 会把环境定义暴露给全部 254 个源码包，并触及 55 个已
+  判定不需要迁移的 C++ 包、6 个当前 GCC 包、2 个未定包。
+- 实际 C++ 构建日志中有 69 个规范化源码包消费 C++ 工具链；C-only 包是否把
+  LDFLAGS 继续传到 driver 未逐包穷尽，因此不能把“254 全部实际受影响”写成实测。
+- armv7l/x86_64 的 GCC 14.2.0 实测明确拒绝 `-stdlib=libc++`，未出现静默
+  忽略；aarch64 GCC buildroot 的 driver 自身退出 139，该格仍为
+  `NOT_OBSERVED`。
+- 三架构 Clang 22.1.8 无诊断接受该选项，但 `-###` 证明它实际选择 `-lc++`
+  并转发 libc++abi 链接参数，不是无害的静默忽略。
+
+## 8. 覆盖边界、自行判断与疑问
+
+### 覆盖边界
+
+1. 精确符号交集及本次 provider 核查只覆盖 armv7l；构建日志、RPM 元数据和
+   文件载体覆盖三架构。
+2. 镜像列只覆盖六份已保存的标准镜像清单，不覆盖所有产品 profile、临时测试
+   rootfs 或人工安装包。
+3. 测试/诊断/基准属性来自仓元数据主要用途/明确子包，不是源码功能穷举。
+4. `gmp` 与 `tensorflow2` 的静态链接归属仍未观测。
+5. R100 锚点之后四个目标仓分支已前移；本轮只读检查了当前 spec，但没有在新
+   HEAD 上重跑边界分析或构建。
+6. 本任务未实施建议、未构建迁移包，所有实施后验证均待后续任务。
+
+### 自行判断
+
+1. 把四路完整候选扫描均未命中的 181 包在全量表中标为“非 C++/不需要改”，
+   是对 R100 分母的机械补全，不改变其 73 包分类。
+2. 工具属性采用“仓元数据主要用途或明确子包”的可复核口径；没有用包名印象
+   扩大分类。
+3. 两个未定包的临时处理只影响计划预留，不把它们写入 10 包实施集合。
+4. 实施建议显式写 BuildRequires，以免依赖 project_config `Support:` 的非调度
+   语义；是否接受该 packaging 形式仍由后续实施评审决定。
+
+### 尚存疑问
+
+1. 四个已前移仓的最新源码内容是否改变 R100 边界，需要在实际实施 revision
+   确定后复核；本任务不自行改判定。
+2. QuickBuild 是否有可观察的 provider→consumer 调度边仍为
+   `NOT_OBSERVED`；实施前需读取任务图或采用两阶段构建。
+3. 两个未定包需要 consumer 的真实链接命令、link map 或最终 ELF 对象归属。
+
+整理与补查过程中未发现 R100 的 73 项判定存在问题；本轮发现并修正的仅是
+R101 自身源码包级派生表曾混用“该源码包对的全部 ELF 边数”与“其中布局敏感
+ELF 边数”的统计口径，最终表已由 121 条 ELF 明细重新聚合，判定和边的两端均
+未变化。
+
+## 9. 纪律确认
+
+未修改任何 project_config、平台源码、spec 或 R100 材料；只保存只读副本和分析
+产物。未推送 Gerrit。
+
+===== docs/progress/R101/SUMMARY_ONE_PAGE.md =====
+# Tizen-Base-Toolchain libc++ 逐包方案：一页汇总
+
+## 范围与数字
+
+输入是 `tizen-base-toolchain_20260828.101647`，不是 R95 的 GCC 标准
+`Tizen-Base`。292 条 source 记录按源码包名去重后是 **254 包**。
+
+| 项目 | 数量 |
+|---|---:|
+| 全部源码包 | 254 |
+| R100 四路证据确认含 C++ | 73 |
+| 需要改 | 10 |
+| 不需要改 | 236（181 个非 C++ + 55 个 C++） |
+| 当前不能改 | 6 |
+| 未定 | 2 |
+
+需要改的 10 包：`abseil-cpp`、`bcc-tools`、`boost`、`bpftrace`、`icu`、
+`jsoncpp`、`libsigc++`、`llvm`、`pcre`、`taglib`。
+
+## 为什么采用逐包方式
+
+- 逐包方式只触及 10 个已由实际符号边证实需要迁移的 spec。
+- 全局方式会把定义暴露给全部 254 包，并额外触及 55 个已判定不需要迁移的
+  C++ 包、6 个当前 GCC 包和 2 个未定包。
+- GCC 14.2.0 在 armv7l/x86_64 实测明确拒绝 `-stdlib=libc++`，不是静默忽略；
+  这 6 个当前 GCC 包会形成明确失败暴露面。aarch64 GCC driver 环境自身退出
+  139，故该架构的同项实测是 `NOT_OBSERVED`。
+- Clang 22.1.8 会无诊断接受该选项，但 `-###` 证明它实际选择 `-lc++`，不是
+  “编过但选项没作用”。对 55 个不需要迁移的 C++ 包，全局注入会真实改变标准库。
+
+## Base 内部边补查
+
+121 条布局敏感 ELF 边归并为 4 个源码包对：`bcc-tools→llvm`、
+`boost→boost`、`bpftrace→llvm`、`llvm→llvm`。四个 provider 全在 10 包集合内；
+**`NEED_LIBCXX → NO_LIBCXX_NEEDED` 的布局敏感边为 0**。
+
+## 实施与验证要点
+
+每个目标 spec 显式声明 libc++ devel 依赖，只对 C++/链接加入
+`-stdlib=libc++` 和 libc++abi 链接参数。Boost/PCRE 还需更新 devel 子包中现有的
+`libstdc++-devel` Requires；LLVM 要把 LDFLAGS 合入其显式 CMake linker flags。
+
+构建顺序：先发布 `libcxx-runtimes`，再构建 LLVM，之后构建 BCC/bpftrace 及其余
+目标包。逐架构验证编译器、实际命令、`DT_NEEDED`、`GLIBCXX_*`、精确边界和
+运行 smoke test。
+
+## 尚未覆盖
+
+- 精确符号边只在 armv7l 执行；
+- 镜像归属只核对六份标准镜像清单；
+- `gmp`、`tensorflow2` 是否被 consumer 实际静态链接仍未定；
+- 四个目标仓已较 R100 快照前移，新实施 revision 需重新核对；
+- 本任务未修改 spec、未构建、未推送 Gerrit。
+
+===== docs/progress/R86/REPORT.md =====
+# R86：`noexcept` 边界五处的处置方案评估
+
+## 结论摘要
+
+本任务只形成裁决素材，**不推荐、不排序、不选择方案**，也没有实施任何改动。
+
+1. “五处原本不会抛，删除标注只解除取消终止”这一前提不成立。D01-D03 明确生成 `system_error`，D04 可遇到自定义 Clock 异常并委托到 D02/D03；D05 的开放虚调用可抛普通异常或进入取消点。
+2. D01-D04 的成功等待/通知/正常超时路径可以在简单解除异常规格时保持算法意图；错误/取消路径必然从终止改为传播，调用点异常清理代码也会变化。
+3. D05 没有显式标注可删。它是覆盖 non-throwing 虚基类析构的隐式 non-throwing 析构，不能单独改为 `noexcept(false)`；必须改变析构同步结构、引入显式收尾协议，或扩大整个 streambuf 基类契约。
+4. 顶层 `noexcept` 不进入这五个函数自身的 Itanium 符号名，但进入函数类型，并影响 caller 是否生成展开/清理元数据。因此 D01/D02 “同符号可链接”不等于旧程序 unwind-compatible。
+5. D01/D02 是真实 `@@LLVM_22` 动态符号，GNU old/new symbol version 技术上可用；D03/D04/D05 是 hidden header 实现，不能靠共享库双符号替换旧对象。
+6. libstdc++ 在 PR103382 中移除了公开普通 wait 和内部普通/两种定时 wait 的 `noexcept`，只对公开 `condition_variable::wait` 保留新旧双版本。generic Clock wrapper 本来就不带标注。其 wbuffer 析构仍隐式 non-throwing，但不做 libc++ 的析构 `sync()`。
+7. 改 future 结构只能移除一个间接使用路径，不能修复 D01-D05 本身；D01-D04 还有多种直接/间接消费者，D05 独立。
+
+完整事实见 `FACTS.md`，逐路线的覆盖、后果和验证量见 `ROUTES.md`，探针与原始证据索引见 `VALIDATION.md`。
+
+## 第一步四组事实
+
+### 1. 实际抛出能力
+
+| 站点 | 查明结果 |
+|---|---|
+| D01 | 非持锁调用和 pthread wait 错误生成 `system_error`；wait 是取消点。 |
+| D02 | 非持锁调用和非 timeout 的 timedwait 错误生成 `system_error`；timed wait 是取消点。 |
+| D03 | 非持锁调用和非 timeout 的 clockwait 错误生成 `system_error`；clockwait 是取消点。 |
+| D04 | 自定义 `Clock::now()`/时钟运算可抛，随后进入 D02/D03。 |
+| D05 | 析构同步调用用户 codecvt 与 wrapped streambuf 虚函数，可抛普通异常或进入输出取消点。 |
+
+结论：只能确认“不发生错误/取消的成功路径意图可保持”，不能确认“去掉标注对所有正常路径无影响”。特别是 D05 根本不能单独作这种修改。
+
+### 2. 对已编译程序的影响
+
+- 五处函数自身的顶层异常规格不改变 Itanium 函数名；最小探针和三架构真实 D01/D02 符号支持这一点。
+- `noexcept` 是函数类型的一部分，函数指针/相关模板类型会变化。
+- 旧 caller 可能按 non-throwing 调用生成，无对应清理 landing pad；新实现若从同符号展开，不能宣称完全二进制兼容。
+- D01/D02 可由库端版本化承载旧、新行为。D03/D04/D05 已嵌入消费者，只能通过新头文件重编影响新产物；旧产物保留原行为。
+
+### 3. 保留新旧版本
+
+- 本地独立 `.symver` 探针成功同时导出 `@LLVM_22` 和 `@@LLVM_23`，说明 GNU 机制和当前 Tizen map 形态具有表达能力；探针节点名不代表实际方案。
+- libc++ 当前只有 `LLVM_22 { global: *; };`，没有现成 condition-variable compatibility wrapper。真实实现还要避免通配导出 helper。
+- D01 可直接类比 GCC；D02 也有动态符号，机制可行但私有成员 wrapper 仍需工程设计；D03-D05 没有库符号可作双版本。
+- 头文件三处若随平台全量重编，D03/D04 的新产物不需要库端兼容 wrapper；未重编对象仍有缺口。D05 还需先解决异常规格/结构约束。
+
+### 4. libstdc++ 对照
+
+详见 `FACTS.md` 的逐项表。关键差异是：GCC PR103382 同时解除内部普通和两种定时等待，只给公开 out-of-line wait 做符号双版本；future async 先 join 任务线程，而 libc++ shared state 普遍等待 condition_variable；libstdc++ wbuffer 析构不调用 sync。
+
+## 第二步路线清单
+
+以下顺序仅为编号：
+
+- **A1**：解除 D01-D04，D05 另案。覆盖 4/5；源码改动面集中，但 ABI、旧 caller、全量重编验证面大。
+- **A2**：D01/D02 双版本 + D03/D04 新头文件重编。覆盖 4/5；旧 D01/D02 可保留原契约，旧 D03/D04 仍嵌有边界。
+- **B1**：future 改用 join/atomic-futex 等结构。只减少 future 暴露，不修复五站点定义；可能触及 `__assoc_sub_state` ABI、调度和多平台 fallback。
+- **B2**：condition_variable 改底层非取消等待。不能可靠覆盖 async cancellation，且改变 native_handle/唤醒/时钟等；D05 不覆盖。
+- **C**：A2 + D03/D04 重编 + 一个 D05 子方案。理论覆盖 5/5，但不是单一已定设计，验证量是各子项并集。
+- **D**：产品迁移 cooperative stop。减少已知暴露，不修库，也不能覆盖未知/闭源调用者。
+- **E**：边界附近屏蔽取消。恢复 pending cancellation 的时点仍可能在边界内，或遗留错误线程状态；不能构成完整解法。
+- **F**：在 noexcept 内 catch/rethrow 或吞 forced unwind。前者仍 terminate，后者违反强制展开语义，不可行。
+- **G**：D05 析构不 sync。只解决 D05，但正常输出收尾改变且可能丢数据。
+- **H**：D05 显式 close/sync 协议。只解决遵守新协议的 D05 使用者，需要调用点迁移。
+- **I**：放宽 basic_streambuf 基类析构。可让 D05 合法放宽，但影响整个 streambuf 派生层次、ABI/源码/标准契约，验证面远超单站点。
+- **J**：接受并记录。零代码变化，五处风险全部保留。
+
+每条路线对成功路径、错误路径、旧程序、验证量和未知风险的逐项回答在 `ROUTES.md` 与 `tables/route_matrix.tsv`。
+
+## 小规模验证
+
+完成三个不触碰 libc++ 源码的最小验证：
+
+1. 符号/函数类型/caller EH 元数据探针：成功，退出 0。
+2. D05 派生虚析构约束探针：预期编译拒绝得到确认；外层验证退出 0。
+3. GNU 双符号版本探针：标准 map 和 Tizen 通配 map 形态均成功，退出 0。
+
+没有临时删除真实 libc++ 的异常规格，也没有构建完整候选方案。R72 已有 D01/D03/D04 动态结果，本轮不重复。D02/D05 动态行为仍为 `NOT_OBSERVED`。
+
+## 未查清的事实及所需条件
+
+1. **真实 D01/D02 libc++ compatibility wrapper 的最终代码形态**：未实施。需先由人工裁决版本策略，再在目标源码构造候选并用三架构链接器验证。
+2. **新版本节点名称与发布/回滚策略**：属于产品 ABI 政策，本任务没有选择；需要发布负责人给出规则。
+3. **QuickBuild 在 armv7l/aarch64/x86_64 对 `.symver` 具体实现的接受情况**：独立本机探针不能替代目标构建，需候选实现后的 QuickBuild。
+4. **D02/D05 的目标板动态取消结果**：`NOT_OBSERVED`。查清需两架构最小运行用例；D05 还需定义具体 wrapped streambuf/codecvt 场景。
+5. **D05 哪种普通输出语义允许改变**：无产品要求，不能自行决定。需要人工明确是否允许取消析构 sync、要求显式 close，或考虑基类层次变更。
+6. **预编译/闭源对象的实际存量与可重编比例**：`NOT_AVAILABLE`。需要平台发布清单和二进制来源信息，才能量化 D03-D05 混合版本风险。
+7. **B1/B2 在非 Linux/futex fallback 目标的完整约束**：本任务只查了当前源码结构，没有目标平台清单与性能/调度要求。
+
+## 自行判断与尚存疑问
+
+### 本任务自行判断
+
+1. 把“正常路径”拆成成功路径和普通错误路径，因为源码明确存在 `system_error`；若合并描述会错误地声称行为完全不变。
+2. 把 D05 从路线 A 的“一律删标注”中拆出，因为语言探针证明它没有可独立放宽的显式规格。
+3. 将 `LLVM_23` 仅用作 `.symver` 探针名称，不把它建议为发布节点。
+4. 复用 R72 动态结果，不重复消耗资源；D02/D05 严格保留 `NOT_OBSERVED`。
+5. 把“future 重构”和“整个 condition_variable 底层重构”拆成 B1/B2，因为覆盖面和风险不同。
+6. 任务书一方面禁止向 Gerrit/外部源码仓推送，另一方面明确要求材料 `commit 并 push`；结合 R83-R85 的既有交付方式，本任务把后者理解为只允许推送本项目的文档分支，禁令仍覆盖 Gerrit、LLVM 上游和平台源码仓。除此之外没有扩大推送范围。
+
+### 尚存疑问
+
+- 人工若选择解除 D01/D02，要求是允许新程序观察并捕获原有 `system_error`，还是只要求 forced unwind 穿越、普通错误仍终止？两者会产生不同 wrapper/错误策略。
+- D05 的产品目标是仅允许线程取消，还是同时允许 codecvt/streambuf 的普通异常传播？当前没有足以自行选择的要求。
+- 平台是否承诺所有包含 D03-D05 的包全量重编并淘汰旧对象？若不承诺，需要定义混合版本支持边界。
+
+## 纪律确认
+
+- 平台源码、四个补丁：**无修改**。
+- 完整方案：**未实施**。
+- Gerrit、LLVM 上游及平台源码仓：**未推送**。
+- 本项目材料仓：按任务要求仅提交并推送 `docs/progress/R86/` 材料；这是上述自行判断所说明的唯一例外。
+- 结论状态：**EVALUATION_COMPLETE / DECISION_NOT_MADE**。
+
+===== docs/progress/R86/FACTS.md =====
+# R86 事实查明
+
+## 1. 五处是否真的“不会抛”
+
+结论是否定的。这里要区分“成功的普通路径”与“实现中客观存在的异常/强制展开路径”。源码逐项结果见 `tables/site_facts.tsv`。
+
+### D01 `condition_variable::wait`
+
+`libcxx/src/condition_variable.cpp:33-39` 在锁不属于调用者时调用 `__throw_system_error(EPERM, ...)`，底层 `__libcpp_condvar_wait` 返回错误时也调用 `__throw_system_error`。阻塞于 `pthread_cond_wait` 时还可能收到 NPTL 线程取消的 forced unwind。
+
+因此它本来就有普通 `system_error` 生成路径；当前 `noexcept` 把这些错误和 forced unwind 都转成终止。若只去掉异常规格，成功等待的锁与返回行为不变，但错误路径从“终止”变为“异常向上传播”，不是全路径无行为变化。
+
+### D02 `__do_timed_wait(system_clock)`
+
+`libcxx/src/condition_variable.cpp:41-63` 同样在锁无效时生成 `system_error(EPERM)`；`__libcpp_condvar_timedwait` 返回非 0 且非 `ETIMEDOUT` 时生成 `system_error`。底层定时等待也是取消点。
+
+所以结论与 D01 相同：成功/正常超时路径本身可以保持，错误与取消路径会改变。
+
+### D03 `__do_timed_wait(steady_clock)`
+
+`libcxx/include/__condition_variable/condition_variable.h:197-217` 在锁无效时生成 `system_error(EPERM)`，`pthread_cond_clockwait` 返回非 0 且非 `ETIMEDOUT` 时生成 `system_error`；该 pthread 调用也可承载 forced unwind。
+
+### D04 `__do_timed_wait<Clock>`
+
+`condition_variable.h:220-224` 调用 `Clock::now()`、计算 `tp - Clock::now()`，再进入 `wait_for`，后者最终进入 D02 或 D03。自定义 Clock 的 `now()` 不是由 libc++ 保证不抛的封闭实现；其操作可抛，后续 D02/D03 又有上述普通错误和 forced unwind 路径。
+
+### D05 `wbuffer_convert::~wbuffer_convert`
+
+D05 没有可直接“删除”的显式 `_NOEXCEPT`：它是派生自 `basic_streambuf` 的虚析构，当前异常规格是隐式 non-throwing。其函数体调用 `__close()`；输出模式下 `__close -> sync` 进一步调用：
+
+- 用户可覆盖的 `codecvt::do_unshift`；
+- wrapped streambuf 的 `sputn`/`pubsync`/`pubseekoff` 虚路径；
+- 这些开放虚调用可能抛任意普通异常，也可能进入输出取消点。
+
+所以 D05 也不是“函数体不会抛”。而且代表性语言规则探针确认：非抛虚基类析构的派生析构不能单独声明 `noexcept(false)`，编译器报“looser exception specification”。要放宽它，必须扩大到基类层次，或改变析构结构；这不是简单删一处标注。
+
+## 2. ABI 与已编译程序
+
+### 2.1 符号名
+
+本机 GCC 13 的最小探针显示，在当前使用的 Itanium C++ ABI 下，函数自身的顶层 `noexcept` 不进入 D01/D02/D04 这类函数符号名：移除前后 demangled/raw name 相同。当前 R85 三架构包中的 D01 与 D02 分别以同一 C++ 名称导出为 `@@LLVM_22`。
+
+但 C++17 起 `noexcept` 是函数类型的一部分。探针中函数指针作为模板实参时，non-throwing 指针使用 `PDoFvvE`，potentially-throwing 指针使用 `PFvvE`。因此函数指针类型、依赖它的模板实例名、重载/类型 traits 等仍可能变化。
+
+### 2.2 “能链接”不等于“兼容展开”
+
+调用点探针是本项最关键的限定：
+
+- 调用声明为 `noexcept` 的目标时，调用者没有为该调用生成清理 landing pad/LSDA；
+- 调用可能抛的目标时，调用者生成 personality、LSDA、局部对象清理和 `_Unwind_Resume`。
+
+因此 D01/D02 若沿用原符号、仅换成可展开实现，旧程序通常不会“找不到符号”，但旧调用点可能没有为异常穿越准备正确的清理元数据。不能把符号名不变写成二进制完全兼容。
+
+### 2.3 out-of-line 与 header 的区别
+
+- **D01/D02**：共享库中存在真实动态符号，当前为 `@@LLVM_22`。可以在库中承载旧、新实现，但新头文件必须使新对象绑定到新默认版本；旧对象仍绑定旧版本，才能保留原契约。
+- **D03/D04/D05**：当前头文件带 `_LIBCPP_HIDE_FROM_ABI`，在 R85 三架构 libc++ 动态符号表中没有观察到对应符号。实现随使用者编译进入消费对象。库端双版本不能替换旧对象内已有代码。
+- 全量重编能让 D03/D04 的新消费者取得新异常规格和调用点元数据；不重编的预置/第三方对象仍保留旧边界。D05 即使全量重编，也还必须先选择一个语言上可行的结构方案。
+
+C++03 兼容头也有 D01-D04 的镜像声明/实现；D05 的 C++03 镜像在 `include/__cxx03/locale`。任何实际修改的范围都不能只看主头文件。本任务没有修改这些文件。
+
+## 3. 保留新旧两个版本
+
+### 3.1 现有能力与本地打包形态
+
+Tizen libc++ spec 当前通过 GNU linker version script `packaging/libcxx-llvm22.map`，该脚本只有一个 `LLVM_22 { global: *; };` 节点。它证明当前产物已经使用符号版本，但源码树中没有像 libstdc++ `compatibility-condvar.cc` 那样现成的 libc++ condition-variable 兼容 wrapper 框架。
+
+本任务用独立的、没有修改 libc++ 的 `.symver` 小探针验证了机制本身：
+
+- 同一个 API 名可以同时导出旧 `api@LLVM_22` 与新默认 `api@@LLVM_23`；
+- 在当前 Tizen map 的通配节点形态上追加继承节点也能产生这两个版本；
+- 通配 `global: *` 会顺带暴露实现 helper，真实实现必须把 helper 隐藏或在脚本中精确控制。
+
+`LLVM_23` 只是探针名称，不是本报告选定的实际版本节点。实际节点名和 release 规则是待人工裁决的 ABI 政策。
+
+### 3.2 对各站点的可行性
+
+- **D01**：可借鉴 GCC。保留旧 non-throwing wrapper 在旧版本，让新头文件/新对象绑定可展开的新默认版本。GCC PR103382 已真实使用这一形态。
+- **D02**：它也是当前导出的 `@@LLVM_22` 符号，GNU 符号版本机制在技术上可承载双版本；但它是私有成员，libc++ 没有现成 wrapper，仍需设计能访问内部状态且不额外泄露 helper 的实现。本任务只确认“机制可行”，没有把具体实现视为已解决。
+- **D03/D04/D05**：没有可统一重定向的共享库动态符号，双版本手法不能覆盖旧实例。D03/D04 的新头文件加全量重编可解决新产物；旧对象仍需要淘汰或接受旧行为。D05 还需单独的结构决定。
+
+### 3.3 libstdc++ 的真实先例
+
+GCC commit `9e18a25331fa25c3907249fede65a02c6817b06e`（PR103382）同时移除了：
+
+- 内部普通 wait 的 `noexcept`；
+- 内部 system/monotonic timed wait 的 `noexcept`；
+- 公开 `condition_variable::wait` 的 `noexcept`。
+
+只有公开 out-of-line `condition_variable::wait` 使用旧 `@GLIBCXX_3.4.11` / 新默认 `@@GLIBCXX_3.4.30` 双版本。其回归测试覆盖 ordinary wait、predicate wait、`wait_for`、system-clock `wait_until` 的 pthread cancellation。本机系统 libstdc++ 的符号表也观察到了这两个版本。
+
+## 4. libstdc++ 五处对应形态及 future
+
+| libc++ 站点 | libstdc++ 对应形态 |
+|---|---|
+| D01 | 公开 wait 原来带 `noexcept`，PR103382 后移除；只此公开符号保留旧/新双版本。 |
+| D02 | 内部 system-clock wait 原来带 `noexcept`，PR103382 后移除；没有单独导出双符号。 |
+| D03 | 内部 monotonic-clock wait 原来带 `noexcept`，PR103382 后移除；没有单独导出双符号。 |
+| D04 | generic public `wait_until<Clock>` 在该修复前后都没有 `noexcept`；它调用的内部 wait 在 PR103382 中解除。 |
+| D05 | 析构仍是隐式 non-throwing，但 libstdc++ 将其 `= default`，析构不调用 `sync()`，故没有 libc++ 的析构输出取消路径。 |
+
+`future::wait` 结构也不同：
+
+- libc++ 的导出类 `__assoc_sub_state` 内含 mutex + condition_variable；普通 `wait` 循环执行 `__cv_.wait`，定时等待执行 `__cv_.wait_until`。async/deferred 等共享状态共用这一路径。
+- libstdc++ `_State_baseV2::wait` 先调用 `_M_complete_async()`，async 派生实现通过 `_M_join()` 直接 `thread::join()`，随后用原子状态等待；普通原子等待在 Linux 可走 futex，另有 condition-variable fallback。
+
+所以“让 future 不经条件变量”在 libstdc++ 有结构先例，但把它移植成 libc++ 方案会牵涉 shared-state 布局、deferred 执行、定时等待、多等待者与各平台 fallback；它并不自动修复直接使用 condition_variable 的 D01-D04，也与 D05 无关。
+
+## 5. 事实边界
+
+- D01/D03/D04 的动态取消差异已由 R72 样本观察：libc++ 退出 134，libstdc++ 干净取消。D02/D05 动态样本仍为 `NOT_OBSERVED`；其可达性来自源码路径，不把 D01 表现外推成“已观测”。
+- `.symver` 探针证明本机 GNU 链接器和当前 map 形态的技术表达能力，不等于已经在 QuickBuild/三目标架构完成真实 libc++ wrapper 验证。
+- 没有实施完整方案，也没有修改平台源码或补丁。

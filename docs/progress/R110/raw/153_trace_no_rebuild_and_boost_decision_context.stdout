@@ -1,0 +1,477 @@
+docs/progress/R108/REPORT.md-1-# R108 运行时验证线总报告
+docs/progress/R108/REPORT.md-2-
+docs/progress/R108/REPORT.md-3-| 任务 | 结论 | 核心结果 |
+docs/progress/R108/REPORT.md-4-|---|---|---|
+docs/progress/R108/REPORT.md-5-| W1 源码与已发布文件核查 | `PARTIAL` | 覆盖内源码、39,166 个 ELF、既有 8,911 个静态归档均无平台调用命中；材料缺口阻止全平台断言 |
+docs/progress/R108/REPORT.md:6:| W2 不随迁移重建组件 | `PARTIAL` | 三类已量化；确认 5 个预编译 DSO、8,911 个静态归档、21 个生产链接对象；外部组件使全局上界为 `NOT_AVAILABLE` |
+docs/progress/R108/REPORT.md-7-| W3 正交行为与组件路径 | `CONFIRMED_ON_X86_64` | 两组件均条件可达；补丁运行库和系统基线各 5 轮、25/25 行为判定通过 |
+docs/progress/R108/REPORT.md-8-
+docs/progress/R108/REPORT.md-9-详细方法、分母、失败记录和边界分别见 `W1_REPORT.md`、`W2_REPORT.md`、`W3_REPORT.md`。本轮未改动平台源码或四补丁内容。
+--
+docs/progress/R86/REPORT.md-4-
+docs/progress/R86/REPORT.md-5-本任务只形成裁决素材，**不推荐、不排序、不选择方案**，也没有实施任何改动。
+docs/progress/R86/REPORT.md-6-
+docs/progress/R86/REPORT.md-7-1. “五处原本不会抛，删除标注只解除取消终止”这一前提不成立。D01-D03 明确生成 `system_error`，D04 可遇到自定义 Clock 异常并委托到 D02/D03；D05 的开放虚调用可抛普通异常或进入取消点。
+docs/progress/R86/REPORT.md-8-2. D01-D04 的成功等待/通知/正常超时路径可以在简单解除异常规格时保持算法意图；错误/取消路径必然从终止改为传播，调用点异常清理代码也会变化。
+docs/progress/R86/REPORT.md-9-3. D05 没有显式标注可删。它是覆盖 non-throwing 虚基类析构的隐式 non-throwing 析构，不能单独改为 `noexcept(false)`；必须改变析构同步结构、引入显式收尾协议，或扩大整个 streambuf 基类契约。
+docs/progress/R86/REPORT.md-10-4. 顶层 `noexcept` 不进入这五个函数自身的 Itanium 符号名，但进入函数类型，并影响 caller 是否生成展开/清理元数据。因此 D01/D02 “同符号可链接”不等于旧程序 unwind-compatible。
+docs/progress/R86/REPORT.md-11-5. D01/D02 是真实 `@@LLVM_22` 动态符号，GNU old/new symbol version 技术上可用；D03/D04/D05 是 hidden header 实现，不能靠共享库双符号替换旧对象。
+docs/progress/R86/REPORT.md:12:6. libstdc++ 在 PR103382 中移除了公开普通 wait 和内部普通/两种定时 wait 的 `noexcept`，只对公开 `condition_variable::wait` 保留新旧双版本。generic Clock wrapper 本来就不带标注。其 wbuffer 析构仍隐式 non-throwing，但不做 libc++ 的析构 `sync()`。
+docs/progress/R86/REPORT.md-13-7. 改 future 结构只能移除一个间接使用路径，不能修复 D01-D05 本身；D01-D04 还有多种直接/间接消费者，D05 独立。
+docs/progress/R86/REPORT.md-14-
+docs/progress/R86/REPORT.md-15-完整事实见 `FACTS.md`，逐路线的覆盖、后果和验证量见 `ROUTES.md`，探针与原始证据索引见 `VALIDATION.md`。
+docs/progress/R86/REPORT.md-16-
+docs/progress/R86/REPORT.md-17-## 第一步四组事实
+docs/progress/R86/REPORT.md-18-
+docs/progress/R86/REPORT.md-19-### 1. 实际抛出能力
+docs/progress/R86/REPORT.md-20-
+docs/progress/R86/REPORT.md-21-| 站点 | 查明结果 |
+docs/progress/R86/REPORT.md-22-|---|---|
+--
+docs/progress/R86/REPORT.md-34-- `noexcept` 是函数类型的一部分，函数指针/相关模板类型会变化。
+docs/progress/R86/REPORT.md-35-- 旧 caller 可能按 non-throwing 调用生成，无对应清理 landing pad；新实现若从同符号展开，不能宣称完全二进制兼容。
+docs/progress/R86/REPORT.md-36-- D01/D02 可由库端版本化承载旧、新行为。D03/D04/D05 已嵌入消费者，只能通过新头文件重编影响新产物；旧产物保留原行为。
+docs/progress/R86/REPORT.md-37-
+docs/progress/R86/REPORT.md-38-### 3. 保留新旧版本
+docs/progress/R86/REPORT.md-39-
+docs/progress/R86/REPORT.md-40-- 本地独立 `.symver` 探针成功同时导出 `@LLVM_22` 和 `@@LLVM_23`，说明 GNU 机制和当前 Tizen map 形态具有表达能力；探针节点名不代表实际方案。
+docs/progress/R86/REPORT.md-41-- libc++ 当前只有 `LLVM_22 { global: *; };`，没有现成 condition-variable compatibility wrapper。真实实现还要避免通配导出 helper。
+docs/progress/R86/REPORT.md:42:- D01 可直接类比 GCC；D02 也有动态符号，机制可行但私有成员 wrapper 仍需工程设计；D03-D05 没有库符号可作双版本。
+docs/progress/R86/REPORT.md-43-- 头文件三处若随平台全量重编，D03/D04 的新产物不需要库端兼容 wrapper；未重编对象仍有缺口。D05 还需先解决异常规格/结构约束。
+docs/progress/R86/REPORT.md-44-
+docs/progress/R86/REPORT.md-45-### 4. libstdc++ 对照
+docs/progress/R86/REPORT.md-46-
+docs/progress/R86/REPORT.md:47:详见 `FACTS.md` 的逐项表。关键差异是：GCC PR103382 同时解除内部普通和两种定时等待，只给公开 out-of-line wait 做符号双版本；future async 先 join 任务线程，而 libc++ shared state 普遍等待 condition_variable；libstdc++ wbuffer 析构不调用 sync。
+docs/progress/R86/REPORT.md-48-
+docs/progress/R86/REPORT.md-49-## 第二步路线清单
+docs/progress/R86/REPORT.md-50-
+docs/progress/R86/REPORT.md-51-以下顺序仅为编号：
+docs/progress/R86/REPORT.md-52-
+docs/progress/R86/REPORT.md-53-- **A1**：解除 D01-D04，D05 另案。覆盖 4/5；源码改动面集中，但 ABI、旧 caller、全量重编验证面大。
+docs/progress/R86/REPORT.md:54:- **A2**：D01/D02 双版本 + D03/D04 新头文件重编。覆盖 4/5；旧 D01/D02 可保留原契约，旧 D03/D04 仍嵌有边界。
+docs/progress/R86/REPORT.md-55-- **B1**：future 改用 join/atomic-futex 等结构。只减少 future 暴露，不修复五站点定义；可能触及 `__assoc_sub_state` ABI、调度和多平台 fallback。
+docs/progress/R86/REPORT.md-56-- **B2**：condition_variable 改底层非取消等待。不能可靠覆盖 async cancellation，且改变 native_handle/唤醒/时钟等；D05 不覆盖。
+docs/progress/R86/REPORT.md-57-- **C**：A2 + D03/D04 重编 + 一个 D05 子方案。理论覆盖 5/5，但不是单一已定设计，验证量是各子项并集。
+docs/progress/R86/REPORT.md-58-- **D**：产品迁移 cooperative stop。减少已知暴露，不修库，也不能覆盖未知/闭源调用者。
+docs/progress/R86/REPORT.md-59-- **E**：边界附近屏蔽取消。恢复 pending cancellation 的时点仍可能在边界内，或遗留错误线程状态；不能构成完整解法。
+docs/progress/R86/REPORT.md-60-- **F**：在 noexcept 内 catch/rethrow 或吞 forced unwind。前者仍 terminate，后者违反强制展开语义，不可行。
+docs/progress/R86/REPORT.md-61-- **G**：D05 析构不 sync。只解决 D05，但正常输出收尾改变且可能丢数据。
+docs/progress/R86/REPORT.md-62-- **H**：D05 显式 close/sync 协议。只解决遵守新协议的 D05 使用者，需要调用点迁移。
+docs/progress/R86/REPORT.md-63-- **I**：放宽 basic_streambuf 基类析构。可让 D05 合法放宽，但影响整个 streambuf 派生层次、ABI/源码/标准契约，验证面远超单站点。
+docs/progress/R86/REPORT.md-64-- **J**：接受并记录。零代码变化，五处风险全部保留。
+--
+docs/progress/R108/W2_REPORT.md:1:# W2 不随迁移重新构建的组件清单
+docs/progress/R108/W2_REPORT.md-2-
+docs/progress/R108/W2_REPORT.md-3-## 结论
+docs/progress/R108/W2_REPORT.md-4-
+docs/progress/R108/W2_REPORT.md-5-`PARTIAL`。平台已发布物和可得源码包内的三类候选已经量化，但外部产品/应用组件缺少 BOM、产物和重建策略，因而全局真实上界为 `NOT_AVAILABLE`，不能把已见文件数当成完整平台上界。
+docs/progress/R108/W2_REPORT.md-6-
+docs/progress/R108/W2_REPORT.md-7-## 四类组件
+docs/progress/R108/W2_REPORT.md-8-
+docs/progress/R108/W2_REPORT.md-9-| 类别 | 已确认/候选分母 | C++ 指标 | 确认进入产品或生产构建 | 保守上界 | 说明 |
+docs/progress/R108/W2_REPORT.md-10-|---|---:|---:|---:|---:|---|
+docs/progress/R108/W2_REPORT.md-11-| 预编译共享库、迁移时不重建 | 5 个已确认；另有 1,027 个源码包内共享候选 | 候选中 164 | 5 | 1,027（发现上界） | R66 确认 `pen-wave` 的 5 个架构 DSO 仅复制安装；其余候选不能仅凭存在即判定发布 |
+--
+docs/progress/R86/FACTS.md-44-
+docs/progress/R86/FACTS.md-45-### 2.2 “能链接”不等于“兼容展开”
+docs/progress/R86/FACTS.md-46-
+docs/progress/R86/FACTS.md-47-调用点探针是本项最关键的限定：
+docs/progress/R86/FACTS.md-48-
+docs/progress/R86/FACTS.md-49-- 调用声明为 `noexcept` 的目标时，调用者没有为该调用生成清理 landing pad/LSDA；
+docs/progress/R86/FACTS.md-50-- 调用可能抛的目标时，调用者生成 personality、LSDA、局部对象清理和 `_Unwind_Resume`。
+docs/progress/R86/FACTS.md-51-
+docs/progress/R86/FACTS.md:52:因此 D01/D02 若沿用原符号、仅换成可展开实现，旧程序通常不会“找不到符号”，但旧调用点可能没有为异常穿越准备正确的清理元数据。不能把符号名不变写成二进制完全兼容。
+docs/progress/R86/FACTS.md-53-
+docs/progress/R86/FACTS.md-54-### 2.3 out-of-line 与 header 的区别
+docs/progress/R86/FACTS.md-55-
+docs/progress/R86/FACTS.md-56-- **D01/D02**：共享库中存在真实动态符号，当前为 `@@LLVM_22`。可以在库中承载旧、新实现，但新头文件必须使新对象绑定到新默认版本；旧对象仍绑定旧版本，才能保留原契约。
+docs/progress/R86/FACTS.md:57:- **D03/D04/D05**：当前头文件带 `_LIBCPP_HIDE_FROM_ABI`，在 R85 三架构 libc++ 动态符号表中没有观察到对应符号。实现随使用者编译进入消费对象。库端双版本不能替换旧对象内已有代码。
+docs/progress/R86/FACTS.md:58:- 全量重编能让 D03/D04 的新消费者取得新异常规格和调用点元数据；不重编的预置/第三方对象仍保留旧边界。D05 即使全量重编，也还必须先选择一个语言上可行的结构方案。
+docs/progress/R86/FACTS.md-59-
+docs/progress/R86/FACTS.md-60-C++03 兼容头也有 D01-D04 的镜像声明/实现；D05 的 C++03 镜像在 `include/__cxx03/locale`。任何实际修改的范围都不能只看主头文件。本任务没有修改这些文件。
+docs/progress/R86/FACTS.md-61-
+docs/progress/R86/FACTS.md-62-## 3. 保留新旧两个版本
+docs/progress/R86/FACTS.md-63-
+docs/progress/R86/FACTS.md-64-### 3.1 现有能力与本地打包形态
+docs/progress/R86/FACTS.md-65-
+docs/progress/R86/FACTS.md-66-Tizen libc++ spec 当前通过 GNU linker version script `packaging/libcxx-llvm22.map`，该脚本只有一个 `LLVM_22 { global: *; };` 节点。它证明当前产物已经使用符号版本，但源码树中没有像 libstdc++ `compatibility-condvar.cc` 那样现成的 libc++ condition-variable 兼容 wrapper 框架。
+docs/progress/R86/FACTS.md-67-
+docs/progress/R86/FACTS.md-68-本任务用独立的、没有修改 libc++ 的 `.symver` 小探针验证了机制本身：
+--
+docs/progress/R86/FACTS.md-71-- 在当前 Tizen map 的通配节点形态上追加继承节点也能产生这两个版本；
+docs/progress/R86/FACTS.md-72-- 通配 `global: *` 会顺带暴露实现 helper，真实实现必须把 helper 隐藏或在脚本中精确控制。
+docs/progress/R86/FACTS.md-73-
+docs/progress/R86/FACTS.md-74-`LLVM_23` 只是探针名称，不是本报告选定的实际版本节点。实际节点名和 release 规则是待人工裁决的 ABI 政策。
+docs/progress/R86/FACTS.md-75-
+docs/progress/R86/FACTS.md-76-### 3.2 对各站点的可行性
+docs/progress/R86/FACTS.md-77-
+docs/progress/R86/FACTS.md-78-- **D01**：可借鉴 GCC。保留旧 non-throwing wrapper 在旧版本，让新头文件/新对象绑定可展开的新默认版本。GCC PR103382 已真实使用这一形态。
+docs/progress/R86/FACTS.md:79:- **D02**：它也是当前导出的 `@@LLVM_22` 符号，GNU 符号版本机制在技术上可承载双版本；但它是私有成员，libc++ 没有现成 wrapper，仍需设计能访问内部状态且不额外泄露 helper 的实现。本任务只确认“机制可行”，没有把具体实现视为已解决。
+docs/progress/R86/FACTS.md:80:- **D03/D04/D05**：没有可统一重定向的共享库动态符号，双版本手法不能覆盖旧实例。D03/D04 的新头文件加全量重编可解决新产物；旧对象仍需要淘汰或接受旧行为。D05 还需单独的结构决定。
+docs/progress/R86/FACTS.md-81-
+docs/progress/R86/FACTS.md-82-### 3.3 libstdc++ 的真实先例
+docs/progress/R86/FACTS.md-83-
+docs/progress/R86/FACTS.md-84-GCC commit `9e18a25331fa25c3907249fede65a02c6817b06e`（PR103382）同时移除了：
+docs/progress/R86/FACTS.md-85-
+docs/progress/R86/FACTS.md-86-- 内部普通 wait 的 `noexcept`；
+docs/progress/R86/FACTS.md-87-- 内部 system/monotonic timed wait 的 `noexcept`；
+docs/progress/R86/FACTS.md-88-- 公开 `condition_variable::wait` 的 `noexcept`。
+docs/progress/R86/FACTS.md-89-
+docs/progress/R86/FACTS.md:90:只有公开 out-of-line `condition_variable::wait` 使用旧 `@GLIBCXX_3.4.11` / 新默认 `@@GLIBCXX_3.4.30` 双版本。其回归测试覆盖 ordinary wait、predicate wait、`wait_for`、system-clock `wait_until` 的 pthread cancellation。本机系统 libstdc++ 的符号表也观察到了这两个版本。
+docs/progress/R86/FACTS.md-91-
+docs/progress/R86/FACTS.md-92-## 4. libstdc++ 五处对应形态及 future
+docs/progress/R86/FACTS.md-93-
+docs/progress/R86/FACTS.md-94-| libc++ 站点 | libstdc++ 对应形态 |
+docs/progress/R86/FACTS.md-95-|---|---|
+docs/progress/R86/FACTS.md:96:| D01 | 公开 wait 原来带 `noexcept`，PR103382 后移除；只此公开符号保留旧/新双版本。 |
+docs/progress/R86/FACTS.md-97-| D02 | 内部 system-clock wait 原来带 `noexcept`，PR103382 后移除；没有单独导出双符号。 |
+docs/progress/R86/FACTS.md-98-| D03 | 内部 monotonic-clock wait 原来带 `noexcept`，PR103382 后移除；没有单独导出双符号。 |
+docs/progress/R86/FACTS.md-99-| D04 | generic public `wait_until<Clock>` 在该修复前后都没有 `noexcept`；它调用的内部 wait 在 PR103382 中解除。 |
+docs/progress/R86/FACTS.md-100-| D05 | 析构仍是隐式 non-throwing，但 libstdc++ 将其 `= default`，析构不调用 `sync()`，故没有 libc++ 的析构输出取消路径。 |
+docs/progress/R86/FACTS.md-101-
+docs/progress/R86/FACTS.md-102-`future::wait` 结构也不同：
+docs/progress/R86/FACTS.md-103-
+docs/progress/R86/FACTS.md-104-- libc++ 的导出类 `__assoc_sub_state` 内含 mutex + condition_variable；普通 `wait` 循环执行 `__cv_.wait`，定时等待执行 `__cv_.wait_until`。async/deferred 等共享状态共用这一路径。
+docs/progress/R86/FACTS.md-105-- libstdc++ `_State_baseV2::wait` 先调用 `_M_complete_async()`，async 派生实现通过 `_M_join()` 直接 `thread::join()`，随后用原子状态等待；普通原子等待在 Linux 可走 futex，另有 condition-variable fallback。
+docs/progress/R86/FACTS.md-106-
+--
+docs/progress/R110/W1_REPORT.md-3-## 结论边界
+docs/progress/R110/W1_REPORT.md-4-
+docs/progress/R110/W1_REPORT.md-5-本轮把缺口拆成八类，并逐类写明所需材料与职能责任方。外部产品/应用的真实分母仍为 `NOT_AVAILABLE`，但已有两组标准镜像安装清单可作为间接材料：14 份清单共 5,995 条成员记录，另 6 份清单共 4,399 条成员记录。它们来自与当前冻结仓不同的快照身份，不能充当当前外部 BOM，也不能覆盖仓外应用、供应商载荷或现场下发组件。
+docs/progress/R110/W1_REPORT.md-6-
+docs/progress/R110/W1_REPORT.md-7-因此当前能够核实的最强表述仍是：
+docs/progress/R110/W1_REPORT.md-8-
+docs/progress/R110/W1_REPORT.md-9-> 在 Base/Unified 冻结仓的 1,424 个源码完整记录、24 个部分记录的可见内容、39,166 个已发布 ELF 和 8,911 个已发布静态归档中，没有发现 `std::wbuffer_convert` 使用者。
+docs/progress/R110/W1_REPORT.md-10-
+docs/progress/R110/W1_REPORT.md:11:不能写成“平台上没有使用者”。不随迁移重编组件同理：前三类仓内材料已有发现上界，外部一类没有分母，所以不存在全平台有限上界。
+docs/progress/R110/W1_REPORT.md-12-
+docs/progress/R110/W1_REPORT.md-13-## 现有覆盖
+docs/progress/R110/W1_REPORT.md-14-
+docs/progress/R110/W1_REPORT.md-15-### 冻结仓
+docs/progress/R110/W1_REPORT.md-16-
+docs/progress/R110/W1_REPORT.md-17-仓库输入是 Tizen Base Toolchain 与 Unified Toolchain 的 `reference/repos/standard` 二进制仓和源码仓。平台没有跨四仓的单一快照号，身份由四个 `repomd revision + SHA256` 共同冻结：
+docs/progress/R110/W1_REPORT.md-18-
+docs/progress/R110/W1_REPORT.md-19-| 仓 | revision | repomd SHA256 |
+docs/progress/R110/W1_REPORT.md-20-|---|---:|---|
+docs/progress/R110/W1_REPORT.md-21-| Base binary | 1785866115 | `1789528921ae67d70ba657c787899ec580ab0b17a8368a0245ec09440710cf16` |
+docs/progress/R110/W1_REPORT.md-22-| Unified binary | 1785904307 | `e425b6a91a3cfb2f67cbd73160ac48e2bb776e92866de81d5b97bb25e5ab39c3` |
+docs/progress/R110/W1_REPORT.md-23-| Base source | 1785866095 | `cf7fca47147304ec114e8e0c19f6f43353dbf973ee623d3eb5188919c509fe72` |
+docs/progress/R110/W1_REPORT.md-24-| Unified source | 1785904240 | `f15c6854277fb975d6d5e52d9a33c120eb85bb5cdc726acdf4243026098fde59` |
+docs/progress/R110/W1_REPORT.md-25-
+docs/progress/R110/W1_REPORT.md-26-该复合快照含 1,450 条源码 RPM 记录和 11,332 条二进制 RPM 记录；二进制载荷中读到 39,166 个 ELF，其中 36,829 个是非 debug 路径的运行时 ET_EXEC/ET_DYN。源码专项覆盖为 1,424 完整、24 部分、2 个上游源码不可得；目标可见命中为零。已发布静态归档为 8,911 个路径。
+docs/progress/R110/W1_REPORT.md-27-
+docs/progress/R110/W1_REPORT.md:28:对“不重编组件”的仓内清点还包括：5 个已确认复制安装的 `pen-wave` 共享对象、1,027 个含共享库候选的源码包（发现上界）、8,911 个已发布静态归档、3,236 个源码包内对象候选；其中 21 个对象有生产构建规则引用。这些计数的单位和集合会重叠，不能相加。
+docs/progress/R110/W1_REPORT.md-29-
+docs/progress/R110/W1_REPORT.md-30-### 可得的镜像安装清单
+docs/progress/R110/W1_REPORT.md-31-
+docs/progress/R110/W1_REPORT.md-32-两组历史/相邻快照材料合计 20 份 `.packages` 文件：
+docs/progress/R110/W1_REPORT.md-33-
+docs/progress/R110/W1_REPORT.md-34-| 清单组 | 文件 | 成员行 | 去重 name+arch+version-release | 与当前冻结仓 exact 行 | 当前仓有同 name+arch 的行 |
+docs/progress/R110/W1_REPORT.md-35-|---|---:|---:|---:|---:|---:|
+docs/progress/R110/W1_REPORT.md-36-| reference standard 组 | 14 | 5,995 | 2,773 | 3,964 | 5,977 |
+docs/progress/R110/W1_REPORT.md-37-| toolchain 成对快照组 | 6 | 4,399 | 2,632 | 3,763 | 4,399 |
+docs/progress/R110/W1_REPORT.md-38-
+--
+docs/progress/R110/W1_REPORT.md-51-最小可执行请求应按“产品 profile + 架构 + 版本”发给产品镜像集成/发布团队，要求：
+docs/progress/R110/W1_REPORT.md-52-
+docs/progress/R110/W1_REPORT.md-53-1. 与冻结 Base/Unified 身份同源的最终镜像 BOM，至少含包名、架构、NEVRA、载荷 SHA256 和来源；
+docs/progress/R110/W1_REPORT.md-54-2. 系统仓以外的预装、供应商、HAL、应用、插件及运行时下载组件清单；
+docs/progress/R110/W1_REPORT.md-55-3. 对应最终 ELF、静态归档和可加载模块，优先同时提供未剥离文件、DWARF、link map 或符号清单；
+docs/progress/R110/W1_REPORT.md-56-4. 组件源码、生成源码、依赖锁文件和编译数据库；
+docs/progress/R110/W1_REPORT.md-57-5. 逐组件“随迁移重编/保留旧二进制”的声明，以及 OTA、回滚和旧版本支持窗口。
+docs/progress/R110/W1_REPORT.md-58-
+docs/progress/R110/W1_REPORT.md:59:材料责任方及每项材料能闭合的结论见矩阵。若只能取得 BOM 和最终二进制，可以量化外部分母并做符号/载荷扫描，但仍不能把模板零符号提升为源码级零使用；若再取得源码与构建材料，才能核实内联和生成路径；若再取得重建策略，才能量化不重编组件。
+docs/progress/R110/W1_REPORT.md-60-
+docs/progress/R110/W1_REPORT.md-61-## 替代手段实测
+docs/progress/R110/W1_REPORT.md-62-
+docs/progress/R110/W1_REPORT.md-63-- **安装清单反推：部分有效。** 对 20 份本地清单逐行解析并与当前冻结仓 11,332 条记录对照，结果见三个 `w1_image_manifest_*.tsv` 表。它能缩小特定历史 profile 的仓内选择，不能覆盖仓外载荷，也不能跨快照拼接。
+docs/progress/R110/W1_REPORT.md-64-- **依赖声明反推：只适合定位，不能证明目标类型使用。** RPM Requires/BuildRequires、ELF `DT_NEEDED` 和 UND/DEF 可说明包或动态库依赖；`wbuffer_convert` 是头文件模板，依赖边不携带“是否实例化该类型”的完备信息。既有源码、ELF 和归档专项扫描比依赖名称更直接，但仍受内联/剥离等边界限制。
+docs/progress/R110/W1_REPORT.md-65-- **许可证/SBOM 反推：当前不可用。** 对 git 跟踪文件名搜索 SBOM、Bill of Materials、CycloneDX 和 SPDX，结果为零、退出码 1；同一 `git ls-files | rg` 管线以 `manifest` 为正向对照取得命中，排除了空文件集和失效规则。较宽的 license/notice 搜索只找到发布通知、镜像清单和一份评审备忘，不是机器可关联的产品组件许可证清单。
+docs/progress/R110/W1_REPORT.md-66-- **VCS 字段反推：只能识别来源。** `.packages` 行带项目路径和提交标识，可协助向源码 owner 索取材料；它不包含最终载荷 SHA、运行时下载项或重编策略。
+docs/progress/R110/W1_REPORT.md-67-
+docs/progress/R110/W1_REPORT.md-68-没有任何替代手段把外部分母闭合。缺口已被分解为可索取的具体输入，但结论强度没有越过“已覆盖范围内成立”。
+docs/progress/R110/W1_REPORT.md-69-
+--
+docs/progress/R95/REPORT.md-5-本报告只给出事实和可选范围，不选择路线、不排序。
+docs/progress/R95/REPORT.md-6-
+docs/progress/R95/REPORT.md-7-1. 本轮严格使用实际 `Tizen-Base` 快照，而不是 `Tizen-Base-Toolchain`。实际 Base 有 412 条 source-RPM 记录（251 个去重源码名）和 1,710 条 binary-RPM 记录（646 个去重二进制名）。1,710/1,710 个 RPM 均完成 SHA256 校验、解包与 ELF 盘点，分析失败为 0。
+docs/progress/R95/REPORT.md-8-2. 按“包内存在 runtime ELF，且该 ELF 有 Itanium C++ 符号或依赖 C++ runtime”这一可复核口径，Base 有 38 个去重源码名（65 条 source-RPM 记录）、106 个去重二进制名（276 条 binary-RPM 记录）产出 C++ runtime ELF。实际直接依赖 `libstdc++.so*` 的是 35 个源码名（59 条记录）、96 个二进制名（245 条记录）。
+docs/progress/R95/REPORT.md-9-3. 在核对的 14 个标准设备镜像中，存在 11 个 Base C++ 源码名、15 个二进制名；若把只作为 `libstdc++` 运行库来源的 `gcc` 单独列出，则其余为 10 个源码名。
+docs/progress/R95/REPORT.md-10-4. 实际 Unified→Base 动态依赖形成 65 条去重“consumer 源码名→provider 源码名”逻辑边，涉及 58 个 Unified consumer 和 11 个 Base provider。其中 29 条已由动态符号证据证明传递布局敏感的标准库类型，涉及 26 个 consumer 和 5 个 provider；另有 18 条确有 C++ ABI 耦合、但现有符号证据不能证明或排除隐藏布局，不能归为安全边；17 条只有 C 接口符号交集；1 条虽有 `DT_NEEDED`，但没有动态符号交集。
+docs/progress/R95/REPORT.md-11-5. 历史所谓“483 个待迁移包”是 483 条 source-RPM 记录、455 个去重 `package_name`，其原始语料已经同时包含 `Tizen-Base-Toolchain` 与 `Tizen-Unified-Toolchain`。按名称映射到本轮实际快照，63 条历史记录（38 个名字）落入 Base，416 条（414 个名字）落入 Unified，4 条（3 个名字）因快照漂移在两边均无同名项。因此 Base 不是应再加到 483 上的新范围；按历史口径加入 Base 的增量为 0。当前快照的精确总迁移量不能把本轮 Base 实测数直接与历史 Unified 数相加，记为 `NOT_AVAILABLE`，需对当前 Unified 快照用同一口径重扫后才能给出。
+docs/progress/R95/REPORT.md-12-
+docs/progress/R95/REPORT.md:13:本轮不回答“应该迁”或“不用迁”。调查证明 Base/Unified 间确实存在 29 条布局敏感逻辑边，但迁移范围由人工在第五节所列选项中裁决。
+docs/progress/R95/REPORT.md-14-
+docs/progress/R95/REPORT.md-15-## 1. 范围、数据身份与方法
+docs/progress/R95/REPORT.md-16-
+docs/progress/R95/REPORT.md-17-### 1.1 冻结输入
+docs/progress/R95/REPORT.md-18-
+docs/progress/R95/REPORT.md-19-- Base：`Tizen/Tizen-Base/tizen-base_20260827.214809`。
+docs/progress/R95/REPORT.md-20-- Unified：`Tizen/Tizen-Unified/tizen-unified_20260829.123409`。
+docs/progress/R95/REPORT.md-21-- 设备镜像：上述 Unified 快照 `images/standard/` 下 14 份 `.packages` 清单，涵盖 generic-hal、boot、headed、headless 的 armv7l/aarch64 变体。
+docs/progress/R95/REPORT.md-22-
+docs/progress/R95/REPORT.md-23-完整 URL 见 `inputs/actual_repositories.tsv`，14 份清单原文见 `inputs/image_packages/`。
+--
+docs/progress/R95/REPORT.md-211-1. 为避免“Base 包总数”的歧义，同时报告 source-RPM 记录、去重源码名、binary-RPM 记录和去重二进制名，不自行选一种充当唯一分母。
+docs/progress/R95/REPORT.md-212-2. 使用 runtime ELF + Itanium 符号/C++ runtime 依赖作为“产出 C++ 二进制”的操作定义，与此前迁移盘点保持一致；静态归档明确列为盲区。
+docs/progress/R95/REPORT.md-213-3. 对 18 条只有 C++ ABI 证据的边保留独立分类，不因符号名中未见 `std::` 就判为“仅名字修饰”。
+docs/progress/R95/REPORT.md-214-4. `gcc` 在设备镜像范围内是 `libstdc++` 运行库的源码载体，因此同时给出含它的 11 和单列它后的 10，避免把两种政策口径混为一谈。
+docs/progress/R95/REPORT.md-215-5. 没有把本轮实际 Base 数和历史 Unified 数相加；快照、项目和记录粒度不同，混算会产生不可复核的总量。
+docs/progress/R95/REPORT.md-216-
+docs/progress/R95/REPORT.md-217-### 7.3 尚存疑问
+docs/progress/R95/REPORT.md-218-
+docs/progress/R95/REPORT.md:219:- 人工裁决迁移范围时，是否要把静态归档/仅头文件包纳入“Base C++ 内容”的政策定义？本报告的 38 是 runtime ELF 口径。
+docs/progress/R95/REPORT.md-220-- 哪一套设备镜像测试计划代表发布验收范围？当前只核对快照中的 14 个 `standard` 镜像。
+docs/progress/R95/REPORT.md-221-- 是否需要另开任务对 18 条“C++ ABI、布局未证明”边做源码级收口？
+docs/progress/R95/REPORT.md-222-
+docs/progress/R95/REPORT.md-223-## 8. 纪律确认
+docs/progress/R95/REPORT.md-224-
+docs/progress/R95/REPORT.md-225-- 未修改任何 project_config、平台源码或补丁。
+docs/progress/R95/REPORT.md-226-- 未实施迁移。
+docs/progress/R95/REPORT.md-227-- 未向 Gerrit 或任何外部源码仓推送；最终只提交并推送本项目仓的 R95 调查材料。
+docs/progress/R95/REPORT.md-228-- 原始命令、stdout、stderr 与退出码在 `progress/R95/raw/`，归档副本在本目录 `raw/`。
+--
+docs/progress/R86/VALIDATION.md-59-| `001_resource_gate` | light 资源门禁，退出 0。 |
+docs/progress/R86/VALIDATION.md-60-| `002_source_and_prior_evidence_inventory` | llvm/gcc 源码身份及既有材料盘点。 |
+docs/progress/R86/VALIDATION.md-61-| `003_five_site_libcxx_source` | D01-D05 当前 libc++ 源码与 future 路径。 |
+docs/progress/R86/VALIDATION.md-62-| `005_wbuffer_throwing_operations_corrected` | D05 的虚 `unshift`/streambuf 操作；对 004 错误路径猜测的更正。 |
+docs/progress/R86/VALIDATION.md-63-| `006_libstdcxx_corresponding_source` | libstdc++ 当前对应实现、compat wrapper、wbuffer。 |
+docs/progress/R86/VALIDATION.md-64-| `007`/`008` | GCC PR103382 历史、完整 commit message/diff。 |
+docs/progress/R86/VALIDATION.md-65-| `009` | Tizen libc++ map/spec 与 libc++ ABI 宏。 |
+docs/progress/R86/VALIDATION.md-66-| `014`/`015` | libc++ LWG2135 历史和 Noexcept Policy。 |
+docs/progress/R86/VALIDATION.md:67:| `016` | GCC 取消回归测试与本机 GLIBCXX 双版本符号。 |
+docs/progress/R86/VALIDATION.md-68-| `017` | R85 三架构真实 libc++ D01/D02 `@@LLVM_22` 导出。 |
+docs/progress/R86/VALIDATION.md-69-| `020` | D03/D04/D05 无动态符号及 hidden/header 属性。 |
+docs/progress/R86/VALIDATION.md-70-| `021` | libstdc++ 修复前后五站点矩阵。 |
+docs/progress/R86/VALIDATION.md-71-| `022` | 两库 future 等待实现结构。 |
+docs/progress/R86/VALIDATION.md-72-| `023`/`024` | libc++ C++03 镜像及 R72 动态证据索引。 |
+docs/progress/R86/VALIDATION.md-73-
+docs/progress/R86/VALIDATION.md-74-## 保留的异常/失败记录
+docs/progress/R86/VALIDATION.md-75-
+docs/progress/R86/VALIDATION.md-76-- `raw/004_*`：最初猜测了不存在的 granularized streambuf 路径，命令退出 2；随后用 `005_*` 定位正确文件并保留原失败记录，没有篡改。
+docs/progress/R86/VALIDATION.md-77-- `raw/010_*`：尝试调用不存在的 `clang++`，退出 127；随后使用已安装 GCC 13 完成 V1。
+--
+docs/progress/R82/REPORT.md:1:# R82：平台 Boost 边界的跨运行时实测
+docs/progress/R82/REPORT.md-2-
+docs/progress/R82/REPORT.md-3-## 结论
+docs/progress/R82/REPORT.md-4-
+docs/progress/R82/REPORT.md-5-状态：`PARTIAL`。
+docs/progress/R82/REPORT.md-6-
+docs/progress/R82/REPORT.md:7:在 R22/R80 已确认的 90 条真实 Boost C++ 符号边中，63 条可从公开签名或 Boost 类型定义确认会传递标准库布局敏感状态，27 条在当前边界签名中未见标准库布局证据。选取的 filesystem、iostreams 两类边界在 x86_64 与 armv7l 用户态模拟环境中均稳定复现不兼容；额外选取的 program_options 边界在 x86_64 上也稳定复现。结果明确支持此前结论：两套运行时可以在同一进程中共存，但不能据此推导跨边界传递 C++ 语义是安全的。
+docs/progress/R82/REPORT.md-8-
+docs/progress/R82/REPORT.md-9-本轮没有修复或处置建议。由于执行异常退出用例时环境连续出现保护性中止提示，为避免反复触发，停止了新增异常退出实验；program_options 的 armv7l 格与物理开发板实测记为 `NOT_OBSERVED`，因此不把结论提升为 `BOUNDARY_VERIFIED`。
+docs/progress/R82/REPORT.md-10-
+docs/progress/R82/REPORT.md-11-## 1. 输入、口径与可复核材料
+docs/progress/R82/REPORT.md-12-
+docs/progress/R82/REPORT.md-13-- 输入边：`docs/progress/R22/tables/split/candidate_edge_evidence.part*.tsv` 中 `reason_class=TRUE_CPP_ABI_COUPLING` 且 provider 为 Boost 的 90 行。
+docs/progress/R82/REPORT.md:14:- 既有规模：13 个 consumer 源码包、75 个 `(arch, consumer ELF path)`、90 条边。
+docs/progress/R82/REPORT.md-15-- 本轮完整边表：`tables/boost_edges_90.tsv`。
+docs/progress/R82/REPORT.md-16-- 带 demangle、布局证据和分类的表：`tables/boost_edges_90_classified.tsv`。
+docs/progress/R82/REPORT.md-17-- 去重符号：`tables/boost_distinct_symbols.tsv`。
+docs/progress/R82/REPORT.md-18-- 25 次运行的逐格结果：`tables/mixed_runtime_matrix.tsv`。
+docs/progress/R82/REPORT.md-19-- 所有命令原文、标准输出、标准错误与退出码：`raw/`。原始输出未经摘要替换；对话中仅给短统计。
+docs/progress/R82/REPORT.md-20-
+docs/progress/R82/REPORT.md-21-75 与一度统计到的 84 的差别已经机械核对：75 的身份是 `(arch, consumer ELF path)`；若把二进制包名也计入，同一路径在 security-manager 的多个二进制包身份下重复出现，得到 84。本文沿用原始任务的 75 个 ELF 口径。
+docs/progress/R82/REPORT.md-22-
+docs/progress/R82/REPORT.md:23:## 2. 90 条边的性质分类
+docs/progress/R82/REPORT.md-24-
+docs/progress/R82/REPORT.md-25-| 分类 | 边数 | 含义 |
+docs/progress/R82/REPORT.md-26-| --- | ---: | --- |
+docs/progress/R82/REPORT.md-27-| `HIDDEN_STD_LAYOUT` | 33 | 签名显示 Boost 自有类型，但该类型内部持有 `std::string`、`std::wstring` 等标准库对象 |
+docs/progress/R82/REPORT.md-28-| `HIDDEN_STD_LAYOUT+DIRECT_STD_SIGNATURE` | 6 | 同时具有隐藏标准库布局和公开签名中的标准库类型 |
+docs/progress/R82/REPORT.md-29-| `DIRECT_STD_SIGNATURE` | 24 | 公开符号签名直接带标准库类型 |
+docs/progress/R82/REPORT.md-30-| `NO_STD_LAYOUT_EVIDENCE` | 27 | 从已观察签名和相关类型定义未确认跨界标准库布局；不是安全性证明 |
+docs/progress/R82/REPORT.md-31-| 合计 | 90 | — |
+docs/progress/R82/REPORT.md-32-
+docs/progress/R82/REPORT.md-33-按 provider 归纳：
+--
+docs/progress/R82/REPORT.md-38-- boost-test：24 条直接标准库签名，另 18 条未确认布局证据。
+docs/progress/R82/REPORT.md-39-- boost-thread：9 条未确认布局证据；当前 POSIX `once_flag` 证据表现为整数/原子状态。
+docs/progress/R82/REPORT.md-40-
+docs/progress/R82/REPORT.md-41-按 consumer 源码包去重：
+docs/progress/R82/REPORT.md-42-
+docs/progress/R82/REPORT.md-43-- 隐藏布局风险形态 3 包：`capi-appfw-capmgr`、`dotnet-launcher`、`security-manager`。
+docs/progress/R82/REPORT.md-44-- 直接标准库签名 5 包：`capi-appfw-capmgr`、`cert-svc`、`key-manager`、`libwebappenc`、`security-manager`。
+docs/progress/R82/REPORT.md-45-- 两类并集 6/13 包；其中 3 包属于符号名不显露标准库类型的静默风险形态。
+docs/progress/R82/REPORT.md:46:- 其余 7 包在这 90 条已观察边上未确认标准库布局传递；不代表包内其他路径已获证明。
+docs/progress/R82/REPORT.md-47-
+docs/progress/R82/REPORT.md-48-## 3. 实测对象及选择理由
+docs/progress/R82/REPORT.md-49-
+docs/progress/R82/REPORT.md-50-### 3.1 filesystem
+docs/progress/R82/REPORT.md-51-
+docs/progress/R82/REPORT.md-52-覆盖 30 条、数量最多，并存在生产 consumer。用例调用平台 Boost 的真实 `status(path, error_code)` 和返回 `path` 的 `read_symlink(path, error_code)`；consumer 读取具体状态、路径长度与路径值，并在自己的 libc++ 一侧销毁 provider 返回的对象。这同时覆盖输入、返回值、具体数据断言和异侧销毁。
+docs/progress/R82/REPORT.md-53-
+docs/progress/R82/REPORT.md-54-### 3.2 iostreams
+docs/progress/R82/REPORT.md-55-
+docs/progress/R82/REPORT.md-56-边界对象的 Boost 外壳内部含 `std::string/std::wstring`，适合作为“符号能匹配但隐藏布局不匹配”的代表。用例调用平台真实 `mapped_file_source::open_impl`，检查映射是否成功、长度和具体字节，并让 consumer 离开作用域执行销毁。
+--
+docs/progress/R82/REPORT.md-94-说明限制。由于当时没有脚本 SHA256，不能声称该重建版本与当时文件逐字节相同；
+docs/progress/R82/REPORT.md-95-直接运行当前 `run_arm_local_matrix.sh` 也不会得到 raw/034 的相同执行集合。
+docs/progress/R82/REPORT.md-96-
+docs/progress/R82/REPORT.md-97-以后脚本型命令在执行前必须同步保存编号化脚本快照及 SHA256，命令直接引用
+docs/progress/R82/REPORT.md-98-快照，避免工作副本后续修改破坏证据对应关系。
+docs/progress/R82/REPORT.md-99-
+docs/progress/R82/REPORT.md-100-## 6. 影响评估
+docs/progress/R82/REPORT.md-101-
+docs/progress/R82/REPORT.md:102:1. 平台 Boost 边界在混合运行时下确实会出问题：已实测的三类全部出现可重复的不兼容；后果从静默错值到进程异常终止。
+docs/progress/R82/REPORT.md-103-2. 13 个 consumer 包中，6 个从真实符号边和类型定义可确认处于标准库布局敏感形态；其中 3 个的标准库状态隐藏在 Boost 类型内部，链接器无法从边界表面阻止误配。
+docs/progress/R82/REPORT.md:104:3. 其余 7 个包当前只能说“这 90 条边中未发现标准库布局证据”，不能外推为全面安全。
+docs/progress/R82/REPORT.md-105-4. 结果进一步支持“可以共存，但禁止跨界传递 C++ 语义”的既有边界：此前 ICU 的 C API 成功不与本轮结果矛盾；Boost 这些真实边传递的正是 C++ 对象语义。
+docs/progress/R82/REPORT.md-106-
+docs/progress/R82/REPORT.md-107-## 7. 未覆盖范围
+docs/progress/R82/REPORT.md-108-
+docs/progress/R82/REPORT.md:109:- 没有逐条动态执行 90 条边；动态样本覆盖三种代表性 provider 类别。
+docs/progress/R82/REPORT.md-110-- 27 条 `NO_STD_LAYOUT_EVIDENCE` 未逐条做运行期安全证明。
+docs/progress/R82/REPORT.md-111-- program_options 的 armv7l 格未执行。
+docs/progress/R82/REPORT.md-112-- armv7l 结果来自 QEMU 用户态，物理板行为 `NOT_OBSERVED`。
+docs/progress/R82/REPORT.md-113-- aarch64 不在本任务要求的两架构范围，未执行。
+docs/progress/R82/REPORT.md-114-- 未使用 ASan/Valgrind 等检查已完成销毁路径的潜在堆损坏或泄漏。
+docs/progress/R82/REPORT.md-115-
+docs/progress/R82/REPORT.md-116-## 8. 自行判断与尚存疑问
+docs/progress/R82/REPORT.md-117-
+docs/progress/R82/REPORT.md-118-自行判断：
+docs/progress/R82/REPORT.md-119-
+--
+docs/progress/R109/W1_REPORT.md-56-
+docs/progress/R109/W1_REPORT.md-57-- 未持锁：code 1、generic category，消息为 `condition_variable::wait: mutex not locked: Operation not permitted`；
+docs/progress/R109/W1_REPORT.md-58-- 底层错误：code 22、generic category，消息为 `condition_variable wait failed: Invalid argument`。
+docs/progress/R109/W1_REPORT.md-59-
+docs/progress/R109/W1_REPORT.md-60-保留规格格另以默认终止处理器重复 5 次：两类均 5/5 收到 `SIGABRT`（子进程 return code `-6`）；stderr 分别报告未捕获的 `std::__1::system_error` 和上述具体消息。自定义终止处理器格则 10/10 到达终止处理器并以 86 退出，证明不是仅凭“崩溃/退出码”作判断。
+docs/progress/R109/W1_REPORT.md-61-
+docs/progress/R109/W1_REPORT.md-62-libstdc++ 未持锁格虽然 5/5 正常返回，但返回后 `unique_lock::owns_lock()==false`，而 native mutex 的 `try_lock` 仍报告 busy；这是静默的所有权状态不一致，不能记为“没有问题”。底层注入格 5/5 返回且 `owns_lock()==true`，说明当前实现没有把该返回码转成异常。
+docs/progress/R109/W1_REPORT.md-63-
+docs/progress/R109/W1_REPORT.md:64:旧调用方格说明不重编并不等于自动取得新行为：符号仍能绑定，但旧调用点保留 non-throwing 契约，异常穿越时仍终止。这是当前机器上的实际观察，不是仅由 ABI 名称推断。
+docs/progress/R109/W1_REPORT.md-65-
+docs/progress/R109/W1_REPORT.md-66-## 4. 影响评估
+docs/progress/R109/W1_REPORT.md-67-
+docs/progress/R109/W1_REPORT.md-68-对持锁正确、底层返回成功或正常超时的现有调用，实验没有观察到变化。变化集中在原本会终止的前置条件违反和底层异常错误：
+docs/progress/R109/W1_REPORT.md-69-
+docs/progress/R109/W1_REPORT.md-70-- 重新编译的调用方会收到 `system_error`。若希望恢复或记录后继续，需要在能定义恢复策略的位置增加针对性处理；若异常最终逃出线程入口、析构函数或其他 non-throwing 边界，进程仍可能终止，只是问题现场和清理轨迹改变。
+docs/progress/R109/W1_REPORT.md-71-- `catch (...)`、通用任务执行器或未来值封装可能捕获并吞掉异常，使原先在错误现场终止的缺陷延后或被掩盖。这是可能变差的场景。
+docs/progress/R109/W1_REPORT.md-72-- 展开期间可运行局部清理、记录上下文、由上层决定重试或降级；对于可恢复的底层故障，这比无条件终止提供更多选择，是可能变好的场景。
+docs/progress/R109/W1_REPORT.md-73-- glibc 明确说明某些 priority-protect 错误返回时 mutex 已释放。因此异常处理代码不能笼统假定锁仍由调用方持有。受控 `EINVAL` 格中锁仍显示持有，只代表该注入格。
+docs/progress/R109/W1_REPORT.md:74:- 同一进程混用新旧调用点时，同一实现抛出的异常在新调用点可传播、在旧调用点终止，形成可观察的不一致。当前 R24 范围内 601 个发布消费记录都会重编，可消除此集合内的调用点差异；外部和预编译消费方是否存在、是否淘汰为 `NOT_AVAILABLE`。
+docs/progress/R109/W1_REPORT.md-75-
+docs/progress/R109/W1_REPORT.md-76-## 5. 人工裁决所需事实边界
+docs/progress/R109/W1_REPORT.md-77-
+docs/progress/R109/W1_REPORT.md:78:现有证据支持以下有限结论：当前已发布仓的 D01/D02 消费方都在重编计划内；直接可归因源码调用没有发现未持锁的产品路径；变化在故障路径上真实存在，且旧调用方不会自动获得新语义。证据不支持“平台上没有外部旧调用方”或“底层错误永不可能发生”。是否接受这项从现场终止到可传播异常的策略变化，留给人工裁决。
+docs/progress/R109/W1_REPORT.md-79-
+docs/progress/R109/W1_REPORT.md-80-## 6. 缺口与证据索引
+docs/progress/R109/W1_REPORT.md-81-
+docs/progress/R109/W1_REPORT.md-82-缺口：外部产品/应用 BOM、最终 ELF 和重编声明 `NOT_AVAILABLE`；D03/D04 内联实例的全平台语义消费面 `NOT_AVAILABLE`；通过复杂宏、模板或跨文件别名形成的 311 条源码候选为 `NOT_DETERMINABLE`；自然底层错误在平台产品运行中的发生率为 `NOT_OBSERVED`。
+docs/progress/R109/W1_REPORT.md-83-
+docs/progress/R109/W1_REPORT.md-84-主要证据：
+docs/progress/R109/W1_REPORT.md-85-
+docs/progress/R109/W1_REPORT.md-86-- `tables/w1_source_callers.tsv`、`w1_source_callers_summary.tsv`：92 条直接调用及逐条锁状态复核；
+docs/progress/R109/W1_REPORT.md-87-- `tables/w1_caller_refined.tsv`、`w1_caller_refined_summary.tsv`：直接归因与未知候选边界；
+docs/progress/R109/W1_REPORT.md-88-- `tables/w1_binary_callers.tsv`、`w1_binary_consumers.tsv`：39,166 个 ELF 的符号命中与 R24 映射；
+--
+docs/progress/R110/W3_REPORT.md-1-# Boost 剩余符号边实测（本轮）
+docs/progress/R110/W3_REPORT.md-2-
+docs/progress/R110/W3_REPORT.md-3-## 结论边界
+docs/progress/R110/W3_REPORT.md-4-
+docs/progress/R110/W3_REPORT.md:5:本轮结论为 **`PARTIAL`**。在既有 27/90 条已测边基础上，本轮在
+docs/progress/R110/W3_REPORT.md-6-**aarch64、QEMU 用户态**新增测到 22 条边，累计为 **49/90**；仍有
+docs/progress/R110/W3_REPORT.md-7-**41/90** 未在其对应架构和符号组上实测。本轮没有把 QEMU aarch64
+docs/progress/R110/W3_REPORT.md-8-结果外推到物理 aarch64、x86_64、armv7l，也没有把一个代表符号组的
+docs/progress/R110/W3_REPORT.md-9-结果外推到同一边上的所有 C++ 符号。
+docs/progress/R110/W3_REPORT.md-10-
+docs/progress/R110/W3_REPORT.md-11-## 选取及理由
+docs/progress/R110/W3_REPORT.md-12-
+docs/progress/R110/W3_REPORT.md:13:沿用上一轮的 90 条边分类，并严格按以下次序选择：
+docs/progress/R110/W3_REPORT.md-14-
+docs/progress/R110/W3_REPORT.md-15-1. 先补 aarch64 上已有同符号组、但该架构尚未观测的布局敏感边：
+docs/progress/R110/W3_REPORT.md-16-   Boost.Test 7 条、Boost.Filesystem 4 条、Boost.Iostreams 1 条、
+docs/progress/R110/W3_REPORT.md-17-   Boost.Program Options 2 条，共 14 条。
+docs/progress/R110/W3_REPORT.md-18-2. 再补“C++ ABI 耦合但布局未证明”：Boost.Test 5 条、Boost.Thread
+docs/progress/R110/W3_REPORT.md-19-   3 条，共 8 条。Boost.Thread 在 x86_64 通过只能说明该架构和该符号
+docs/progress/R110/W3_REPORT.md-20-   组的实测结果，不能代替 aarch64 实测；Boost.Test 在这一分类中也
+docs/progress/R110/W3_REPORT.md-21-   不能因分类名含“未证明”而默认安全。
+docs/progress/R110/W3_REPORT.md-22-
+docs/progress/R110/W3_REPORT.md:23:逐边清单见 `tables/w3_selected_edges.tsv`，更新后的完整 90 条表见
+docs/progress/R110/W3_REPORT.md-24-`tables/w3_edges_90_results.tsv`。
+docs/progress/R110/W3_REPORT.md-25-
+docs/progress/R110/W3_REPORT.md-26-## 方法和正向对照
+docs/progress/R110/W3_REPORT.md-27-
+docs/progress/R110/W3_REPORT.md-28-- provider 均来自 R11 Base aarch64 二进制 RPM，实际加载的是平台的
+docs/progress/R110/W3_REPORT.md-29-  Boost 1.83.0 DSO，不是模拟 provider。五个 provider 的 SHA256 记录在
+docs/progress/R110/W3_REPORT.md-30-  `raw/080_extract_selected_r11_boost_providers.stdout`。
+docs/progress/R110/W3_REPORT.md-31-- consumer 以 aarch64 目标编译，使用 R11 的 libc++ 22.1.8 或
+docs/progress/R110/W3_REPORT.md-32-  libstdc++ 14.2.0 头文件和运行库。构建产物经 `file` 确认为 aarch64
+docs/progress/R110/W3_REPORT.md-33-  ELF；混合格的动态依赖包含 libc++、libc++abi 与 libstdc++。
+--
+docs/progress/R110/W3_REPORT.md-45-  AArch64 参数与隐藏返回值约定，而不是沿用 x86_64 的寄存器假设。
+docs/progress/R110/W3_REPORT.md-46-
+docs/progress/R110/W3_REPORT.md-47-执行环境是 QEMU 用户态而非物理板。它足以观测本轮确定性的对象布局、
+docs/progress/R110/W3_REPORT.md-48-返回值、状态转换与析构结果；不据此声明真实内核时序、信号交付或设备
+docs/progress/R110/W3_REPORT.md-49-行为已覆盖。
+docs/progress/R110/W3_REPORT.md-50-
+docs/progress/R110/W3_REPORT.md-51-## 实测结果
+docs/progress/R110/W3_REPORT.md-52-
+docs/progress/R110/W3_REPORT.md:53:| provider / 调用形态 | 混合运行库 5 轮 | libstdc++ 对照 5 轮 | 析构观察 |
+docs/progress/R110/W3_REPORT.md-54-|---|---|---|---|
+docs/progress/R110/W3_REPORT.md-55-| Boost.Test `normalize_test_case_name`，provider 返回 `std::string` | 5/5 返回后读取为长度 56，期望长度 16；具体值断言失败，退出 41 | 5/5 长度 16，十六进制为 `616c7068615f626574615f67616d6d61`（`alpha_beta_gamma`），退出 0 | 混合侧 5/5 consumer 析构完成且 `dlclose` 完成 |
+docs/progress/R110/W3_REPORT.md-56-| Boost.Filesystem `status` + `read_symlink` | 5/5 `status_ok=0`、`value_ok=0`；返回路径长度 8 且文本损坏，退出 41 | 5/5 `status_ok=1`，精确返回 `payload.txt`（长度 11），退出 0 | 两格均 5/5 完成 provider 构造对象的 consumer 析构 |
+docs/progress/R110/W3_REPORT.md-57-| Boost.Iostreams `mapped_file_source::open` | 5/5 在给出值断言前抛出 `std::length_error` 并终止，退出 134 | 5/5 打开成功、长度 19、内容精确匹配，退出 0 | 混合侧 5/5 析构未观测；对照 5/5 完成 |
+docs/progress/R110/W3_REPORT.md-58-| Boost.Program Options `variables_map` | 5/5 初始大小 0、插入后大小 1、值 82 精确通过；随后在作用域退出的析构阶段 SIGSEGV，退出 139 | 5/5 值与析构均通过，退出 0 | 混合侧 5/5 值正确但析构未完成；对照 5/5 完成 |
+docs/progress/R110/W3_REPORT.md-59-| Boost.Thread `enter/rollback/commit_once_region` | 5/5 精确状态 `1,1,0`，退出 0 | 5/5 精确状态 `1,1,0`，退出 0 | `once_flag` 为平凡析构，5/5 作用域退出完成 |
+docs/progress/R110/W3_REPORT.md-60-
+docs/progress/R110/W3_REPORT.md-61-完整逐轮结构化结果为 `build/w3/runtime_results.tsv`；逐轮命令与退出码
+docs/progress/R110/W3_REPORT.md-62-为 `build/w3/runtime_commands.tsv`；逐轮 stdout/stderr 均在
+docs/progress/R110/W3_REPORT.md-63-`build/w3/`。最终矩阵自校验输出
+--
+docs/progress/R109/W3_REPORT.md:1:# W3 Boost 边界其余各条实测
+docs/progress/R109/W3_REPORT.md-2-
+docs/progress/R109/W3_REPORT.md-3-## 结论
+docs/progress/R109/W3_REPORT.md-4-
+docs/progress/R109/W3_REPORT.md:5:`PARTIAL`。90 条真实 Boost C++ 语义边已逐条分类并标记测量状态；按“该边包含被测代表符号，且该架构确实执行”计，R82 已测 12 条，本轮新增 x86_64 15 条，合计 27/90。其余 63 条没有被标成已测：39 条是同一代表符号组但该架构未执行，24 条属于未选符号组。每条边可能包含多个 C++ 符号，因此 27 也只表示边上的代表符号组，不表示边内所有符号逐个动态执行。
+docs/progress/R109/W3_REPORT.md-6-
+docs/progress/R109/W3_REPORT.md:7:## 1. 90 条边分类
+docs/progress/R109/W3_REPORT.md-8-
+docs/progress/R109/W3_REPORT.md-9-| 用户要求的分类 | 边数 | R82 对应口径 |
+docs/progress/R109/W3_REPORT.md-10-|---|---:|---|
+docs/progress/R109/W3_REPORT.md-11-| 布局敏感 | 63 | 33 `HIDDEN_STD_LAYOUT` + 6 `HIDDEN_STD_LAYOUT+DIRECT_STD_SIGNATURE` + 24 `DIRECT_STD_SIGNATURE` |
+docs/progress/R109/W3_REPORT.md-12-| C++ ABI 耦合但布局未证明 | 27 | 27 `NO_STD_LAYOUT_EVIDENCE` |
+docs/progress/R109/W3_REPORT.md-13-| 仅 C 接口 | 0 | 输入集合本身限定为 `TRUE_CPP_ABI_COUPLING` |
+docs/progress/R109/W3_REPORT.md-14-| 无交集 | 0 | 同上 |
+docs/progress/R109/W3_REPORT.md-15-
+docs/progress/R109/W3_REPORT.md-16-分类是对全部 90 行机械生成，逐行见 `tables/w3_edges_90_results.tsv`。布局未证明不是安全证明。
+docs/progress/R109/W3_REPORT.md-17-
+--
+docs/progress/R109/W3_REPORT.md-63-
+docs/progress/R109/W3_REPORT.md-64-- 44 条布局敏感：23 条是已选符号组的未执行架构，21 条是未选符号组。相同 provider 家族的已测样本已经出现静默错值或终止，风险评为高；不能据家族结果替代逐条值和销毁观察。
+docs/progress/R109/W3_REPORT.md-65-- 19 条 C++ ABI 耦合但布局未证明：16 条是本轮符号组的 armv7l/aarch64 未执行边，3 条为 Boost.Test 未选符号组。风险保持未知；Boost.Thread x86_64 成功不能外推。
+docs/progress/R109/W3_REPORT.md-66-
+docs/progress/R109/W3_REPORT.md-67-若按“不区分架构，只看代表符号是否被某处测试”计，R82 三组触及 21 条、本轮两组触及 45 条、未选符号组 24 条；该口径只用于说明选择覆盖面，不用于 `ALL_MEASURED` 判定。权威结论采用 27 已测、63 未测。
+docs/progress/R109/W3_REPORT.md-68-
+docs/progress/R109/W3_REPORT.md-69-## 7. 证据索引
+docs/progress/R109/W3_REPORT.md-70-
+docs/progress/R109/W3_REPORT.md:71:- 全 90 条分类、代表符号及结果：`tables/w3_edges_90_results.tsv`；
+docs/progress/R109/W3_REPORT.md-72-- 未测 63 条：`tables/w3_unmeasured_edges.tsv`；
+docs/progress/R109/W3_REPORT.md-73-- 分类与最终统计：`tables/w3_edge_classification_summary.tsv`、`w3_final_summary.tsv`；
+docs/progress/R109/W3_REPORT.md-74-- 新混合矩阵：`tables/w3_runtime_matrix_retry.tsv`、`w3_runtime_summary_retry.tsv`；
+docs/progress/R109/W3_REPORT.md-75-- libstdc++ 正向对照：`tables/w3_libstdcxx_reference.tsv`；
+docs/progress/R109/W3_REPORT.md-76-- R82 既有矩阵：`docs/progress/R82/tables/mixed_runtime_matrix.tsv`；
+docs/progress/R109/W3_REPORT.md-77-- 构建、符号、动态依赖、SHA256、命令原文、stdout、stderr 与退出码：`raw/`。
+docs/progress/R109/W3_REPORT.md-78-
+docs/progress/R109/W3_REPORT.md-79-本轮没有修改平台源码或四个补丁，没有使用开发板，没有把“未崩溃”当作“没有问题”。
+--
+docs/progress/R86/ROUTES.md-17-覆盖：直接解决 D01-D04 的 forced unwind 边界，不解决 D05。
+docs/progress/R86/ROUTES.md-18-
+docs/progress/R86/ROUTES.md-19-正常路径：成功等待、被通知和正常超时的算法可以保持；但普通错误会从终止变为传播 `system_error`，自定义 Clock/虚调用异常也可能开始传播。编译器为调用点生成的异常清理数据会改变。因此只能说“不涉及取消且没有异常的成功路径意图不变”，不能说全部正常行为无变化。
+docs/progress/R86/ROUTES.md-20-
+docs/progress/R86/ROUTES.md-21-已编译程序：D01/D02 符号名不变，通常仍可解析；旧 caller 的异常元数据却可能不完整，不能把它作为兼容策略。D03/D04 需要重编使用者。D05 未解决。
+docs/progress/R86/ROUTES.md-22-
+docs/progress/R86/ROUTES.md-23-实现/验证量：源码行数有限，但 ABI 与平台交付验证不小。至少需要两架构 D01-D04 取消用例、无效锁与底层错误路径、system/steady/custom Clock、所有 predicate overload、libc++/libc++abi 官方套件、旧对象/新对象与旧库/新库矩阵、平台全量重编和运行抽样。
+docs/progress/R86/ROUTES.md-24-
+docs/progress/R86/ROUTES.md:25:### A2：D01/D02 双版本，D03/D04 头文件解除
+docs/progress/R86/ROUTES.md-26-
+docs/progress/R86/ROUTES.md-27-D01/D02 的旧版本保留 non-throwing 行为，新默认版本允许 forced unwind；新头文件使新对象绑定新版本。D03/D04 与 A1 一样靠新头文件和重编。
+docs/progress/R86/ROUTES.md-28-
+docs/progress/R86/ROUTES.md-29-覆盖：D01-D04；D05 未解决。
+docs/progress/R86/ROUTES.md-30-
+docs/progress/R86/ROUTES.md-31-正常路径：与 A1 相同。旧对象调用 D01/D02 仍保持旧终止契约；新对象取得新传播行为。
+docs/progress/R86/ROUTES.md-32-
+docs/progress/R86/ROUTES.md-33-已编译程序：它显式解决 D01/D02 的旧 caller 问题。D03/D04 没有库符号，旧对象仍含旧边界，必须淘汰、重编或接受混合行为。
+docs/progress/R86/ROUTES.md-34-
+docs/progress/R86/ROUTES.md-35-实现/验证量：除 A1 外，需要添加实际版本节点、旧 wrapper、新默认实现、隐藏 helper；逐架构验证 `readelf --version-info`、old/new symbol binding，并覆盖包升级与回滚。D02 私有成员 wrapper 的具体写法和版本节点命名没有在本任务中选定。
