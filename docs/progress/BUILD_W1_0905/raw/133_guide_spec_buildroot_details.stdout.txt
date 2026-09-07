@@ -1,0 +1,303 @@
+# mlgo-pack (chroot edition) — MLGO model pre-generation, fully GBS-based
+
+Pre-compiles MLGO inliner/regalloc models (TF SavedModel zip / tar.gz /
+directory) into the tar.gz packages that `llvm.spec` consumes directly, so the
+GBS build of LLVM never needs TensorFlow.
+
+This directory ships **no compilers of its own** (~75 MB, mostly a pre-seeded
+sysroot cache). Everything heavy runs inside one **x86_64 GBS buildroot**:
+
+| Step                    | Tool used, inside the buildroot                                   |
+|-------------------------|-------------------------------------------------------------------|
+| Model AOT (all 3 arches)| `/opt/tensorflow-aot/bin/saved_model_cli` from the cross-enabled tensorflow2-aot RPM |
+| XLA runtime compile     | The buildroot's own clang (Tizen x86_64 clang carries the X86;ARM;AArch64 backends) |
+| Static archive          | The buildroot's binutils `ar`                                     |
+
+One x86_64 buildroot produces the packages for **all three arches**
+(armv7l / aarch64 / x86_64). A sibling, self-contained variant that needs no
+GBS infrastructure lives in `../tools/` (portable edition, ~2 GB).
+
+## Prerequisites
+
+- Host: `python3` (stdlib only), `sudo`, `tar`, binutils (`nm`, `readelf`).
+- A GBS setup with an x86_64 buildroot that ships clang — any buildroot
+  created by a `tensorflow2` or `llvm` gbs build qualifies, e.g.
+  `<GBS-ROOT>/local/BUILD-ROOTS/scratch.x86_64.0`.
+- The **cross-enabled** tensorflow2-aot RPM (its spec must carry
+  `--define=with_cross_compiler_support=true`, see `../mlgo-tf-aot-cross.diff`;
+  the older x86-only RPM can only AOT for x86_64).
+
+## Operation
+
+### 1. Prepare the buildroot (one-time, needs sudo)
+
+```bash
+BR=/path/to/GBS-ROOT/local/BUILD-ROOTS/scratch.x86_64.0
+./setup-chroot.sh --chroot $BR --rpm /path/to/tensorflow2-aot-2.18.0-1.x86_64.rpm
+```
+
+This installs the RPM into the buildroot (skipped if already present), checks
+clang/ar, stages the armv7l/aarch64 header sysroots into
+`<buildroot>/opt/mlgo-sysroots/` (from `build/sysroot-cache/`, no network
+needed; set `TIZEN_BASE_REPO=` to refetch from a different repo), mounts
+`/proc` if missing, and self-checks that clang has the ARM and AArch64
+backends.
+
+### 2. Package a model (the frequent operation)
+
+```bash
+./mlgo-pack --chroot $BR --model inliner_model.zip  --type inliner
+./mlgo-pack --chroot $BR --model regalloc_model.zip --type regalloc
+```
+
+Input may be a zip, tar.gz, or directory; the tool locates `saved_model.pb`
+automatically (nested dirs and `__MACOSX` junk are handled). Each run produces
+`mlgo_<type>_<arch>.tar.gz` for the selected arches (default: all three) in
+`../llvm/packaging/` (override with `--out`). Updating one model never touches
+the other model's packages or the runtime packages.
+
+### 3. Rebuild the runtime packages (rare — only on a TF upgrade)
+
+```bash
+./mlgo-pack --chroot $BR --make-runtime
+```
+
+Cross-compiles the 34 XLA runtime sources (taken from the RPM inside the
+buildroot) for each arch and produces `mlgo_runtime_<arch>.tar.gz`.
+
+### 4. Verification
+
+Every run performs static checks automatically: ELF machine type per arch,
+the armv7l softfp ABI gate (hard-float is rejected), canonical entry symbol
+`_xla_<Model>_llvm_<Model>` with header/object consistency, and presence of
+the five runtime objects `llvm.spec` embeds.
+
+After packaging, a full `gbs build` verification of the LLVM package runs
+automatically (`verify-gbs.sh`, sequential per arch, resource-capped: job
+count derived from available memory, systemd MemoryHigh/MemoryMax + CPUQuota,
+refuses to start below 6 GB free). Pass `--no-verify` to skip it and run
+`./verify-gbs.sh <arch>...` separately later. Build logs are kept under
+`build/logs/`.
+
+### Useful variants
+
+```bash
+./mlgo-pack --chroot $BR --model X.zip --type inliner --arch armv7l   # one arch only
+./mlgo-pack --chroot $BR --model X.zip --type inliner --out /tmp/pkgs # custom output dir
+```
+
+## Outputs
+
+Nine packages total, named exactly as `llvm.spec` Source1002–1010 expects:
+
+- `mlgo_runtime_<arch>.tar.gz` — five precompiled XLA runtime objects (embedded
+  by the spec), `mlgo_sysroot/` (TF include tree + stub CMakeLists +
+  `libtf_xla_runtime_prebuilt.a`), LICENSE
+- `mlgo_inliner_<arch>.tar.gz` — `InlinerSizeModel.h/.o`
+- `mlgo_regalloc_<arch>.tar.gz` — `RegAllocEvictModel.h/.o`
+
+Each package carries a `MANIFEST-<kind>.json` with the model sha256, TF and
+clang versions, target triple, generation time, and
+`tf_source=team-rpm(chroot:...)` for provenance.
+
+## Troubleshooting
+
+- **"has no /opt/tensorflow-aot/..."** — run step 1; the RPM is not installed
+  in that buildroot.
+- **"No available targets are compatible with triple ..."** — the installed
+  RPM is the old x86-only build; install the cross-enabled one (step 1 with
+  `--rpm`).
+- **"missing the ... sysroot"** — run step 1; the header sysroots are not
+  staged.
+- **TF aborts with `Check failed: -1 != path_length`** — `/proc` is not
+  mounted in the buildroot; rerun step 1 (or
+  `sudo mount -t proc proc $BR/proc`).
+- A gbs build may recreate/clean buildroots; if the buildroot was wiped,
+  simply rerun step 1.
+
+## Mechanism notes
+
+- Model AOT copies the model to `<buildroot>/tmp/mlgo-aot/` and runs
+  `saved_model_cli aot_compile_cpu` with a bare `--output_prefix` from inside
+  that directory, keeping entry symbols canonical (no absolute paths leak into
+  symbol names). `--tag_set serve --signature_def_key action`, cpp_class
+  `llvm::<Model>` — identical to upstream LLVM's TensorFlowCompile.cmake usage.
+- Runtime compile flags: `-O3 -fPIC -std=c++17`; armv7l uses
+  `-march=armv7-a -mfloat-abi=softfp -mfpu=neon -mtune=cortex-a8 -mthumb`
+  (matches the Tizen buildroot ABI), aarch64 adds `-DEIGEN_NEON_GEBP_NR=4`
+  (TF upstream requirement for the Eigen convolution kernels).
+- Tizen ships libstdc++ headers inside the GCC install dir
+  (`usr/lib{,64}/gcc/<triple>/<ver>/include/c++`); the tool passes them to
+  clang explicitly via `-isystem`.
+
+=== SPECS ===
+--- codes/tensorflow2-mlgo-aot-v3/packaging/tensorflow2-aot-aarch64.spec
+1:%define aot_arch aarch64
+12:%define aot_prefix /opt/tensorflow-aot
+13:%define py_ver 3.12
+15:%define py_platform aarch64-unknown-linux-gnu
+17:%define py_platform x86_64-unknown-linux-gnu
+21:Name:           tensorflow2-aot-%{aot_arch}
+22:Summary:        TensorFlow AOT toolchain (saved_model_cli) for LLVM MLGO, %{aot_arch}
+23:Version:        2.18.0
+24:Release:        1
+33:Source3030:     bazel-6.5.0-linux-arm64.gz.part00
+34:Source3031:     bazel-6.5.0-linux-arm64.gz.part01
+36:Source3000:     bazel-6.5.0-linux-x86_64
+38:Source3010:     bazel-repo-cache.tgz.part00
+39:Source3011:     bazel-repo-cache.tgz.part01
+40:Source3012:     bazel-repo-cache.tgz.part02
+41:Source3013:     bazel-repo-cache.tgz.part03
+42:Source3014:     bazel-repo-cache.tgz.part04
+43:Source3015:     bazel-repo-cache.tgz.part05
+44:Source3016:     bazel-repo-cache.tgz.part06
+45:Source3017:     bazel-repo-cache.tgz.part07
+46:Source3018:     bazel-repo-cache.tgz.part08
+47:Source3019:     bazel-repo-cache.tgz.part09
+48:Source3020:     bazel-repo-cache.tgz.part10
+49:# Runtime-only pypi deps of saved_model_cli not present in bazel's pip repos
+53:# whl_library resolves requirements by running pip, which bypasses the bazel
+68:BuildRequires:  zip
+69:BuildRequires:  unzip
+70:# For bazel repository rules (llvm_configure etc.); the built product uses
+72:BuildRequires:  python3
+75:BuildRequires:  gcc
+76:BuildRequires:  gcc-c++
+77:BuildRequires:  which
+78:BuildRequires:  findutils
+79:BuildRequires:  patchelf
+93:Summary:        TensorFlow AOT toolchain (saved_model_cli) for LLVM MLGO
+102:Self-contained TensorFlow AOT compilation environment (saved_model_cli,
+123:cat %{SOURCE3030} %{SOURCE3031} | gzip -dc > ./bazel
+125:cp %{SOURCE3000} ./bazel
+127:chmod +x ./bazel
+131:# patchelf, ...). Only three things cannot (no bazel package exists; Tizen
+132:# python3 is 3.14 while TF 2.18 requires <=3.12): the bazel binary, the
+136:./bazel --version || { echo "FATAL: vendored bazel cannot run in this buildroot"; exit 1; }
+139:# Keep bazel's output base outside the source tree: %%prep wipes the tree on
+142:export BAZEL_ROOT=$HOME/.cache/bazel-tf-aot
+145:# Force gcc for bazel's C++ toolchain autodetection (see BuildRequires note).
+176:# action count and the memory budget bazel schedules against. Raise with
+179:# The bazel JVM under qemu-user sporadically deadlocks during analysis with
+184:    if timeout 5400 ./bazel --output_user_root=$BAZEL_ROOT \
+197:        //tensorflow/python/tools:saved_model_cli; then
+201:    echo "analysis attempt $attempt hung or failed; restarting bazel server"
+202:    timeout 120 ./bazel --output_user_root=$BAZEL_ROOT shutdown || true
+206:    [ $attempt = 3 ] && { echo "FATAL: bazel analysis kept hanging"; exit 1; }
+209:./bazel --output_user_root=$BAZEL_ROOT \
+227:    //tensorflow/python/tools:saved_model_cli
+230:./bazel --output_user_root=$BAZEL_ROOT shutdown
+237:BAZEL_ROOT=$HOME/.cache/bazel-tf-aot
+243:rm -f $AOT_ROOT/python/BUILD.bazel $AOT_ROOT/python/WORKSPACE
+249:WHEEL=$(find bazel-bin/tensorflow/tools/pip_package -name "tensorflow-%{version}*.whl" | head -1)
+253:# 3. Python runtime deps of saved_model_cli (numpy, absl, protobuf, ...) from
+264:# 3b. Runtime-only deps missing from the bazel pip repos.
+272:install -m 0755 bazel-bin/tensorflow/compiler/aot/tfcompile $AOT_ROOT/bin/tfcompile
+274:# 5. saved_model_cli launcher at <prefix>/bin, where llvm's
+276:cat > $AOT_ROOT/bin/saved_model_cli << 'EOF'
+280:exec "$SELF/python/bin/python%{py_ver}" -c "from tensorflow.python.tools.saved_model_cli import main; main()" "$@"
+282:sed -i "s/%%{py_ver}/%{py_ver}/g" $AOT_ROOT/bin/saved_model_cli 2>/dev/null || true
+283:chmod 0755 $AOT_ROOT/bin/saved_model_cli
+288:# use `saved_model_cli --help`: absl prints usage and exits 1, so it can
+290:test -x %{buildroot}%{aot_prefix}/bin/saved_model_cli || \
+291:    { echo "FATAL: saved_model_cli wrapper missing or not executable"; exit 1; }
+294:    "import tensorflow as tf; from tensorflow.python.tools import saved_model_cli; print('smoke: TF', tf.__version__)" ) || \
+295:    { echo "FATAL: saved_model_cli smoke test failed"; exit 1; }
+--- codes/tensorflow2-mlgo-aot-v3/packaging/tensorflow2-aot.spec
+10:%define aot_prefix /opt/tensorflow-aot
+11:%define py_ver 3.12
+13:%define py_platform aarch64-unknown-linux-gnu
+15:%define py_platform x86_64-unknown-linux-gnu
+19:Name:           tensorflow2-aot-%{aot_arch}
+20:Summary:        TensorFlow AOT toolchain (saved_model_cli) for LLVM MLGO, %{aot_arch}
+21:Version:        2.18.0
+22:Release:        1
+31:Source3030:     bazel-6.5.0-linux-arm64.gz.part00
+32:Source3031:     bazel-6.5.0-linux-arm64.gz.part01
+34:Source3000:     bazel-6.5.0-linux-x86_64
+36:Source3010:     bazel-repo-cache.tgz.part00
+37:Source3011:     bazel-repo-cache.tgz.part01
+38:Source3012:     bazel-repo-cache.tgz.part02
+39:Source3013:     bazel-repo-cache.tgz.part03
+40:Source3014:     bazel-repo-cache.tgz.part04
+41:Source3015:     bazel-repo-cache.tgz.part05
+42:Source3016:     bazel-repo-cache.tgz.part06
+43:Source3017:     bazel-repo-cache.tgz.part07
+44:Source3018:     bazel-repo-cache.tgz.part08
+45:Source3019:     bazel-repo-cache.tgz.part09
+46:Source3020:     bazel-repo-cache.tgz.part10
+47:# Runtime-only pypi deps of saved_model_cli not present in bazel's pip repos
+51:# whl_library resolves requirements by running pip, which bypasses the bazel
+66:BuildRequires:  zip
+67:BuildRequires:  unzip
+68:# For bazel repository rules (llvm_configure etc.); the built product uses
+70:BuildRequires:  python3
+73:BuildRequires:  gcc
+74:BuildRequires:  gcc-c++
+75:BuildRequires:  which
+76:BuildRequires:  findutils
+77:BuildRequires:  patchelf
+91:Summary:        TensorFlow AOT toolchain (saved_model_cli) for LLVM MLGO
+100:Self-contained TensorFlow AOT compilation environment (saved_model_cli,
+121:cat %{SOURCE3030} %{SOURCE3031} | gzip -dc > ./bazel
+123:cp %{SOURCE3000} ./bazel
+125:chmod +x ./bazel
+129:# patchelf, ...). Only three things cannot (no bazel package exists; Tizen
+130:# python3 is 3.14 while TF 2.18 requires <=3.12): the bazel binary, the
+134:./bazel --version || { echo "FATAL: vendored bazel cannot run in this buildroot"; exit 1; }
+137:# Keep bazel's output base outside the source tree: %%prep wipes the tree on
+140:export BAZEL_ROOT=$HOME/.cache/bazel-tf-aot
+143:# Force gcc for bazel's C++ toolchain autodetection (see BuildRequires note).
+174:# action count and the memory budget bazel schedules against. Raise with
+177:# The bazel JVM under qemu-user sporadically deadlocks during analysis with
+182:    if timeout 5400 ./bazel --output_user_root=$BAZEL_ROOT \
+195:        //tensorflow/python/tools:saved_model_cli; then
+199:    echo "analysis attempt $attempt hung or failed; restarting bazel server"
+200:    timeout 120 ./bazel --output_user_root=$BAZEL_ROOT shutdown || true
+204:    [ $attempt = 3 ] && { echo "FATAL: bazel analysis kept hanging"; exit 1; }
+207:./bazel --output_user_root=$BAZEL_ROOT \
+225:    //tensorflow/python/tools:saved_model_cli
+228:./bazel --output_user_root=$BAZEL_ROOT shutdown
+235:BAZEL_ROOT=$HOME/.cache/bazel-tf-aot
+241:rm -f $AOT_ROOT/python/BUILD.bazel $AOT_ROOT/python/WORKSPACE
+247:WHEEL=$(find bazel-bin/tensorflow/tools/pip_package -name "tensorflow-%{version}*.whl" | head -1)
+251:# 3. Python runtime deps of saved_model_cli (numpy, absl, protobuf, ...) from
+262:# 3b. Runtime-only deps missing from the bazel pip repos.
+270:install -m 0755 bazel-bin/tensorflow/compiler/aot/tfcompile $AOT_ROOT/bin/tfcompile
+272:# 5. saved_model_cli launcher at <prefix>/bin, where llvm's
+274:cat > $AOT_ROOT/bin/saved_model_cli << 'EOF'
+278:exec "$SELF/python/bin/python%{py_ver}" -c "from tensorflow.python.tools.saved_model_cli import main; main()" "$@"
+280:sed -i "s/%%{py_ver}/%{py_ver}/g" $AOT_ROOT/bin/saved_model_cli 2>/dev/null || true
+281:chmod 0755 $AOT_ROOT/bin/saved_model_cli
+286:# use `saved_model_cli --help`: absl prints usage and exits 1, so it can
+288:test -x %{buildroot}%{aot_prefix}/bin/saved_model_cli || \
+289:    { echo "FATAL: saved_model_cli wrapper missing or not executable"; exit 1; }
+292:    "import tensorflow as tf; from tensorflow.python.tools import saved_model_cli; print('smoke: TF', tf.__version__)" ) || \
+293:    { echo "FATAL: saved_model_cli smoke test failed"; exit 1; }
+--- codes/tensorflow2-mlgo-aot-v3/packaging/tensorflow2.spec
+1:Name:           tensorflow2
+3:Version:        2.18.0
+4:Release:        1
+34:%define USE_CLANG     "ON"
+35:%define USE_XNNPACK   "ON"
+36:%define USE_OPENCL    "ON"
+37:%define SHARED_LIB    "OFF"
+41:%define USE_CLANG     "OFF"
+46:BuildRequires: python-accel-armv7l-cross-arm
+47:BuildRequires: clang-accel-armv7l-cross-arm
+51:BuildRequires: python-accel-armv7hl-cross-arm
+52:BuildRequires: clang-accel-armv7hl-cross-arm
+56:BuildRequires: python-accel-aarch64-cross-aarch64
+57:BuildRequires: clang-accel-aarch64-cross-aarch64
+61:BuildRequires: python-accel-riscv64-cross-riscv64
+62:BuildRequires: clang-accel-riscv64-cross-riscv64
+65:BuildRequires: clang
+68:BuildRequires: cmake
+69:BuildRequires: ninja
+70:BuildRequires: python3
+134:%define host_triplet %(echo %{_host} | sed 's/^i686-/i586-/')
+
+=== BUILDROOT CANDIDATES ===
+tmp/GBS-ROOT/R104-matrix-x86_64-libcxx/local/BUILD-ROOTS/scratch.x86_64.0/usr/bin/clang++
+tmp/GBS-ROOT/R105-tensorflow2-armv7l-gccactual/local/BUILD-ROOTS/scratch.armv7l.0/emul/usr/bin/clang++
+tmp/GBS-ROOT/R105-tensorflow2-armv7l-gccactual/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/clang++

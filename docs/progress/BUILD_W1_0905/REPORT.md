@@ -1,8 +1,16 @@
-# W1 第一阶段：MLGO / XLA AOT 生成指南核对
+# W1：MLGO / XLA AOT 资产再生成（含最终续跑记录）
 
 ## 结论
 
-`BLOCKED`（第一轮确认后已按人工答复续查；新的停止点是“只生成 inliner”不能替换实际携带错误 ABI 的 XLA runtime，资产生成尚未开始）。
+`PARTIAL`。人工随后授权同步重新生成三架构 XLA runtime，并确认采用
+“有效载荷、接口与 ABI 一致”的等价口径。隔离副本中的双标准库开关和
+三包兼容组装工具已经准备；AOT 工具构建在修正若干命令自身的环境问题后推进到
+`31,594 / 35,555`，但中途资源门禁返回 21（负载过高），已立即中断并清理
+本轮进程。尚未生成可用资产，因此符号、接口、载荷及 LLVM 构建验证均为
+`NOT_OBSERVED`，W2 仍为 `NOT_AVAILABLE`。
+
+第 1–12 节保留第一阶段与两轮人工确认的历史记录；第 13–17 节是最终续跑
+结果，若状态或未观测项与前文不同，以后者为准。
 
 两个指定分支和两个模型输入均已取得并核对，但现有指南、脚本、目标 LLVM spec 与“生成基于 libc++ 的资产”这一目标之间存在多处实质不一致。按任务书“指南与实际材料不符或缺少必要输入即停”的要求，本阶段没有执行 `setup-chroot.sh`、`mlgo-pack`、GBS 构建或任何资产导入。
 
@@ -245,3 +253,135 @@ Source1004: mlgo_x86_model.tar.gz
 - sysroot 在线下载：`NOT_OBSERVED`；
 - 三架构 inliner/runtime 资产生成：`NOT_OBSERVED`；
 - LLVM 三架构 GBS 验证：`NOT_OBSERVED`。
+
+## 13. 最终授权后的实施范围
+
+人工最终确认：
+
+- 同步重新生成 XLA runtime 的 armv7l、aarch64、x86_64 三架构资产；
+- 模型采用 inliner 三架构；regalloc 本轮不重新生成；
+- 默认 libstdc++ 路径必须保持现状，显式开关才选择 libc++；
+- 新旧比较采用“有效载荷、接口与 ABI 一致”，不要求含时间戳和 tar 元数据的
+  压缩包逐字节一致；
+- 接口符号缺失或新增必须逐项申报，新对象必须以 `std::__1` 为 ABI 证据；
+- 缺失的 sysroot 缓存可从脚本所列 Tizen `reference` 地址在线获取；
+- 缺失的交叉支持 diff、指南的 sysroot 缓存遗漏和验证脚本资源参数冲突均继续
+  记录，但不再作为开始实施的阻断。
+
+为兼容当前 LLVM spec 的三个合并包接口，新增了
+`code/assemble_combined_assets.py`：每个架构以新 runtime、新 inliner 和旧
+regalloc 组装 `mlgo_{arm,aarch,x86}_model.tar.gz`。该工具仅准备并通过语法
+检查（`raw/150_helper_syntax_and_help.*`）；因没有生成输入，未实际运行，
+组装结果为 `NOT_OBSERVED`。
+
+## 14. 隔离副本中的实现（未修改 `codes/`）
+
+所有实验性修改均位于 `tmp/BUILD_W1_0905/`，没有写入只读的 `codes/`：
+
+1. `fetch_sysroot.py` 增加 `--stdlib {libstdc++,libc++}`，默认
+   `libstdc++`；按选择下载并核验相应开发包和头文件。
+2. `setup-chroot.sh` 增加同一开关，并为两种标准库使用相互隔离的 sysroot
+   缓存与 buildroot 路径。
+3. `mlgo_pack.py` 增加同一开关；libc++ 路径显式使用
+   `-stdlib=libc++ -nostdinc++` 与 libc++/libc++abi 头文件，默认路径保留
+   原有 libstdc++ 查找逻辑。
+4. 隔离的 `tensorflow2-aot.spec` 在 Bazel 调用中加入现有
+   `--config=cpu_cross`，没有自行补写缺失的 diff。
+
+完整 diff 与静态检查见 `raw/136_switch_diff_static_checks.*`。静态检查只能证明
+开关存在、默认值与代码路径按设计保留，不能替代“默认输出与现状等价”的产物
+实测；该实测因 AOT 工具未构建完成而为 `NOT_OBSERVED`。
+
+## 15. AOT 工具构建过程与停止点
+
+### 15.1 命令自身的技术性问题
+
+这些非零均发生在生成资产所需的 AOT 工具构建阶段，未产出可供 LLVM 使用的
+资产；按“命令自身技术性错误可修正并申报”的纪律处理：
+
+| 记录 | 结果 | 现象与修正 |
+|---|---:|---|
+| `raw/138_aot_build.*` | 1 | GBS/Bazel 执行 LLVM overlay 时超时；保留已取得的外部仓数据后作一次增量重试。 |
+| `raw/139_aot_build_retry.*` | 1 | Bazel 报 `@ruy: download is disabled`；`raw/140_*` 证明所需 SHA256 为 `a22c42e80c7bb450db8492728e4742ee66f46d5458c45fe67ce2c9b61240630c` 的缓存文件实际存在且校验一致，判定为 Bazel 外部仓状态问题，而非输入缺失。 |
+| `raw/142_aot_build_clean_bazel_state.*` | 1 | 隔离执行继承宿主 `HOME`，RPM 将 `%{_topdir}` 解析到无权限路径；改为 buildroot 内的 `/home/abuild`。 |
+| `raw/143_aot_build_clean_bazel_state_home.*` | 1 | 继承宿主 Snap 的 `LOCPATH`，导致 Go SDK 解包过程的 UTF-8 locale 转换错误；移除该宿主变量，并在 buildroot 中明确设置 UTF-8 locale。 |
+| `raw/145_aot_build_clean_state_utf8.*` | 130（恢复记录） | 修正后的命令成功推进到 `31,594 / 35,555`。资源门禁返回 21 后人工中断；退出码文件为依据统一执行会话返回值补记，非包装器自动写入，详见同名 `RECOVERY_NOTE.md`。 |
+
+`raw/145` 的命令明确限制 `_smp_mflags -j2` 和 `aot_build_jobs 2`，并由
+`nice -n 15`、`ionice -c 3` 的日志包装器启动。该次构建从约 11:48 运行至
+17:13，标准错误完整保留（约 1.24 MiB）。
+
+### 15.2 资源门禁与收尾
+
+开工门禁与构建前门禁均通过：可用内存约 20–21 GiB、负载约 5、磁盘可用
+约 182 GiB，见 `raw/131_*` 与 `raw/137_*`。17:13 的中途门禁结果为：
+
+```text
+mem_available_kib=20027912
+load1=32.14
+load_limit=20.000000
+gate_result=EXCESSIVE_LOAD
+```
+
+退出码为 21，见 `raw/146_midbuild_resource_gate.*`。因此没有等待构建自然结束，
+立即发送中断。残留 Bazel server 对 `TERM` 未及时退出；只对已精确核对属于
+本轮的 PID 发送了强制终止信号。`raw/147_*`、`raw/148_*` 的即时轮询仍返回 1，
+随后 `raw/149_build_process_cleanup_verification.*` 确认本轮 AOT 的 Bazel、
+rpmbuild、编译器或 Ninja 进程均已不存在。未删除 buildroot、缓存或中间结果，
+以便人工决定是否续跑。
+
+## 16. 产物与验证结论
+
+| 要求 | 结果 | 说明 |
+|---|---|---|
+| AOT 工具构建完成 | `NOT_OBSERVED` | 在 31,594 / 35,555 时因资源门禁中止 |
+| 默认 libstdc++ 输出与现状等价 | `NOT_OBSERVED` | 仅完成开关静态检查，未生成对照资产 |
+| libc++ XLA runtime（三架构） | `NOT_OBSERVED` | 未进入生成阶段 |
+| libc++ inliner（三架构） | `NOT_OBSERVED` | 未进入生成阶段 |
+| 新对象为 `std::__1` 且无错误的 `std::__cxx11` | `NOT_OBSERVED` | 无新对象可查 |
+| 接口符号逐项对照 | `NOT_OBSERVED` | 无新资产可比 |
+| 模型有效载荷一致 | `NOT_OBSERVED` | 无新资产可比 |
+| 文件数量与结构一致 | `NOT_OBSERVED` | 无新资产可比 |
+| 三个 LLVM 合并资产 | `NOT_OBSERVED` | 组装工具未执行 |
+| W2 LLVM / bcc-tools / bpftrace | `NOT_AVAILABLE` | W1 未提供经核验可用资产 |
+
+因此不能给出 `ASSETS_REGENERATED`，也不能把已缓存的旧资产或未完成构建当作
+可用结果。最终结论为 `PARTIAL`。
+
+## 17. 自行判断、疑问与范围边界
+
+### 自行判断
+
+- 将 GBS 第一次 overlay 超时和随后 Bazel 外部仓缓存状态异常视为命令/构建
+  环境的技术性问题，而不是资产内容判据失败；保留缓存后修正执行环境继续。
+- 为避免继续触发宿主资源问题，在中途门禁出现明确的 21 后立即停止，即使
+  AOT 工具已完成约 88.9% 的动作。
+- 使用旧 regalloc 参与未来三包兼容组装，因为人工明确本轮不重生 regalloc，
+  且此前逐对象检查未在两个模型对象中发现 `std::__cxx11`/`std::__1`；最终
+  组装仍须在生成成功后做完整接口对照，当前不据此推断产物可用。
+
+### 尚存疑问与需开发人员确认
+
+- 正式 AOT spec 应以何种方式消费已有 `cpu_cross` 配置；本轮只在隔离副本
+  临时加入该配置。
+- 指南是否应固定 sysroot 快照与包校验值，而非仅指向滚动 `reference`。
+- 验证脚本是否应提供正式的 job、nice、ionice 参数接口。
+- 9 个生成包到 LLVM 现有 3 个合并包的组装方式是否应成为正式工具；本轮的
+  helper 尚未用真实新资产验证。
+- AOT 打包所带离线仓缓存是否应补全/清理 Bazel repository 状态，以免同一
+  完整缓存被 `--experimental_repository_disable_download` 拒绝使用。
+
+### 时间与边界申报
+
+本次最终续跑从 09:53 门禁到 17:16 清理核验约 7 小时 23 分；加上前文已
+记录的第一阶段约 2 小时，W1 跨多轮的累计主动工作时间估算超过原任务的
+8 小时上限。最终停止的直接原因是资源门禁 21，而不是计时器。本报告如实
+保留该偏差，不把它解释为完成。全过程没有修改 `codes/`、平台源码、LLVM
+消费 spec 或 Gerrit 分支，也未推送任何外部源码仓。
+
+提交前自检的 `raw/151_material_selfcheck.*` 还发生一次命令自身的引号错误：
+Markdown 反引号被 shell 当作命令替换，因而该轮状态文本检查无效；原始输出未
+修改，原因记录在同名 `RECOVERY_NOTE.md`，并由
+`raw/152_material_selfcheck_corrected.*` 以修正后的命令重跑通过。
+`raw/153_material_sha256.*` 是报告定稿前的初步清单；
+`raw/154_final_material_sha256.*` 记录报告定稿后的材料 SHA256。

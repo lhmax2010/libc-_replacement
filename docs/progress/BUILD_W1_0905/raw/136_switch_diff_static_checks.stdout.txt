@@ -1,0 +1,245 @@
+--- codes/tensorflow2-mlgo-aot-temp/fetch_sysroot.py	2026-09-04 21:46:05.229175657 +0800
++++ tmp/BUILD_W1_0905/mlgo-tools/fetch_sysroot.py	2026-09-07 09:58:41.920070356 +0800
+@@ -1,10 +1,9 @@
+ #!/usr/bin/env python3
+ """Fetch per-arch Tizen header sysroots for cross-compiling the XLA AOT runtime.
+ 
+-Downloads a small set of header RPMs (glibc-devel, linux-glibc-devel,
+-libstdc++-devel, ...) from the Tizen Base repo and extracts them into
+-toolbox/sysroots/<arch>/. Only headers are needed: the runtime objects are
+-compiled with -c and never linked locally.
++Downloads a small set of header RPMs from the Tizen Base repo and extracts
++them into a caller-selected destination.  Both the existing libstdc++ layout
++and the libc++/libc++abi layout are supported; the default stays libstdc++.
+ """
+ 
+ import argparse
+@@ -23,22 +22,33 @@
+ 
+ # Header providers required to compile the XLA AOT runtime sources.
+ # Per name: list of acceptable package names, first match in repo wins.
+-WANTED = [
++COMMON_WANTED = [
+     ["glibc-devel"],
+     ["linux-glibc-devel"],
+-    ["libstdc++-devel", "gcc-c++", "gcc"],
+-    ["libstdc++"],
+ ]
+ 
++STDLIB_WANTED = {
++    "libstdc++": [
++        ["libstdc++-devel", "gcc-c++", "gcc"],
++        ["libstdc++"],
++    ],
++    "libc++": [
++        ["libc++-devel"],
++        ["libc++abi-devel"],
++        ["libc++"],
++        ["libc++abi"],
++    ],
++}
++
+ # Files that must exist after extraction, else the sysroot is unusable.
+ SANITY_FILES = [
+     "usr/include/stdio.h",
+     "usr/include/linux/limits.h",
+ ]
+-SANITY_GLOBS = [
+-    # Tizen ships libstdc++ headers inside the GCC install dir, not /usr/include.
+-    "usr/lib*/gcc/*/*/include/c++/cstdint",
+-]
++STDLIB_SANITY_GLOBS = {
++    "libstdc++": ["usr/lib*/gcc/*/*/include/c++/cstdint"],
++    "libc++": ["usr/include/c++/v1/cstdint", "usr/include/c++/v1/cxxabi.h"],
++}
+ 
+ 
+ def http_get(url: str) -> bytes:
+@@ -84,14 +94,14 @@
+         sys.exit(f"FATAL: failed to extract {rpm_path}")
+ 
+ 
+-def fetch_arch(repo_url: str, arch: str, dest: Path) -> None:
++def fetch_arch(repo_url: str, arch: str, dest: Path, stdlib: str) -> None:
+     print(f"[{arch}] loading repo metadata ...")
+     packages = index_packages(load_primary(repo_url), arch)
+     dest.mkdir(parents=True, exist_ok=True)
+     rpm_cache = dest.parent / f".rpms-{arch}"
+     rpm_cache.mkdir(exist_ok=True)
+ 
+-    for candidates in WANTED:
++    for candidates in COMMON_WANTED + STDLIB_WANTED[stdlib]:
+         picked = next((c for c in candidates if c in packages), None)
+         if not picked:
+             sys.exit(f"FATAL: [{arch}] none of {candidates} found in repo")
+@@ -106,10 +116,10 @@
+     for f in SANITY_FILES:
+         if not (dest / f).exists():
+             sys.exit(f"FATAL: [{arch}] sysroot missing {f}")
+-    for g in SANITY_GLOBS:
++    for g in STDLIB_SANITY_GLOBS[stdlib]:
+         if not list(dest.glob(g)):
+             sys.exit(f"FATAL: [{arch}] sysroot missing {g}")
+-    print(f"[{arch}] sysroot OK: {dest}")
++    print(f"[{arch}/{stdlib}] sysroot OK: {dest}")
+ 
+ 
+ def main() -> None:
+@@ -117,9 +127,11 @@
+     ap.add_argument("--repo-url", required=True, help="Tizen Base repo (dir containing repodata/)")
+     ap.add_argument("--arch", action="append", required=True, choices=["armv7l", "aarch64", "x86_64"])
+     ap.add_argument("--dest", required=True, help="sysroots root dir; per-arch subdir is created")
++    ap.add_argument("--stdlib", choices=sorted(STDLIB_WANTED), default="libstdc++",
++                    help="C++ standard library headers to stage (default: libstdc++)")
+     args = ap.parse_args()
+     for arch in args.arch:
+-        fetch_arch(args.repo_url.rstrip("/"), arch, Path(args.dest) / arch)
++        fetch_arch(args.repo_url.rstrip("/"), arch, Path(args.dest) / arch, args.stdlib)
+ 
+ 
+ if __name__ == "__main__":
+--- codes/tensorflow2-mlgo-aot-temp/setup-chroot.sh	2026-09-04 21:46:05.231175657 +0800
++++ tmp/BUILD_W1_0905/mlgo-tools/setup-chroot.sh	2026-09-07 09:58:41.920070356 +0800
+@@ -15,15 +15,17 @@
+ 
+ TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ TIZEN_BASE_REPO="${TIZEN_BASE_REPO:-https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages}"
+-CHROOT="" RPM=""
++CHROOT="" RPM="" STDLIB="libstdc++"
+ while [ $# -gt 0 ]; do
+     case "$1" in
+         --chroot) CHROOT="$2"; shift 2 ;;
+         --rpm)    RPM="$2"; shift 2 ;;
++        --stdlib) STDLIB="$2"; shift 2 ;;
+         *) echo "unknown arg: $1"; exit 1 ;;
+     esac
+ done
+ test -n "$CHROOT" || { echo "usage: $0 --chroot <buildroot> [--rpm <rpm>]"; exit 1; }
++case "$STDLIB" in libstdc++|libc++) ;; *) echo "FATAL: unknown stdlib: $STDLIB"; exit 1 ;; esac
+ CHROOT="$(cd "$CHROOT" && pwd)"
+ test -d "$CHROOT/usr" || { echo "FATAL: not a buildroot: $CHROOT"; exit 1; }
+ 
+@@ -43,19 +45,19 @@
+ echo "clang/ar OK"
+ 
+ echo "=== 3/4 target header sysroots ==="
+-CACHE="$TOOLS_DIR/build/sysroot-cache"
++CACHE="$TOOLS_DIR/build/sysroot-cache/$STDLIB"
+ NEED=()
+ for arch in armv7l aarch64; do
+-    [ -e "$CHROOT/opt/mlgo-sysroots/$arch/usr/include/stdio.h" ] || NEED+=("$arch")
++    [ -e "$CHROOT/opt/mlgo-sysroots/$STDLIB/$arch/usr/include/stdio.h" ] || NEED+=("$arch")
+ done
+ if [ ${#NEED[@]} -gt 0 ]; then
+     mkdir -p "$CACHE"
+     for arch in "${NEED[@]}"; do
+         [ -e "$CACHE/$arch/usr/include/stdio.h" ] || \
+             python3 "$TOOLS_DIR/fetch_sysroot.py" --repo-url "$TIZEN_BASE_REPO" \
+-                    --dest "$CACHE" --arch "$arch"
+-        sudo mkdir -p "$CHROOT/opt/mlgo-sysroots"
+-        sudo cp -r "$CACHE/$arch" "$CHROOT/opt/mlgo-sysroots/$arch"
++                    --dest "$CACHE" --arch "$arch" --stdlib "$STDLIB"
++        sudo mkdir -p "$CHROOT/opt/mlgo-sysroots/$STDLIB"
++        sudo cp -r "$CACHE/$arch" "$CHROOT/opt/mlgo-sysroots/$STDLIB/$arch"
+     done
+ fi
+ echo "sysroots OK"
+--- codes/tensorflow2-mlgo-aot-temp/mlgo_pack.py	2026-09-04 21:46:05.229175657 +0800
++++ tmp/BUILD_W1_0905/mlgo-tools/mlgo_pack.py	2026-09-07 09:58:41.921070356 +0800
+@@ -263,29 +263,44 @@
+ 
+ # -------------------------------------------------------------- runtime build
+ 
+-def build_runtime(chroot: Path, arch: str) -> Path:
++def build_runtime(chroot: Path, arch: str, stdlib: str) -> Path:
+     cfg = ARCHES[arch]
+     src_root = chroot / CHROOT_TF_PKG.lstrip("/") / "xla_aot_runtime_src"
+-    sysroot_host = chroot / CHROOT_SYSROOTS.lstrip("/") / arch
++    sysroot_host = chroot / CHROOT_SYSROOTS.lstrip("/") / stdlib / arch
+     if arch != "x86_64" and not (sysroot_host / "usr/include/stdio.h").exists():
+-        die(f"buildroot is missing the {arch} sysroot ({CHROOT_SYSROOTS}/{arch}) — "
++            die(f"buildroot is missing the {arch}/{stdlib} sysroot "
++                f"({CHROOT_SYSROOTS}/{stdlib}/{arch}) — "
+             "run ./setup-chroot.sh first")
+ 
+     # Target C++ headers: staged Tizen sysroot for cross arches; the buildroot
+     # itself is the x86_64 sysroot.
+     if arch == "x86_64":
+-        sysroot_flag, cxx_inc = [], []
++        sysroot_flag = []
++        if stdlib == "libc++":
++            libcxx = chroot / "usr/include/c++/v1"
++            if not (libcxx / "cstdint").exists() or not (libcxx / "cxxabi.h").exists():
++                die("buildroot is missing libc++/libc++abi development headers")
++            cxx_inc = ["-stdlib=libc++", "-nostdinc++", "-isystem", "/usr/include/c++/v1"]
++        else:
++            cxx_inc = []
+     else:
+-        sysroot_in = f"{CHROOT_SYSROOTS}/{arch}"
++        sysroot_in = f"{CHROOT_SYSROOTS}/{stdlib}/{arch}"
+         sysroot_flag = [f"--sysroot={sysroot_in}"]
+-        bases = sorted(sysroot_host.glob("usr/lib*/gcc/*/*/include/c++"))
+-        if not bases:
+-            die(f"no libstdc++ headers found in the {arch} sysroot")
+-        base = bases[-1]
+-        cxx_inc = ["-isystem", in_chroot(chroot, base)]
+-        for sub in sorted(base.glob("*-tizen-linux-*")) + [base / "backward"]:
+-            if sub.is_dir():
+-                cxx_inc += ["-isystem", in_chroot(chroot, sub)]
++        if stdlib == "libc++":
++            libcxx = sysroot_host / "usr/include/c++/v1"
++            if not (libcxx / "cstdint").exists() or not (libcxx / "cxxabi.h").exists():
++                die(f"no libc++/libc++abi headers found in the {arch} sysroot")
++            cxx_inc = ["-stdlib=libc++", "-nostdinc++", "-isystem",
++                       in_chroot(chroot, libcxx)]
++        else:
++            bases = sorted(sysroot_host.glob("usr/lib*/gcc/*/*/include/c++"))
++            if not bases:
++                die(f"no libstdc++ headers found in the {arch} sysroot")
++            base = bases[-1]
++            cxx_inc = ["-isystem", in_chroot(chroot, base)]
++            for sub in sorted(base.glob("*-tizen-linux-*")) + [base / "backward"]:
++                if sub.is_dir():
++                    cxx_inc += ["-isystem", in_chroot(chroot, sub)]
+ 
+     sources = sorted(src_root.rglob("*.cc"))
+     if not sources:
+@@ -307,7 +322,7 @@
+     script = BUILD_DIR / f"rt-build-{arch}.sh"
+     script.write_text("\n".join(lines) + "\n")
+ 
+-    print(f"[{arch}] cross-compiling {len(sources)} runtime sources in chroot ...")
++    print(f"[{arch}/{stdlib}] cross-compiling {len(sources)} runtime sources in chroot ...")
+     run(["sudo", "cp", script, chroot / "tmp/rt-build.sh"])
+     run(["sudo", "chroot", chroot, "/bin/sh", "/tmp/rt-build.sh"])
+     for name in sorted(p.name + ".o" for p in sources):
+@@ -393,6 +408,8 @@
+                     help="which model the input is")
+     ap.add_argument("--make-runtime", action="store_true",
+                     help="(re)build the mlgo_runtime_<arch> packages")
++    ap.add_argument("--stdlib", choices=["libstdc++", "libc++"], default="libstdc++",
++                    help="runtime C++ standard library ABI (default: libstdc++)")
+     ap.add_argument("--arch", default="all",
+                     help="comma-separated: armv7l,aarch64,x86_64 or 'all' (default)")
+     ap.add_argument("--out", type=Path, default=DEFAULT_OUT,
+@@ -416,7 +433,7 @@
+ 
+     if args.make_runtime:
+         for arch in arches:
+-            objdir = build_runtime(args.chroot, arch)
++            objdir = build_runtime(args.chroot, arch, args.stdlib)
+             make_runtime_pkg(arch, objdir, args.out, args.chroot)
+ 
+     if args.model:
+diff --git a/packaging/tensorflow2-aot.spec b/packaging/tensorflow2-aot.spec
+index 1ecbbd5f6b1..a63053a3387 100644
+--- a/packaging/tensorflow2-aot.spec
++++ b/packaging/tensorflow2-aot.spec
+@@ -209,6 +209,7 @@ done
+     --host_jvm_args=-XX:ActiveProcessorCount=2 \
+ %endif
+     build \
++    --config=cpu_cross \
+     -c opt \
+     --curses=no --color=no --verbose_failures \
+ %if "%{aot_arch}" == "aarch64"
