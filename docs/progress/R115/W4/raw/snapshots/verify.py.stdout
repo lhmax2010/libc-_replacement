@@ -1,0 +1,36 @@
+--- /dev/null	2026-09-07 09:29:10.192384252 +0800
++++ /home/toolchain/development/libcxx_runtime_validation/tmp/R115-W4/verify.py	2026-09-07 21:42:47.631746364 +0800
+@@ -0,0 +1,33 @@
++#!/usr/bin/env python3
++import collections,csv,pathlib,re,statistics
++root=pathlib.Path('docs/progress/R115/W4'); summary=[]; perf=[]
++for arch in ['x86_64','armv7l']:
++ rows=list(csv.DictReader((root/f'matrix_{arch}.tsv').open(),delimiter='\t'))
++ assert len(rows)==160,(arch,len(rows))
++ grouped=collections.defaultdict(list)
++ for r in rows:
++  assert r['actual_exit']=='0' and r['assertions']=='PASS',r
++  text=pathlib.Path(r['evidence']+'.stdout').read_text()
++  assert 'ASSERTIONS=PASS' in text and 'maps_overlay=1 libcxx=1 libcxxabi=1' in text
++  if r['mode'] in ['cancel','wake_reader','wake_writer']:
++   assert 'canceled=1 cleanup=1 internal_mutex_rc=0' in text
++   if r['variant']=='rollback':
++    assert 'rollback_count=1' in text and 'new_reader=1 new_writer=1 final_state=0' in text
++   else:assert 'control_damaged=1 reader=0 writer=0 writer_bit=1' in text
++  elif r['kind']=='functional':assert 'normal_rollback_count=0' in text
++  grouped[(r['kind'],r['path'],r['variant'],r['mode'])].append(r)
++ for key,items in grouped.items():
++  assert sorted(int(r['repeat']) for r in items)==[1,2,3,4,5]
++  summary.append([arch,*key,len(items),'5/5'])
++  if key[0]=='perf':
++   values=[float(re.search(r'ns_per_lock_unlock=([0-9.]+)',pathlib.Path(r['evidence']+'.stdout').read_text())[1]) for r in items]
++   perf.append([arch,key[1],key[2],*values,statistics.median(values),min(values),max(values)])
++with (root/'cells.tsv').open('w') as f:
++ w=csv.writer(f,delimiter='\t',lineterminator='\n');w.writerow(['arch','kind','path','variant','mode','runs','pass']);w.writerows(summary)
++with (root/'performance.tsv').open('w') as f:
++ w=csv.writer(f,delimiter='\t',lineterminator='\n');w.writerow(['arch','path','variant','run1_ns','run2_ns','run3_ns','run4_ns','run5_ns','median_ns','min_ns','max_ns']);w.writerows(perf)
++for arch in ['x86_64','armv7l']:
++ for path in ['plain','timed']:
++  c=next(r for r in perf if r[:3]==[arch,path,'control']);g=next(r for r in perf if r[:3]==[arch,path,'rollback'])
++  print(f'{arch} {path} control_median_ns={c[8]:.3f} rollback_median_ns={g[8]:.3f} median_delta_percent={(g[8]/c[8]-1)*100:.3f}')
++print('verified_runs=320 cells=64 repeats_per_cell=5 functional_runs=280 perf_runs=40')

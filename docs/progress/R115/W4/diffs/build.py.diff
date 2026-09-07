@@ -1,0 +1,32 @@
+--- /dev/null	2026-09-07 09:29:10.192384252 +0800
++++ /home/toolchain/development/libcxx_runtime_validation/tmp/R115-W4/build.py	2026-09-07 21:41:23.053743008 +0800
+@@ -0,0 +1,29 @@
++#!/usr/bin/env python3
++"""实验脚本；所有编译/链接命令逐次留证，最多串行一个构建。"""
++import pathlib, subprocess, sys
++root=pathlib.Path.cwd(); arch=sys.argv[1]; attempt=sys.argv[2] if len(sys.argv)>2 else 'initial'
++task=root/'tmp/R115-W4'; platform=pathlib.Path('/home/toolchain/development/libc++_replacement')
++compiler=platform/('progress/R36/tools/armv7l-clang++' if arch=='armv7l' else 'progress/R33/tools/tizen-clang++')
++headers=platform/f'tmp/R68/build-baseline-{arch}/libcxx/test-suite-install/include/c++/v1'
++runtime=platform/f'tmp/R69/build-{arch}/lib'
++counter=0
++def run(label,args):
++ global counter
++ counter+=1
++ subprocess.run([sys.executable,'docs/progress/R114/code/record.py',f'docs/progress/R115/W4/raw/build_{arch}_{attempt}/{counter:03}_{label}',
++                 'nice','-n','15','ionice','-c','3',*map(str,args)],check=True)
++for kind in ['functional','perf']:
++ for variant in ['control','rollback']:
++  out=task/arch/kind/variant; out.mkdir(parents=True,exist_ok=True)
++  common=['-std=c++20','-O2','-g','-fPIC','-nostdinc++','-I',task/variant/'include','-I',headers,'-include',task/'trace.h']
++  if kind=='functional':common+=['-DW4_TRACE']
++  link=['-nostdlib++','-L',runtime,'-Wl,-rpath-link,'+str(runtime),'-lc++','-lc++abi','-latomic','-pthread','-ldl']
++  objects=[]
++  for name,source in [('condition_variable',task/'condition_variable_removed.cpp'),('shared_mutex',task/variant/'shared_mutex.cpp')]:
++   obj=out/(name+'.o');objects.append(obj)
++   run(kind+'_'+variant+'_'+name,[compiler,*common,'-c',source,'-o',obj])
++  run(kind+'_'+variant+'_dso',[compiler,'-shared',*objects,*link,'-Wl,-soname,libw4.so','-o',out/'libw4.so'])
++  run(kind+'_'+variant+'_probe_object',[compiler,*common,'-fno-access-control','-c',task/'probe.cpp','-o',out/'probe.o'])
++  run(kind+'_'+variant+'_probe_link',[compiler,out/'probe.o','-L',out,'-Wl,--no-as-needed','-lw4',*link,'-Wl,-export-dynamic','-o',out/'probe'])
++  run(kind+'_'+variant+'_hashes',['sha256sum',out/'probe',out/'libw4.so'])
++run('identity',['file',*sorted((task/arch).glob('*/*/probe'))])

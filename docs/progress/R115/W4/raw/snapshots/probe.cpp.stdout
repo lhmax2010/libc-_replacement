@@ -1,0 +1,203 @@
+--- /dev/null	2026-09-07 09:29:10.192384252 +0800
++++ /home/toolchain/development/libcxx_runtime_validation/tmp/R115-W4/probe.cpp	2026-09-07 21:39:22.940738243 +0800
+@@ -0,0 +1,200 @@
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <dlfcn.h>
++#include <pthread.h>
++#include <shared_mutex>
++#include <unistd.h>
++
++// Observation only: compiled with -fno-access-control; no layout changes.
++std::shared_mutex plain;
++std::shared_timed_mutex timed;
++std::__shared_mutex_base* base;
++bool is_timed, expect_rollback;
++std::atomic<int> rollbacks{0}, cleanups{0}, arrivals[8][2], acquired[8];
++std::atomic<bool> hold[8];
++thread_local int role = -1;
++int value = 0, checksum = 3;
++void check(bool ok, const char* label) {
++  if (!ok) { printf("FAIL=%s\n", label); _Exit(70); }
++}
++extern "C" void w4_rollback_event() { ++rollbacks; }
++void observe(pthread_cond_t* c) {
++  if (role < 0) return;
++  if (c == base->__gate1_.native_handle()) ++arrivals[role][0];
++  if (c == base->__gate2_.native_handle()) ++arrivals[role][1];
++}
++extern "C" int pthread_cond_wait(pthread_cond_t* c, pthread_mutex_t* m) {
++  static auto f = reinterpret_cast<int(*)(pthread_cond_t*, pthread_mutex_t*)>(dlsym(RTLD_NEXT,"pthread_cond_wait"));
++  observe(c); return f(c,m);
++}
++extern "C" int pthread_cond_timedwait(pthread_cond_t* c, pthread_mutex_t* m, const timespec* t) {
++  static auto f = reinterpret_cast<int(*)(pthread_cond_t*, pthread_mutex_t*, const timespec*)>(dlsym(RTLD_NEXT,"pthread_cond_timedwait"));
++  observe(c); return f(c,m,t);
++}
++extern "C" int pthread_cond_clockwait(pthread_cond_t* c, pthread_mutex_t* m, clockid_t k, const timespec* t) {
++  static auto f = reinterpret_cast<int(*)(pthread_cond_t*, pthread_mutex_t*, clockid_t, const timespec*)>(dlsym(RTLD_NEXT,"pthread_cond_clockwait"));
++  observe(c); return f(c,m,k,t);
++}
++unsigned state() {
++  auto m=base->__mut_.native_handle();
++  check(pthread_mutex_lock(m)==0,"observe_mutex_lock");
++  unsigned result=base->__state_;
++  check(pthread_mutex_unlock(m)==0,"observe_mutex_unlock");
++  return result;
++}
++void reader_lock() { if(is_timed) timed.lock_shared(); else plain.lock_shared(); }
++void reader_unlock() { if(is_timed) timed.unlock_shared(); else plain.unlock_shared(); }
++void writer_unlock() { if(is_timed) timed.unlock(); else plain.unlock(); }
++bool writer_lock(int ms=10000) {
++  if(is_timed) return timed.try_lock_for(std::chrono::milliseconds(ms));
++  plain.lock(); return true;
++}
++void await(std::atomic<int>& a,int n,const char* label) {
++  auto end=std::chrono::steady_clock::now()+std::chrono::seconds(4);
++  while(a.load()<n && std::chrono::steady_clock::now()<end) usleep(1000);
++  check(a.load()>=n,label);
++}
++void blocked(int id,int gate,int n=1) {
++  await(arrivals[id][gate],n,"wait_arrival");
++  // Obtaining the same mutex after arrival proves the native wait released it.
++  unsigned s=state();
++  printf("blocked role=%d gate=%d waits=%d state=%u\n",id,gate+1,arrivals[id][gate].load(),s);
++}
++struct Arg { int id,op,ms; }; // op: 0 writer,1 reader,2 stress writer,3 stress reader
++struct Cleanup { ~Cleanup(){++cleanups;} };
++void* worker(void* p) {
++  Arg& a=*static_cast<Arg*>(p); role=a.id; Cleanup cleanup;
++  if(a.op>=2) {
++    for(int i=0;i<1000;++i) {
++      if(a.op==2) {
++        check(writer_lock(),"stress_write_acquired"); ++value; checksum=value*7+3; writer_unlock();
++      } else {
++        reader_lock(); check(checksum==value*7+3,"stress_exact_relation"); reader_unlock();
++      }
++    }
++    return nullptr;
++  }
++  bool ok=true;
++  if(a.op==1) reader_lock(); else ok=writer_lock(a.ms);
++  acquired[a.id].store(ok?1:2);
++  if(ok) {
++    while(hold[a.id].load()) usleep(1000);
++    if(a.op==1) reader_unlock(); else writer_unlock();
++  }
++  return nullptr;
++}
++pthread_t start(Arg& a) {
++  pthread_t t; check(pthread_create(&t,nullptr,worker,&a)==0,"pthread_create"); return t;
++}
++void* join(pthread_t t) {
++  timespec ts; clock_gettime(CLOCK_REALTIME,&ts); ts.tv_sec+=4;
++  void* result=nullptr;
++  check(pthread_timedjoin_np(t,&result,&ts)==0,"bounded_join"); return result;
++}
++void progress() {
++  // Real blocking APIs, bounded by timed joins and process alarm, not only try_lock.
++  Arg r{5,1,1000},w{6,0,1000}; auto rt=start(r); join(rt); auto wt=start(w); join(wt);
++  check(acquired[5]==1 && acquired[6]==1 && state()==0,"new_reader_writer_progress");
++  puts("new_reader=1 new_writer=1 final_state=0");
++}
++void cancellation(const char* mode) {
++  const bool queued_reader=!strcmp(mode,"wake_reader"), queued_writer=!strcmp(mode,"wake_writer");
++  reader_lock(); Arg original{0,0,10000}; auto t=start(original);
++  blocked(0,1); check(state()==(base->__write_entered_|1U),"reserved_with_one_reader");
++  Arg queued{1,queued_reader?1:0,10000}; pthread_t q{};
++  if(queued_reader || queued_writer) {
++    check(expect_rollback,"queued_cases_require_rollback"); hold[1]=true; q=start(queued); blocked(1,0);
++    int before=arrivals[1][0]; base->__gate1_.notify_all(); blocked(1,0,before+1);
++    check(acquired[1]==0 && state()==(base->__write_entered_|1U),"spurious_gate1_keeps_predicate");
++    int g2=arrivals[0][1]; base->__gate2_.notify_all(); blocked(0,1,g2+1);
++    check(acquired[0]==0 && state()==(base->__write_entered_|1U),"spurious_gate2_keeps_predicate");
++  }
++  check(pthread_cancel(t)==0,"cancel_request"); check(join(t)==PTHREAD_CANCELED,"pthread_canceled");
++  check(cleanups==1,"canceled_frame_cleanup");
++  auto m=base->__mut_.native_handle(); int unlocked=pthread_mutex_trylock(m);
++  check(unlocked==0,"internal_mutex_unlocked"); unsigned after=base->__state_; pthread_mutex_unlock(m);
++  check(rollbacks==(expect_rollback?1:0),"rollback_exact_count");
++  if(queued_reader) {
++    await(acquired[1],1,"queued_reader_woken_before_original_release");
++    check(state()==2,"two_readers_no_writer_bit"); hold[1]=false; join(q);
++  } else if(queued_writer) {
++    blocked(1,1); check(acquired[1]==0 && state()==(base->__write_entered_|1U),"queued_writer_reserves_then_waits");
++  } else check(after==(expect_rollback?1U:(base->__write_entered_|1U)),"post_cancel_exact_state");
++  reader_unlock();
++  if(queued_writer) { await(acquired[1],1,"queued_writer_acquired"); check(state()==base->__write_entered_,"writer_owns_without_readers"); hold[1]=false; join(q); }
++  printf("canceled=1 cleanup=1 internal_mutex_rc=%d post_cancel_state=%u rollback_count=%d\n",unlocked,after,rollbacks.load());
++  if(expect_rollback) progress();
++  else {
++    bool r=is_timed?timed.try_lock_shared():plain.try_lock_shared();
++    bool w=is_timed?timed.try_lock():plain.try_lock();
++    check(!r && !w && state()==base->__write_entered_,"damaged_control");
++    puts("control_damaged=1 reader=0 writer=0 writer_bit=1");
++  }
++}
++void normal(const char* mode) {
++  if(!strcmp(mode,"stress")) {
++    Arg args[4]={{0,2,0},{1,2,0},{2,3,0},{3,3,0}}; pthread_t ts[4];
++    for(int i=0;i<4;++i)ts[i]=start(args[i]); for(auto t:ts)join(t);
++    check(value==2000 && checksum==14003 && state()==0,"stress_final_exact_values");
++    printf("writers=2 readers=2 iterations=1000 value=%d checksum=%d\n",value,checksum);
++  } else if(!strcmp(mode,"immediate")) {
++    check(writer_lock(),"immediate_write"); check(state()==base->__write_entered_,"immediate_state"); writer_unlock();
++    if(is_timed) {
++      check(timed.try_lock_until(std::chrono::steady_clock::now()-std::chrono::seconds(1)),"expired_but_available"); timed.unlock();
++    }
++    check(state()==0,"immediate_release");
++  } else {
++    bool timeout1=!strcmp(mode,"timeout_gate1"),timeout2=!strcmp(mode,"timeout_gate2");
++    bool gate1success=!strcmp(mode,"gate1_success");
++    if(timeout1||gate1success) check(writer_lock(),"initial_writer"); else reader_lock();
++    Arg a{0,0,(timeout1||timeout2)?150:10000}; hold[0]=!(timeout1||timeout2); auto t=start(a);
++    blocked(0,(timeout1||gate1success)?0:1);
++    check(state()==((timeout1||gate1success)?base->__write_entered_:(base->__write_entered_|1U)),"normal_wait_exact_state");
++    Arg q{1,1,10000}; pthread_t qt{};
++    if(timeout2) { hold[1]=true; qt=start(q); blocked(1,0); }
++    if(timeout1||timeout2) {
++      join(t); check(acquired[0]==2,"normal_timeout_false");
++      if(timeout2) {
++        await(acquired[1],1,"normal_timeout_notifies_reader"); check(state()==2,"normal_timeout_clear_and_two_readers");
++        hold[1]=false; join(qt); reader_unlock();
++      } else { check(state()==base->__write_entered_,"gate1_timeout_preserves_owner"); writer_unlock(); }
++    } else {
++      if(gate1success)writer_unlock();else reader_unlock();
++      await(acquired[0],1,"normal_writer_acquires"); check(state()==base->__write_entered_,"normal_exclusive_state");
++      hold[0]=false; join(t);
++    }
++    check(state()==0,"normal_final_state_zero");
++  }
++  check(rollbacks==0,"normal_no_rollback"); puts("normal_rollback_count=0");
++}
++long long ns() { timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (long long)t.tv_sec*1000000000+t.tv_nsec; }
++void perf() {
++  constexpr int count=500000;
++  long long begin=ns();
++  for(int i=0;i<count;++i) {check(writer_lock(),"perf_lock"); ++value; writer_unlock();}
++  long long elapsed=ns()-begin;
++  check(value==count && state()==0,"perf_exact_counter");
++  printf("perf_iterations=%d elapsed_ns=%lld ns_per_lock_unlock=%.3f value=%d\n",count,elapsed,double(elapsed)/count,value);
++}
++int main(int argc,char**argv) {
++  if(argc!=4)return 64;
++  setvbuf(stdout,nullptr,_IONBF,0); alarm(25);
++  is_timed=!strcmp(argv[1],"timed"); expect_rollback=!strcmp(argv[2],"rollback");
++  base=is_timed?&timed.__base_:&plain.__base_;
++  printf("path=%s variant=%s mode=%s\n",argv[1],argv[2],argv[3]);
++  FILE* f=fopen("/proc/self/maps","r"); check(f!=nullptr,"maps_available"); char line[1024]; bool overlay=false,lib=false,abi=false;
++  while(fgets(line,sizeof line,f)) {
++    if(strstr(line,"libw4.so")){overlay=true;fputs(line,stdout);}
++    if(strstr(line,"libc++.so"))lib=true;
++    if(strstr(line,"libc++abi.so"))abi=true;
++  }
++  fclose(f);check(overlay && lib && abi,"expected_libraries_loaded"); puts("maps_overlay=1 libcxx=1 libcxxabi=1");
++  if(!strcmp(argv[3],"perf"))perf();
++  else if(!strcmp(argv[3],"cancel") || !strncmp(argv[3],"wake_",5)) cancellation(argv[3]);
++  else normal(argv[3]);
++  puts("ASSERTIONS=PASS");
++  _Exit(0); // A damaged control deliberately does not destroy its poisoned object.
++}

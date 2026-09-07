@@ -1,0 +1,35 @@
+--- /dev/null	2026-09-07 09:29:10.192384252 +0800
++++ /home/toolchain/development/libcxx_runtime_validation/tmp/R115-W4/run.py	2026-09-07 21:40:33.744741052 +0800
+@@ -0,0 +1,32 @@
++#!/usr/bin/env python3
++"""每格五次；失败原样记录；连接异常立即停板上矩阵。"""
++import csv, pathlib, re, subprocess, sys
++arch=sys.argv[1]; rows=[]
++cases=[]
++for path in ['plain','timed']:
++ for variant in ['control','rollback']:
++  for mode in ['cancel','immediate','gate2_success','gate1_success','stress']+(['timeout_gate1','timeout_gate2'] if path=='timed' else []):
++   cases.append(('functional',path,variant,mode))
++ for mode in ['wake_reader','wake_writer']:cases.append(('functional',path,'rollback',mode))
++# Interleave performance variants to reduce ordering bias.
++for repeat in range(1,6):
++ for kind,path,variant,mode in cases+[("perf",p,v,"perf") for p in ['plain','timed'] for v in (['control','rollback'] if repeat%2 else ['rollback','control'])]:
++  stem=pathlib.Path(f'docs/progress/R115/W4/raw/matrix_{arch}/{kind}_{path}_{variant}_{mode}_{repeat}')
++  if arch=='armv7l':
++   command=f'ulimit -c 0; cd /var/tmp/r115_w4_20260907 && LD_LIBRARY_PATH=/var/tmp/r115_w4_20260907/{kind}/{variant}:/var/tmp/r115_w4_20260907 nice -n 15 ionice -c 3 ./{kind}/{variant}/probe {path} {variant} {mode}; rc=$?; printf "REMOTE_EXIT=%d\\n" "$rc"'
++   cmd=['timeout','35','/home/toolchain/.local/bin/sdb','-s','192.168.108.26:26101','shell',command]
++  else:
++   location=f'tmp/R115-W4/x86_64/{kind}/{variant}'
++   cmd=['nice','-n','15','ionice','-c','3','timeout','30','env',f'LD_LIBRARY_PATH={location}:/home/toolchain/development/libc++_replacement/tmp/R69/build-x86_64/lib',f'{location}/probe',path,variant,mode]
++  host=subprocess.run([sys.executable,'docs/progress/R114/code/record.py',str(stem),*cmd]).returncode
++  output=pathlib.Path(str(stem)+'.stdout').read_text();rc=host
++  if arch=='armv7l':
++   match=re.search(r'REMOTE_EXIT=(\d+)',output)
++   if host or not match:raise SystemExit('板连接或执行状态异常；已停止，保留此前记录')
++   rc=int(match[1])
++  ok=rc==0 and 'ASSERTIONS=PASS' in output
++  rows.append([arch,'物理板' if arch=='armv7l' else '原生',kind,path,variant,mode,repeat,rc,'PASS' if ok else 'FAIL',str(stem)])
++  with open(f'docs/progress/R115/W4/matrix_{arch}.tsv','w') as f:
++   w=csv.writer(f,delimiter='\t',lineterminator='\n');w.writerow(['arch','environment','kind','path','variant','mode','repeat','actual_exit','assertions','evidence']);w.writerows(rows)
++print(f'runs={len(rows)} failed={sum(r[8]!="PASS" for r in rows)}')
++sys.exit(1 if any(r[8]!='PASS' for r in rows) else 0)

@@ -1,0 +1,306 @@
+codex/runtime-validation
+5d2cce926759099fadcbe645d41a1bdad0388999
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	
+     9	#include <__config>
+    10	#include <__mutex/once_flag.h>
+    11	#include <__utility/exception_guard.h>
+    12	
+    13	#if _LIBCPP_HAS_THREADS
+    14	#  include <__thread/support.h>
+    15	#endif
+    16	
+    17	#include "include/atomic_support.h"
+    18	
+    19	_LIBCPP_BEGIN_NAMESPACE_STD
+    20	
+    21	// If dispatch_once_f ever handles C++ exceptions, and if one can get to it
+    22	// without illegal macros (unexpected macros not beginning with _UpperCase or
+    23	// __lowercase), and if it stops spinning waiting threads, then call_once should
+    24	// call into dispatch_once_f instead of here. Relevant radar this code needs to
+    25	// keep in sync with:  7741191.
+    26	
+    27	#if _LIBCPP_HAS_THREADS
+    28	static constinit __libcpp_mutex_t mut  = _LIBCPP_MUTEX_INITIALIZER;
+    29	static constinit __libcpp_condvar_t cv = _LIBCPP_CONDVAR_INITIALIZER;
+    30	#endif
+    31	
+    32	void __call_once(volatile once_flag::_State_type& flag, void* arg, void (*func)(void*)) {
+    33	#if !_LIBCPP_HAS_THREADS
+    34	
+    35	  if (flag == once_flag::_Unset) {
+    36	    auto guard = std::__make_exception_guard([&flag] { flag = once_flag::_Unset; });
+    37	    flag       = once_flag::_Pending;
+    38	    func(arg);
+    39	    flag = once_flag::_Complete;
+    40	    guard.__complete();
+    41	  }
+    42	
+    43	#else // !_LIBCPP_HAS_THREADS
+    44	
+    45	  __libcpp_mutex_lock(&mut);
+    46	  while (flag == once_flag::_Pending)
+    47	    __libcpp_condvar_wait(&cv, &mut);
+    48	  if (flag == once_flag::_Unset) {
+    49	    auto guard = std::__make_exception_guard([&flag] {
+    50	      __libcpp_mutex_lock(&mut);
+    51	      __libcpp_relaxed_store(&flag, once_flag::_Unset);
+    52	      __libcpp_mutex_unlock(&mut);
+    53	      __libcpp_condvar_broadcast(&cv);
+    54	    });
+    55	
+    56	    __libcpp_relaxed_store(&flag, once_flag::_Pending);
+    57	    __libcpp_mutex_unlock(&mut);
+    58	    func(arg);
+    59	    __libcpp_mutex_lock(&mut);
+    60	    __libcpp_atomic_store(&flag, once_flag::_Complete, _AO_Release);
+    61	    __libcpp_mutex_unlock(&mut);
+    62	    __libcpp_condvar_broadcast(&cv);
+    63	    guard.__complete();
+    64	  } else {
+    65	    __libcpp_mutex_unlock(&mut);
+    66	  }
+    67	
+    68	#endif // !_LIBCPP_HAS_THREADS
+    69	}
+    70	
+    71	_LIBCPP_END_NAMESPACE_STD
+template <class _Fp>
+void _LIBCPP_HIDE_FROM_ABI __call_once_proxy(void* __vp) {
+  __call_once_param<_Fp>* __p = static_cast<__call_once_param<_Fp>*>(__vp);
+  (*__p)();
+}
+
+_LIBCPP_EXPORTED_FROM_ABI void __call_once(volatile once_flag::_State_type&, void*, void (*)(void*));
+
+template <class _ValueType>
+inline _LIBCPP_HIDE_FROM_ABI _ValueType __libcpp_acquire_load(_ValueType const* __value) {
+#if _LIBCPP_HAS_THREADS
+  return __atomic_load_n(__value, __ATOMIC_ACQUIRE);
+#else
+  return *__value;
+#endif
+}
+
+#ifndef _LIBCPP_CXX03_LANG
+
+template <class _Callable, class... _Args>
+inline _LIBCPP_HIDE_FROM_ABI void call_once(once_flag& __flag, _Callable&& __func, _Args&&... __args) {
+  if (__libcpp_acquire_load(&__flag.__state_) != once_flag::_Complete) {
+    typedef tuple<_Callable&&, _Args&&...> _Gp;
+    _Gp __f(std::forward<_Callable>(__func), std::forward<_Args>(__args)...);
+    __call_once_param<_Gp> __p(__f);
+    std::__call_once(__flag.__state_, std::addressof(__p), std::addressof(__call_once_proxy<_Gp>));
+  }
+}
+
+#else // _LIBCPP_CXX03_LANG
+
+template <class _Callable>
+inline _LIBCPP_HIDE_FROM_ABI void call_once(once_flag& __flag, _Callable& __func) {
+  if (__libcpp_acquire_load(&__flag.__state_) != once_flag::_Complete) {
+    __call_once_param<_Callable> __p(__func);
+    std::__call_once(__flag.__state_, std::addressof(__p), std::addressof(__call_once_proxy<_Callable>));
+  }
+}
+
+template <class _Callable>
+inline _LIBCPP_HIDE_FROM_ABI void call_once(once_flag& __flag, const _Callable& __func) {
+  if (__libcpp_acquire_load(&__flag.__state_) != once_flag::_Complete) {
+    __call_once_param<const _Callable> __p(__func);
+    std::__call_once(__flag.__state_, std::addressof(__p), std::addressof(__call_once_proxy<const _Callable>));
+  }
+}
+
+#endif // _LIBCPP_CXX03_LANG
+#define _LIBCPP_CONDVAR_INITIALIZER PTHREAD_COND_INITIALIZER
+
+inline _LIBCPP_HIDE_FROM_ABI int __libcpp_condvar_signal(__libcpp_condvar_t* __cv) { return pthread_cond_signal(__cv); }
+
+inline _LIBCPP_HIDE_FROM_ABI int __libcpp_condvar_broadcast(__libcpp_condvar_t* __cv) {
+  return pthread_cond_broadcast(__cv);
+}
+
+_LIBCPP_NO_THREAD_SAFETY_ANALYSIS inline _LIBCPP_HIDE_FROM_ABI int
+__libcpp_condvar_wait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m) {
+  return pthread_cond_wait(__cv, __m);
+}
+
+_LIBCPP_NO_THREAD_SAFETY_ANALYSIS inline _LIBCPP_HIDE_FROM_ABI int
+__libcpp_condvar_timedwait(__libcpp_condvar_t* __cv, __libcpp_mutex_t* __m, __libcpp_timespec_t* __ts) {
+  return pthread_cond_timedwait(__cv, __m, __ts);
+}
+
+inline _LIBCPP_HIDE_FROM_ABI int __libcpp_condvar_destroy(__libcpp_condvar_t* __cv) {
+  return pthread_cond_destroy(__cv);
+}
+
+//
+// Execute once
+//
+typedef pthread_once_t __libcpp_exec_once_flag;
+#define _LIBCPP_EXEC_ONCE_INITIALIZER PTHREAD_ONCE_INIT
+
+inline _LIBCPP_HIDE_FROM_ABI int __libcpp_execute_once(__libcpp_exec_once_flag* __flag, void (*__init_routine)()) {
+  return pthread_once(__flag, __init_routine);
+}
+
+//
+// Thread id
+#!/usr/bin/env python3
+import argparse
+import hashlib
+from pathlib import Path
+
+
+def digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--header", required=True, type=Path)
+    parser.add_argument("--source", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+    target_header = args.output / "include/__condition_variable/condition_variable.h"
+    target_source = args.output / "condition_variable_removed.cpp"
+    target_header.parent.mkdir(parents=True, exist_ok=True)
+    header = args.header.read_text()
+    source = args.source.read_text()
+    header_replacements = 0
+    source_replacements = 0
+    for old, new in (
+        ("void wait(unique_lock<mutex>& __lk) _NOEXCEPT;", "void wait(unique_lock<mutex>& __lk);"),
+        ("__do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>) _NOEXCEPT;", "__do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>);"),
+        ("__do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>) _NOEXCEPT;", "__do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>);"),
+        ("__do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>) _NOEXCEPT;", "__do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>);"),
+        ("chrono::time_point<chrono::steady_clock, chrono::nanoseconds> __tp) _NOEXCEPT {", "chrono::time_point<chrono::steady_clock, chrono::nanoseconds> __tp) {"),
+        ("chrono::time_point<_Clock, chrono::nanoseconds> __tp) _NOEXCEPT {", "chrono::time_point<_Clock, chrono::nanoseconds> __tp) {"),
+    ):
+        count = header.count(old)
+        header_replacements += count
+        header = header.replace(old, new)
+    for old, new in (
+        ("void condition_variable::wait(unique_lock<mutex>& lk) noexcept {", "void condition_variable::wait(unique_lock<mutex>& lk) {"),
+        ("chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) noexcept {", "chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) {"),
+    ):
+        count = source.count(old)
+        source_replacements += count
+        source = source.replace(old, new)
+    if header_replacements != 6 or source_replacements != 2:
+        raise SystemExit(f"unexpected replacement counts header={header_replacements} source={source_replacements}")
+    target_header.write_text(header)
+    target_source.write_text(source)
+    print(f"header_replacements={header_replacements}")
+    print(f"source_replacements={source_replacements}")
+    print(f"input_header_sha256={digest(args.header)}")
+    print(f"output_header_sha256={digest(target_header)}")
+    print(f"input_source_sha256={digest(args.source)}")
+    print(f"output_source_sha256={digest(target_source)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <dlfcn.h>
+#include <mutex>
+#include <pthread.h>
+#include <shared_mutex>
+#include <unistd.h>
+
+std::__shared_mutex_base base;
+std::shared_mutex plain;
+std::shared_timed_mutex timed;
+std::atomic<pthread_mutex_t*> native{nullptr};
+std::atomic<int> clean{0};
+thread_local bool observe = false;
+const char* mode;
+using Wait = int(*)(pthread_cond_t*,pthread_mutex_t*);
+using Timed = int(*)(pthread_cond_t*,pthread_mutex_t*,const timespec*);
+using Clock = int(*)(pthread_cond_t*,pthread_mutex_t*,clockid_t,const timespec*);
+extern "C" int pthread_cond_wait(pthread_cond_t* c,pthread_mutex_t* m) {
+  static auto f=reinterpret_cast<Wait>(dlsym(RTLD_NEXT,"pthread_cond_wait"));
+  if(observe) native.store(m,std::memory_order_release);
+  return f(c,m);
+}
+extern "C" int pthread_cond_timedwait(pthread_cond_t* c,pthread_mutex_t* m,const timespec* t) {
+  static auto f=reinterpret_cast<Timed>(dlsym(RTLD_NEXT,"pthread_cond_timedwait"));
+  if(observe) native.store(m,std::memory_order_release);
+  return f(c,m,t);
+}
+extern "C" int pthread_cond_clockwait(pthread_cond_t* c,pthread_mutex_t* m,clockid_t k,const timespec* t) {
+  static auto f=reinterpret_cast<Clock>(dlsym(RTLD_NEXT,"pthread_cond_clockwait"));
+  if(observe) native.store(m,std::memory_order_release);
+  return f(c,m,k,t);
+}
+struct Guard {~Guard(){++clean;}};
+struct Custom {
+  using rep=long long; using period=std::ratio<1>; using duration=std::chrono::duration<rep>;
+  using time_point=std::chrono::time_point<Custom>; static constexpr bool is_steady=false;
+  static time_point now(){return time_point(duration(0));}
+};
+void* worker(void*) {
+  Guard g; observe=true;
+  if(!strcmp(mode,"base")) base.lock();
+  else if(!strcmp(mode,"plain")) plain.lock();
+  else if(!strcmp(mode,"timed_lock")) timed.lock();
+  else if(!strcmp(mode,"system")) timed.try_lock_until(std::chrono::system_clock::now()+std::chrono::hours(1));
+  else if(!strcmp(mode,"steady")) timed.try_lock_for(std::chrono::hours(1));
+  else timed.try_lock_until(Custom::now()+Custom::duration(3600));
+  return reinterpret_cast<void*>(1);
+}
+int main(int argc,char**argv){
+  if(argc!=2)return 64; mode=argv[1]; setvbuf(stdout,nullptr,_IONBF,0);
+  alarm(8);
+  bool b=!strcmp(mode,"base"),p=!strcmp(mode,"plain");
+  if(b)base.lock_shared();else if(p)plain.lock_shared();else timed.lock_shared();
+  pthread_t t; if(pthread_create(&t,nullptr,worker,nullptr))return 65;
+  while(!native.load(std::memory_order_acquire))usleep(1000);
+  auto m=native.load();
+  int before=pthread_mutex_lock(m); if(before)return 66;
+  unsigned state=b?base.__state_:0;
+  pthread_mutex_unlock(m);
+  printf("native_wait_entered=1 pre_native_lock=%d state=%u\n",before,state);
+  int cancel=pthread_cancel(t);void* result=nullptr;int join=pthread_join(t,&result);
+  int unlocked=pthread_mutex_trylock(m); if(!unlocked)pthread_mutex_unlock(m);
+  if(b)base.unlock_shared();else if(p)plain.unlock_shared();else timed.unlock_shared();
+  bool reader=b?base.try_lock_shared():(p?plain.try_lock_shared():timed.try_lock_shared_for(std::chrono::milliseconds(30)));
+  if(reader){if(b)base.unlock_shared();else if(p)plain.unlock_shared();else timed.unlock_shared();}
+  bool writer=b?base.try_lock():(p?plain.try_lock():timed.try_lock_for(std::chrono::milliseconds(30)));
+  if(writer){if(b)base.unlock();else if(p)plain.unlock();else timed.unlock();}
+  bool flag=!b || (base.__state_ & base.__write_entered_);
+  printf("cancel=%d join=%d canceled=%d cleanup=%d internal_mutex_rc=%d reader=%d writer=%d explicit_flag=%s\n",cancel,join,result==PTHREAD_CANCELED,clean.load(),unlocked,reader,writer,b?(flag?"1":"0"):"NOT_OBSERVED");
+  bool ok=!cancel&&!join&&result==PTHREAD_CANCELED&&clean==1&&!unlocked&&!reader&&!writer&&flag;
+  printf("ASSERTIONS=%s\n",ok?"PASS":"FAIL");
+  _Exit(ok?0:67); // 损坏对象不调用析构；进程隔离探针。
+}
+7:**已确认一个反例**:`shared_mutex` 写者设标记后等待,展开穿过后标记未回滚,
+11:根本没有那个状态机;其条件变量 fallback 与 libc++ 同源,同样无回滚,
+18:  还有没有别的问题 —— **最终决定是加回滚,还是换成与 libstdc++ 一致的方案**;
+35:**时间上限**:W1 六小时;W2 四小时;W3 六小时。
+93:- 两套实现除了取消回滚,**还有没有别的行为差异**?
+94:- **据此判断:我们是加回滚,还是换成与 libstdc++ 一致的方案?**
+124:   | | 加回滚 | 换成 `pthread_rwlock` 后端 |
+171:# W4:回滚方案的可行性验证
+173:**要回答的**:给 `shared_mutex` 写者路径加回滚守卫后,
+184:13. **设计回滚守卫**:
+202:    e. 与不加回滚的对照组比较 —— 对照组应仍为损坏;
+208:    d. **异常路径以外的所有退出**都不应触发守卫的回滚动作;
+211:16. **同时验证"回滚后被唤醒的线程行为正确"**:
+217:    a. 无竞争路径的开销变化 —— RAII 对象的构造/析构;
+220:18. **若发现回滚方案有问题**:
+223:    c. 这条结果直接影响 W2 第 9 项的对比(加回滚 vs 换后端);
+227:回滚守卫的 diff、取消路径实测(含对照组)、正常路径实测、

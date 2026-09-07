@@ -1,0 +1,35 @@
+--- /home/toolchain/development/libcxx_runtime_validation/tmp/R115-W4/control/include/shared_mutex	2026-09-07 21:36:36.906052642 +0800
++++ /home/toolchain/development/libcxx_runtime_validation/tmp/R115-W4/rollback/include/shared_mutex	2026-09-07 21:36:56.205732422 +0800
+@@ -244,6 +244,19 @@
+       }
+     }
+     __base_.__state_ |= __base_.__write_entered_;
++    struct rollback_guard {
++      __shared_mutex_base& base;
++      bool completed = false;
++      ~rollback_guard() {
++        if (!completed) {
++          base.__state_ &= ~base.__write_entered_;
++          base.__gate1_.notify_all();
++#ifdef W4_TRACE
++          w4_rollback_event();
++#endif
++        }
++      }
++    } rollback{__base_};
+     if (__base_.__state_ & __base_.__n_readers_) {
+       while (true) {
+         cv_status __status = __base_.__gate2_.wait_until(__lk, __abs_time);
+@@ -252,10 +265,12 @@
+         if (__status == cv_status::timeout) {
+           __base_.__state_ &= ~__base_.__write_entered_;
+           __base_.__gate1_.notify_all();
++          rollback.completed = true;
+           return false;
+         }
+       }
+     }
++    rollback.completed = true;
+     return true;
+   }
+ 

@@ -1,0 +1,38 @@
+5ed6c77278dfa7a470667cf1a137723d3c96fe60
+af41f2989efcc28405bd26e3db24fb8e26c1fcca89f7d6f22c9140ccdb5beebd  docs/progress/R69/code/patches/0001-Layer-A-fix-foreign-forced-unwind-resume.patch
+a121ce3bb7b95d3170a5ae0acd885557a5c7c0ab100b360a469d129c9c985b6e  docs/progress/R69/code/patches/0002-Layer-B-add-GNU-forced-unwind-marker.patch
+0a32dc44e0e57ed524283bc416bdc5c4f6a00b131de5e421485b6e7bcb4b82e9  docs/progress/R69/code/patches/0003-Layer-C-header-batch-20-sites.patch
+88228328db96b38ca139ec1fa3b04ddd82c25f17b97e8a90c674feb2a654d90e  docs/progress/R69/code/patches/0004-Layer-C-library-batch-30-sites.patch
+# W4:回滚方案的可行性验证
+
+**要回答的**:给 `shared_mutex` 写者路径加回滚守卫后,
+**取消是否真的不再留下损坏状态,且正常路径行为不变?**
+
+**前置**:W1 完成(需要"有残留且有害"的完整名单);
+**架构**:x86_64 与 armv7l 物理板都要跑。
+
+**本任务的改动只在实验副本上做**(`tmp/` 下),
+**不动 `codes/`,不推送任何分支** —— 这是验证方案可行性,不是实施。
+
+## 执行
+
+13. **设计回滚守卫**:
+    a. 在写者设标记之后、等待之前,放置一个 RAII 对象;
+    b. 其析构在**异常退出**时:清除 `__write_entered_` 标记,
+       并通知 `__gate1_`(让被挡住的读者与写者能继续);
+    c. **正常完成时守卫不动作** —— 用一个"已完成"标志控制;
+    d. `shared_timed_mutex` 的定时路径同样;
+    e. **W1 名单上的其他"有残留且有害"点**,各自按同样思路设计;
+    f. **贴出实际改动的 diff**;
+
+14. **验证取消路径**(每格 5 次,两架构):
+    a. 一个读者持读锁;
+    b. 写者设标记后阻塞于第二等待阶段;
+    c. **取消写者**;
+    d. 断言:
+       - 写者线程干净回收(`PTHREAD_CANCELED`);
+       - 内部 mutex 已解锁;
+       - **`__write_entered_` 标记已清除**;
+       - **原读者释放后,新读者与新写者都能获取锁**(带超时,断言成功);
+    e. 与不加回滚的对照组比较 —— 对照组应仍为损坏;
+
