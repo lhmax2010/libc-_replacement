@@ -1,0 +1,260 @@
+diff --git a/tmp/BUILD_W1_0905/mlgo-tools/mlgo_pack.py b/tmp/BUILD_W1_0905/mlgo-tools/mlgo_pack.py
+new file mode 100644
+index 0000000..2b31714
+--- /dev/null
++++ b/tmp/BUILD_W1_0905/mlgo-tools/mlgo_pack.py
+@@ -0,0 +1,492 @@
++#!/usr/bin/env python3
++"""mlgo-pack (chroot edition): AOT pre-generation of MLGO model packages for
++Tizen LLVM, running everything heavy inside an x86_64 GBS buildroot.
++
++Nothing is bundled here — the compilers all come from the GBS environment:
++  model AOT        -> /opt/tensorflow-aot/bin/saved_model_cli (cross-enabled
++                      tensorflow2-aot RPM, all LLVM backends)
++  runtime compile  -> the buildroot's clang (Tizen x86_64 clang carries the
++                      X86;ARM;AArch64 backends) + staged target sysroots
++  archives         -> the buildroot's binutils ar
++
++One x86_64 buildroot produces the packages for all three arches:
++
++  mlgo_inliner_<arch>.tar.gz   InlinerSizeModel.h/.o
++  mlgo_regalloc_<arch>.tar.gz  RegAllocEvictModel.h/.o
++  mlgo_runtime_<arch>.tar.gz   xla_runtime_objects/*.cc.o, mlgo_sysroot/
++
++Host needs only: python3 (stdlib), sudo, tar, binutils (nm/readelf).
++Prepare the buildroot once with ./setup-chroot.sh, then:
++
++  ./mlgo-pack --chroot <buildroot> --model X.zip --type inliner
++  ./mlgo-pack --chroot <buildroot> --make-runtime
++"""
++
++import argparse
++import hashlib
++import json
++import os
++import shutil
++import subprocess
++import sys
++import tarfile
++import zipfile
++from datetime import datetime, timezone
++from pathlib import Path
++
++TOOLS_DIR = Path(__file__).resolve().parent
++BUILD_DIR = TOOLS_DIR / "build"
++TEMPLATES = TOOLS_DIR / "templates"
++DEFAULT_OUT = TOOLS_DIR.parent / "llvm/packaging"
++
++# Paths inside the buildroot (established by the tensorflow2-aot RPM and
++# setup-chroot.sh).
++CHROOT_TF_AOT = os.environ.get("MLGO_TF_AOT_PREFIX", "/opt/tensorflow-aot")
++CHROOT_TF_PKG = f"{CHROOT_TF_AOT}/lib/python3.12/site-packages/tensorflow"
++CHROOT_SMC = f"{CHROOT_TF_AOT}/bin/saved_model_cli"
++CHROOT_SYSROOTS = os.environ.get("MLGO_SYSROOT_PREFIX", "/opt/mlgo-sysroots")
++CHROOT_STAGE = "tmp/mlgo-aot"
++CHROOT_RUNNER = os.environ.get("MLGO_CHROOT_RUNNER", "sudo-chroot")
++
++ARCHES = {
++    "armv7l": {
++        "triple": "armv7l-tizen-linux-gnueabi",
++        "cflags": ["-march=armv7-a", "-mfloat-abi=softfp", "-mfpu=neon",
++                   "-mtune=cortex-a8", "-mthumb"],
++        "elf_machine": "ARM",
++    },
++    "aarch64": {
++        "triple": "aarch64-tizen-linux-gnu",
++        # TF upstream forces GEBP nr=4 on arm64; the eigen_spatial_convolutions
++        # custom pack kernels static-assert on it (default is 8 on aarch64).
++        "cflags": ["-DEIGEN_NEON_GEBP_NR=4"],
++        "elf_machine": "AArch64",
++    },
++    "x86_64": {
++        "triple": "x86_64-tizen-linux-gnu",
++        "cflags": [],
++        "elf_machine": "Advanced Micro Devices X86-64",
++    },
++}
++
++MODELS = {
++    "inliner": {"fname": "InlinerSizeModel", "cpp_class": "llvm::InlinerSizeModel"},
++    "regalloc": {"fname": "RegAllocEvictModel", "cpp_class": "llvm::RegAllocEvictModel"},
++}
++
++# The five objects llvm.spec embeds via LLVM_MLGO_EMBED_TF_XLA_RUNTIME_OBJECTS.
++EMBED_OBJECTS = [
++    "xla_compiled_cpu_function.cc.o",
++    "cpu_function_runtime.cc.o",
++    "custom_call_status.cc.o",
++    "executable_run_options.cc.o",
++    "runtime_single_threaded_matmul_f32.cc.o",
++]
++
++# -O3 matches the legacy artifacts (CMake Release), keeping EABI attribute
++# parity with the packages already validated in GBS.
++RUNTIME_CXXFLAGS = [
++    "-O3", "-fPIC", "-std=c++17",
++    "-ftemplate-backtrace-limit=0",
++    "-Wno-ignored-attributes", "-Wno-deprecated-copy",
++    "-Wno-cast-qual", "-Wno-sign-compare",
++]
++
++
++def die(msg: str) -> None:
++    sys.exit(f"FATAL: {msg}")
++
++
++def run(cmd, **kw):
++    r = subprocess.run([str(c) for c in cmd], **kw)
++    if r.returncode:
++        die(f"command failed ({r.returncode}): {' '.join(str(c) for c in cmd)}")
++    return r
++
++
++def inside_cmd(chroot: Path, cmd: list) -> list:
++    """Build a command that executes *cmd* inside the selected buildroot.
++
++    The default remains the guide's sudo+chroot behavior.  The bwrap backend
++    is an execution-environment fallback for hosts without passwordless sudo;
++    it does not change the compiler flags or packaged payload.
++    """
++    if CHROOT_RUNNER == "sudo-chroot":
++        return ["sudo", "chroot", chroot, *cmd]
++    if CHROOT_RUNNER == "bwrap":
++        return ["bwrap", "--bind", chroot, "/", "--dev", "/dev",
++                "--proc", "/proc", "--setenv", "HOME", "/home/abuild",
++                "--chdir", "/", *cmd]
++    die(f"unknown MLGO_CHROOT_RUNNER: {CHROOT_RUNNER}")
++
++
++def run_inside(chroot: Path, cmd: list, **kw):
++    return run(inside_cmd(chroot, cmd), **kw)
++
++
++def in_chroot(chroot: Path, p: Path) -> str:
++    """Host path under the buildroot -> the path processes see inside it."""
++    return "/" + str(p.relative_to(chroot))
++
++
++def tool_versions(chroot: Path) -> dict:
++    tf_ver = "unknown"
++    meta = sorted((chroot / CHROOT_TF_PKG.lstrip("/")).parent
++                  .glob("tensorflow-*.dist-info/METADATA"))
++    if meta:
++        for line in meta[-1].read_text().splitlines():
++            if line.startswith("Version:"):
++                tf_ver = line.split(":", 1)[1].strip()
++    clang = subprocess.run(
++        inside_cmd(chroot, ["/usr/bin/clang", "--version"]),
++        capture_output=True, text=True).stdout.splitlines()
++    return {"tensorflow": tf_ver,
++            "tf_source": f"team-rpm(chroot:{chroot.name})",
++            "clang": clang[0].strip() if clang else "unknown"}
++
++
++# ---------------------------------------------------------------- model input
++
++def sha256_file(p: Path) -> str:
++    h = hashlib.sha256()
++    with open(p, "rb") as f:
++        for chunk in iter(lambda: f.read(1 << 20), b""):
++            h.update(chunk)
++    return h.hexdigest()
++
++
++def sha256_input(p: Path) -> str:
++    if p.is_file():
++        return sha256_file(p)
++    h = hashlib.sha256()
++    for f in sorted(x for x in p.rglob("*") if x.is_file()):
++        h.update(str(f.relative_to(p)).encode())
++        h.update(sha256_file(f).encode())
++    return h.hexdigest()
++
++
++def locate_saved_model(root: Path) -> Path:
++    hits = [p.parent for p in root.rglob("saved_model.pb")
++            if "__MACOSX" not in p.parts and not p.name.startswith("._")]
++    if not hits:
++        die(f"no saved_model.pb found under {root}")
++    hits.sort(key=lambda p: len(p.parts))
++    return hits[0]
++
++
++def extract_model(src: Path, workdir: Path) -> Path:
++    if src.is_dir():
++        return locate_saved_model(src)
++    dest = workdir / "model_input"
++    if dest.exists():
++        shutil.rmtree(dest)
++    dest.mkdir(parents=True)
++    name = src.name.lower()
++    if name.endswith(".zip"):
++        with zipfile.ZipFile(src) as z:
++            z.extractall(dest)
++    elif name.endswith((".tar.gz", ".tgz", ".tar")):
++        with tarfile.open(src) as t:
++            t.extractall(dest)
++    else:
++        die(f"unsupported model input format: {src}")
++    return locate_saved_model(dest)
++
++
++# -------------------------------------------------------------- static checks
++
++def readelf(args, path: Path) -> str:
++    return subprocess.run(["readelf", *args, str(path)],
++                          capture_output=True, text=True).stdout
++
++
++def check_object(path: Path, arch: str) -> None:
++    header = readelf(["-h"], path)
++    want = ARCHES[arch]["elf_machine"]
++    if "Machine:" not in header or want not in header:
++        die(f"{path.name}: ELF machine mismatch (want {want})")
++    if arch == "armv7l":
++        attrs = readelf(["-A"], path)
++        if "Tag_ABI_VFP_args" in attrs:
++            die(f"{path.name}: hard-float ABI detected — Tizen armv7l needs softfp")
++        if "Tag_CPU_arch: v7" not in attrs:
++            die(f"{path.name}: not ARMv7 code")
++
++
++def defined_symbols(path: Path) -> set:
++    out = subprocess.run(["nm", "--defined-only", str(path)],
++                         capture_output=True, text=True).stdout
++    return {line.split()[-1] for line in out.splitlines()
++            if line.strip() and "$" not in line.split()[-1]}
++
++
++# ------------------------------------------------------------- chroot helpers
++
++def chroot_precheck(chroot: Path) -> None:
++    if not (chroot / CHROOT_SMC.lstrip("/")).exists():
++        die(f"{chroot} has no {CHROOT_SMC}\n"
++            "       Run ./setup-chroot.sh --chroot <buildroot> --rpm <cross-enabled RPM> first")
++    if not (chroot / "usr/bin/clang").exists():
++        die(f"{chroot} has no clang — use a buildroot that ships clang "
++            "(e.g. one created by a tensorflow2 or llvm build)")
++    if CHROOT_RUNNER == "sudo-chroot" and not (chroot / "proc/self").exists():
++        print(f"[chroot] mounting /proc in {chroot}")
++        run(["sudo", "mount", "-t", "proc", "proc", chroot / "proc"])
++
++
++def fetch_back(chroot: Path, src_in_stage: Path, outdir: Path) -> None:
++    if CHROOT_RUNNER == "bwrap":
++        shutil.copy2(src_in_stage, outdir)
++    else:
++        run(["sudo", "cp", src_in_stage, outdir])
++        run(["sudo", "chown", f"{os.getuid()}:{os.getgid()}",
++             outdir / src_in_stage.name])
++
++
++# ------------------------------------------------------------------- AOT step
++
++def aot_compile(chroot: Path, model_dir: Path, mtype: str, arch: str,
++                outdir: Path) -> tuple:
++    cfg, m = ARCHES[arch], MODELS[mtype]
++    outdir.mkdir(parents=True, exist_ok=True)
++    for stale in outdir.iterdir():
++        stale.unlink()
++    print(f"[{arch}/{mtype}] AOT compiling for {cfg['triple']} (chroot) ...")

@@ -2,15 +2,18 @@
 
 ## 结论
 
-`PARTIAL`。人工随后授权同步重新生成三架构 XLA runtime，并确认采用
-“有效载荷、接口与 ABI 一致”的等价口径。隔离副本中的双标准库开关和
-三包兼容组装工具已经准备；AOT 工具构建在修正若干命令自身的环境问题后推进到
-`31,594 / 35,555`，但中途资源门禁返回 21（负载过高），已立即中断并清理
-本轮进程。尚未生成可用资产，因此符号、接口、载荷及 LLVM 构建验证均为
-`NOT_OBSERVED`，W2 仍为 `NOT_AVAILABLE`。
+`PARTIAL`。2026-09-07 经人工授权从断点续跑后，AOT 工具已完成
+`35,555 / 35,555`，并实际生成默认 libstdc++ 与 libc++ 两条路径的 runtime、
+inliner 三架构资产。libc++ runtime 三架构均检出 `std::__1`，均未检出
+`std::__cxx11`。
 
-第 1–12 节保留第一阶段与两轮人工确认的历史记录；第 13–17 节是最终续跑
-结果，若状态或未观测项与前文不同，以后者为准。
+但“不开 libc++ 开关时应与现有资产等价”的内容门禁**未通过**：现有资产携带
+TensorFlow 2.15.1 头文件，而本次材料生成 TensorFlow 2.18.0 资产；每架构文件数
+从 10,866 变成 8,393，runtime 归档成员从 30 变成 34，inliner 入口符号也发生
+变化。因此本轮生成物只能作为不可交付候选留档，未导入 LLVM、未进入 W2。
+
+第 1–17 节保留第一阶段与上次因资源门禁中止的历史记录；第 18 节以后是
+2026-09-07 的最新续跑结果，若状态或未观测项与前文不同，以后者为准。
 
 两个指定分支和两个模型输入均已取得并核对，但现有指南、脚本、目标 LLVM spec 与“生成基于 libc++ 的资产”这一目标之间存在多处实质不一致。按任务书“指南与实际材料不符或缺少必要输入即停”的要求，本阶段没有执行 `setup-chroot.sh`、`mlgo-pack`、GBS 构建或任何资产导入。
 
@@ -385,3 +388,206 @@ Markdown 反引号被 shell 当作命令替换，因而该轮状态文本检查�
 `raw/152_material_selfcheck_corrected.*` 以修正后的命令重跑通过。
 `raw/153_material_sha256.*` 是报告定稿前的初步清单；
 `raw/154_final_material_sha256.*` 记录报告定稿后的材料 SHA256。
+
+## 18. 2026-09-07 断点续跑与资源门禁
+
+续跑前的 medium 门禁为 `PASS`：`load1=0.92`、可用内存
+`23,881,288 KiB`、可用磁盘 `158,881,988 KiB`，退出码 0，见
+`raw/161_resume_resource_gate.*`。因此无需进入“每 10 分钟重试、最多 5 次”
+分支。
+
+续跑仍使用 `_smp_mflags -j2`、`aot_build_jobs 2`、`nice -n 15`、
+`ionice -c 3`。构建从保留的 Bazel 断点继续，最终输出：
+
+```text
+[35,555 / 35,555] checking cached actions
+INFO: Elapsed time: 9409.934s, Critical Path: 332.04s
+INFO: 3957 processes: 18 internal, 3939 local.
+INFO: Build completed successfully, 3957 total actions
+```
+
+包装器退出码为 0，见 `raw/163_aot_build_resume.*`。随后以 RPM
+`--short-circuit -bi` 执行安装阶段，TensorFlow 2.18.0 import 与
+`saved_model_cli` smoke test 通过，退出码 0，见
+`raw/198_aot_install_shortcircuit.*`。
+
+构建与生成期间的门禁采样 `raw/164_*` 至 `raw/194_*`、`raw/197_*`、
+`raw/207_*`、`raw/210_*`、`raw/212_*` 至 `raw/225_*`、`raw/234_*`、
+`raw/236_*` 至 `raw/238_*` 全部返回 0；没有放宽负载上限，也没有提高并行度。
+
+## 19. 当前环境适配与 sysroot
+
+当前账户没有免密 sudo。第一次向另一临时 buildroot 的 `/opt` 复制返回权限错误，
+按指南重试 sudo 又明确报需要终端密码，见 `raw/202_*`、`raw/203_*`。这两次是
+命令环境错误，不是资产判据失败。为保持指南默认行为不变，临时
+`mlgo_pack.py` 增加了显式选择的 `bwrap` 后端及 AOT/sysroot 路径环境变量；
+不设置时仍使用原来的 `sudo chroot` 和 `/opt/...`。本次 AOT 工具放在临时
+buildroot 的 `/home/abuild/tensorflow-aot`，smoke test 得到 TensorFlow 2.18.0
+和 Clang 22.1.8，见 `raw/204_*`、`raw/205_*`。
+
+从指南的 Tizen `reference` 地址实际下载并展开了两套标准库的 armv7l、
+aarch64 sysroot：
+
+- 通用：`glibc-devel-2.40-2.3`、`linux-glibc-devel-6.6-1.9`；
+- 默认路径：`libstdc++-devel-14.2.0-1.8`、`libstdc++-14.2.0-1.8`；
+- libc++ 路径：`libc++-devel-22.1.8-1.1`、`libc++abi-devel-22.1.8-1.1`、
+  `libc++-22.1.8-1.1`、`libc++abi-22.1.8-1.1`。
+
+两次下载和完整性门禁均退出 0，见 `raw/208_*`、`raw/209_*`。实际执行的
+脚本快照及 SHA256 已放在 `code/`：
+
+| 快照 | SHA256 |
+|---|---|
+| `mlgo_pack.executed.py` | `e3c7ffca1bd0d160bf206f288565708eff6372e623b61826ec204e190f8f63ee` |
+| `fetch_sysroot.executed.py` | `1d68621f1594a5e5310eaa8e9c82a18f9b80df5db89c9b633835015ee641cd47` |
+| `tensorflow2-aot.executed.spec` | `98b024675ee0526ce364bb4a37ebaddf2ff65d39ffc887f24d5433cfa5ac3fb7` |
+
+## 20. 三架构资产生成结果
+
+以下四组生成均实际执行且退出码为 0：
+
+| 路径 | runtime | inliner |
+|---|---|---|
+| 显式 `--stdlib libstdc++` | `raw/211_*` | `raw/216_*` |
+| 显式 `--stdlib libc++` | `raw/217_*` | `raw/222_*` |
+| 完全省略 `--stdlib` | `raw/235_*` | `raw/239_*` |
+
+每组覆盖 armv7l、aarch64、x86_64。runtime 每架构编译 34 个源文件，
+inliner 每架构均产生 `InlinerSizeModel.h/.o` 并通过入口符号与 ELF 架构检查。
+完整 tarball SHA256 见 `GENERATED_SHA256SUMS.txt` 与 `raw/245_*`。
+
+`--no-verify` 是有意指定：先执行 W1 的资产内容门禁；只有资产等价性通过后
+才允许把它们交给 LLVM 构建。后续内容门禁失败，所以没有运行 LLVM GBS 验证，
+也没有进入 W2。
+
+## 21. ABI 核验
+
+三架构 libc++ 合并候选的全局符号结果如下；计数是 `.o`/`.a` 全局已定义与
+未定义符号去重后再 demangle 的集合：
+
+| 架构 | `std::__1` | `std::__cxx11` |
+|---|---:|---:|
+| armv7l | 15,509 | 0 |
+| aarch64 | 15,900 | 0 |
+| x86_64 | 15,915 | 0 |
+
+实际命中示例：
+
+```text
+_ZN3tsl8internal17MakeCheckOpStringIiiEEPNSt3__112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEERKT_RKT0_PKc
+std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char> >*
+tsl::internal::MakeCheckOpString<int, int>(...)
+```
+
+完整计数、前 50 个示例与完整符号差异分别见
+`asset_verification/summary.tsv`、`*_std___1.samples.tsv` 和压缩的
+`*_{defined,undefined}_{missing,extra}_vs_old.txt.gz`。
+
+inliner 模型对象本身不携带标准库 ABI 符号：三架构均只定义规范化入口
+`_xla_InlinerSizeModel_llvm_InlinerSizeModel`；armv7l 另有两个 ABI helper
+未定义引用，三架构的 `std::__1`/`std::__cxx11` 均为 0，见 `raw/248_*`。
+因此 `std::__1` 的关键证据来自重新编译的 XLA runtime，与此前定位一致。
+
+## 22. 默认开关行为与现有资产等价门禁
+
+### 22.1 开关默认值本身通过
+
+完全省略 `--stdlib` 与显式 `--stdlib libstdc++` 的三架构结果：
+
+- runtime 与 inliner 文件集合均相同；
+- inliner 的两个有效载荷文件逐字节相同；
+- runtime 除静态归档容器文件外，8,388 个有效载荷文件逐字节相同；
+- 静态归档容器哈希不同，但其 34 个成员逐一同名、逐一 SHA256 相同。
+
+因此按人工确认的“有效载荷、接口与 ABI 一致，不要求 tar/归档元数据逐字节
+一致”口径，省略开关确实保持临时生成机制的默认 libstdc++ 行为。证据见
+`asset_verification/default_switch_equivalence.tsv` 与
+`default_archive_member_equivalence.tsv`。
+
+### 22.2 与平台现有资产的等价门禁失败
+
+默认 libstdc++ 再生成结果与现有三架构合并资产并不等价：
+
+| 架构 | 现有/新文件数 | 缺少/新增路径 | 非二进制共同文件内容不同 | 已定义符号缺少/新增 |
+|---|---:|---:|---:|---:|
+| armv7l | 10,866 / 8,393 | 3,548 / 1,075 | 3,488 | 1,516 / 3,506 |
+| aarch64 | 10,866 / 8,393 | 3,548 / 1,075 | 3,489 | 2,484 / 4,552 |
+| x86_64 | 10,866 / 8,393 | 3,548 / 1,075 | 3,488 | 2,110 / 7,104 |
+
+直接原因有独立文件证据：
+
+1. 现有资产的 `tensorflow/core/public/version.h` 为 2.15.1，本次 AOT RPM
+   和新资产为 2.18.0；
+2. 现有 runtime 静态归档每架构 30 个成员，新资产为 34 个，新增至少包括
+   `convolution_thunk_f16.cc.o`、`convolution_thunk_f32.cc.o`、
+   `runtime_single_threaded_matmul_f8.cc.o`、
+   `runtime_single_threaded_matmul_u8.cc.o`；
+3. 现有 inliner 入口含生成机绝对路径：
+   `_xla_home_linhao_mlgo_assets_<arch>_publish_InlinerSizeModel_llvm_InlinerSizeModel`；
+   新指南产物改为 `_xla_InlinerSizeModel_llvm_InlinerSizeModel`；
+4. 例如 x86_64 的旧、新 inliner 头文件 SHA256 分别为
+   `5ad854de2fb6d4f138541a7ed61d7ced24a3ec4c1a3ffc263ff7d81e31625816`
+   与 `db5467cbc438daee1b16628d4033995cc9ea5c90ae0e9f3867547364150a06d2`。
+
+版本、归档成员和模型差异原文见 `raw/227_*`、`raw/231_*`、`raw/233_*`。
+所有路径和符号差异均已完整落盘在 `asset_verification/`，没有为了对上现有
+资产而改变口径。
+
+## 23. libc++ 与同版本默认路径的对照
+
+在共同的 TensorFlow 2.18.0 输入下，libc++ 与 libstdc++ 两条路径的文件集合
+完全相同，所有非二进制载荷和三架构 inliner 均相同；runtime 归档均有相同
+的 34 个成员，其中每架构 29 个成员内容随标准库 ABI 改变。五个 LLVM 直接
+嵌入对象中每架构有四个内容改变，`cpu_function_runtime.cc.o` 不变。
+
+这证明 libc++ 开关只改变 runtime 编译所需的标准库 ABI，没有改变模型输入
+或 inliner 有效载荷。证据见 `asset_verification/stdlib_variant_payload.tsv`
+和 `stdlib_variant_archive_members.tsv`。但它不能消除 2.15.1 与 2.18.0 的
+版本差异，故不能让候选资产通过平台现状等价门禁。
+
+## 24. 最终结论、留档与阻断点
+
+结论仍为 `PARTIAL`，但完成范围已更新：
+
+- AOT 工具：完成，构建与安装退出码均为 0；
+- runtime + inliner：默认路径、libc++ 路径、完全省略开关路径均完成三架构；
+- `std::__1` 核验：三架构 runtime 通过，且均无 `std::__cxx11`；
+- 接口、文件与载荷对照：完成，完整差异清单已落盘；
+- 默认机制兼容性：省略开关与显式 libstdc++ 的有效载荷、接口、ABI 等价；
+- 与现有平台资产的等价性：**失败**，原因是 TensorFlow 2.15.1 与 2.18.0
+  以及旧/新生成接口存在实质差异；
+- LLVM 导入、GBS 验证与 W2：未执行，分别记 `NOT_OBSERVED`、
+  `NOT_OBSERVED`、`NOT_AVAILABLE`。
+
+六个 libc++ 拆分候选保存于
+`artifacts/UNUSABLE_TF218_CANDIDATES/`，目录名与 README 明确标注不可交付；
+它们没有被复制到 LLVM 工作树。默认对照和三包组装候选保留在本机
+`tmp/BUILD_W1_0905/generated/`，其 SHA256 已归档，但不作为发布产物。
+
+继续收口需要下列任一项人工输入/裁决：
+
+1. 提供与现有资产一致的 TensorFlow 2.15.1 源码 revision、AOT 工具构建环境
+   和对应模型生成约定，以同版本重新生成；或
+2. 明确批准把 XLA runtime 升级到 TensorFlow 2.18.0，并重新定义可接受的
+   文件/接口变化，再对 LLVM 消费端做兼容性验证。
+
+本轮没有自行作出上述选择。没有修改 `codes/`、平台源码、LLVM spec 或任何
+Gerrit 分支；没有向 Gerrit 或其他外部源码仓推送。
+
+### 本轮自行判断与命令异常
+
+- 选择 `bwrap` 仅是无免密 sudo 环境下的执行后端替换；保留默认
+  `sudo chroot` 行为，并用同一 buildroot 内的 smoke test 验证工具可运行。
+- 在资产内容门禁前使用 `--no-verify`，避免把已知可能不等价的资产带入 LLVM
+  构建；门禁失败后按任务纪律停止。
+- `raw/195_*` 的宽范围 RPM 查找与随后两次宽范围只读枚举发生慢 I/O，均停止
+  后改为明确路径检查，见 `raw/196_*`、`raw/199_*`、`raw/200_*`。
+- `raw/232_*` 的 `awk` 转义写错，管道又未启用 `pipefail`，该结果不采信；
+  `raw/233_*` 使用 `cut` 并启用 `pipefail` 后重跑。
+- `raw/252_*` 首次收口校验从仓库根目录直接执行相对路径的
+  `GENERATED_SHA256SUMS.txt`，因此报告文件无法打开；这是校验命令的目录错误，
+  不是生成物哈希不符。`raw/253_*` 切换到实际生成目录后逐项重跑，全部为
+  `OK`、退出码为 0。`git diff --cached --check` 的非零项仅来自原始工具输出
+  自带的行尾空格；为保证日志逐字留存，没有清洗这些原始证据文件。
+- 完整 demangle 的 `std::__1` 清单产生约 286 MiB 文本；为避免无谓仓库膨胀，
+  删除该可再生中间文件，保留准确计数、50 条样本及完整 raw 符号差异。
