@@ -1,0 +1,276 @@
+  /// @endcond
+
+#ifdef __cpp_lib_shared_mutex
+  /// The standard shared mutex type.
+  class shared_mutex
+  {
+  public:
+    shared_mutex() = default;
+    ~shared_mutex() = default;
+
+    shared_mutex(const shared_mutex&) = delete;
+    shared_mutex& operator=(const shared_mutex&) = delete;
+
+    // Exclusive ownership
+
+    void lock() { _M_impl.lock(); }
+    [[nodiscard]] bool try_lock() { return _M_impl.try_lock(); }
+    void unlock() { _M_impl.unlock(); }
+
+    // Shared ownership
+
+    void lock_shared() { _M_impl.lock_shared(); }
+    [[nodiscard]] bool try_lock_shared() { return _M_impl.try_lock_shared(); }
+    void unlock_shared() { _M_impl.unlock_shared(); }
+
+#if _GLIBCXX_USE_PTHREAD_RWLOCK_T
+    typedef void* native_handle_type;
+    native_handle_type native_handle() { return _M_impl.native_handle(); }
+
+  private:
+    __shared_mutex_pthread _M_impl;
+#else
+  private:
+    __shared_mutex_cv _M_impl;
+#endif
+  };
+#endif // __cpp_lib_shared_mutex
+
+  /// @cond undocumented
+#if _GLIBCXX_USE_PTHREAD_RWLOCK_T && _GTHREAD_USE_MUTEX_TIMEDLOCK
+  using __shared_timed_mutex_base = __shared_mutex_pthread;
+#else
+  using __shared_timed_mutex_base = __shared_mutex_cv;
+#endif
+  /// @endcond
+
+  /// The standard shared timed mutex type.
+  class shared_timed_mutex
+  : private __shared_timed_mutex_base
+  {
+    using _Base = __shared_timed_mutex_base;
+
+    // Must use the same clock as condition_variable for __shared_mutex_cv.
+#ifdef _GLIBCXX_USE_PTHREAD_RWLOCK_CLOCKLOCK
+    using __clock_t = chrono::steady_clock;
+#else
+    using __clock_t = chrono::system_clock;
+#endif
+
+  public:
+    shared_timed_mutex() = default;
+    ~shared_timed_mutex() = default;
+
+    shared_timed_mutex(const shared_timed_mutex&) = delete;
+    shared_timed_mutex& operator=(const shared_timed_mutex&) = delete;
+
+    // Exclusive ownership
+
+    void lock() { _Base::lock(); }
+    _GLIBCXX_NODISCARD bool try_lock() { return _Base::try_lock(); }
+    void unlock() { _Base::unlock(); }
+
+    template<typename _Rep, typename _Period>
+      _GLIBCXX_NODISCARD
+      bool
+      try_lock_for(const chrono::duration<_Rep, _Period>& __rtime)
+      {
+	auto __rt = chrono::duration_cast<__clock_t::duration>(__rtime);
+	if (ratio_greater<__clock_t::period, _Period>())
+	  ++__rt;
+	return try_lock_until(__clock_t::now() + __rt);
+      }
+
+    // Shared ownership
+
+    void lock_shared() { _Base::lock_shared(); }
+    _GLIBCXX_NODISCARD
+    bool try_lock_shared() { return _Base::try_lock_shared(); }
+    void unlock_shared() { _Base::unlock_shared(); }
+
+    template<typename _Rep, typename _Period>
+      _GLIBCXX_NODISCARD
+      bool
+      try_lock_shared_for(const chrono::duration<_Rep, _Period>& __rtime)
+      {
+	auto __rt = chrono::duration_cast<__clock_t::duration>(__rtime);
+	if (ratio_greater<__clock_t::period, _Period>())
+	  ++__rt;
+	return try_lock_shared_until(__clock_t::now() + __rt);
+      }
+
+#if _GLIBCXX_USE_PTHREAD_RWLOCK_T && _GTHREAD_USE_MUTEX_TIMEDLOCK
+
+    // Exclusive ownership
+
+    template<typename _Duration>
+      _GLIBCXX_NODISCARD
+      bool
+      try_lock_until(const chrono::time_point<chrono::system_clock,
+		     _Duration>& __atime)
+      {
+	auto __s = chrono::time_point_cast<chrono::seconds>(__atime);
+	auto __ns = chrono::duration_cast<chrono::nanoseconds>(__atime - __s);
+
+	__gthread_time_t __ts =
+	  {
+	    static_cast<std::time_t>(__s.time_since_epoch().count()),
+	    static_cast<long>(__ns.count())
+	  };
+
+	int __ret = __glibcxx_rwlock_timedwrlock(&_M_rwlock, &__ts);
+	// On self-deadlock, we just fail to acquire the lock.  Technically,
+	// the program violated the precondition.
+	if (__ret == ETIMEDOUT || __ret == EDEADLK)
+	  return false;
+	// Errors not handled: EINVAL
+	__glibcxx_assert(__ret == 0);
+	return true;
+      }
+
+#ifdef _GLIBCXX_USE_PTHREAD_RWLOCK_CLOCKLOCK
+    template<typename _Duration>
+      _GLIBCXX_NODISCARD
+      bool
+      try_lock_until(const chrono::time_point<chrono::steady_clock,
+		   _Duration>& __atime)
+      {
+	auto __s = chrono::time_point_cast<chrono::seconds>(__atime);
+	auto __ns = chrono::duration_cast<chrono::nanoseconds>(__atime - __s);
+
+	__gthread_time_t __ts =
+	  {
+	    static_cast<std::time_t>(__s.time_since_epoch().count()),
+	    static_cast<long>(__ns.count())
+	  };
+
+	int __ret = pthread_rwlock_clockwrlock(&_M_rwlock, CLOCK_MONOTONIC,
+					       &__ts);
+	// On self-deadlock, we just fail to acquire the lock.  Technically,
+	// the program violated the precondition.
+	if (__ret == ETIMEDOUT || __ret == EDEADLK)
+	  return false;
+	// Errors not handled: EINVAL
+	__glibcxx_assert(__ret == 0);
+	return true;
+      }
+#endif
+
+    template<typename _Clock, typename _Duration>
+      _GLIBCXX_NODISCARD
+      bool
+      try_lock_until(const chrono::time_point<_Clock, _Duration>& __atime)
+      {
+#if __cplusplus > 201703L
+	static_assert(chrono::is_clock_v<_Clock>);
+#endif
+	// The user-supplied clock may not tick at the same rate as
+	// steady_clock, so we must loop in order to guarantee that
+	// the timeout has expired before returning false.
+	typename _Clock::time_point __now = _Clock::now();
+	do {
+	    auto __rtime = __atime - __now;
+	    if (try_lock_for(__rtime))
+	      return true;
+	    __now = _Clock::now();
+	} while (__atime > __now);
+	return false;
+      }
+
+    // Shared ownership
+
+    template<typename _Duration>
+      _GLIBCXX_NODISCARD
+      bool
+      try_lock_shared_until(const chrono::time_point<chrono::system_clock,
+			    _Duration>& __atime)
+      {
+	auto __s = chrono::time_point_cast<chrono::seconds>(__atime);
+	auto __ns = chrono::duration_cast<chrono::nanoseconds>(__atime - __s);
+
+	__gthread_time_t __ts =
+	  {
+	    static_cast<std::time_t>(__s.time_since_epoch().count()),
+	    static_cast<long>(__ns.count())
+	  };
+
+	int __ret;
+	// Unlike for lock(), we are not allowed to throw an exception so if
+	// the maximum number of read locks has been exceeded, or we would
+	// deadlock, we just try to acquire the lock again (and will time out
+	// eventually).
+	// In cases where we would exceed the maximum number of read locks
+	// throughout the whole time until the timeout, we will fail to
+	// acquire the lock even if it would be logically free; however, this
+	// is allowed by the standard, and we made a "strong effort"
+	// (see C++14 30.4.1.4p26).
+	// For cases where the implementation detects a deadlock we
+	// intentionally block and timeout so that an early return isn't
+	// mistaken for a spurious failure, which might help users realise
+	// there is a deadlock.
+	do
+	  __ret = __glibcxx_rwlock_timedrdlock(&_M_rwlock, &__ts);
+	while (__ret == EAGAIN || __ret == EDEADLK);
+	if (__ret == ETIMEDOUT)
+	  return false;
+	// Errors not handled: EINVAL
+	__glibcxx_assert(__ret == 0);
+	return true;
+      }
+
+#ifdef _GLIBCXX_USE_PTHREAD_RWLOCK_CLOCKLOCK
+    template<typename _Duration>
+      _GLIBCXX_NODISCARD
+      bool
+      try_lock_shared_until(const chrono::time_point<chrono::steady_clock,
+			    _Duration>& __atime)
+      {
+	auto __s = chrono::time_point_cast<chrono::seconds>(__atime);
+	auto __ns = chrono::duration_cast<chrono::nanoseconds>(__atime - __s);
+
+	__gthread_time_t __ts =
+	  {
+	    static_cast<std::time_t>(__s.time_since_epoch().count()),
+	    static_cast<long>(__ns.count())
+	  };
+
+	int __ret = pthread_rwlock_clockrdlock(&_M_rwlock, CLOCK_MONOTONIC,
+					       &__ts);
+	// On self-deadlock, we just fail to acquire the lock.  Technically,
+	// the program violated the precondition.
+	if (__ret == ETIMEDOUT || __ret == EDEADLK)
+	  return false;
+	// Errors not handled: EINVAL
+	__glibcxx_assert(__ret == 0);
+	return true;
+      }
+#endif
+
+    template<typename _Clock, typename _Duration>
+      _GLIBCXX_NODISCARD
+      bool
+      try_lock_shared_until(const chrono::time_point<_Clock,
+						     _Duration>& __atime)
+      {
+#if __cplusplus > 201703L
+	static_assert(chrono::is_clock_v<_Clock>);
+#endif
+	// The user-supplied clock may not tick at the same rate as
+	// steady_clock, so we must loop in order to guarantee that
+	// the timeout has expired before returning false.
+	typename _Clock::time_point __now = _Clock::now();
+	do {
+	    auto __rtime = __atime - __now;
+	    if (try_lock_shared_for(__rtime))
+	      return true;
+	    __now = _Clock::now();
+	} while (__atime > __now);
+	return false;
+      }
+
+#else // ! (_GLIBCXX_USE_PTHREAD_RWLOCK_T && _GTHREAD_USE_MUTEX_TIMEDLOCK)
+
+    // Exclusive ownership
+
+    template<typename _Clock, typename _Duration>
+      _GLIBCXX_NODISCARD

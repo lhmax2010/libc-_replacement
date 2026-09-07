@@ -1,0 +1,100 @@
+# shared mutex 两种后端的设计事实对照
+
+## 查证结果
+
+**已找到明确动机：利用优化过的 POSIX 读写锁，而不是找到“有意规避取消残留”的说明。**
+Torvald Riegel 的 2015-01-16 提交邮件明确将两个条件变量加 mutex 的实现与
+直接调用 pthread_rwlock 操作对比；同日 Jonathan Wakely 批准。
+[原邮件](https://gcc.gnu.org/pipermail/libstdc%2B%2B/2015-January/042384.html)、
+[批准邮件](https://gcc.gnu.org/pipermail/libstdc%2B%2B/2015-January/042388.html)、
+[实际提交](https://github.com/gcc-mirror/gcc/commit/6220fdff17b91f6d1e06a119967b716f87a8e82b)。
+这是作者明示的历史事实；不能从取消行为的差异反推作者动机。
+
+### 时间线（提交记录核查）
+
+| 日期 | 事实 | 出处 |
+|---|---|---|
+| 2013-06-16 | 实现 N3659，共享 mutex 的条件变量实现已经存在 | [初始提交](https://github.com/gcc-mirror/gcc/commit/8d2cddc125d4d433f3486cfdd93129bfa52877b3) |
+| 2014-02-20 | 按 C++14 N3891 改名为 shared_timed_mutex | [改名提交](https://github.com/gcc-mirror/gcc/commit/4bbfc5fa4d4378ff138290a604f7065b014746bc) |
+| 2015-01-16 | 增加 POSIX 后端；原条件变量实现成为未选 POSIX 时的分支 | 上述原邮件与提交 |
+| 2015-03-18 | 引入 pthread_rwlock_t 的 configure 检查，补读锁 EAGAIN 重试 | [提交](https://github.com/gcc-mirror/gcc/commit/5e0216f173c1bef5bec3e709345d8170b1484d2f) |
+| 2015-04-10 | shared_timed_mutex 仅在支持 POSIX 超时功能时选 pthread 后端 | [提交](https://github.com/gcc-mirror/gcc/commit/c3d71b62c66f81b95213b88897cdd75f840e2fae) |
+| 2015-06-05 | 提取两种 helper，加入 C++17 非定时 shared_mutex | [提交](https://github.com/gcc-mirror/gcc/commit/712266515f4ba06d8a2d90584984f461a37b5d68) |
+
+故“fallback 是之后为了取消问题才添加”不符合这条历史。
+完整查询结果为 `raw/002_gcc_history.stdout`，不把当前分支代码冒充当年代码。
+
+### libc++ 的来源与仍缺的说明
+
+libc++ 的 2013-09-21 提交说明是实现 N3659；可直接查到现有状态机的初始引入。
+[提交](https://github.com/llvm/llvm-project/commit/ead6f1699dcda74528393b328250cbcb47fb1211)。
+GCC fallback 的源码注释明确标注源于 Howard Hinnant 的 N2406 参考实现。
+N2406 表示可以使用操作系统提供的读写锁，展示可移植实现是为了说明薄条件变量层和
+不提供读写优先级策略的理由。这里展示的是设计文档，不是平台性能实测。
+[N2406 参考实现及动机](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2007/n2406.html#shared_mutex_imp)。
+
+一个容易忽略的事实：N2406 的参考 lock/lock_shared 代码包含
+`std::this_thread::disable_interruption`，当前 libc++ 两处对应路径没有该语句。
+不能将该参考实现的中断前提直接套在解除规格后的实际代码上。
+
+“libc++ 当年为何不直接使用 pthread_rwlock”的维护者明确排他性理由：
+`NOT_AVAILABLE`。已查初始提交、N2406、LLVM GitHub issue/PR 的
+`shared_mutex pthread_rwlock` 检索以及 LLVM 邮件索引；不能把“结构可移植”
+自行补成“维护者选择的唯一原因”。
+
+找到的 [LLVM PR 70151](https://github.com/llvm/llvm-project/pull/70151)
+确实因 Darwin 性能改用 pthread_rwlock，但改的是 `llvm/Support/RWMutex.h`，
+不是 libc++ 的 std::shared_mutex，不能冒充 libc++ 已采用该后端。
+[PR 82466](https://github.com/llvm/llvm-project/pull/82466) 提议增加非标准递归设施，
+维护者质疑非标准扩展后因长期无回复关闭；不是拒绝替换 std::shared_mutex 后端的决议。
+
+## 行为差异表
+
+比较基线：本平台 libc++ 源码与 GCC 14.2.0 安装头（完整快照
+`platform_shared_mutex.hpp`），pthread 行为限定 glibc 2.40。
+glibc 主分支仅作检索入口，表中采用固定
+[glibc 2.40 源码](https://github.com/bminor/glibc/blob/glibc-2.40/nptl/pthread_rwlock_common.c)。
+
+| 项目 | libc++ 条件变量状态机 | libstdc++ pthread 后端 | 证据性质 |
+|---|---|---|---|
+| 延迟取消 | wait 是原生取消点；解除规格后 gate2 可穿过但写者位不回滚 | glibc rwlock 获取不实现取消点，等待通常不响应取消请求；不能称为“取消后回滚成功” | 前者本轮 30 次实测；后者 glibc 源码明确说明 |
+| 异步取消 | 不因修复这两处而整体安全 | 不因没有 C++ 状态机而整体安全 | 范围限制；本轮未测试任意指令取消 |
+| 公平性 | 写者一旦占写者位，后来的读者被 gate1 挡住；无占位时竞争内部 mutex，无 FIFO 队列 | glibc 默认读者优先，已有读者时新读者可加入，等待写者可能长期受阻 | 源码核查；未以有限测试证明无饥饿 |
+| 饥饿保证 | N2406 对公平性有设计论述；当前源码未提供有界调度/全局 FIFO 保证，不能由该论述推成实测保证 | 持续读负载可能延迟写者；属性可改变策略但标准 C++ 接口并不提供策略参数 | 文档与源码推论，明确非压力实测 |
+| 无竞争成本 | 进入内部 mutex、检查/修改状态、解 mutex；释放可能通知条件变量 | glibc 为读占多数优化，已有读阶段时读加锁以原子操作为主 | 源码结构，未测纳秒数，不声称所有负载都更快 |
+| 竞争成本 | gate1/gate2 等待、唤醒、再竞争内部 mutex | glibc 读写阶段和 futex 状态机；不同属性有不同交接方式 | 源码结构；后端仍有状态机，只是位于 C 库 |
+| 错误处理 | 内部 mutex 错误、条件变量错误可抛 system_error；解除规格使之前终止的路径可能展开 | lock/lock_shared 对 EDEADLK 抛 system_error；读获取 EAGAIN 重试；try 读锁 EBUSY/EAGAIN 返回 false；其他错误多仅断言 | 平台 GCC 14.2.0 头核查，非全部错误注入实测 |
+| 读计数上限 | unsigned 最高位预约写者，其余位计数；到上限在 gate1 等待 | glibc 自有计数编码；GCC 对 EAGAIN 可忙重试，try 则失败 | 源码核查，不把两者最大读者数当相同 |
+| 递归/重入 | 未记录每个读者身份；写重入可自阻塞，读重入遇已预约写者可阻塞 | glibc 支持递归读；已持写锁时相关获取可返回 EDEADLK，由 GCC 转换 | 实现事实；不是赋予 std::shared_mutex 递归使用的可移植许可 |
+| 超时/时钟 | 基于 condition_variable 的三种时间处理；gate2 正常超时主动清位并 notify_all | 基于 pthread timed/clock rwlock 及自定义时钟适配；实际选择受编译宏影响 | 两套头文件核查 |
+| 优先级继承 | 当前默认内部 mutex 不设置 PI 属性 | glibc rwlock 属性不是 mutex 的 PI protocol；GCC 使用默认 rwlock 属性，未配置 PI | 源码/API 核查；没有证据称切换自动获得优先级继承 |
+| 进程共享/健壮恢复 | C++ 类无该配置接口 | POSIX rwlock 有 process-shared 属性，但 GCC 默认初始化且无对应标准配置接口；不能据此称获得进程共享或 owner-death 恢复 | glibc pthread.h 与 GCC 初始化核查 |
+| 布局与 ABI | 两个 CV、mutex、unsigned 的组合，且 timed 路径在头中直接访问 | 一个 pthread_rwlock_t 的组合 | 源码核查；替换不是只改库内算法即可兼容所有旧内联调用方 |
+
+### 已知问题检索的强度
+
+“写者取消后 CV fallback 状态残留”的 GCC 专门缺陷编号：`NOT_AVAILABLE`。
+Bugzilla 请求被拒绝（HTTP 403/Anubis）；GCC 邮件关键词检索未定位该精确问题。
+这不是“GCC 从无此问题”的零命中结论。检索正向对照找到了真实的 pthread 后端
+错误处理讨论：[2025-11 邮件](https://gcc.gnu.org/pipermail/libstdc%2B%2B/2025-November/064216.html)。
+该讨论提出修正意外错误下错误返回成功，以及某些 EDEADLK 重试行为，关联 PR116586；
+本平台 14.2.0 头仍有对应旧结构。它说明 pthread 后端也不能默认无问题，
+但不是本轮对这些错误的实测。网页访问失败与成功的 API/源码获取原文均保存在 raw；
+web 工具可访问邮件而本机 curl 被 403 拒绝，两个通道结果分开记录。
+
+## 两种实验方向的事实对照（不作推荐）
+
+| 项目 | 加回滚 | 换成 pthread_rwlock 后端 |
+|---|---|---|
+| 改动范围 | 已确认两处 gate2 预约区间；若底层直调也扩围需另核查 | 共享基类及其存储、头内定时实现、构造析构、错误/时钟适配与平台选择 |
+| 正常路径 | 设计目标是成功/正常超时不额外回滚；是否达成须 W4 实测，目前 NOT_OBSERVED | 进入不同后端，公平性、超时、错误与取消响应语义可能改变 |
+| 与 libstdc++ 一致性 | 继续接近其 CV fallback，但增加 fallback 没有的退出恢复 | 仅在匹配同一 pthread 实现、属性、包装策略时接近其 pthread 分支；不是全平台一致 |
+| 取消 | 仍可在 CV 阻塞处响应延迟取消，需要守卫成功清状态并唤醒 | glibc rwlock 不提供该取消点；消除这一 C++ 残留不等于及时取消等待线程 |
+| 公平/性能/上限 | 保留现有状态机主体；守卫开销及唤醒竞争待实测 | 改为上述后端特性；必须区分读写负载和系统实现 |
+| 系统属性 | 不会自动新增 PI、进程共享或健壮恢复 | 默认包装也不会自动配置这些能力 |
+| ABI | 局部栈上守卫可不改变对象布局，但头内代码需重编调用方 | 存储布局和已编内联代码存在兼容性问题；本轮没有设计 ABI 迁移方案 |
+| 风险与验证缺口 | 未检验守卫、正常超时、已有 gate1 等待者唤醒、并发及性能；W4 前置未解除 | 本轮未实现替代后端、未验证迁移兼容和实际平台全部行为 |
+
+W4 尚未开工，因此不能填 `ROLLBACK_VIABLE` 或以假想回滚成功作为比较依据。
+整体材料状态 `PARTIAL`：有历史动机与源码差异；精确取消缺陷史、libc++ 排他性选型动机
+及实验修法的效果仍缺证据。无处置建议、无优先级排序。
