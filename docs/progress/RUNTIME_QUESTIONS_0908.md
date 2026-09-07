@@ -6,4 +6,4 @@
 
 ## 交付通道
 
-W1 已在本地分支提交为 `ac6ce845`；`git push origin codex/runtime-validation` 返回“could not read Username for 'https://github.com'”，当前环境的 GitHub 认证材料 `NOT_AVAILABLE`。依纪律未改走 Gerrit。需人工恢复该远端的非交互认证后补推；本问题不阻塞后续互不依赖的验证。
+W1、W2 已分别在本地分支提交为 `ac6ce845`、`74521453`；`git push origin codex/runtime-validation` 均返回“could not read Username for 'https://github.com'”，当前环境的 GitHub 认证材料 `NOT_AVAILABLE`。依纪律未改走 Gerrit。需人工恢复该远端的非交互认证后补推；本问题不阻塞后续互不依赖的验证。
