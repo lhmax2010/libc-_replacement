@@ -1,0 +1,222 @@
+git identity
+e611ebb4e4dd6d47023f3b06bccc528022aa098f
+stdlib option parser
+codes/tensorflow2-mlgo-aot-temp/fetch_sysroot.py:5:libstdc++-devel, ...) from the Tizen Base repo and extracts them into
+codes/tensorflow2-mlgo-aot-temp/fetch_sysroot.py:29:    ["libstdc++-devel", "gcc-c++", "gcc"],
+codes/tensorflow2-mlgo-aot-temp/fetch_sysroot.py:30:    ["libstdc++"],
+codes/tensorflow2-mlgo-aot-temp/fetch_sysroot.py:39:    # Tizen ships libstdc++ headers inside the GCC install dir, not /usr/include.
+codes/tensorflow2-mlgo-aot-temp/mlgo_pack.py:18:Host needs only: python3 (stdlib), sudo, tar, binutils (nm/readelf).
+codes/tensorflow2-mlgo-aot-temp/mlgo_pack.py:47:CHROOT_SYSROOTS = "/opt/mlgo-sysroots"
+codes/tensorflow2-mlgo-aot-temp/mlgo_pack.py:87:RUNTIME_CXXFLAGS = [
+codes/tensorflow2-mlgo-aot-temp/mlgo_pack.py:269:    sysroot_host = chroot / CHROOT_SYSROOTS.lstrip("/") / arch
+codes/tensorflow2-mlgo-aot-temp/mlgo_pack.py:271:        die(f"buildroot is missing the {arch} sysroot ({CHROOT_SYSROOTS}/{arch}) — "
+codes/tensorflow2-mlgo-aot-temp/mlgo_pack.py:279:        sysroot_in = f"{CHROOT_SYSROOTS}/{arch}"
+codes/tensorflow2-mlgo-aot-temp/mlgo_pack.py:283:            die(f"no libstdc++ headers found in the {arch} sysroot")
+codes/tensorflow2-mlgo-aot-temp/mlgo_pack.py:300:                      *cfg["cflags"], *cxx_inc, *RUNTIME_CXXFLAGS,
+executed-only stdlib changes
+--- codes/tensorflow2-mlgo-aot-temp/mlgo_pack.py	2026-09-04 21:46:05.229175657 +0800
++++ docs/progress/BUILD_W1_0905/code/mlgo_pack.executed.py	2026-09-07 22:02:32.465793370 +0800
+@@ -41,11 +41,12 @@
+ 
+ # Paths inside the buildroot (established by the tensorflow2-aot RPM and
+ # setup-chroot.sh).
+-CHROOT_TF_AOT = "/opt/tensorflow-aot"
++CHROOT_TF_AOT = os.environ.get("MLGO_TF_AOT_PREFIX", "/opt/tensorflow-aot")
+ CHROOT_TF_PKG = f"{CHROOT_TF_AOT}/lib/python3.12/site-packages/tensorflow"
+ CHROOT_SMC = f"{CHROOT_TF_AOT}/bin/saved_model_cli"
+-CHROOT_SYSROOTS = "/opt/mlgo-sysroots"
++CHROOT_SYSROOTS = os.environ.get("MLGO_SYSROOT_PREFIX", "/opt/mlgo-sysroots")
+ CHROOT_STAGE = "tmp/mlgo-aot"
++CHROOT_RUNNER = os.environ.get("MLGO_CHROOT_RUNNER", "sudo-chroot")
+ 
+ ARCHES = {
+     "armv7l": {
+@@ -103,6 +104,26 @@
+     return r
+ 
+ 
++def inside_cmd(chroot: Path, cmd: list) -> list:
++    """Build a command that executes *cmd* inside the selected buildroot.
++
++    The default remains the guide's sudo+chroot behavior.  The bwrap backend
++    is an execution-environment fallback for hosts without passwordless sudo;
++    it does not change the compiler flags or packaged payload.
++    """
++    if CHROOT_RUNNER == "sudo-chroot":
++        return ["sudo", "chroot", chroot, *cmd]
++    if CHROOT_RUNNER == "bwrap":
++        return ["bwrap", "--bind", chroot, "/", "--dev", "/dev",
++                "--proc", "/proc", "--setenv", "HOME", "/home/abuild",
++                "--chdir", "/", *cmd]
++    die(f"unknown MLGO_CHROOT_RUNNER: {CHROOT_RUNNER}")
++
++
++def run_inside(chroot: Path, cmd: list, **kw):
++    return run(inside_cmd(chroot, cmd), **kw)
++
++
+ def in_chroot(chroot: Path, p: Path) -> str:
+     """Host path under the buildroot -> the path processes see inside it."""
+     return "/" + str(p.relative_to(chroot))
+@@ -117,7 +138,7 @@
+             if line.startswith("Version:"):
+                 tf_ver = line.split(":", 1)[1].strip()
+     clang = subprocess.run(
+-        ["sudo", "chroot", chroot, "/usr/bin/clang", "--version"],
++        inside_cmd(chroot, ["/usr/bin/clang", "--version"]),
+         capture_output=True, text=True).stdout.splitlines()
+     return {"tensorflow": tf_ver,
+             "tf_source": f"team-rpm(chroot:{chroot.name})",
+@@ -208,15 +229,18 @@
+     if not (chroot / "usr/bin/clang").exists():
+         die(f"{chroot} has no clang — use a buildroot that ships clang "
+             "(e.g. one created by a tensorflow2 or llvm build)")
+-    if not (chroot / "proc/self").exists():
++    if CHROOT_RUNNER == "sudo-chroot" and not (chroot / "proc/self").exists():
+         print(f"[chroot] mounting /proc in {chroot}")
+         run(["sudo", "mount", "-t", "proc", "proc", chroot / "proc"])
+ 
+ 
+ def fetch_back(chroot: Path, src_in_stage: Path, outdir: Path) -> None:
+-    run(["sudo", "cp", src_in_stage, outdir])
+-    run(["sudo", "chown", f"{os.getuid()}:{os.getgid()}",
+-         outdir / src_in_stage.name])
++    if CHROOT_RUNNER == "bwrap":
++        shutil.copy2(src_in_stage, outdir)
++    else:
++        run(["sudo", "cp", src_in_stage, outdir])
++        run(["sudo", "chown", f"{os.getuid()}:{os.getgid()}",
++             outdir / src_in_stage.name])
+ 
+ 
+ # ------------------------------------------------------------------- AOT step
+@@ -229,10 +253,15 @@
+         stale.unlink()
+     print(f"[{arch}/{mtype}] AOT compiling for {cfg['triple']} (chroot) ...")
+     stage = chroot / CHROOT_STAGE
+-    run(["sudo", "rm", "-rf", stage])
+-    run(["sudo", "mkdir", "-p", stage / "out"])
+-    run(["sudo", "cp", "-r", model_dir, stage / "model"])
+-    run(["sudo", "chroot", chroot, "/bin/sh", "-c",
++    if CHROOT_RUNNER == "bwrap":
++        shutil.rmtree(stage, ignore_errors=True)
++        (stage / "out").mkdir(parents=True)
++        shutil.copytree(model_dir, stage / "model")
++    else:
++        run(["sudo", "rm", "-rf", stage])
++        run(["sudo", "mkdir", "-p", stage / "out"])
++        run(["sudo", "cp", "-r", model_dir, stage / "model"])
++    run_inside(chroot, ["/bin/sh", "-c",
+          f"cd /{CHROOT_STAGE}/out && TF_CPP_MIN_LOG_LEVEL=3 {CHROOT_SMC} "
+          "aot_compile_cpu --multithreading false "
+          f"--dir /{CHROOT_STAGE}/model --tag_set serve "
+@@ -242,7 +271,10 @@
+         src = stage / "out" / f"{m['fname']}{suffix}"
+         if suffix in (".h", ".o") or src.exists():
+             fetch_back(chroot, src, outdir)
+-    run(["sudo", "rm", "-rf", stage])
++    if CHROOT_RUNNER == "bwrap":
++        shutil.rmtree(stage)
++    else:
++        run(["sudo", "rm", "-rf", stage])
+ 
+     hdr, obj = outdir / f"{m['fname']}.h", outdir / f"{m['fname']}.o"
+     meta = outdir / f"{m['fname']}_metadata.o"
+@@ -263,29 +295,44 @@
+ 
+ # -------------------------------------------------------------- runtime build
+ 
+-def build_runtime(chroot: Path, arch: str) -> Path:
++def build_runtime(chroot: Path, arch: str, stdlib: str) -> Path:
+     cfg = ARCHES[arch]
+     src_root = chroot / CHROOT_TF_PKG.lstrip("/") / "xla_aot_runtime_src"
+-    sysroot_host = chroot / CHROOT_SYSROOTS.lstrip("/") / arch
++    sysroot_host = chroot / CHROOT_SYSROOTS.lstrip("/") / stdlib / arch
+     if arch != "x86_64" and not (sysroot_host / "usr/include/stdio.h").exists():
+-        die(f"buildroot is missing the {arch} sysroot ({CHROOT_SYSROOTS}/{arch}) — "
++            die(f"buildroot is missing the {arch}/{stdlib} sysroot "
++                f"({CHROOT_SYSROOTS}/{stdlib}/{arch}) — "
+             "run ./setup-chroot.sh first")
+ 
+     # Target C++ headers: staged Tizen sysroot for cross arches; the buildroot
+     # itself is the x86_64 sysroot.
+     if arch == "x86_64":
+-        sysroot_flag, cxx_inc = [], []
++        sysroot_flag = []
++        if stdlib == "libc++":
++            libcxx = chroot / "usr/include/c++/v1"
++            if not (libcxx / "cstdint").exists() or not (libcxx / "cxxabi.h").exists():
++                die("buildroot is missing libc++/libc++abi development headers")
++            cxx_inc = ["-stdlib=libc++", "-nostdinc++", "-isystem", "/usr/include/c++/v1"]
++        else:
++            cxx_inc = []
+     else:
+-        sysroot_in = f"{CHROOT_SYSROOTS}/{arch}"
++        sysroot_in = f"{CHROOT_SYSROOTS}/{stdlib}/{arch}"
+         sysroot_flag = [f"--sysroot={sysroot_in}"]
+-        bases = sorted(sysroot_host.glob("usr/lib*/gcc/*/*/include/c++"))
+-        if not bases:
+-            die(f"no libstdc++ headers found in the {arch} sysroot")
+-        base = bases[-1]
+-        cxx_inc = ["-isystem", in_chroot(chroot, base)]
+-        for sub in sorted(base.glob("*-tizen-linux-*")) + [base / "backward"]:
+-            if sub.is_dir():
+-                cxx_inc += ["-isystem", in_chroot(chroot, sub)]
++        if stdlib == "libc++":
++            libcxx = sysroot_host / "usr/include/c++/v1"
++            if not (libcxx / "cstdint").exists() or not (libcxx / "cxxabi.h").exists():
++                die(f"no libc++/libc++abi headers found in the {arch} sysroot")
++            cxx_inc = ["-stdlib=libc++", "-nostdinc++", "-isystem",
++                       in_chroot(chroot, libcxx)]
++        else:
++            bases = sorted(sysroot_host.glob("usr/lib*/gcc/*/*/include/c++"))
++            if not bases:
++                die(f"no libstdc++ headers found in the {arch} sysroot")
++            base = bases[-1]
++            cxx_inc = ["-isystem", in_chroot(chroot, base)]
++            for sub in sorted(base.glob("*-tizen-linux-*")) + [base / "backward"]:
++                if sub.is_dir():
++                    cxx_inc += ["-isystem", in_chroot(chroot, sub)]
+ 
+     sources = sorted(src_root.rglob("*.cc"))
+     if not sources:
+@@ -307,14 +354,17 @@
+     script = BUILD_DIR / f"rt-build-{arch}.sh"
+     script.write_text("\n".join(lines) + "\n")
+ 
+-    print(f"[{arch}] cross-compiling {len(sources)} runtime sources in chroot ...")
+-    run(["sudo", "cp", script, chroot / "tmp/rt-build.sh"])
+-    run(["sudo", "chroot", chroot, "/bin/sh", "/tmp/rt-build.sh"])
++    print(f"[{arch}/{stdlib}] cross-compiling {len(sources)} runtime sources in chroot ...")
++    if CHROOT_RUNNER == "bwrap":
++        shutil.copy2(script, chroot / "tmp/rt-build.sh")
++    else:
++        run(["sudo", "cp", script, chroot / "tmp/rt-build.sh"])
++    run_inside(chroot, ["/bin/sh", "/tmp/rt-build.sh"])
+     for name in sorted(p.name + ".o" for p in sources):
+         fetch_back(chroot, chroot / stage_in.lstrip("/") / name, objdir)
+         check_object(objdir / name, arch)
+     fetch_back(chroot, chroot / stage_in.lstrip("/") / "libtf_xla_runtime_prebuilt.a", objdir)
+-    run(["sudo", "chroot", chroot, "/bin/rm", "-rf", stage_in, "/tmp/rt-build.sh"])
++    run_inside(chroot, ["/bin/rm", "-rf", stage_in, "/tmp/rt-build.sh"])
+ 
+     for obj_name in EMBED_OBJECTS:
+         if not (objdir / obj_name).exists():
+@@ -393,6 +443,8 @@
+                     help="which model the input is")
+     ap.add_argument("--make-runtime", action="store_true",
+                     help="(re)build the mlgo_runtime_<arch> packages")
++    ap.add_argument("--stdlib", choices=["libstdc++", "libc++"], default="libstdc++",
++                    help="runtime C++ standard library ABI (default: libstdc++)")
+     ap.add_argument("--arch", default="all",
+                     help="comma-separated: armv7l,aarch64,x86_64 or 'all' (default)")
+     ap.add_argument("--out", type=Path, default=DEFAULT_OUT,
+@@ -416,7 +468,7 @@
+ 
+     if args.make_runtime:
+         for arch in arches:
+-            objdir = build_runtime(args.chroot, arch)
++            objdir = build_runtime(args.chroot, arch, args.stdlib)
+             make_runtime_pkg(arch, objdir, args.out, args.chroot)
+ 
+     if args.model:
