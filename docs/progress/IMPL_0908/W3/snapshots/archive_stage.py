@@ -24,6 +24,7 @@ if stage=='W3':
   shutil.copyfile(p,dest/('input_'+'_'.join(p.parts[-3:])))
  for p in out.glob('*before*'):
   if p.is_file():shutil.copyfile(p,dest/p.name)
+ for p in out.glob('*.args'):shutil.copyfile(p,dest/p.name)
 with (out/'SNAPSHOT_SHA256SUMS').open('w') as f:
  for p in sorted(dest.iterdir()):f.write(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+str(p)+'\n')
 print('SNAPSHOT_FILES',len(list(dest.iterdir())))

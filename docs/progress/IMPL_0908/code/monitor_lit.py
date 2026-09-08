@@ -9,10 +9,11 @@ def canon(s):
  return s
 old={}
 for row in csv.DictReader((r/'historical_baseline.tsv').open(),delimiter='\t'):old[(row['arch'],row['suite'],canon(row['test']))]=row['historical_code']
-for arch in ['x86_64','armv7l']:
- p=r/'raw'/('lit_'+arch+'_new_full');status=[];candidates=[]
+for arch,label in [('x86_64','full'),('armv7l','full')]+[('armv7l','resume'+str(i)) for i in range(1,4)]:
+ p=r/'raw'/('lit_'+arch+'_new_'+label);status=[];candidates=[]
+ if not (p/'stdout').exists():continue
  for code,name,position,total in re.findall(r'^(PASS|FAIL|XFAIL|XPASS|UNSUPPORTED|TIMEOUT|UNRESOLVED): (.+) \((\d+) of (\d+)\)$',(p/'stdout').read_text(errors='replace'),re.M):
   status.append(code);suite='libcxxabi' if 'libc++abi' in name.split(' :: ',1)[0] else 'libcxx'
   prior=old.get((arch,suite,canon(name)),'NOT_AVAILABLE')
   if code in ['FAIL','XPASS','TIMEOUT','UNRESOLVED'] and prior!=code:candidates.append([canon(name),prior,code])
- print(json.dumps({'arch':arch,'completed_records':len(status),'counts':dict(collections.Counter(status)),'new_failure_candidates':candidates,'json_ready':(p/'result.json').exists(),'connection_failure':(p/'executor/CONNECTION_FAILURE').exists()},ensure_ascii=False))
+ print(json.dumps({'arch':arch,'run':label,'completed_records':len(status),'counts':dict(collections.Counter(status)),'new_failure_candidates':candidates,'json_ready':(p/'result.json').exists(),'connection_failure':(p/'executor/CONNECTION_FAILURE').exists()},ensure_ascii=False))

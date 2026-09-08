@@ -11,6 +11,9 @@ jobs=os.environ.get('IMPL_LIT_JOBS','2');assert jobs in ('1','2')
 cmd=['nice','-n','15','ionice','-c','3','python3',str(src/'llvm/utils/lit/lit.py'),'-j',jobs,'-D','std=c++26','--timeout=240','--order=lexical','--show-unsupported','--show-skipped','--time-tests','-v','-o',str(raw/'result.json')]
 if arch=='armv7l':cmd+=['-D','compiler=/home/toolchain/development/libc++_replacement/progress/R68/tools/armv7l_lit_host_clangxx.sh','-D','executor=python3 '+str(executor)]
 if pattern:cmd+=['--filter',pattern]
+if os.environ.get('IMPL_LIT_ARGS_FILE'):
+ args_file=pathlib.Path(os.environ['IMPL_LIT_ARGS_FILE']).resolve();assert args_file.is_file()
+ cmd+=['@'+str(args_file)]
 cmd+=[str(build/'libcxx/test'),str(build/'libcxxabi/test')]
 deadline=datetime.datetime.fromisoformat(json.loads((base/'raw/001_resource.time.json').read_text())['start']).timestamp()+6*3600
 env=os.environ.copy();env['IMPL_LIT_LOG']=str(raw/'executor');env['IMPL_LIT_VARIANT']=variant
