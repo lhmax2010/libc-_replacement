@@ -1,0 +1,119 @@
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	
+     9	// <locale>
+    10	
+    11	// ADDITIONAL_COMPILE_FLAGS: -D_LIBCPP_DISABLE_DEPRECATION_WARNINGS -D_LIBCPP_ENABLE_CXX26_REMOVED_CODECVT -D_LIBCPP_ENABLE_CXX26_REMOVED_WSTRING_CONVERT
+    12	
+    13	// wbuffer_convert<Codecvt, Elem, Tr>
+    14	
+    15	// int_type overflow(int_type c = traits::eof());
+    16	
+    17	// This test is not entirely portable
+    18	
+    19	// XFAIL: no-wide-characters
+    20	
+    21	#include <locale>
+    22	#include <cassert>
+    23	#include <codecvt>
+    24	#include <fstream>
+    25	#include <sstream>
+    26	
+    27	#include "test_macros.h"
+    28	
+    29	struct test_buf
+    30	    : public std::wbuffer_convert<std::codecvt_utf8<wchar_t> >
+    31	{
+    32	    typedef std::wbuffer_convert<std::codecvt_utf8<wchar_t> > base;
+    33	    typedef base::char_type   char_type;
+    34	    typedef base::int_type    int_type;
+    35	    typedef base::traits_type traits_type;
+    36	
+    37	    explicit test_buf(std::streambuf* sb) : base(sb) {}
+    38	
+    39	    char_type* pbase() const {return base::pbase();}
+    40	    char_type* pptr()  const {return base::pptr();}
+    41	    char_type* epptr() const {return base::epptr();}
+    42	    void gbump(int n) {base::gbump(n);}
+    43	
+    44	    virtual int_type overflow(int_type c = traits_type::eof()) {return base::overflow(c);}
+    45	};
+    46	
+    47	int main(int, char**)
+    48	{
+    49	    {
+    50	        std::string s;
+    51	        {
+    52	            std::ostringstream out;
+    53	            test_buf f(out.rdbuf());
+    54	            assert(f.pbase() == 0);
+    55	            assert(f.pptr() == 0);
+    56	            assert(f.epptr() == 0);
+    57	            assert(f.overflow(L'a') == L'a');
+    58	            assert(f.pbase() != 0);
+    59	            assert(f.pptr() == f.pbase());
+    60	            assert(f.epptr() - f.pbase() == 4095);
+    61	            s = out.str();
+    62	        }
+    63	        {
+    64	            std::istringstream in(s);
+    65	            test_buf f(in.rdbuf());
+    66	            assert(f.sgetc() == L'a');
+    67	        }
+    68	    }
+    69	    {
+    70	        std::string s;
+    71	        {
+    72	            std::ostringstream out;
+    73	            test_buf f(out.rdbuf());
+    74	            f.pubsetbuf(0, 0);
+    75	            assert(f.pbase() == 0);
+    76	            assert(f.pptr() == 0);
+    77	            assert(f.epptr() == 0);
+    78	            assert(f.overflow('a') == 'a');
+    79	            assert(f.pbase() == 0);
+    80	            assert(f.pptr() == 0);
+    81	            assert(f.epptr() == 0);
+    82	            s = out.str();
+    83	        }
+    84	        {
+    85	            std::istringstream in(s);
+    86	            test_buf f(in.rdbuf());
+    87	            assert(f.sgetc() == L'a');
+    88	        }
+    89	    }
+    90	    // TODO: Move this to std::stringstream once https://llvm.org/PR59083 has been resolved
+    91	#ifndef TEST_HAS_NO_FILESYSTEM
+    92	    {
+    93	        {
+    94	            std::ofstream bs("overflow.dat");
+    95	            test_buf f(bs.rdbuf());
+    96	            assert(f.sputc(0x4E51) == 0x4E51);
+    97	            assert(f.sputc(0x4E52) == 0x4E52);
+    98	            assert(f.sputc(0x4E53) == 0x4E53);
+    99	        }
+   100	        {
+   101	            std::ifstream f("overflow.dat");
+   102	            assert(f.is_open());
+   103	            assert(f.get() == 0xE4);
+   104	            assert(f.get() == 0xB9);
+   105	            assert(f.get() == 0x91);
+   106	            assert(f.get() == 0xE4);
+   107	            assert(f.get() == 0xB9);
+   108	            assert(f.get() == 0x92);
+   109	            assert(f.get() == 0xE4);
+   110	            assert(f.get() == 0xB9);
+   111	            assert(f.get() == 0x93);
+   112	            assert(f.get() == -1);
+   113	        }
+   114	        std::remove("overflow.dat");
+   115	    }
+   116	#endif // TEST_HAS_NO_FILESYSTEM
+   117	
+   118	    return 0;
+   119	}

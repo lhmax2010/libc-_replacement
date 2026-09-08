@@ -1,0 +1,202 @@
+From 72e7a0f21ceeb1a2a4de60fc5137be194c748b90 Mon Sep 17 00:00:00 2001
+From: He Fangyu <fangyu.he@samsung.com>
+Date: Tue, 8 Sep 2026 09:56:56 +0800
+Subject: [PATCH] libcxx: retain versioned condition-variable wait contracts
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Keep non-throwing ordinary and system-clock wait wrappers at LLVM_22 and
+publish throwing implementations as the LLVM_22_TIZEN_1 defaults. Share
+the existing wait bodies and use public native_handle() access rather
+than private-member tricks or object-layout casts. The ELF member aliases
+use an explicit this argument and retain the existing parameter ABI.
+
+Enable this platform-specific scheme for the shared runtime through an
+opt-in CMake option and the package recipe. Remove helper assembler names
+and also localize their namespace in the version map. Header-only clock
+overloads have no library symbol hook and still require recompilation.
+
+Validation: a full native x86_64 libc++/libc++abi build, dynamic symbol
+inspection, four caller/linking cases repeated five times, and both timed
+entry versions repeated five times. The old quiet object relinked to the
+new default retains its lock; this is an observed compatibility limit,
+not a claim that all old object layouts behave identically.
+Evidence: https://github.com/lhmax2010/libc-_replacement/tree/codex/runtime-validation/docs/progress/IMPL_0908/W2
+
+中文说明：普通和 system-clock 等待保留 LLVM_22 不抛出包装，新增默认
+LLVM_22_TIZEN_1；公开 native_handle 取得原生对象，不猜私有布局。
+真实库的四种绑定与两个定时入口共 30 次值断言通过；旧目标文件重链接
+不能补回编译时缺失的清理路径，头文件内联入口仍须重编。
+---
+ libcxx/CMakeLists.txt             |  7 ++++
+ libcxx/src/CMakeLists.txt         |  3 ++
+ libcxx/src/condition_variable.cpp | 64 ++++++++++++++++++++++++++++---
+ packaging/libcxx-llvm22.map       |  5 +++
+ packaging/libcxx-runtimes.spec    |  5 ++-
+ 5 files changed, 77 insertions(+), 7 deletions(-)
+
+diff --git a/libcxx/CMakeLists.txt b/libcxx/CMakeLists.txt
+index 00ea2deef196..d867acf97eff 100644
+--- a/libcxx/CMakeLists.txt
++++ b/libcxx/CMakeLists.txt
+@@ -318,6 +318,13 @@ endif()
+ # about #include_next which is used everywhere.
+ option(LIBCXX_ENABLE_PEDANTIC "Compile with pedantic enabled." OFF)
+ option(LIBCXX_ENABLE_WERROR "Fail and stop if a warning is triggered." OFF)
++option(LIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS
++  "Provide legacy and unwind-capable Tizen condition-variable symbol versions." OFF)
++if (LIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS)
++  if (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT LIBCXX_ABI_NAMESPACE STREQUAL "__1")
++    message(FATAL_ERROR "Tizen condition-variable versions require Linux ELF and ABI namespace __1")
++  endif()
++endif()
+ 
+ set(LIBCXX_HERMETIC_STATIC_LIBRARY_DEFAULT OFF)
+ if (WIN32)
+diff --git a/libcxx/src/CMakeLists.txt b/libcxx/src/CMakeLists.txt
+index 2c04cbd1b272..59d4969430a0 100644
+--- a/libcxx/src/CMakeLists.txt
++++ b/libcxx/src/CMakeLists.txt
+@@ -189,6 +189,9 @@ set_target_properties(cxx_shared
+     DEFINE_SYMBOL ""
+ )
+ cxx_add_common_build_flags(cxx_shared)
++if (LIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS)
++  target_compile_definitions(cxx_shared PRIVATE _LIBCPP_TIZEN_CONDVAR_VERSIONS)
++endif()
+ 
+ if(ZOS)
+   add_custom_command(TARGET cxx_shared POST_BUILD
+diff --git a/libcxx/src/condition_variable.cpp b/libcxx/src/condition_variable.cpp
+index 548bdf5b2170..e83b15afd4c0 100644
+--- a/libcxx/src/condition_variable.cpp
++++ b/libcxx/src/condition_variable.cpp
+@@ -30,16 +30,16 @@ void condition_variable::notify_one() noexcept { __libcpp_condvar_signal(&__cv_)
+ 
+ void condition_variable::notify_all() noexcept { __libcpp_condvar_broadcast(&__cv_); }
+ 
+-void condition_variable::wait(unique_lock<mutex>& lk) {
++static void __condvar_wait_body(condition_variable::native_handle_type cv, unique_lock<mutex>& lk) {
+   if (!lk.owns_lock())
+     std::__throw_system_error(EPERM, "condition_variable::wait: mutex not locked");
+-  int ec = __libcpp_condvar_wait(&__cv_, lk.mutex()->native_handle());
++  int ec = __libcpp_condvar_wait(cv, lk.mutex()->native_handle());
+   if (ec)
+     std::__throw_system_error(ec, "condition_variable wait failed");
+ }
+ 
+-void condition_variable::__do_timed_wait(unique_lock<mutex>& lk,
+-                                         chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) {
++static void __condvar_timed_wait_body(condition_variable::native_handle_type cv, unique_lock<mutex>& lk,
++                                     chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) {
+   using namespace chrono;
+   if (!lk.owns_lock())
+     std::__throw_system_error(EPERM, "condition_variable::timed wait: mutex not locked");
+@@ -57,11 +57,65 @@ void condition_variable::__do_timed_wait(unique_lock<mutex>& lk,
+     ts.tv_sec  = ts_sec_max;
+     ts.tv_nsec = giga::num - 1;
+   }
+-  int ec = __libcpp_condvar_timedwait(&__cv_, lk.mutex()->native_handle(), &ts);
++  int ec = __libcpp_condvar_timedwait(cv, lk.mutex()->native_handle(), &ts);
+   if (ec != 0 && ec != ETIMEDOUT)
+     std::__throw_system_error(ec, "condition_variable timed_wait failed");
+ }
+ 
++#if defined(_LIBCPP_TIZEN_CONDVAR_VERSIONS)
++
++// Native handles are public: no private-member access or object-layout cast is
++// needed. The explicit first argument is the member function's Itanium ABI this.
++extern "C" {
++_LIBCPP_EXPORTED_FROM_ABI void
++__libcpp_tizen_cv_wait_old(condition_variable*, unique_lock<mutex>&) noexcept;
++_LIBCPP_EXPORTED_FROM_ABI void
++__libcpp_tizen_cv_wait_new(condition_variable*, unique_lock<mutex>&);
++_LIBCPP_EXPORTED_FROM_ABI void __libcpp_tizen_cv_timed_old(
++    condition_variable*, unique_lock<mutex>&, chrono::time_point<chrono::system_clock, chrono::nanoseconds>) noexcept;
++_LIBCPP_EXPORTED_FROM_ABI void __libcpp_tizen_cv_timed_new(
++    condition_variable*, unique_lock<mutex>&, chrono::time_point<chrono::system_clock, chrono::nanoseconds>);
++
++void __libcpp_tizen_cv_wait_old(condition_variable* self, unique_lock<mutex>& lk) noexcept {
++  __condvar_wait_body(self->native_handle(), lk);
++}
++void __libcpp_tizen_cv_wait_new(condition_variable* self, unique_lock<mutex>& lk) {
++  __condvar_wait_body(self->native_handle(), lk);
++}
++void __libcpp_tizen_cv_timed_old(condition_variable* self, unique_lock<mutex>& lk,
++                                chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) noexcept {
++  __condvar_timed_wait_body(self->native_handle(), lk, tp);
++}
++void __libcpp_tizen_cv_timed_new(condition_variable* self, unique_lock<mutex>& lk,
++                                chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) {
++  __condvar_timed_wait_body(self->native_handle(), lk, tp);
++}
++}
++
++// Remove implementation names from the object symbol table as well as marking
++// their namespace local in the version script. Only the ABI aliases are public.
++asm(".symver __libcpp_tizen_cv_wait_old,"
++    "_ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE@LLVM_22, remove");
++asm(".symver __libcpp_tizen_cv_wait_new,"
++    "_ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE@@LLVM_22_TIZEN_1, remove");
++asm(".symver __libcpp_tizen_cv_timed_old,"
++    "_ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEE"
++    "NS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE@LLVM_22, remove");
++asm(".symver __libcpp_tizen_cv_timed_new,"
++    "_ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEE"
++    "NS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE@@LLVM_22_TIZEN_1, remove");
++
++#else
++
++void condition_variable::wait(unique_lock<mutex>& lk) { __condvar_wait_body(native_handle(), lk); }
++
++void condition_variable::__do_timed_wait(unique_lock<mutex>& lk,
++                                         chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) {
++  __condvar_timed_wait_body(native_handle(), lk, tp);
++}
++
++#endif
++
+ void notify_all_at_thread_exit(condition_variable& cond, unique_lock<mutex> lk) {
+   auto& tl_ptr = __thread_local_data();
+   // If this thread was not created using std::thread then it will not have
+diff --git a/packaging/libcxx-llvm22.map b/packaging/libcxx-llvm22.map
+index 277f8bb6e4c7..371e65abc811 100644
+--- a/packaging/libcxx-llvm22.map
++++ b/packaging/libcxx-llvm22.map
+@@ -1,4 +1,9 @@
+ LLVM_22 {
+   global:
+     *;
++  local:
++    __libcpp_tizen_cv_*;
+ };
++
++LLVM_22_TIZEN_1 {
++} LLVM_22;
+diff --git a/packaging/libcxx-runtimes.spec b/packaging/libcxx-runtimes.spec
+index f2a0c0c0e8ab..2c842ae27759 100644
+--- a/packaging/libcxx-runtimes.spec
++++ b/packaging/libcxx-runtimes.spec
+@@ -23,8 +23,8 @@ BuildRequires:  libgcc
+ 
+ %description
+ Source package for the LLVM libc++ standard library and libc++abi runtime.
+-The libraries use libgcc_s as the unwinder and export only default-version
+-LLVM_22 symbols.
++The libraries use libgcc_s as the unwinder. Existing interfaces retain LLVM_22;
++condition-variable waits also provide unwind-capable LLVM_22_TIZEN_1 defaults.
+ 
+ %package -n libc++
+ Summary:        LLVM C++ standard library runtime
+@@ -92,6 +92,7 @@ cmake -G Ninja \
+   -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+   -DLLVM_INCLUDE_TESTS=OFF \
+   -DLIBCXX_ENABLE_SHARED=ON \
++  -DLIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS=ON \
+   -DLIBCXX_ENABLE_STATIC=OFF \
+   -DLIBCXX_INSTALL_SHARED_LIBRARY=ON \
+   -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF \
+-- 
+2.43.0
+
