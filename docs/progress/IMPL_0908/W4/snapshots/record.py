@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""逐次记录命令、时间、真实退出码；拒绝覆盖已有证据。"""
+import datetime
+import json
+import pathlib
+import shlex
+import subprocess
+import sys
+
+def main():
+    stem = pathlib.Path(sys.argv[1])
+    command = sys.argv[2:]
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    def target(suffix):
+        return pathlib.Path(str(stem) + suffix)
+    start = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with target('.command.txt').open('x') as f:
+        f.write('cwd: ' + str(pathlib.Path.cwd()) + '\ncommand: ' + shlex.join(command) + '\n')
+    with target('.stdout').open('xb') as out, target('.stderr').open('xb') as err:
+        result = subprocess.run(command, stdout=out, stderr=err)
+    target('.exitcode').write_text(str(result.returncode) + '\n')
+    target('.time.json').write_text(json.dumps(dict(start=start, end=datetime.datetime.now(datetime.timezone.utc).isoformat()), indent=2) + '\n')
+    print(f'{stem}: exit={result.returncode}', flush=True)
+    return result.returncode if result.returncode >= 0 else 128 - result.returncode
+
+if __name__ == '__main__':
+    sys.exit(main())
