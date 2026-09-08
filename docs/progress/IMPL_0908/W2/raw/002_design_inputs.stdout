@@ -1,0 +1,183 @@
+169-  bool _LIBCPP_HIDE_FROM_ABI
+170-  wait_for(unique_lock<mutex>& __lk, const chrono::duration<_Rep, _Period>& __d, _Predicate __pred);
+171-
+172:  typedef __libcpp_condvar_t* native_handle_type;
+173:  [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI native_handle_type native_handle() { return &__cv_; }
+174-
+175-private:
+176-  void
+--
+211-    __ts.tv_sec  = __ts_sec_max;
+212-    __ts.tv_nsec = giga::num - 1;
+213-  }
+214:  int __ec = pthread_cond_clockwait(&__cv_, __lk.mutex()->native_handle(), CLOCK_MONOTONIC, &__ts);
+215-  if (__ec != 0 && __ec != ETIMEDOUT)
+216-    std::__throw_system_error(__ec, "condition_variable timed_wait failed");
+217-}
+00000000000660a0 T _ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEENS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE@@LLVM_22
+0000000000066060 T _ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE@@LLVM_22
+    set(LIBFILE "libclang_rt.ubsan_osx_dynamic.dylib")
+  elseif("${LLVM_USE_SANITIZER}" STREQUAL "Thread")
+    set(LIBFILE "libclang_rt.tsan_osx_dynamic.dylib")
+  else()
+    message(WARNING "LLVM_USE_SANITIZER=${LLVM_USE_SANITIZER} is not supported on OS X")
+  endif()
+  if (LIBFILE)
+    find_compiler_rt_library(builtins LIBCXX_BUILTINS_LIBRARY)
+    get_filename_component(LIBDIR "${LIBCXX_BUILTINS_LIBRARY}" DIRECTORY)
+    if (NOT IS_DIRECTORY "${LIBDIR}")
+      message(FATAL_ERROR "Cannot find compiler-rt directory on OS X required for LLVM_USE_SANITIZER")
+    endif()
+    set(LIBCXX_SANITIZER_LIBRARY "${LIBDIR}/${LIBFILE}")
+    set(LIBCXX_SANITIZER_LIBRARY "${LIBCXX_SANITIZER_LIBRARY}" PARENT_SCOPE)
+    message(STATUS "Manually linking compiler-rt library: ${LIBCXX_SANITIZER_LIBRARY}")
+    add_library_flags("${LIBCXX_SANITIZER_LIBRARY}")
+    add_link_flags("-Wl,-rpath,${LIBDIR}")
+  endif()
+endif()
+
+split_list(LIBCXX_COMPILE_FLAGS)
+split_list(LIBCXX_LINK_FLAGS)
+
+include(FindLibcCommonUtils)
+
+# Build the shared library.
+add_library(cxx_shared SHARED ${LIBCXX_SOURCES} ${LIBCXX_HEADERS})
+target_include_directories(cxx_shared PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(cxx_shared PUBLIC cxx-headers runtimes-libc-shared
+                                  PRIVATE ${LIBCXX_LIBRARIES}
+                                  PRIVATE llvm-libc-common-utilities)
+set_target_properties(cxx_shared
+  PROPERTIES
+    EXCLUDE_FROM_ALL "$<IF:$<BOOL:${LIBCXX_ENABLE_SHARED}>,FALSE,TRUE>"
+    COMPILE_FLAGS "${LIBCXX_COMPILE_FLAGS}"
+    LINK_FLAGS    "${LIBCXX_LINK_FLAGS}"
+    OUTPUT_NAME   "${LIBCXX_SHARED_OUTPUT_NAME}"
+    VERSION       "${LIBCXX_LIBRARY_VERSION}"
+    SOVERSION     "${LIBCXX_ABI_VERSION}"
+    DEFINE_SYMBOL ""
+)
+cxx_add_common_build_flags(cxx_shared)
+
+if(ZOS)
+  add_custom_command(TARGET cxx_shared POST_BUILD
+    COMMAND
+      ${LIBCXX_SOURCE_DIR}/utils/zos_rename_dll_side_deck.sh
+      $<TARGET_LINKER_FILE_NAME:cxx_shared> $<TARGET_FILE_NAME:cxx_shared> "${LIBCXX_DLL_NAME}"
+if (LIBCXX_ENABLE_THREADS)
+  set(LIBCXX_PSTL_BACKEND "std_thread" CACHE STRING "Which PSTL backend to use")
+else()
+  set(LIBCXX_PSTL_BACKEND "serial" CACHE STRING "Which PSTL backend to use")
+endif()
+
+# Misc options ----------------------------------------------------------------
+# FIXME: Turn -pedantic back ON. It is currently off because it warns
+# about #include_next which is used everywhere.
+option(LIBCXX_ENABLE_PEDANTIC "Compile with pedantic enabled." OFF)
+option(LIBCXX_ENABLE_WERROR "Fail and stop if a warning is triggered." OFF)
+
+set(LIBCXX_HERMETIC_STATIC_LIBRARY_DEFAULT OFF)
+if (WIN32)
+  set(LIBCXX_HERMETIC_STATIC_LIBRARY_DEFAULT ON)
+endif()
+option(LIBCXX_HERMETIC_STATIC_LIBRARY
+  "Do not export any symbols from the static library." ${LIBCXX_HERMETIC_STATIC_LIBRARY_DEFAULT})
+
+#===============================================================================
+# Check option configurations
+#===============================================================================
+
+# Ensure LIBCXX_ENABLE_MONOTONIC_CLOCK is set to ON only when
+# LIBCXX_ENABLE_THREADS is on.
+if(LIBCXX_ENABLE_THREADS AND NOT LIBCXX_ENABLE_MONOTONIC_CLOCK)
+    endif()
+  endif()
+
+  set(linker_script "INPUT($<TARGET_SONAME_FILE_NAME:cxx_shared> ${link_libraries})")
+  add_custom_command(TARGET cxx_shared POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E remove "$<TARGET_LINKER_FILE:cxx_shared>"
+    COMMAND "${CMAKE_COMMAND}" -E echo "${linker_script}" > "$<TARGET_LINKER_FILE:cxx_shared>"
+    COMMENT "Generating linker script: '${linker_script}' as file $<TARGET_LINKER_FILE:cxx_shared>"
+    VERBATIM
+  )
+endif()
+
+if(WIN32 AND NOT MINGW AND NOT "${CMAKE_HOST_SYSTEM_NAME}" STREQUAL "Windows")
+  # Since we most likely do not have a mt.exe replacement, disable the
+  # manifest bundling.  This allows a normal cmake invocation to pass which
+  # will attempt to use the manifest tool to generate the bundled manifest
+  if (${CMAKE_CXX_COMPILER_FRONTEND_VARIANT} STREQUAL "MSVC")
+    set_target_properties(cxx_shared PROPERTIES
+                          APPEND_STRING PROPERTY LINK_FLAGS " /MANIFEST:NO")
+  else()
+    set_target_properties(cxx_shared PROPERTIES
+                          APPEND_STRING PROPERTY LINK_FLAGS " -Xlinker /MANIFEST:NO")
+  endif()
+endif()
+
+set(CMAKE_STATIC_LIBRARY_PREFIX "lib")
+
+# Build the static library.
+add_library(cxx_static STATIC ${LIBCXX_SOURCES} ${LIBCXX_HEADERS})
+target_include_directories(cxx_static PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(cxx_static PUBLIC cxx-headers runtimes-libc-static
+                                  PRIVATE ${LIBCXX_LIBRARIES}
+                                  PRIVATE libcxx-abi-static
+                                  PRIVATE llvm-libc-common-utilities)
+set_target_properties(cxx_static
+  PROPERTIES
+    EXCLUDE_FROM_ALL "$<IF:$<BOOL:${LIBCXX_ENABLE_STATIC}>,FALSE,TRUE>"
+    COMPILE_FLAGS "${LIBCXX_COMPILE_FLAGS}"
+    LINK_FLAGS    "${LIBCXX_LINK_FLAGS}"
+    OUTPUT_NAME   "${LIBCXX_STATIC_OUTPUT_NAME}"
+)
+cxx_add_common_build_flags(cxx_static)
+
+if (LIBCXX_HERMETIC_STATIC_LIBRARY)
+  # If the hermetic library doesn't define the operator new/delete functions
+  # then its code shouldn't declare them with hidden visibility.  They might
+  # actually be provided by a shared library at link time.
+  if (LIBCXX_ENABLE_NEW_DELETE_DEFINITIONS)
+    append_flags_if_supported(CXX_STATIC_LIBRARY_FLAGS -fvisibility-global-new-delete=force-hidden)
+    if (NOT CXX_SUPPORTS_FVISIBILITY_GLOBAL_NEW_DELETE_EQ_FORCE_HIDDEN_FLAG)
+      append_flags_if_supported(CXX_STATIC_LIBRARY_FLAGS -fvisibility-global-new-delete-hidden)
+%define llvm_major 22
+%define llvm_version 22.1.8
+
+Name:           libcxx-runtimes
+Version:        22.1.8
+Release:        1
+ExclusiveArch:  armv7l aarch64 x86_64
+Summary:        LLVM libc++ and libc++abi runtimes
+Group:          Development/Toolchain
+License:        Apache-2.0 WITH LLVM-exception
+URL:            https://llvm.org/
+Source0:        llvm-%{version}.tar.gz
+Source1:        libcxx-llvm22.map
+Source2:        libcxx-runtimes.manifest
+Source3:        SOURCE_PROVENANCE
+
+BuildRequires:  clang = %{version}
+BuildRequires:  cmake
+BuildRequires:  ninja
+BuildRequires:  python3
+BuildRequires:  glibc-devel
+BuildRequires:  libgcc
+
+%description
+Source package for the LLVM libc++ standard library and libc++abi runtime.
+The libraries use libgcc_s as the unwinder and export only default-version
+LLVM_22 symbols.
+
+%package -n libc++
+Summary:        LLVM C++ standard library runtime
+Requires:       libc++abi = %{version}-%{release}
+
+%description -n libc++
+Shared LLVM libc++ runtime, built against libc++abi and libgcc_s.
+
+%package -n libc++-devel
+Summary:        LLVM C++ standard library headers and development files
+Requires:       libc++ = %{version}-%{release}
+Requires:       libc++abi-devel = %{version}-%{release}
+
