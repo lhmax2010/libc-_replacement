@@ -145,6 +145,22 @@ DSO 指动态共享对象；下表“镜像”特指集成后的实际系统，�
 
 可参考的是固定工具链身份、实际提供方核验、版本化导出比较、干净构建和跨 DSO／插件断言；它们需按 Tizen 架构与产物改造。不可当作现成证明的是“全 Google 禁取消”、任意外部二进制均受受控 SDK 管理、ARM 与 x86 相同、符号名字相同就能混用上下文。这些前提或未成立，或缺证据。
 
+## 为什么 Tizen 不采用 Chromium 的方案
+
+这里的“不采用”是指：**不把 Chromium 的协作退出协议直接当作 Tizen 全平台的取消支持方案**，并非否定其工具链或 ABI 隔离方法。下表区分已证实的前提与尚不能证实的概括；Chromium 一侧的局部做法不能自动成为 Tizen 所有调用方的约束。
+
+| Chromium 的前提／做法 | 证据（URL） | Tizen 的情况及不能直接沿用的原因 | 证据（URL） |
+|---|---|---|---|
+| 使用 `base::Thread` 的线程，退出走请求停止、处理退出工作、join 的协作协议。 | [固定版本 thread.cc](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/base/threading/thread.cc) | 已检查源码有真实取消调用；lightweight-web-engine 与 OpenMP 的条件路径启用异步模式。不能假定这些线程全部经该封装退出；这里证明的是条件可达，不是每个产品都实际触发。 | [两个组件的源码路径及异步取消实测](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R108/W3_REPORT.md) |
+| 协作退出的有效性依赖调用方采用并遵守协议，不能从代码封装推成全仓强制规则。本次主仓选定文本仅发现一处直接 `pthread_cancel` 调用，但它确实存在。 | [gRPC 的实际调用](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/third_party/grpc/source/src/core/util/posix/thd.cc)、[固定范围检索结果](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R116/chromium_usage.tsv) | Tizen 的仓外应用、供应商组件及插件不在完整覆盖范围内。现有材料无法保证它们全部遵守统一退出协议；库更新本身也不能要求不可得的源码一律改用该协议。这不是“永远不能制定产品约束”的断言。 | [外部组件缺口、材料与责任方](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R110/W1_REPORT.md) |
+| 统一构建配置及固定依赖使受该构建管理的目标可保持一致；**配置不能证明“monorepo 每次全量重编、完全不考虑旧二进制”**。 | [标准库构建配置](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/c++/c++.gni)、[固定依赖清单](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/DEPS) | 已确认 5 个只复制安装、不随迁移重建的预编译 DSO；仓外第三方产物和重建策略的分母仍不可得。因此不能把“所有边界两侧都会重编”作为平台前提；也不能给未知外部集合补写数量或确定策略。 | [不随迁移重建组件清单](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R108/W2_REPORT.md)、[外部支持范围缺口](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R110/W1_REPORT.md) |
+| ABI 命名空间 `__Cr` 隔离标准库符号；该机制不是跨标准库对象转换。 | [固定版本 __config_site](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/buildtools/third_party/libc++/__config_site) | 布局实例中，libstdc++ 提供方与 libc++ 消费方成功链接／加载，却把同一 `deque` 解释成不同大小和元素数。命名空间不能修复未在接口名中暴露的内部布局；该实例是 x86_64 最小探针，不是断言所有生产边都失败。 | [跨库对象布局实例与原始证据索引](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R80/REPORT.md) |
+| 普通 Linux 默认不启用自带 libunwind，而使用系统提供方；系统为 GNU libgcc 时仍走 GNU 展开器。不能把该配置泛化为所有 Linux 产品（包括 ChromeOS）都用 GNU。 | [固定版本 unwind.gni](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/unwind.gni) | **在同用 GNU 提供方的比较下，展开器不是差异点。** 本地 30 格 GNU／LLVM 对照又表明，换展开器不消除规格终止或写者残留。该实测来自宿主，不冒充 Tizen 镜像验证。 | [30 格对照及环境身份](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R116/MEASUREMENTS.md)、[逐格结果](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R116/measurement_summary.tsv) |
+
+下述概括只针对已核查的协作退出路径及 Tizen 已确定的支持目标：它不声称 Chromium 全产品不用取消，也不声称修库后任意调用链、所有异步取消或所有用户回调都安全；本文已有的架构、调用链与未修复路径限制继续成立。
+
+**概括而言，Chromium 的这类方案是“约定 + 在遵守协议的路径上不用取消”，Tizen 的方案是“修库 + 在明确边界内支持取消”；前者依赖调用方遵守协作协议，后者不以所有调用方都放弃取消为前提，两者不是优劣之分，而是前提不同。**
+
 ## 适用性结论与既有工作影响
 
 **Chromium：部分做法可参考，不能整体照搬为 Tizen 的取消安全方案。** 已有的协作退出与 ABI 隔离适用范围取决于调用方协议及边界统一；Tizen 的既有取消和外部二进制缺口不随链接配置消失。规范级“免疫前提”未被证实。

@@ -30,7 +30,10 @@ for p in r.glob('*.md'):
 assert not missing,missing
 print('LOCAL_REPORT_LINKS=PASS')
 for p in [r/'REPORT_ZH.md',r/'REPORT_EN.md']:
- assert not re.search(r'\bR\d{2,3}\b',p.read_text())
+ # Evidence URLs may necessarily contain repository task-directory names;
+ # the headquarters-facing prose and link labels must not require them.
+ visible=re.sub(r'(\]\()[^)]*(\))',r'\1\2',p.read_text())
+ assert not re.search(r'\bR\d{2,3}\b',visible)
 print('NO_INTERNAL_TASK_LABELS_IN_HQ_REPORTS=PASS')
 assert pathlib.Path('/proc/self/exe').resolve().is_file();print('PROCESS_SCAN_POSITIVE_CONTROL=PASS')
 experiment=pathlib.Path('tmp/R116').absolute();active=[]

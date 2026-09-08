@@ -1,0 +1,412 @@
+docs/progress/R80/REPORT.md:1:# R80：D-09 同名符号与 D-11 头文件对象布局确认
+docs/progress/R80/REPORT.md:12:- D-11：对象布局差异确定存在。33 个代表对象中 10 个的 x86_64
+docs/progress/R80/REPORT.md:32:- D-11 布局探针用系统 GCC 13.3 编译 libstdc++ 侧；libc++ 侧用工作区既有
+docs/progress/R80/REPORT.md:84:## D-11：分布、数量与布局
+## D-11：分布、数量与布局
+
+这类对象不能给出有限“实例总数”：容器、词汇类型、智能指针、atomic、
+iterator、range view 和闭包大多是头文件模板，元素、allocator、traits、extent
+和闭包组合令实例数无上限。按家族的分布见
+[tables/d11_header_object_families.tsv](tables/d11_header_object_families.tsv)。
+
+为给出可复核的粗略规模，单行词法代理统计得到：libstdc++ 854 个 include
+文件中 81 个文件命中 393 个 class/struct definition 行；libc++ 排除复制的
+`__cxx03` 树后，1,104 个文件中 657 个命中 2,478 行。它们包含内部类型、
+遗漏跨行声明，也不是唯一 public type 数，只能说明实现规模为数百至数千个
+定义点，不能冒充 ABI 对象总数。
+
+33 个代表对象的完整结果见
+[tables/d11_layout_comparison.tsv](tables/d11_layout_comparison.tsv)：
+
+- 明确不同 10 个：`any`、`function<void()>`、`deque<int>`、`map<int,int>`、
+  `set<int>`、`unordered_map<int,int>`、`unordered_set<int>`、`string`、
+  `future<int>`、`promise<int>`；
+- 其余 23 个仅 `sizeof/alignof` 相同，不能据此推断成员偏移、节点、控制块、
+  iterator 或操作语义兼容。
+
+### 最小可运行用例
+
+`layout_provider.cpp` 由 libstdc++ 构建共享库，返回
+`std::deque<int>*`；`layout_consumer.cpp` 由 libc++ 构建。Itanium ABI 不把
+普通函数返回类型编码进 `make_payload()` 的符号名，故 consumer 的 UND 与
+provider 的 DEF 精确匹配。ELF 核对显示进程同时需要 provider、libc++、
+libc++abi，而 provider 需要 libstdc++；链接、装载均成功。
+
+运行输出：
+
+```text
+provider_sizeof=80
+consumer_sizeof=48
+provider_view=4
+consumer_view=106884723786536
+RUN_EXIT=42
+```
+
+退出 42 是用例主动标记“两侧视图不一致”，不是崩溃。对象由原 provider
+销毁，避免把本用例扩大成跨 allocator 释放测试。
+
+### 平台迁移触发路径
+
+- R22 发布 ELF 图总体已有 82 个真实 C++ ABI provider source identity 和
+  383 个 consumer identity；这证明跨 DSO C++ 调用边存在，不证明每条都传
+  对象。
+- 对 Boost 的收窄复核确认 13 个 consumer source RPM、75 个架构化 ELF、
+  90 条 true symbol-intersection 边，覆盖 aarch64/armv7l/x86_64。生产路径
+  包括 `security-manager` 对 boost-filesystem/program-options/iostreams、
+  `dotnet-launcher` 对 boost-filesystem、`libzypp` 对 boost-thread；另有测试
+  路径。
+- 冻结 Boost 头的 `boost/filesystem/path.hpp` 定义 `path::string_type` 为
+  `std::basic_string`，对象成员 `m_pathname` 即该类型；R22 consumer 符号中有
+  参数为 `boost::filesystem::path const&` 的接口。这种函数名只编码 Boost
+  类型，不编码其内部 std::string 布局，符合最小用例所证实的静默边界。
+- 当前边两侧都是既有 libstdc++ 构建，坏行为没有发生；触发条件是 provider
+  与 consumer 非原子迁移、预制旧 DSO 与新 consumer 共存，或插件/静态
+  runtime 形成两套对象模型。全量同一工具链重建并保持边两侧一致时，没有
+  该“跨实现解释同一对象”的条件。
+
+事实判断是：平台迁移存在需要逐边确认的布局边界，不能用“链接成功”关闭；
+但本轮没有把 82 个 provider 的全部公开 API、插件加载顺序和运行调用全部
+执行，因此平台故障数量仍为 `NOT_OBSERVED`，不能从 90 条 Boost 边推成 90
+个故障。
+
+## 未覆盖范围
+
+- ARM/aarch64 的逐类型布局和最小用例未运行；33 项结果只代表 x86_64。
+- ABI 配置宏、debug iterator、sanitizer、不同 allocator/traits、`-fno-exceptions`
+  和静态链接组合未展开。
+- 没有获得所有平台 DSO 的 DWARF，也未验证成员偏移/控制块/节点布局全量。
+- 未做 82 provider × 383 consumer 的 API 语义审计和产品场景运行。
+- D-09 混合 runtime 的 empty-message、foreign exception、symbol preemption 与
+  `dlsym` 场景未运行，记 `NOT_OBSERVED`。
+
+## 过程异常
+
+- 命令 007 首次调用错 R66 parser API，退出 1；命令 008 按脚本实际函数名
+  重跑，恢复 17 项。
+- 命令 020/021 证实 GCC 13 无法编译 LLVM 22 头；没有修改头文件，而是解包
+  既有缓存 Clang 工具。解包后依次缺 `libLLVM.so.21.1`、`libxml2.so.16`，
+  命令 029~032 从同一缓存补齐，未安装系统包。
+- 命令 028 的内层显式 `exit 2` 绕过日志 footer，其退出码未由 wrapper 捕获，
+  记 `NOT_OBSERVED`；现象与后续修复均完整保留。
+- 首个跨布局用例用 `std::string` 返回值；libstdc++ 的 `abi:cxx11` tag 进入符号
+  名，consumer 链接退出 1，说明该变体会提前暴露。命令 036 改用无该 tag 的
+  `deque` 后验证静默运行时差异。两版源码演进与错误原文均存档。
+
+## 材料
+
+# R81：armv7l 基线补跑与测试夹具隔离
+
+状态：`FAILURES_FOUND`（全量执行完成；213 项为基线与补丁共同失败，方案引入 0 项）
+
+## 结论
+
+R81 两阶段均已完成。armv7l libc++ 的 owner 标准化对照覆盖
+11,321/11,321 项，libc++abi 覆盖 81/81 项。标准化后两侧状态逐项完全一致：
+
+| 组合 | PASS | FAIL | UNSUPPORTED | XFAIL | 总数 |
+|---|---:|---:|---:|---:|---:|
+| armv7l 基线 libc++（owner） | 10,018 | 213 | 1,061 | 29 | 11,321 |
+| armv7l 补丁 libc++（owner 标准化） | 10,018 | 213 | 1,061 | 29 | 11,321 |
+| armv7l 基线 libc++abi | 60 | 0 | 21 | 0 | 81 |
+| armv7l 补丁 libc++abi | 60 | 0 | 21 | 0 | 81 |
+
+213 项 libc++ 失败全部是两侧共同失败，沿用任务口径分类为
+`UPSTREAM_EXISTING`；这里表示“未打补丁基线也失败”，不表示已经逐项证明根因
+一定在 LLVM 上游。`SCHEME_INTRODUCED=0`、`INDETERMINATE=0`。
+
+结合此前已经完成的 x86_64 全量对照，两架构的选定测试配置均未发现补丁引入
+的回归。结论限定在本文“未覆盖范围”内。
+
+机器可读汇总见 `tables/final_summary.json`，213 项逐项分类见
+`tables/full_failure_classification.tsv`。
+
+## 执行身份和夹具隔离
+
+统一使用 `owner(5001)`。理由是产品应用通常不是以特权 root 运行，owner 更接近
+实际产品身份；同时它与既有补丁侧预期身份一致，并且不会绕过权限和
+`RLIMIT_NPROC` 测试夹具。
+
+判断身份敏感测试的方法分两层：
+
+1. 对测试源码机械扫描权限变更、权限错误断言、UID/EUID、`setrlimit`、
+   `RLIMIT_NPROC` 等身份相关机制；
+2. 对候选项在同一补丁运行库上做 root/owner 动态对照，并对原差异项做两侧
+   owner 成对复验。不能只靠目录名或历史状态推断。
+
+最终确认 28 项身份敏感测试：27 项 filesystem 权限夹具，以及
+`thread_create_failure.pass.cpp`。完整清单和机械依据见
+`tables/identity_sensitive_tests_final.tsv`。
+
+filesystem 测试通过 `scoped_test_env`/`static_test_env` 在每个测试进程内创建
+目录、普通文件、软/硬链接、FIFO、socket 和无权限路径。异常中止会跳过 C++
+析构，留下专属临时根；正常运行则由析构和执行器清理。隔离方案为两侧使用
+互不相干、运行前重建的 `/opt/usr/r81_phase2/owner_baseline/tmp` 与
+`owner_patched/tmp`，固定 `TMPDIR/TMP/TEMP`，每项仍使用独立远端工作目录。
+
+27 项 filesystem 在 owner 下两侧均 PASS。第 28 项
+`thread_create_failure.pass.cpp` 通过 `setrlimit(RLIMIT_NPROC, 1)` 强制线程创建
+失败；root 可绕过该限制。R77 原补丁结果由未执行 `su owner` 的旧执行器得到，
+退出 134 且断言 `assert(false)`，本轮同一补丁二进制在 owner 下退出 0；基线
+owner 也退出 0。因此它是执行身份造成的环境差异，不是 future 补丁回归。
+
+第一阶段的详细夹具结构、四项 root/owner 双向抽样及残留分析仍保留在本目录
+原始材料中。
+
+## `offset_range.pass.cpp`
+
+运行前板上 `/opt/usr` 可用约 92.4 GB；测试写入量为 4,294,967,362 字节，
+高于所需空间并另保留 8 GiB 安全余量，因此允许成对复验。
+
+lit 的单项运行受 120 秒执行器上限影响，故最终直接执行 lit 已构建的同一测试
+二进制，并继续使用同一 owner SDB 执行器、独立目录和目标运行库：
+
+- 基线：退出 0，约 117.94 秒；
+- 补丁：退出 0，约 119.59 秒。
+
+R77 的基线 TIMEOUT 与补丁 PASS 是 120 秒边界附近的时间环境差异；owner 成对
+结果相同。没有把超时推断成库行为差异。
+
+## 基线补跑
+
+从 R77 已完成的 7,000 项断点继续，批次 015--022 按原纪律以 `-j2`、
+`nice -n 15`、`ionice -c 3` 执行；批次 023 和 libc++abi 在系统异常后降为
+`-j1`。完整 result JSON、lit stdout/stderr、遥测和每批 COMPLETE 标记均在
+`raw/phase2/results/`。
+
+- libc++：原 7,000 项 + 本轮 4,321 项 = 11,321/11,321；23 个批次标记齐全；
+- libc++abi：81/81，lit 退出 0；
+- 基线运行库板端 SHA256：libc++
+  `d293b1a3bed8a4114b5a7c30d3732a4299a52221fd7cc7d5aada9a369899a737`，
+  libc++abi
+  `58b8bcc8ffe95b78bb1a3d5951efe9507ddf44400fe3e6ad8debeed09a93b374`。
+
+设备连接在本轮发生两次中断，均立即停止当前运行、保存已完成批次并检查板端
+进程、夹具、运行库 SHA256 和空间；总连接恢复次数为 2/3。未观察到系统崩溃
+的可证明根因，记 `NOT_OBSERVED`，不归因于某个命令或补丁。
+
+第二次恢复后，为响应“控制 CPU 和内存消耗”的明确要求，采取以下保护：
+
+- 只运行剩余单批和 libc++abi，`-j1`；
+- 每 60 秒记录负载和可用内存；
+- 可用内存低于 8 GiB 或 load1 高于 20 即主动停止，比原 1 GiB 门槛保守；
+- 一次 batch-023 重试在 load1=23.33 时主动终止，保存为
+  `interrupted_attempt_2_high_load`；等待连续两个低负载样本后重跑成功。
+
+最终成功的 batch-023 期间 MemAvailable 约 18.7--19.6 GiB、load1
+9.93--11.97；libc++abi 期间约 17.5--18.4 GiB、load1 10.93--11.81。
+第二阶段从 15:27:37 开始，在 22:27:37 的七小时截止点前完成。
+
+## 79 项和原 28 项的重新分类
+
+原 79 项 `INDETERMINATE` 已全部定性，见
+`tables/r77_79_indeterminate_resolved.tsv`：
+
+- 78 项：基线与补丁均 FAIL，`UPSTREAM_EXISTING`；
+- 1 项 `thread_create_failure.pass.cpp`：owner 下两侧均 PASS，
+  `ENVIRONMENT_CAUSED`；
+- 方案引入 0，无法判断 0。
+
+R77 原 28 项“基线失败、补丁通过”在隔离后均无差异，见
+`tables/r77_28_resolved.tsv`：27 项由 root/owner 身份漂移造成，1 项
+`offset_range` 由超时边界造成，全部归为 `ENVIRONMENT_CAUSED`。
+
+## 五处 `noexcept` 边界和 25 类差异
+
+五处边界逐项记录在 `tables/noexcept_boundary_coverage.tsv`。官方套件没有
+`pthread_cancel` 用例，因此 D01--D05 五个精确取消触发均未直接命中；只能确认
+import("//build_overrides/build.gni")
+
+declare_args() {
+  # Use in-tree libunwind (buildtools/third_party/libunwind) instead of whatever
+  # system library provides unwind symbols (e.g. libgcc).
+  use_custom_libunwind = is_fuchsia || is_android
+}
+# Copyright 2017 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/clang/clang.gni")
+import("//build/config/sanitizers/sanitizers.gni")
+import("//build/toolchain/rbe.gni")
+import("//build_overrides/build.gni")
+
+declare_args() {
+  # Use in-tree libc++ (buildtools/third_party/libc++ and
+  # buildtools/third_party/libc++abi) instead of the system C++ library for C++
+  # standard library support.
+  #
+  # WARNING: Bringing your own C++ standard library is deprecated and will not
+  # be supported in the future. This flag will be removed.
+  use_custom_libcxx = true
+
+  # Use libc++ instead of stdlibc++ when using the host_cpu toolchain, even if
+  # use_custom_libcxx is false. This is useful for cross-compiles where a custom
+  # toolchain for the target_cpu has been set as the default toolchain, but
+  # use_custom_libcxx should still be true when building for the host.  The
+  # expected usage is to set use_custom_libcxx=false and
+  # use_custom_libcxx_for_host=true in the passed in buildargs.
+  #
+  # WARNING: Bringing your own C++ standard library is deprecated and will not
+  # be supported in the future. This flag will be removed.
+  use_custom_libcxx_for_host = true
+
+  # Builds libcxx Natvis into the symbols for type visualization.
+  # Set to false to workaround http://crbug.com/966676 and
+  # http://crbug.com/966687.
+  libcxx_natvis_include = true
+
+  # When set, enables libc++ debug mode with iterator debugging.
+  #
+  # Iterator debugging is generally useful for catching bugs. But it can
+  # introduce extra locking to check the state of an iterator against the state
+  # of the current object. For iterator- and thread-heavy code, this can
+  # significantly slow execution - two orders of magnitude slowdown has been
+  # seen (crbug.com/903553) and iterator debugging also slows builds by making
+  # generation of snapshot_blob.bin take ~40-60 s longer. Therefore this
+  # defaults to off.
+  enable_iterator_debugging = false
+
+  # If false, build using C++20; otherwise, build using C++23.
+  use_cxx23 = true
+
+  # Build atomic support from in-tree compiler-rt.
+  #
+  # Apple platforms provide the intrinsics from a different library, and the
+  # implementations in compiler-rt are outdated, so avoid building them in this
+  # case.
+  use_llvm_libatomic = !is_apple
+
+  # Unified modules controls whether we unify sysroot, libc++, and builtins
+  # into a single module.
+  use_unified_system_module = true
+}
+
+if (enable_strict_deps) {
+  assert(use_unified_system_module, "strict deps requires unified modules")
+}
+
+use_custom_libcxx =
+    use_custom_libcxx || (use_custom_libcxx_for_host && !is_a_target_toolchain)
+
+declare_args() {
+  # WARNING: Setting this to a non-default value is highly discouraged.
+  # If true, libc++ will be built as a shared library; otherwise libc++ will be
+  # linked statically. Setting this to something other than the default is
+  # unsupported and can be broken by libc++ rolls. Note that if this is set to
+  # true, you must also set libcxx_abi_unstable=false, which is bad for
+  # performance and memory use.
+  libcxx_is_shared = use_custom_libcxx && is_component_build
+
+  # In case the C++ standard library implementation used is libstdc++, then
+  # enable its own hardening checks. As we cannot determine in GN if libstdc++
+  # is used or not, by default enable it for Linux without the custom libc++.
+  #
+  # WARNING: Bringing your own C++ standard library is deprecated and will not
+  # be supported in the future. This flag will be removed.
+  use_safe_libstdcxx = is_linux && !use_custom_libcxx
+
+  # Use explicit Clang header modules for libc++.
+  # We'll gradually expand supported platform of modules
+  # (https://crbug.com/40440396).
+  # For details on the current state of modules in Chromium see
+  # https://chromium.googlesource.com/chromium/src/+/main/docs/modules.md
+  #
+  # TODO(https://crbug.com/440260716): Enable for Cronet in AOSP once gn2bp
+  # supports copy targets.
+  use_clang_modules =
+      use_custom_libcxx &&
+      # Clang modules doesn't work with translation_unit used in codesearch
+      # pipeline http://b/436082487.
+      !enable_kythe_annotations && is_clang &&
+      clang_modules_platform_supported && using_tested_sysroot &&
+      # reclient and icecc don't handle headers in modulemap config.
+      !use_reclient && !is_cronet_for_aosp_build && cc_wrapper != "icecc" &&
+      # Due to libc++ headers having different dependencies in different
+      # language modes, see crbug.com/507307601
+      use_cxx23 &&
+      # TODO: crbug.com/440481921 - Fix conflicting function types when enabling
+      # fuzzer & coverage with modules.
+      !(use_clang_coverage && use_libfuzzer)
+}
+
+assert(
+    !(use_clang_modules && use_clang_coverage && use_libfuzzer),
+    "crbug.com/440481921: Can't enable use_clang_modules when use_clang_coverage and use_libfuzzer are enabled.")
+
+# The saigo libc++ is distinct from the custom hermetic libc++. However, since
+# the Chrome team controls the saigo toolchain, it is safe to unconditionally
+# enable libc++ hardening there as well.
+use_safe_libcxx = use_custom_libcxx && enable_safe_libcxx
+
+# libc++abi needs to be exported from executables to be picked up by shared
+# libraries on certain instrumented builds.
+export_libcxxabi_from_executables =
+    use_custom_libcxx && !is_apple && !is_win && !is_component_build &&
+    (is_asan || is_ubsan_vptr)
+
+# On Android, many shared libraries get loaded from the context of a JRE.  In
+# this case, there's no "main executable" to export libc++abi from.  We could
+# export libc++abi from each "toplevel" shared library instead, but that would
+# require adding an explicit dependency for each one, and might introduce
+# subtle, hard-to-fix problems down the line if the dependency is missing.
+#
+# export_libcxxabi_from_executables was added to avoid having an RPATH set in
+# static sanitizer builds just for executables to find libc++.  But on Android,
+# the Bionic dynamic loader doesn't even look at RPATH; instead, LD_LIBRARY_PATH
+# is set for tests. Because of this, we make libc++ a shared library on android
+# since it should get loaded properly.
+if (is_android && export_libcxxabi_from_executables) {
+  export_libcxxabi_from_executables = false
+  libcxx_is_shared = true
+}
+
+libcxx_prefix = "//third_party/libc++/src"
+libcxxabi_prefix = "//third_party/libc++abi/src"
+
+assert(!(is_ios && libcxx_is_shared),
+       "Can't build libc++ as a shared library on iOS.")
+
+if (libcxx_is_shared) {
+  libcxx_target_type = "shared_library"
+} else if (is_win) {
+  libcxx_target_type = "source_set"
+} else {
+  # Build as a static_library instead of a source_set when possible. Static
+  # library semantics are more ideal for libc++, because they ensure that only
+  # libc++ object files needed to satisfy unresolved symbols at link time are
+  # actually linked into the output. Especially for small targets with minimal
+  # use of libc++, this can provide space savings and a more predictable result,
+  # and cut down on the number of unnecessary static initializers.
+  libcxx_target_type = "static_library"
+}
+
+if (libcxx_target_type == "shared_library" ||
+    export_libcxxabi_from_executables) {
+  # libc++'s target type follows that of libc++, except:
+  #  - When libc++ is built as a shared_library, libc++abi should be a
+  #    source_set, so that libc++abi can be be linked into the libc++
+  #    shared_library in full.
+  #  - When exporting libc++abi from executables, libc++abi should be a
+  #    source_set, so that all of libc++abi is linked into executables
+  #    regardless of whether they directly depend on any particular portion of
+  #    it.
+  libcxxabi_target_type = "source_set"
+} else {
+  libcxxabi_target_type = libcxx_target_type
+}
+
+# Chromium will require using its libc++ library implementation. Warn if the
+# current configuration is not using it.
+if ((!use_custom_libcxx || !use_custom_libcxx_for_host) &&
+    # Standalone use of //build outside of Chromium can disable libc++.
+    build_with_chromium &&
+    # Try to avoid spamming the console lots. It's not actually
+    # toolchain-specific.
+    current_toolchain == default_toolchain) {
+  print("*********************************************************************")
+  print("WARNING: Support for linking against a C++ standard library other ")
+  print("  than the one in-tree (buildtools/third_party/libc++) is deprecated")
+  print("  and support for this will end. We plan to remove this option in ")
+  print("  M138.")
+  print("*********************************************************************")
+}
