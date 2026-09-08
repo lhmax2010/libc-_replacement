@@ -1,0 +1,81 @@
+diff --git a/packaging/llvm.spec b/packaging/llvm.spec
+index c901dc5a2..15a4f7367 100644
+--- a/packaging/llvm.spec
++++ b/packaging/llvm.spec
+@@ -15,6 +15,12 @@
+ %define llvm_release_build 1
+ %endif
+ 
++%if %{defined _toolchain}
++%if %{toolchain_is clang}
++%define build_with_libcxx 1
++%endif
++%endif
++
+ %define llvm_version 22
+ 
+ %define sdk_install_prefix /home/owner/share/tmp/sdk_tools/lldb
+@@ -44,6 +50,11 @@ Source1001: llvm.manifest
+ Source1002: mlgo_arm_model.tar.gz
+ Source1003: mlgo_aarch_model.tar.gz
+ Source1004: mlgo_x86_model.tar.gz
++# TensorFlow 2.18 AOT assets rebuilt with libc++ for the toolchain build.
++# The original TensorFlow 2.15/libstdc++ assets remain the default elsewhere.
++Source1005: mlgo_arm_model_libcxx_tf218.tar.gz
++Source1006: mlgo_aarch_model_libcxx_tf218.tar.gz
++Source1007: mlgo_x86_model_libcxx_tf218.tar.gz
+ 
+ %{!?mlgo_build_jobs: %define mlgo_build_jobs 6}
+ %{!?mlgo_verify_configure_only: %define mlgo_verify_configure_only 0}
+@@ -58,6 +69,10 @@ BuildRequires: libxml2-devel
+ BuildRequires: sed
+ %endif
+ BuildRequires: ninja
++%if 0%{?build_with_libcxx}
++BuildRequires: libc++-devel
++BuildRequires: libc++abi-devel
++%endif
+ 
+ 
+ Requires: libllvm = %{version}-%{release}
+@@ -156,6 +171,17 @@ Python bindings to parts of the Clang library
+ %setup -q
+ %if %{with mlgo}
+ mkdir -p mlgo_verify_assets
++%if 0%{?build_with_libcxx}
++%ifarch armv7l
++tar -C mlgo_verify_assets -xzf %{SOURCE1005}
++%endif
++%ifarch aarch64
++tar -C mlgo_verify_assets -xzf %{SOURCE1006}
++%endif
++%ifarch x86_64
++tar -C mlgo_verify_assets -xzf %{SOURCE1007}
++%endif
++%else
+ %ifarch armv7l
+ tar -C mlgo_verify_assets -xzf %{SOURCE1002}
+ %endif
+@@ -166,6 +192,7 @@ tar -C mlgo_verify_assets -xzf %{SOURCE1003}
+ tar -C mlgo_verify_assets -xzf %{SOURCE1004}
+ %endif
+ %endif
++%endif
+ 
+ %build
+ %if 0%{llvm_release_build}
+@@ -207,8 +234,14 @@ cmake \
+     -DCMAKE_C_FLAGS="$CFLAGS" \
+     -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
+ %if %{defined _toolchain}
++%if 0%{?build_with_libcxx}
++    -DLLVM_ENABLE_LIBCXX=ON \
++    -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
++    -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
++%else
+     -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections" \
+     -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections" \
++%endif
+     -DLLVM_USE_LINKER=lld \
+ %endif
+     -DLLVM_ENABLE_ASSERTIONS=No \
