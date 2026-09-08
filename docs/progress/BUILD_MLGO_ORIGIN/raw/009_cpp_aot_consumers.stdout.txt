@@ -1,0 +1,510 @@
+=== llvm/lib/Analysis/CMakeLists.txt:1-35 ===
+     1	if (DEFINED LLVM_HAVE_TF_AOT OR LLVM_HAVE_TFLITE)
+     2	  include(TensorFlowCompile)
+     3	  set(LLVM_INLINER_MODEL_PATH_DEFAULT "models/inliner-Oz")
+     4	
+     5	  set(LLVM_INLINER_MODEL_CURRENT_URL "<UNSPECIFIED>" CACHE STRING "URL to download the LLVM inliner model")
+     6	
+     7	  if (DEFINED LLVM_HAVE_TF_AOT)
+     8	    tf_find_and_compile(
+     9	      ${LLVM_INLINER_MODEL_PATH}
+    10	      ${LLVM_INLINER_MODEL_CURRENT_URL}
+    11	      ${LLVM_INLINER_MODEL_PATH_DEFAULT}
+    12	      "models/gen-inline-oz-test-model.py"
+    13	      serve
+    14	      action
+    15	      InlinerSizeModel
+    16	      llvm::InlinerSizeModel
+    17	    )
+    18	  endif()
+    19	
+    20	  if (LLVM_HAVE_TFLITE)
+    21	    list(APPEND MLLinkDeps
+    22	      tensorflow-lite::tensorflow-lite)
+    23	  endif()
+    24	endif()
+    25	
+    26	# The implementation of ConstantFolding.cpp relies on the use of math functions
+    27	# from the host. In particular, it relies on the detection of floating point
+    28	# exceptions originating from such math functions to prevent invalid cases
+    29	# from being constant folded. Therefore, we must ensure that fp exceptions are
+    30	# handled correctly.
+    31	if (MSVC)
+    32	  set_source_files_properties(ConstantFolding.cpp PROPERTIES COMPILE_OPTIONS "/fp:except")
+    33	elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    34	  set_source_files_properties(ConstantFolding.cpp PROPERTIES COMPILE_OPTIONS "-ftrapping-math")
+    35	endif()
+=== llvm/lib/Analysis/MLInlineAdvisor.cpp:1-110 ===
+     1	//===- MLInlineAdvisor.cpp - machine learned InlineAdvisor ----------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	//
+     9	// This file implements the interface between the inliner and a learned model.
+    10	// It delegates model evaluation to either the AOT compiled model (the
+    11	// 'release' mode) or a runtime-loaded model (the 'development' case).
+    12	//
+    13	//===----------------------------------------------------------------------===//
+    14	#include "llvm/Analysis/MLInlineAdvisor.h"
+    15	#include "llvm/ADT/SCCIterator.h"
+    16	#include "llvm/Analysis/AssumptionCache.h"
+    17	#include "llvm/Analysis/BlockFrequencyInfo.h"
+    18	#include "llvm/Analysis/CallGraph.h"
+    19	#include "llvm/Analysis/FunctionPropertiesAnalysis.h"
+    20	#include "llvm/Analysis/InlineCost.h"
+    21	#include "llvm/Analysis/InlineModelFeatureMaps.h"
+    22	#include "llvm/Analysis/InteractiveModelRunner.h"
+    23	#include "llvm/Analysis/LazyCallGraph.h"
+    24	#include "llvm/Analysis/LoopInfo.h"
+    25	#include "llvm/Analysis/MLModelRunner.h"
+    26	#include "llvm/Analysis/OptimizationRemarkEmitter.h"
+    27	#include "llvm/Analysis/ProfileSummaryInfo.h"
+    28	#include "llvm/Analysis/ReleaseModeModelRunner.h"
+    29	#include "llvm/Analysis/TargetTransformInfo.h"
+    30	#include "llvm/Analysis/TensorSpec.h"
+    31	#include "llvm/IR/Dominators.h"
+    32	#include "llvm/IR/InstIterator.h"
+    33	#include "llvm/IR/Module.h"
+    34	#include "llvm/IR/PassManager.h"
+    35	#include "llvm/Support/CommandLine.h"
+    36	
+    37	using namespace llvm;
+    38	
+    39	static cl::opt<std::string> InteractiveChannelBaseName(
+    40	    "inliner-interactive-channel-base", cl::Hidden,
+    41	    cl::desc(
+    42	        "Base file path for the interactive mode. The incoming filename should "
+    43	        "have the name <inliner-interactive-channel-base>.in, while the "
+    44	        "outgoing name should be <inliner-interactive-channel-base>.out"));
+    45	static const std::string InclDefaultMsg =
+    46	    (Twine("In interactive mode, also send the default policy decision: ") +
+    47	     DefaultDecisionName + ".")
+    48	        .str();
+    49	static cl::opt<bool>
+    50	    InteractiveIncludeDefault("inliner-interactive-include-default", cl::Hidden,
+    51	                              cl::desc(InclDefaultMsg));
+    52	
+    53	enum class SkipMLPolicyCriteria { Never, IfCallerIsNotCold };
+    54	
+    55	static cl::opt<SkipMLPolicyCriteria> SkipPolicy(
+    56	    "ml-inliner-skip-policy", cl::Hidden, cl::init(SkipMLPolicyCriteria::Never),
+    57	    cl::values(clEnumValN(SkipMLPolicyCriteria::Never, "never", "never"),
+    58	               clEnumValN(SkipMLPolicyCriteria::IfCallerIsNotCold,
+    59	                          "if-caller-not-cold", "if the caller is not cold")));
+    60	
+    61	static cl::opt<std::string> ModelSelector("ml-inliner-model-selector",
+    62	                                          cl::Hidden, cl::init(""));
+    63	
+    64	static cl::opt<bool> StopImmediatelyForTest("ml-inliner-stop-immediately",
+    65	                                            cl::Hidden);
+    66	
+    67	#if defined(LLVM_HAVE_TF_AOT_INLINERSIZEMODEL)
+    68	// codegen-ed file
+    69	#include "InlinerSizeModel.h" // NOLINT
+    70	using CompiledModelType = llvm::InlinerSizeModel;
+    71	#else
+    72	using CompiledModelType = NoopSavedModelImpl;
+    73	#endif
+    74	
+    75	std::unique_ptr<InlineAdvisor>
+    76	llvm::getReleaseModeAdvisor(Module &M, ModuleAnalysisManager &MAM,
+    77	                            std::function<bool(CallBase &)> GetDefaultAdvice) {
+    78	  if (!llvm::isEmbeddedModelEvaluatorValid<CompiledModelType>() &&
+    79	      InteractiveChannelBaseName.empty())
+    80	    return nullptr;
+    81	  auto RunnerFactory = [&](const std::vector<TensorSpec> &InputFeatures)
+    82	      -> std::unique_ptr<MLModelRunner> {
+    83	    std::unique_ptr<MLModelRunner> AOTRunner;
+    84	    if (InteractiveChannelBaseName.empty())
+    85	      AOTRunner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
+    86	          M.getContext(), InputFeatures, DecisionName,
+    87	          EmbeddedModelRunnerOptions().setModelSelector(ModelSelector));
+    88	    else {
+    89	      AOTRunner = std::make_unique<InteractiveModelRunner>(
+    90	          M.getContext(), InputFeatures, InlineDecisionSpec,
+    91	          InteractiveChannelBaseName + ".out",
+    92	          InteractiveChannelBaseName + ".in");
+    93	    }
+    94	    return AOTRunner;
+    95	  };
+    96	  return std::make_unique<MLInlineAdvisor>(M, MAM, RunnerFactory,
+    97	                                           GetDefaultAdvice);
+    98	}
+    99	
+   100	#define DEBUG_TYPE "inline-ml"
+   101	
+   102	static cl::opt<float> SizeIncreaseThreshold(
+   103	    "ml-advisor-size-increase-threshold", cl::Hidden,
+   104	    cl::desc("Maximum factor by which expected native size may increase before "
+   105	             "blocking any further inlining."),
+   106	    cl::init(2.0));
+   107	
+   108	static cl::opt<bool> KeepFPICache(
+   109	    "ml-advisor-keep-fpi-cache", cl::Hidden,
+   110	    cl::desc(
+=== llvm/include/llvm/Analysis/ReleaseModeModelRunner.h:45-145 ===
+    45	    FetchPrefix = Value;
+    46	    return *this;
+    47	  }
+    48	  EmbeddedModelRunnerOptions &setModelSelector(StringRef Value) {
+    49	    ModelSelector = Value;
+    50	    return *this;
+    51	  }
+    52	};
+    53	
+    54	template <class TGen>
+    55	class ReleaseModeModelRunner final : public MLModelRunner {
+    56	public:
+    57	  /// FeatureNames' type should be an indexed collection of std::string, like
+    58	  /// std::array or std::vector, that has a size() method.
+    59	  template <class FType>
+    60	  ReleaseModeModelRunner(LLVMContext &Ctx, const FType &InputSpec,
+    61	                         StringRef DecisionName,
+    62	                         const EmbeddedModelRunnerOptions &Options = {})
+    63	      : MLModelRunner(Ctx, MLModelRunner::Kind::Release, InputSpec.size() + 1),
+    64	        CompiledModel(std::make_unique<TGen>()) {
+    65	    assert(CompiledModel && "The CompiledModel should be valid");
+    66	    // Set up the model_selector past all the InputSpecs in all cases.
+    67	    //   - if the model doesn't have such a feature, but the user requested it,
+    68	    //   we report error. Same if the model supports it but the user didn't
+    69	    //   specify it
+    70	    //   - finally, we compute the MD5 hash of the user input and set the value
+    71	    //   of the model selector to {high, low}
+    72	    bool InputIsPresent = true;
+    73	    populateTensor(InputSpec.size(),
+    74	                   TensorSpec::createSpec<uint64_t>("model_selector", {2}),
+    75	                   Options.FeedPrefix, InputIsPresent);
+    76	
+    77	    // If we hit the "report an error" cases outlined above, continue with the
+    78	    // set up in case there's some custom diagnostics handler installed and it
+    79	    // doesn't promptly exit.
+    80	    if (Options.ModelSelector.empty() && InputIsPresent)
+    81	      Ctx.emitError(
+    82	          "A model selector was not specified but the underlying model "
+    83	          "requires selecting one because it exposes a model_selector input");
+    84	    uint64_t High = 0;
+    85	    uint64_t Low = 0;
+    86	    if (!Options.ModelSelector.empty()) {
+    87	      if (!InputIsPresent)
+    88	        Ctx.emitError("A model selector was specified but the underlying model "
+    89	                      "does not expose a model_selector input");
+    90	      const auto Hash = MD5::hash(arrayRefFromStringRef(Options.ModelSelector));
+    91	      High = Hash.high();
+    92	      Low = Hash.low();
+    93	    }
+    94	    getTensor<uint64_t>(InputSpec.size())[0] = High;
+    95	    getTensor<uint64_t>(InputSpec.size())[1] = Low;
+    96	    // At this point, the model selector is set up. If the user didn't provide
+    97	    // one, but the model has a model_selector, it'll be set to (0, 0) which
+    98	    // the composite model should treat as error as part of its implementation
+    99	    // (but that should only matter if there is a custom handler that doesn't
+   100	    // exit on error)
+   101	    for (size_t I = 0; I < InputSpec.size(); ++I)
+   102	      populateTensor(I, InputSpec[I], Options.FeedPrefix, InputIsPresent);
+   103	
+   104	    ResultIndex = CompiledModel->LookupResultIndex(Options.FetchPrefix.str() +
+   105	                                                   DecisionName.str());
+   106	    assert(ResultIndex >= 0 && "Cannot find DecisionName in inlining model");
+   107	  }
+   108	
+   109	  ~ReleaseModeModelRunner() override = default;
+   110	
+   111	  static bool classof(const MLModelRunner *R) {
+   112	    return R->getKind() == MLModelRunner::Kind::Release;
+   113	  }
+   114	
+   115	private:
+   116	  // fetch the model-provided buffer for the given Spec, or let MLModelRunner
+   117	  // create a scratch buffer. Indicate back to the caller if the model had that
+   118	  // input in the first place.
+   119	  void populateTensor(size_t Pos, const TensorSpec &Spec, StringRef Prefix,
+   120	                      bool &InputIsPresent) {
+   121	    const int Index =
+   122	        CompiledModel->LookupArgIndex((Prefix + Spec.name()).str());
+   123	    void *Buffer = nullptr;
+   124	    InputIsPresent = Index >= 0;
+   125	    if (InputIsPresent)
+   126	      Buffer = CompiledModel->arg_data(Index);
+   127	    setUpBufferForTensor(Pos, Spec, Buffer);
+   128	  }
+   129	
+   130	  void *evaluateUntyped() override {
+   131	    CompiledModel->Run();
+   132	    return CompiledModel->result_data(ResultIndex);
+   133	  }
+   134	
+   135	  int32_t ResultIndex = -1;
+   136	  std::unique_ptr<TGen> CompiledModel;
+   137	};
+   138	
+   139	/// A mock class satisfying the interface expected by ReleaseModeModelRunner for
+   140	/// its `TGen` parameter. Useful to avoid conditional compilation complexity, as
+   141	/// a compile-time replacement for a real AOT-ed model.
+   142	class NoopSavedModelImpl final {
+   143	#define NOOP_MODEL_ERRMSG                                                      \
+   144	  "The mock AOT-ed saved model is a compile-time stub and should not be "      \
+   145	  "called."
+=== llvm/lib/CodeGen/CMakeLists.txt:1-35 ===
+     1	if (DEFINED LLVM_HAVE_TF_AOT OR LLVM_HAVE_TFLITE)
+     2	  include(TensorFlowCompile)
+     3	  set(LLVM_RAEVICT_MODEL_PATH_DEFAULT "models/regalloc-eviction")
+     4	
+     5	  set(LLVM_RAEVICT_MODEL_CURRENT_URL "<UNSPECIFIED>" CACHE STRING "URL to download the LLVM register allocator eviction model")
+     6	
+     7	  if (DEFINED LLVM_HAVE_TF_AOT)
+     8	    tf_find_and_compile(
+     9	      ${LLVM_RAEVICT_MODEL_PATH}
+    10	      ${LLVM_RAEVICT_MODEL_CURRENT_URL}
+    11	      ${LLVM_RAEVICT_MODEL_PATH_DEFAULT}
+    12	      "../Analysis/models/gen-regalloc-eviction-test-model.py"
+    13	      serve
+    14	      action
+    15	      RegAllocEvictModel
+    16	      llvm::RegAllocEvictModel
+    17	    )
+    18	  endif()
+    19	
+    20	  if (LLVM_HAVE_TFLITE)
+    21	    list(APPEND MLLinkDeps ${tensorflow_c_api} ${tensorflow_fx})
+    22	  endif()
+    23	endif()
+    24	
+    25	add_llvm_component_library(LLVMCodeGen
+    26	  AggressiveAntiDepBreaker.cpp
+    27	  AllocationOrder.cpp
+    28	  Analysis.cpp
+    29	  AssignmentTrackingAnalysis.cpp
+    30	  AtomicExpandPass.cpp
+    31	  BasicTargetTransformInfo.cpp
+    32	  BranchFolding.cpp
+    33	  BranchRelaxation.cpp
+    34	  BreakFalseDeps.cpp
+    35	  BasicBlockSections.cpp
+=== llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:40-65 ===
+    40	#include "llvm/Support/ErrorHandling.h"
+    41	
+    42	#include <array>
+    43	#include <bitset>
+    44	#include <memory>
+    45	#include <unordered_map>
+    46	
+    47	using namespace llvm;
+    48	
+    49	#define DEBUG_TYPE "ml-regalloc"
+    50	
+    51	// Generated header in release (AOT) mode
+    52	#if defined(LLVM_HAVE_TF_AOT_REGALLOCEVICTMODEL)
+    53	#include "RegAllocEvictModel.h"
+    54	using CompiledModelType = RegAllocEvictModel;
+    55	#else
+    56	using CompiledModelType = NoopSavedModelImpl;
+    57	#endif
+    58	
+    59	static cl::opt<std::string> InteractiveChannelBaseName(
+    60	    "regalloc-evict-interactive-channel-base", cl::Hidden,
+    61	    cl::desc(
+    62	        "Base file path for the interactive mode. The incoming filename should "
+    63	        "have the name <regalloc-evict-interactive-channel-base>.in, while the "
+    64	        "outgoing name should be "
+    65	        "<regalloc-evict-interactive-channel-base>.out"));
+=== llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:350-395 ===
+   350	
+   351	#define _DECL_FEATURES(type, name, shape, _)                                   \
+   352	  TensorSpec::createSpec<type>(#name, shape),
+   353	
+   354	// ===================================
+   355	// Release (AOT) - specifics
+   356	// ===================================
+   357	/// Common provider for legacy and new pass managers.
+   358	class ReleaseModeEvictionAdvisorProvider final
+   359	    : public RegAllocEvictionAdvisorProvider {
+   360	public:
+   361	  ReleaseModeEvictionAdvisorProvider(LLVMContext &Ctx)
+   362	      : RegAllocEvictionAdvisorProvider(AdvisorMode::Release, Ctx) {
+   363	    InputFeatures = {RA_EVICT_FEATURES_LIST(_DECL_FEATURES)};
+   364	  }
+   365	  // support for isa<> and dyn_cast.
+   366	  static bool classof(const RegAllocEvictionAdvisorProvider *R) {
+   367	    return R->getAdvisorMode() == AdvisorMode::Release;
+   368	  }
+   369	
+   370	  std::unique_ptr<RegAllocEvictionAdvisor>
+   371	  getAdvisor(const MachineFunction &MF, const RAGreedy &RA,
+   372	             MachineBlockFrequencyInfo *MBFI, MachineLoopInfo *Loops) override {
+   373	    if (!Runner) {
+   374	      if (InteractiveChannelBaseName.empty())
+   375	        Runner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
+   376	            MF.getFunction().getContext(), InputFeatures, DecisionName);
+   377	      else
+   378	        Runner = std::make_unique<InteractiveModelRunner>(
+   379	            MF.getFunction().getContext(), InputFeatures, DecisionSpec,
+   380	            InteractiveChannelBaseName + ".out",
+   381	            InteractiveChannelBaseName + ".in");
+   382	    }
+   383	    assert(MBFI && Loops &&
+   384	           "Invalid provider state: must have analysis available");
+   385	    return std::make_unique<MLEvictAdvisor>(MF, RA, Runner.get(), *MBFI,
+   386	                                            *Loops);
+   387	  }
+   388	
+   389	private:
+   390	  std::vector<TensorSpec> InputFeatures;
+   391	  std::unique_ptr<MLModelRunner> Runner;
+   392	};
+   393	
+   394	class ReleaseModeEvictionAdvisorAnalysisLegacy final
+   395	    : public RegAllocEvictionAdvisorAnalysisLegacy {
+=== llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:1-150 ===
+     1	//===- MLRegAllocPriorityAdvisor.cpp - ML priority advisor-----------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	//
+     9	// Implementation of the ML priority advisor and reward injection pass
+    10	//
+    11	//===----------------------------------------------------------------------===//
+    12	
+    13	#include "AllocationOrder.h"
+    14	#include "RegAllocGreedy.h"
+    15	#include "llvm/Analysis/AliasAnalysis.h"
+    16	#include "llvm/Analysis/InteractiveModelRunner.h"
+    17	#include "llvm/Analysis/MLModelRunner.h"
+    18	#include "llvm/Analysis/ReleaseModeModelRunner.h"
+    19	#include "llvm/Analysis/TensorSpec.h"
+    20	#include "llvm/CodeGen/CalcSpillWeights.h"
+    21	#include "llvm/CodeGen/LiveRegMatrix.h"
+    22	#include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
+    23	#include "llvm/CodeGen/MachineFunction.h"
+    24	#include "llvm/CodeGen/MachineLoopInfo.h"
+    25	#include "llvm/CodeGen/MachineRegisterInfo.h"
+    26	#include "llvm/CodeGen/Passes.h"
+    27	#include "llvm/CodeGen/RegAllocPriorityAdvisor.h"
+    28	#include "llvm/CodeGen/RegisterClassInfo.h"
+    29	#include "llvm/CodeGen/SlotIndexes.h"
+    30	#include "llvm/CodeGen/VirtRegMap.h"
+    31	#include "llvm/InitializePasses.h"
+    32	#include "llvm/Pass.h"
+    33	#include "llvm/PassRegistry.h"
+    34	#include "llvm/Support/CommandLine.h"
+    35	
+    36	#if defined(LLVM_HAVE_TFLITE)
+    37	#include "llvm/Analysis/ModelUnderTrainingRunner.h"
+    38	#include "llvm/Analysis/NoInferenceModelRunner.h"
+    39	#include "llvm/Analysis/Utils/TrainingLogger.h"
+    40	#include "llvm/IR/Module.h"
+    41	#endif
+    42	
+    43	using namespace llvm;
+    44	
+    45	static cl::opt<std::string> InteractiveChannelBaseName(
+    46	    "regalloc-priority-interactive-channel-base", cl::Hidden,
+    47	    cl::desc(
+    48	        "Base file path for the interactive mode. The incoming filename should "
+    49	        "have the name <regalloc-priority-interactive-channel-base>.in, while "
+    50	        "the outgoing name should be "
+    51	        "<regalloc-priority-interactive-channel-base>.out"));
+    52	
+    53	using CompiledModelType = NoopSavedModelImpl;
+    54	
+    55	// Options that only make sense in development mode
+    56	#ifdef LLVM_HAVE_TFLITE
+    57	#include "RegAllocScore.h"
+    58	#include "llvm/Analysis/Utils/TFUtils.h"
+    59	
+    60	static cl::opt<std::string> TrainingLog(
+    61	    "regalloc-priority-training-log", cl::Hidden,
+    62	    cl::desc("Training log for the register allocator priority model"));
+    63	
+    64	static cl::opt<std::string> ModelUnderTraining(
+    65	    "regalloc-priority-model", cl::Hidden,
+    66	    cl::desc("The model being trained for register allocation priority"));
+    67	
+    68	#endif // #ifdef LLVM_HAVE_TFLITE
+    69	
+    70	namespace llvm {
+    71	
+    72	static const std::vector<int64_t> PerLiveRangeShape{1};
+    73	
+    74	#define RA_PRIORITY_FEATURES_LIST(M)                                           \
+    75	  M(int64_t, li_size, PerLiveRangeShape, "size")                               \
+    76	  M(int64_t, stage, PerLiveRangeShape, "stage")                                \
+    77	  M(float, weight, PerLiveRangeShape, "weight")
+    78	
+    79	#define DecisionName "priority"
+    80	static const TensorSpec DecisionSpec =
+    81	    TensorSpec::createSpec<float>(DecisionName, {1});
+    82	
+    83	
+    84	// Named features index.
+    85	enum FeatureIDs {
+    86	#define _FEATURE_IDX(_, name, __, ___) name,
+    87	  RA_PRIORITY_FEATURES_LIST(_FEATURE_IDX)
+    88	#undef _FEATURE_IDX
+    89	      FeatureCount
+    90	};
+    91	
+    92	class MLPriorityAdvisor : public RegAllocPriorityAdvisor {
+    93	public:
+    94	  MLPriorityAdvisor(const MachineFunction &MF, const RAGreedy &RA,
+    95	                    SlotIndexes *const Indexes, MLModelRunner *Runner);
+    96	
+    97	protected:
+    98	  const RegAllocPriorityAdvisor &getDefaultAdvisor() const {
+    99	    return static_cast<const RegAllocPriorityAdvisor &>(DefaultAdvisor);
+   100	  }
+   101	
+   102	  // The assumption is that if the Runner could not be constructed, we emit-ed
+   103	  // error, and we shouldn't be asking for it here.
+   104	  const MLModelRunner &getRunner() const { return *Runner; }
+   105	  float getPriorityImpl(const LiveInterval &LI) const;
+   106	  unsigned getPriority(const LiveInterval &LI) const override;
+   107	
+   108	private:
+   109	  const DefaultPriorityAdvisor DefaultAdvisor;
+   110	  MLModelRunner *const Runner;
+   111	};
+   112	
+   113	#define _DECL_FEATURES(type, name, shape, _)                                   \
+   114	  TensorSpec::createSpec<type>(#name, shape),
+   115	
+   116	static const std::vector<TensorSpec> InputFeatures{
+   117	    {RA_PRIORITY_FEATURES_LIST(_DECL_FEATURES)},
+   118	};
+   119	#undef _DECL_FEATURES
+   120	
+   121	// ===================================
+   122	// Release (AOT) - specifics
+   123	// ===================================
+   124	class ReleaseModePriorityAdvisorProvider final
+   125	    : public RegAllocPriorityAdvisorProvider {
+   126	public:
+   127	  ReleaseModePriorityAdvisorProvider()
+   128	      : RegAllocPriorityAdvisorProvider(AdvisorMode::Release) {}
+   129	  std::unique_ptr<RegAllocPriorityAdvisor>
+   130	  getAdvisor(const MachineFunction &MF, const RAGreedy &RA,
+   131	             SlotIndexes &SI) override {
+   132	    if (!Runner) {
+   133	      if (InteractiveChannelBaseName.empty())
+   134	        Runner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
+   135	            MF.getFunction().getContext(), InputFeatures, DecisionName);
+   136	      else
+   137	        Runner = std::make_unique<InteractiveModelRunner>(
+   138	            MF.getFunction().getContext(), InputFeatures, DecisionSpec,
+   139	            InteractiveChannelBaseName + ".out",
+   140	            InteractiveChannelBaseName + ".in");
+   141	    }
+   142	    return std::make_unique<MLPriorityAdvisor>(MF, RA, &SI, Runner.get());
+   143	  }
+   144	
+   145	private:
+   146	  std::unique_ptr<MLModelRunner> Runner;
+   147	};
+   148	
+   149	class ReleaseModePriorityAdvisorAnalysisLegacy final
+   150	    : public RegAllocPriorityAdvisorAnalysisLegacy {

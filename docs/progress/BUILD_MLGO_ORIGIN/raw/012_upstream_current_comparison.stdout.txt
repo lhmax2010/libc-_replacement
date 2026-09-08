@@ -1,0 +1,84 @@
+DIFFERENT	llvm/CMakeLists.txt	47801a5802487a8cfcf4cf612185b985dce87c7ec802e5a966db7a4567677b12	1c5e125ed2a6d7e18178b75fe97abf2ccf5d83a1b991b0afbbd0059a08f4c46d
+DIFFERENT	llvm/cmake/modules/TensorFlowCompile.cmake	61e6a599d421351065c1bd5aef6a1a57c7d38b1f7ccc603c388605f0fa7a4991	d4201100f65f53f97af9abc07ed47f50c72f7b5f5e54b5426152a1dd69cda7cb
+IDENTICAL	llvm/lib/Analysis/CMakeLists.txt	1b6031ac02d69ff5c293544d8a12fd8846cf78448f149d94068a1e3010da006c	1b6031ac02d69ff5c293544d8a12fd8846cf78448f149d94068a1e3010da006c
+IDENTICAL	llvm/lib/Analysis/MLInlineAdvisor.cpp	9e1e21e25408e6ce14be65a83114e4dee7688af92eec1cbbc6bebbd05c2edd8e	9e1e21e25408e6ce14be65a83114e4dee7688af92eec1cbbc6bebbd05c2edd8e
+IDENTICAL	llvm/include/llvm/Analysis/ReleaseModeModelRunner.h	2558770fb7b85ac2cd9051aa616c692ae4eed21ba281c0b979c4d091335c0d5b	2558770fb7b85ac2cd9051aa616c692ae4eed21ba281c0b979c4d091335c0d5b
+IDENTICAL	llvm/lib/CodeGen/CMakeLists.txt	df42490835d71b8aab1785ae2e4d8afebe19261e2d7b559909a6031d9853996d	df42490835d71b8aab1785ae2e4d8afebe19261e2d7b559909a6031d9853996d
+IDENTICAL	llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp	c17efb586e74be64183e8d87fa62ebe4de495a3ba97d639a43d721a0564b23bb	c17efb586e74be64183e8d87fa62ebe4de495a3ba97d639a43d721a0564b23bb
+IDENTICAL	llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp	9c913d2502d2ee6cb459c6b02881d98569c4865ecdb30fbc1e94756f7d144ebc	9c913d2502d2ee6cb459c6b02881d98569c4865ecdb30fbc1e94756f7d144ebc
+IDENTICAL	llvm/docs/MLGO.rst	9e5ceeed3f18cccdcb795d4b8ef4b8e73bb2c492a6decd3859579cb533dfcc15	9e5ceeed3f18cccdcb795d4b8ef4b8e73bb2c492a6decd3859579cb533dfcc15
+=== non-identical diffs ===
+=== llvm/CMakeLists.txt ===
+--- docs/progress/BUILD_MLGO_ORIGIN/upstream/llvm/CMakeLists.txt	2026-09-08 10:30:38.472574125 +0800
++++ codes/llvm/llvm/CMakeLists.txt	2026-08-05 11:41:58.487356352 +0800
+@@ -1178,6 +1178,11 @@
+ # Then set TENSORFLOW_AOT_PATH to the package install - usually it's ~/.local/lib/python3.7/site-packages/tensorflow
+ #
+ set(TENSORFLOW_AOT_PATH "" CACHE PATH "Path to TensorFlow pip install dir")
++option(LLVM_MLGO_EXPORT_TF_XLA_RUNTIME
++  "Install/export TensorFlow AOT runtime to downstream LLVM consumers"
++  ON)
++set(LLVM_MLGO_EMBED_TF_XLA_RUNTIME_OBJECTS "" CACHE STRING
++  "TensorFlow AOT runtime object files to embed once into LLVM MLGO component libraries")
+ 
+ if (NOT TENSORFLOW_AOT_PATH STREQUAL "")
+   set(LLVM_HAVE_TF_AOT "ON" CACHE BOOL "Tensorflow AOT available")
+@@ -1187,11 +1192,13 @@
+   include_directories(${TENSORFLOW_AOT_PATH}/include)
+   add_subdirectory(${TENSORFLOW_AOT_PATH}/xla_aot_runtime_src
+     ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY}/tf_runtime)
+-  install(TARGETS tf_xla_runtime EXPORT LLVMExports
+-    ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX} COMPONENT tf_xla_runtime)
+-  install(TARGETS tf_xla_runtime EXPORT LLVMDevelopmentExports
+-    ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX} COMPONENT tf_xla_runtime)
+-  set_property(GLOBAL APPEND PROPERTY LLVM_EXPORTS tf_xla_runtime)
++  if (LLVM_MLGO_EXPORT_TF_XLA_RUNTIME)
++    install(TARGETS tf_xla_runtime EXPORT LLVMExports
++      ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX} COMPONENT tf_xla_runtime)
++    install(TARGETS tf_xla_runtime EXPORT LLVMDevelopmentExports
++      ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX} COMPONENT tf_xla_runtime)
++    set_property(GLOBAL APPEND PROPERTY LLVM_EXPORTS tf_xla_runtime)
++  endif()
+   # Once we add more modules, we should handle this more automatically.
+   if (DEFINED LLVM_OVERRIDE_MODEL_HEADER_INLINERSIZEMODEL)
+     set(LLVM_INLINER_MODEL_PATH "none")
+=== llvm/cmake/modules/TensorFlowCompile.cmake ===
+--- docs/progress/BUILD_MLGO_ORIGIN/upstream/llvm/cmake/modules/TensorFlowCompile.cmake	2026-09-08 10:30:39.065009292 +0800
++++ codes/llvm/llvm/cmake/modules/TensorFlowCompile.cmake	2026-08-05 11:41:58.492033596 +0800
+@@ -111,8 +111,34 @@
+     tf_compile(${LLVM_ML_MODELS_ABSOLUTE} ${tag_set} ${signature_def_key} ${fname} ${cpp_class} ${hdr_file} ${obj_file})
+   endif()
+ 
+-  set(GeneratedMLSources ${GeneratedMLSources} ${GENERATED_OBJS} ${GENERATED_HEADERS} PARENT_SCOPE)
++  set(LLVM_MLGO_RUNTIME_OBJECTS)
++  if (LLVM_MLGO_EMBED_TF_XLA_RUNTIME_OBJECTS)
++    set(LLVM_MLGO_INLINER_MODEL_ENABLED FALSE)
++    if ((EXISTS "${LLVM_OVERRIDE_MODEL_HEADER_INLINERSIZEMODEL}" AND
++         EXISTS "${LLVM_OVERRIDE_MODEL_OBJECT_INLINERSIZEMODEL}") OR
++        NOT "${LLVM_INLINER_MODEL_PATH}" STREQUAL "none")
++      set(LLVM_MLGO_INLINER_MODEL_ENABLED TRUE)
++    endif()
++    get_property(LLVM_MLGO_TF_XLA_RUNTIME_OBJECTS_EMBEDDED GLOBAL
++      PROPERTY LLVM_MLGO_TF_XLA_RUNTIME_OBJECTS_EMBEDDED)
++    if (NOT LLVM_MLGO_TF_XLA_RUNTIME_OBJECTS_EMBEDDED AND
++        ("${fname}" STREQUAL "InlinerSizeModel" OR
++         NOT LLVM_MLGO_INLINER_MODEL_ENABLED))
++      set(LLVM_MLGO_RUNTIME_OBJECTS ${LLVM_MLGO_EMBED_TF_XLA_RUNTIME_OBJECTS})
++      set_property(GLOBAL PROPERTY LLVM_MLGO_TF_XLA_RUNTIME_OBJECTS_EMBEDDED TRUE)
++      message(STATUS "Embedding TensorFlow XLA runtime objects with MLGO model ${fname}")
++    endif()
++  endif()
++
++  set(GeneratedMLSources
++    ${GeneratedMLSources}
++    ${GENERATED_OBJS}
++    ${GENERATED_HEADERS}
++    ${LLVM_MLGO_RUNTIME_OBJECTS}
++    PARENT_SCOPE)
+   set(MLDeps ${MLDeps} tf_xla_runtime PARENT_SCOPE)
+-  set(MLLinkDeps ${MLLinkDeps} tf_xla_runtime PARENT_SCOPE)
++  if (LLVM_MLGO_EXPORT_TF_XLA_RUNTIME)
++    set(MLLinkDeps ${MLLinkDeps} tf_xla_runtime PARENT_SCOPE)
++  endif()
+   add_compile_definitions(LLVM_HAVE_TF_AOT_${fname_allcaps})
+ endfunction()

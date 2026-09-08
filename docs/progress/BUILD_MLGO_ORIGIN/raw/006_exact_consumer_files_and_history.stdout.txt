@@ -1,0 +1,922 @@
+upstream_tag=llvmorg-22.1.8
+=== packaging/llvm.spec relevant ranges ===
+     1	%define keepstatic 1
+     2	
+     3	# MLGO AOT support for LLVM MLGO (Ahead-of-Time compilation)
+     4	# TODO: switch back to a project_config-controlled macro after MLGO is enabled
+     5	# for all required arches.
+     6	# %%bcond_with mlgo
+     7	%ifarch armv7l aarch64 x86_64
+     8	%bcond_without mlgo
+     9	%endif
+    10	
+    11	%if %{defined _toolchain}
+    12	%define _toolchain_override clang
+    13	%define llvm_release_build 0
+    14	%else
+    15	%define llvm_release_build 1
+    16	%endif
+    17	
+    18	%define llvm_version 22
+    19	
+    20	%define sdk_install_prefix /home/owner/share/tmp/sdk_tools/lldb
+    21	%define sdk_bin_dir %{sdk_install_prefix}/bin
+    22	%define sdk_lib_dir %{sdk_install_prefix}/%{_lib}
+    23	
+    24	%if 0%{llvm_release_build}
+    25	# Disable debug packages building
+    26	%define debug_package %{nil}
+    27	%define __debug_install_post %{_rpmconfigdir}/find-debuginfo.sh %{?_find_debuginfo_opts} %{?_find_debuginfo_strip_opts} %{?_find_debuginfo_ko_strip_opts} "%{_builddir}/%{?buildsubdir}"\
+    28		rm -rf "%{buildroot}/usr/lib/debug"\
+    29		rm -rf "%{buildroot}/usr/src/debug"
+    30	%endif
+    31	
+    32	Name:      llvm
+    33	Summary:   The LLVM Project is a collection of modular and reusable compiler and toolchain technologies
+    34	Version:   22.1.8
+    35	Release:   1
+    36	Group:     Development/Toolchain
+    37	License:   NCSA
+    38	Source0:   %{name}-%{version}.tar.gz
+    39	Source1001: llvm.manifest
+    40	
+    41	# Bundled MLGO AOT assets for the inliner and regalloc models.
+    42	# These override build-time AOT compilation, avoiding the need for TensorFlow
+    43	# Python in GBS.
+    44	Source1002: mlgo_arm_model.tar.gz
+    45	Source1003: mlgo_aarch_model.tar.gz
+    46	Source1004: mlgo_x86_model.tar.gz
+    47	
+    48	%{!?mlgo_build_jobs: %define mlgo_build_jobs 6}
+    49	%{!?mlgo_verify_configure_only: %define mlgo_verify_configure_only 0}
+    50	
+    51	BuildRequires: cmake
+    52	BuildRequires: python3
+    53	BuildRequires: python3-devel
+    54	BuildRequires: patchelf
+    55	BuildRequires: binutils-devel
+    56	BuildRequires: libxml2-devel
+    57	%if 0%{llvm_release_build}
+    58	BuildRequires: sed
+    59	%endif
+    60	BuildRequires: ninja
+    61	
+    62	
+    63	Requires: libllvm = %{version}-%{release}
+    64	
+    65	%description
+    66	LLVM is a compiler infrastructure designed for compile-time, link-time, runtime,
+    67	and idle-time optimization of programs from arbitrary programming languages.
+    68	LLVM is written in C++ and has been developed since 2000 at the University of
+    69	Illinois and Apple. It currently supports compilation of C and C++ programs,
+    70	using front-ends derived from GCC 4.0.1. A new front-end for the C family of
+    71	languages is in development. The compiler infrastructure
+    72	includes mirror sets of programming tools as well as libraries with equivalent
+    73	functionality.
+    74	
+    75	%package devel
+   170	%build
+   171	%if 0%{llvm_release_build}
+   172	# Not to build debug info
+   173	RELCFLAGS=$(echo $CFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\|dwarf-[[:digit:]]\)\?* *g')
+   174	export CFLAGS=${RELCFLAGS}
+   175	RELCXXFLAGS=$(echo $CXXFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\|dwarf-[[:digit:]]\)\?* *g')
+   176	export CXXFLAGS=${RELCXXFLAGS}
+   177	RELFFLAGS=$(echo $FFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\)|dwarf-[[:digit:]]\\?* *g')
+   178	export FFLAGS=${RELFFLAGS}
+   179	%endif
+   180	
+   181	cp %{SOURCE1001} .
+   182	%{?asan:%gcc_unforce_options}
+   183	
+   184	%ifarch armv7l
+   185	export QEMU_RESERVED_VA=0x100000000
+   186	%endif
+   187	
+   188	# Set up MLGO AOT model paths from bundled verify assets
+   189	%if %{with mlgo}
+   190	MLGO_AOT_DIR="$PWD/mlgo_verify_assets"
+   191	MLGO_BUILD_DIR="$PWD/build"
+   192	MLGO_RUNTIME_OBJECTS="${MLGO_AOT_DIR}/xla_runtime_objects/xla_compiled_cpu_function.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/cpu_function_runtime.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/custom_call_status.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/executable_run_options.cc.o;${MLGO_AOT_DIR}/xla_runtime_objects/runtime_single_threaded_matmul_f32.cc.o"
+   193	MLGO_REQUIRED_RUNTIME_OBJECTS="xla_compiled_cpu_function.cc.o cpu_function_runtime.cc.o custom_call_status.cc.o executable_run_options.cc.o runtime_single_threaded_matmul_f32.cc.o"
+   194	%endif
+   195	
+   196	mkdir -p build
+   197	cd build
+   198	cmake \
+   199	    -G Ninja \
+   200	    -DTIZEN=1 \
+   201	    -DCMAKE_C_COMPILER=%__cc \
+   202	    -DCMAKE_CXX_COMPILER=%__cxx \
+   203	    -DLLVM_HOST_TRIPLE=%{_host} \
+   204	    -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+   205	    -DLLVM_TARGET_TRIPLE_ENV=%{_host} \
+   206	    -DCMAKE_ASM_FLAGS="$CFLAGS" \
+   207	    -DCMAKE_C_FLAGS="$CFLAGS" \
+   208	    -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
+   209	%if %{defined _toolchain}
+   210	    -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections" \
+   211	    -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections" \
+   212	    -DLLVM_USE_LINKER=lld \
+   213	%endif
+   214	    -DLLVM_ENABLE_ASSERTIONS=No \
+   215	    -DLLVM_ENABLE_RTTI=ON \
+   216	%ifarch x86_64 i686
+   217	    -DCMAKE_BUILD_TYPE=Release \
+   218	    -DLLVM_TARGETS_TO_BUILD='X86;ARM;AArch64;BPF' \
+   219	%endif
+   220	%ifarch armv7l
+   221	    -DCMAKE_BUILD_TYPE=MinSizeRel \
+   222	    -DLLVM_TARGETS_TO_BUILD='ARM;BPF' \
+   223	    -DLLVM_TARGET_ARCH="ARM" \
+   224	%endif
+   225	%ifarch aarch64
+   226	    -DCMAKE_BUILD_TYPE=Release \
+   227	    -DLLVM_TARGETS_TO_BUILD='AArch64;BPF' \
+   228	    -DLLVM_TARGET_ARCH="AArch64" \
+   229	%endif
+   230	%ifarch riscv64
+   231	    -DCMAKE_BUILD_TYPE=Release \
+   232	    -DLLVM_TARGETS_TO_BUILD='RISCV;BPF' \
+   233	%endif
+   234	    -DCLANG_ENABLE_ARCMT=OFF \
+   235	    -DLLVM_BUILD_LLVM_DYLIB=ON \
+   236	    -DCLANG_BUILD_CLANG_DYLIB=ON \
+   237	%if %{defined _toolchain}
+   238	    -DLLVM_LINK_LLVM_DYLIB=ON \
+   239	    -DCLANG_LINK_CLANG_DYLIB=ON \
+   240	%endif
+   241	    -DLLVM_ENABLE_PROJECTS="clang;lldb;clang-tools-extra;lld;compiler-rt;openmp" \
+   242	    -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
+   243	    -DLLVM_BUILD_EXAMPLES=OFF \
+   244	    -DLLVM_INCLUDE_EXAMPLES=OFF \
+   245	    -DLLVM_BUILD_TESTS=OFF \
+   246	    -DLLVM_INCLUDE_TESTS=OFF \
+   247	    -DLLVM_ENABLE_DOXYGEN=OFF \
+   248	    -DLLVM_BUILD_DOCS=OFF \
+   249	    -DLLVM_INCLUDE_DOCS=OFF \
+   250	    -DLLVM_OPTIMIZED_TABLEGEN=ON \
+   251	    -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+   252	    -DLLVM_LIBDIR_SUFFIX=`echo %{_lib} | sed s/lib//g` \
+   253	    -DCLANG_RESOURCE_DIR="../%{_lib}/clang/%{llvm_version}" \
+   254	    -DLLVM_BINUTILS_INCDIR=/usr/include \
+   255	    -DLLVM_PARALLEL_COMPILE_JOBS=6 \
+   256	    -DLLVM_PARALLEL_LINK_JOBS=2 \
+   257	%if %{with mlgo}
+   258	%ifarch armv7l aarch64 x86_64
+   259	    -DTENSORFLOW_AOT_PATH="${MLGO_AOT_DIR}/mlgo_sysroot" \
+   260	    -DLLVM_MLGO_EXPORT_TF_XLA_RUNTIME=OFF \
+   261	    -DLLVM_MLGO_EMBED_TF_XLA_RUNTIME_OBJECTS="${MLGO_RUNTIME_OBJECTS}" \
+   262	    -DLLVM_OVERRIDE_MODEL_HEADER_INLINERSIZEMODEL="${MLGO_AOT_DIR}/InlinerSizeModel.h" \
+   263	    -DLLVM_OVERRIDE_MODEL_OBJECT_INLINERSIZEMODEL="${MLGO_AOT_DIR}/InlinerSizeModel.o" \
+   264	    -DLLVM_OVERRIDE_MODEL_HEADER_REGALLOCEVICTMODEL="${MLGO_AOT_DIR}/RegAllocEvictModel.h" \
+   265	    -DLLVM_OVERRIDE_MODEL_OBJECT_REGALLOCEVICTMODEL="${MLGO_AOT_DIR}/RegAllocEvictModel.o" \
+   266	%else
+   267	    -DLLVM_INLINER_MODEL_PATH=none \
+   268	    -DLLVM_RAEVICT_MODEL_PATH=none \
+   269	%endif
+   270	%else
+   271	    -DLLVM_INLINER_MODEL_PATH=none \
+   272	    -DLLVM_RAEVICT_MODEL_PATH=none \
+   273	%endif
+   274	    ../llvm
+   275	
+   276	%if 0%{mlgo_verify_configure_only}
+   277	  # ---- configure-only probe: guard against §0 traps; check sentinels, GBS exit code non-0 is expected ----
+   278	  # Note: %%build does not guarantee set -e, so each assertion explicitly uses '|| { ...; exit 1; }'
+   279	  # Assertion 0: MLGO_BUILD_DIR is correct (fail immediately with clear error if wrong)
+   280	  test -f CMakeCache.txt || \
+   281	    { echo "FATAL: MLGO_BUILD_DIR wrong (CMakeCache.txt not found in $(pwd))"; exit 1; }
+   282	%if %{with mlgo}
+   283	  # Assertion 1: override actually took effect (COPYONLY artifacts exist from configure stage)
+   284	  test -f lib/Analysis/InlinerSizeModel.h || \
+   285	    { echo "FATAL: Missing InlinerSizeModel.h (override not effective, likely trap 1: silent fallback to none)"; exit 1; }
+   286	  test -f lib/Analysis/InlinerSizeModel.o || \
+   287	    { echo "FATAL: Missing InlinerSizeModel.o (override not effective)"; exit 1; }
+   288	  test -f lib/CodeGen/RegAllocEvictModel.h || \
+   289	    { echo "FATAL: Missing RegAllocEvictModel.h(regalloc override not effective)"; exit 1; }
+   290	  test -f lib/CodeGen/RegAllocEvictModel.o || \
+   291	    { echo "FATAL: Missing RegAllocEvictModel.o(regalloc override not effective)"; exit 1; }
+   292	  for mlgo_runtime_object in ${MLGO_REQUIRED_RUNTIME_OBJECTS}; do
+   293	    test -f "${MLGO_AOT_DIR}/xla_runtime_objects/${mlgo_runtime_object}" || \
+   294	        { echo "FATAL: missing MLGO runtime object: ${mlgo_runtime_object}"; exit 1; }
+   295	  done
+   296	  # Assertion 1b: bundled objects must match the target arch.
+   297	%ifarch armv7l
+   298	  MLGO_EXPECT_MACHINE="ARM"
+   299	%endif
+   300	%ifarch aarch64
+   301	  MLGO_EXPECT_MACHINE="AArch64"
+   302	%endif
+   303	%ifarch x86_64
+   304	  MLGO_EXPECT_MACHINE="X86-64"
+   305	%endif
+   306	  for mlgo_obj in lib/Analysis/InlinerSizeModel.o lib/CodeGen/RegAllocEvictModel.o; do
+   307	    readelf -h "${mlgo_obj}" | grep -q "Machine:.*${MLGO_EXPECT_MACHINE}" || \
+   308	      { echo "FATAL: ${mlgo_obj} arch mismatch (expected ${MLGO_EXPECT_MACHINE})"; exit 1; }
+   309	  done
+   310	  for mlgo_runtime_object in ${MLGO_REQUIRED_RUNTIME_OBJECTS}; do
+   311	    mlgo_obj="${MLGO_AOT_DIR}/xla_runtime_objects/${mlgo_runtime_object}"
+   312	    readelf -h "${mlgo_obj}" | grep -q "Machine:.*${MLGO_EXPECT_MACHINE}" || \
+   313	      { echo "FATAL: ${mlgo_obj} arch mismatch (expected ${MLGO_EXPECT_MACHINE})"; exit 1; }
+   314	  done
+   315	  # Assertion 2: did not fall into autogenerate mock. Use && short-circuit: file missing => FATAL, don't let '! grep' pass
+   316	  test -f CMakeCache.txt && \
+   317	    ! grep -qE 'LLVM_INLINER_MODEL_PATH(:[^=]+)?=autogenerate' CMakeCache.txt || \
+   318	    { echo "FATAL: Fell into autogenerate mock or CMakeCache missing (trap 2)"; exit 1; }
+   319	  test -f CMakeCache.txt && \
+   320	    ! grep -qE 'LLVM_RAEVICT_MODEL_PATH(:[^=]+)?=autogenerate' CMakeCache.txt || \
+   321	    { echo "FATAL: regalloc fell into autogenerate mock"; exit 1; }
+   322	  # Assertion 3: MLGO runtime is embedded and tf_xla_runtime is not exported.
+   323	  grep -q '^LLVM_MLGO_EXPORT_TF_XLA_RUNTIME:BOOL=OFF$' "${MLGO_BUILD_DIR}/CMakeCache.txt" || \
+   324	    { echo "FATAL: MLGO TensorFlow runtime export is not disabled"; exit 1; }
+   325	  for mlgo_runtime_object in ${MLGO_REQUIRED_RUNTIME_OBJECTS}; do
+   326	    grep -q "xla_runtime_objects/${mlgo_runtime_object}" "${MLGO_BUILD_DIR}/CMakeCache.txt" || \
+   327	      { echo "FATAL: MLGO runtime object is not embedded: ${mlgo_runtime_object}"; exit 1; }
+   328	  done
+   329	  cmake --build . --target tf_xla_runtime || \
+   330	    { echo "FATAL: tf_xla_runtime build failed"; exit 1; }
+   331	  MLGO_PROBE_ROOT="$PWD/mlgo_probe_root"
+   332	  rm -rf "${MLGO_PROBE_ROOT}"
+   333	  mkdir -p "${MLGO_PROBE_ROOT}"
+   334	  DESTDIR="${MLGO_PROBE_ROOT}" cmake --install . \
+   335	    --prefix /usr --component tf_xla_runtime --verbose
+   336	  ! find "${MLGO_PROBE_ROOT}" -name libtf_xla_runtime.a | grep -q . || \
+   337	    { echo "FATAL: tf_xla_runtime archive should not be installed"; exit 1; }
+   338	%endif
+   339	  echo MLGO_VERIFY_CONFIGURE_PASS
+   340	  exit 86
+   341	%endif
+   342	
+   343	# Full build using ninja (already in build/ directory after cd build)
+   344	ninja -j %{mlgo_build_jobs}
+   345	
+   346	%install
+   347	cd build
+   348	cmake -DCMAKE_INSTALL_PREFIX=%{buildroot}/usr -P cmake_install.cmake
+   349	ln -sf %{_prefix}/bin/clang++ %{buildroot}%{_prefix}/bin/clang++-%{llvm_version}
+   350	
+=== llvm/CMakeLists.txt relevant range ===
+  1160	# They are not referenced. See set_output_directory().
+  1161	set( CMAKE_RUNTIME_OUTPUT_DIRECTORY ${LLVM_TOOLS_BINARY_DIR} )
+  1162	set( CMAKE_LIBRARY_OUTPUT_DIRECTORY ${LLVM_LIBRARY_DIR} )
+  1163	set( CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${LLVM_LIBRARY_DIR} )
+  1164	
+  1165	# For up-to-date instructions for installing the TFLite dependency, refer to
+  1166	# the bot setup script: https://github.com/google/ml-compiler-opt/blob/main/buildbot/buildbot_init.sh
+  1167	set(LLVM_HAVE_TFLITE "" CACHE BOOL "Use tflite")
+  1168	if (LLVM_HAVE_TFLITE)
+  1169	  find_package(tensorflow-lite REQUIRED)
+  1170	endif()
+  1171	
+  1172	set(LLVM_ENABLE_PROFCHECK OFF CACHE BOOL "Enable profile checking in test tools")
+  1173	
+  1174	# For up-to-date instructions for installing the Tensorflow dependency, refer to
+  1175	# the bot setup script: https://github.com/google/ml-compiler-opt/blob/main/buildbot/buildbot_init.sh
+  1176	# Specifically, assuming python3 is installed:
+  1177	# python3 -m pip install --upgrade pip && python3 -m pip install --user tf_nightly==2.3.0.dev20200528
+  1178	# Then set TENSORFLOW_AOT_PATH to the package install - usually it's ~/.local/lib/python3.7/site-packages/tensorflow
+  1179	#
+  1180	set(TENSORFLOW_AOT_PATH "" CACHE PATH "Path to TensorFlow pip install dir")
+  1181	option(LLVM_MLGO_EXPORT_TF_XLA_RUNTIME
+  1182	  "Install/export TensorFlow AOT runtime to downstream LLVM consumers"
+  1183	  ON)
+  1184	set(LLVM_MLGO_EMBED_TF_XLA_RUNTIME_OBJECTS "" CACHE STRING
+  1185	  "TensorFlow AOT runtime object files to embed once into LLVM MLGO component libraries")
+  1186	
+  1187	if (NOT TENSORFLOW_AOT_PATH STREQUAL "")
+  1188	  set(LLVM_HAVE_TF_AOT "ON" CACHE BOOL "Tensorflow AOT available")
+  1189	  set(TENSORFLOW_AOT_COMPILER
+  1190	    "${TENSORFLOW_AOT_PATH}/../../../../bin/saved_model_cli"
+  1191	    CACHE PATH "Path to the Tensorflow AOT compiler")
+  1192	  include_directories(${TENSORFLOW_AOT_PATH}/include)
+  1193	  add_subdirectory(${TENSORFLOW_AOT_PATH}/xla_aot_runtime_src
+  1194	    ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY}/tf_runtime)
+  1195	  if (LLVM_MLGO_EXPORT_TF_XLA_RUNTIME)
+  1196	    install(TARGETS tf_xla_runtime EXPORT LLVMExports
+  1197	      ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX} COMPONENT tf_xla_runtime)
+  1198	    install(TARGETS tf_xla_runtime EXPORT LLVMDevelopmentExports
+  1199	      ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX} COMPONENT tf_xla_runtime)
+  1200	    set_property(GLOBAL APPEND PROPERTY LLVM_EXPORTS tf_xla_runtime)
+  1201	  endif()
+  1202	  # Once we add more modules, we should handle this more automatically.
+  1203	  if (DEFINED LLVM_OVERRIDE_MODEL_HEADER_INLINERSIZEMODEL)
+  1204	    set(LLVM_INLINER_MODEL_PATH "none")
+  1205	  elseif(NOT DEFINED LLVM_INLINER_MODEL_PATH
+  1206	      OR "${LLVM_INLINER_MODEL_PATH}" STREQUAL ""
+  1207	      OR "${LLVM_INLINER_MODEL_PATH}" STREQUAL "autogenerate")
+  1208	    set(LLVM_INLINER_MODEL_PATH "autogenerate")
+  1209	    set(LLVM_INLINER_MODEL_AUTOGENERATED 1)
+  1210	  endif()
+  1211	  if (DEFINED LLVM_OVERRIDE_MODEL_HEADER_REGALLOCEVICTMODEL)
+  1212	    set(LLVM_RAEVICT_MODEL_PATH "none")
+  1213	  elseif(NOT DEFINED LLVM_RAEVICT_MODEL_PATH
+  1214	      OR "${LLVM_RAEVICT_MODEL_PATH}" STREQUAL ""
+  1215	      OR "${LLVM_RAEVICT_MODEL_PATH}" STREQUAL "autogenerate")
+  1216	    set(LLVM_RAEVICT_MODEL_PATH "autogenerate")
+  1217	    set(LLVM_RAEVICT_MODEL_AUTOGENERATED 1)
+  1218	  endif()
+  1219	
+  1220	endif()
+  1221	
+  1222	# Configure the LLVM configuration header files.
+  1223	configure_file(
+  1224	  ${LLVM_MAIN_INCLUDE_DIR}/llvm/Config/config.h.cmake
+  1225	  ${LLVM_INCLUDE_DIR}/llvm/Config/config.h)
+=== TensorFlowCompile.cmake ===
+     1	function(tf_get_absolute_path path base final_path)
+     2	  if (IS_ABSOLUTE ${path})
+     3	    set(${final_path} ${path} PARENT_SCOPE)
+     4	  else()
+     5	    set(${final_path} ${base}/${path} PARENT_SCOPE)
+     6	  endif()
+     7	endfunction()
+     8	
+     9	function(tf_get_model model final_path)
+    10	  string(FIND ${model} "http:" pos_http)
+    11	  string(FIND ${model} "https:" pos_https)
+    12	  if (${pos_http} EQUAL 0 OR ${pos_https} EQUAL 0)
+    13	    message("Downloading model " ${model})
+    14	    string(FIND ${model} "/" fname_start REVERSE)
+    15	    math(EXPR fname_start "${fname_start}+1")
+    16	    string(SUBSTRING ${model} ${fname_start}+1 -1 fname)
+    17	    message("Model archive: " ${fname})
+    18	    file(DOWNLOAD ${model} ${CMAKE_CURRENT_BINARY_DIR}/${fname})
+    19	    file(ARCHIVE_EXTRACT INPUT
+    20	      ${CMAKE_CURRENT_BINARY_DIR}/${fname}
+    21	      DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/${fname}_model)
+    22	    set(${final_path} ${CMAKE_CURRENT_BINARY_DIR}/${fname}_model/model PARENT_SCOPE)
+    23	  else()
+    24	    tf_get_absolute_path(${model} ${CMAKE_CURRENT_BINARY_DIR} model_path)
+    25	    set(${final_path} ${model_path} PARENT_SCOPE)
+    26	  endif()
+    27	endfunction()
+    28	
+    29	# Generate a mock model for tests.
+    30	function(generate_mock_model generator output)
+    31	  tf_get_absolute_path(${generator} ${CMAKE_CURRENT_SOURCE_DIR} generator_absolute_path)
+    32	  tf_get_absolute_path(${output} ${CMAKE_CURRENT_BINARY_DIR} output_absolute_path)
+    33	  message(WARNING "Autogenerated mock models should not be used in production builds.")
+    34	  execute_process(COMMAND ${Python3_EXECUTABLE}
+    35	    ${generator_absolute_path}
+    36	    ${output_absolute_path}
+    37	    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    38	  )
+    39	endfunction()
+    40	
+    41	# Run the tensorflow compiler (saved_model_cli) on the saved model in the
+    42	# ${model} directory, looking for the ${tag_set} tag set, and the SignatureDef
+    43	# ${signature_def_key}.
+    44	# Produce a pair of files called ${fname}.h and  ${fname}.o in the
+    45	# ${CMAKE_CURRENT_BINARY_DIR}. The generated header will define a C++ class
+    46	# called ${cpp_class} - which may be a namespace-qualified class name.
+    47	function(tf_compile model tag_set signature_def_key fname cpp_class hdr_file obj_file)
+    48	  tf_get_absolute_path(${model} ${CMAKE_CURRENT_BINARY_DIR} LLVM_ML_MODELS_ABSOLUTE)
+    49	  message("Using model at " ${LLVM_ML_MODELS_ABSOLUTE})
+    50	  add_custom_command(OUTPUT ${obj_file} ${hdr_file}
+    51	    COMMAND ${TENSORFLOW_AOT_COMPILER} aot_compile_cpu
+    52	          --multithreading false
+    53	          --dir ${LLVM_ML_MODELS_ABSOLUTE}
+    54	          --tag_set ${tag_set}
+    55	          --signature_def_key ${signature_def_key}
+    56	          --output_prefix ${prefix}
+    57	          --cpp_class ${cpp_class}
+    58	          --target_triple ${LLVM_HOST_TRIPLE}
+    59	  )
+    60	
+    61	  # Aggregate the objects so that results of different tf_compile calls may be
+    62	  # grouped into one target.
+    63	  set(GENERATED_OBJS ${GENERATED_OBJS} ${obj_file} PARENT_SCOPE)
+    64	  set_source_files_properties(${obj_file} PROPERTIES
+    65	    GENERATED 1 EXTERNAL_OBJECT 1)
+    66	
+    67	  set(GENERATED_HEADERS ${GENERATED_HEADERS} ${hdr_file} PARENT_SCOPE)
+    68	  set_source_files_properties(${hdr_file} PROPERTIES
+    69	    GENERATED 1)
+    70	
+    71	  endfunction()
+    72	
+    73	function(tf_find_and_compile model default_url default_path test_model_generator tag_set signature_def_key fname cpp_class)
+    74	  set(prefix ${CMAKE_CURRENT_BINARY_DIR}/${fname})
+    75	  set(obj_file ${prefix}.o)
+    76	  set(hdr_file ${prefix}.h)
+    77	  string(TOUPPER ${fname} fname_allcaps)
+    78	  set(override_header ${LLVM_OVERRIDE_MODEL_HEADER_${fname_allcaps}})
+    79	  set(override_object ${LLVM_OVERRIDE_MODEL_OBJECT_${fname_allcaps}})
+    80	  # If the user specified overrides, that indicates intent to use AOT and we
+    81	  # don't care what the model path is
+    82	  if (EXISTS "${override_header}" AND EXISTS "${override_object}")
+    83	    configure_file(${override_header} ${hdr_file} COPYONLY)
+    84	    configure_file(${override_object} ${obj_file} COPYONLY)
+    85	    message(STATUS "Using provided header " ${hdr_file} " and object " ${obj_file} "
+    86	      files for model " ${fname})  
+    87	    set(GENERATED_OBJS ${GENERATED_OBJS} ${obj_file})
+    88	    set(GENERATED_HEADERS ${GENERATED_HEADERS} ${hdr_file})
+    89	  elseif("${model}" STREQUAL "none")
+    90	    message(STATUS "Will skip enabling mlgo for ${fname}")
+    91	    return()
+    92	  else()
+    93	    if ("${model}" STREQUAL "download")
+    94	      # Crash if the user wants to download a model but a URL is set to "TO_BE_UPDATED"
+    95	      if ("${default_url}" STREQUAL "<UNSPECIFIED>")
+    96	          message(FATAL_ERROR "Model path was set to 'download' but there is no"
+    97	          " model url currently specified in cmake. You can generate a model"
+    98	          " using, for example, the tools at http://github.com/google/ml-compiler-opt."
+    99	          " Some reference models are also periodically released there.")
+   100	      endif()
+   101	
+   102	      set(model ${default_url})
+   103	    endif()
+   104	
+   105	    if ("${model}" STREQUAL "autogenerate")
+   106	      set(model ${default_path}-autogenerated)
+   107	      generate_mock_model(${test_model_generator} ${model})
+   108	    endif()
+   109	
+   110	    tf_get_model(${model} LLVM_ML_MODELS_ABSOLUTE)
+   111	    tf_compile(${LLVM_ML_MODELS_ABSOLUTE} ${tag_set} ${signature_def_key} ${fname} ${cpp_class} ${hdr_file} ${obj_file})
+   112	  endif()
+   113	
+   114	  set(LLVM_MLGO_RUNTIME_OBJECTS)
+   115	  if (LLVM_MLGO_EMBED_TF_XLA_RUNTIME_OBJECTS)
+   116	    set(LLVM_MLGO_INLINER_MODEL_ENABLED FALSE)
+   117	    if ((EXISTS "${LLVM_OVERRIDE_MODEL_HEADER_INLINERSIZEMODEL}" AND
+   118	         EXISTS "${LLVM_OVERRIDE_MODEL_OBJECT_INLINERSIZEMODEL}") OR
+   119	        NOT "${LLVM_INLINER_MODEL_PATH}" STREQUAL "none")
+   120	      set(LLVM_MLGO_INLINER_MODEL_ENABLED TRUE)
+   121	    endif()
+   122	    get_property(LLVM_MLGO_TF_XLA_RUNTIME_OBJECTS_EMBEDDED GLOBAL
+   123	      PROPERTY LLVM_MLGO_TF_XLA_RUNTIME_OBJECTS_EMBEDDED)
+   124	    if (NOT LLVM_MLGO_TF_XLA_RUNTIME_OBJECTS_EMBEDDED AND
+   125	        ("${fname}" STREQUAL "InlinerSizeModel" OR
+   126	         NOT LLVM_MLGO_INLINER_MODEL_ENABLED))
+   127	      set(LLVM_MLGO_RUNTIME_OBJECTS ${LLVM_MLGO_EMBED_TF_XLA_RUNTIME_OBJECTS})
+   128	      set_property(GLOBAL PROPERTY LLVM_MLGO_TF_XLA_RUNTIME_OBJECTS_EMBEDDED TRUE)
+   129	      message(STATUS "Embedding TensorFlow XLA runtime objects with MLGO model ${fname}")
+   130	    endif()
+   131	  endif()
+   132	
+   133	  set(GeneratedMLSources
+   134	    ${GeneratedMLSources}
+   135	    ${GENERATED_OBJS}
+   136	    ${GENERATED_HEADERS}
+   137	    ${LLVM_MLGO_RUNTIME_OBJECTS}
+   138	    PARENT_SCOPE)
+   139	  set(MLDeps ${MLDeps} tf_xla_runtime PARENT_SCOPE)
+   140	  if (LLVM_MLGO_EXPORT_TF_XLA_RUNTIME)
+   141	    set(MLLinkDeps ${MLLinkDeps} tf_xla_runtime PARENT_SCOPE)
+   142	  endif()
+   143	  add_compile_definitions(LLVM_HAVE_TF_AOT_${fname_allcaps})
+   144	endfunction()
+=== Analysis CMake ===
+     1	if (DEFINED LLVM_HAVE_TF_AOT OR LLVM_HAVE_TFLITE)
+     2	  include(TensorFlowCompile)
+     3	  set(LLVM_INLINER_MODEL_PATH_DEFAULT "models/inliner-Oz")
+     4	
+     5	  set(LLVM_INLINER_MODEL_CURRENT_URL "<UNSPECIFIED>" CACHE STRING "URL to download the LLVM inliner model")
+     6	
+     7	  if (DEFINED LLVM_HAVE_TF_AOT)
+     8	    tf_find_and_compile(
+     9	      ${LLVM_INLINER_MODEL_PATH}
+    10	      ${LLVM_INLINER_MODEL_CURRENT_URL}
+    11	      ${LLVM_INLINER_MODEL_PATH_DEFAULT}
+    12	      "models/gen-inline-oz-test-model.py"
+    13	      serve
+    14	      action
+    15	      InlinerSizeModel
+    16	      llvm::InlinerSizeModel
+    17	    )
+    18	  endif()
+    19	
+    20	  if (LLVM_HAVE_TFLITE)
+    21	    list(APPEND MLLinkDeps
+    22	      tensorflow-lite::tensorflow-lite)
+    23	  endif()
+    24	endif()
+    25	
+    26	# The implementation of ConstantFolding.cpp relies on the use of math functions
+    27	# from the host. In particular, it relies on the detection of floating point
+    28	# exceptions originating from such math functions to prevent invalid cases
+    29	# from being constant folded. Therefore, we must ensure that fp exceptions are
+    30	# handled correctly.
+    31	if (MSVC)
+    32	  set_source_files_properties(ConstantFolding.cpp PROPERTIES COMPILE_OPTIONS "/fp:except")
+    33	elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    34	  set_source_files_properties(ConstantFolding.cpp PROPERTIES COMPILE_OPTIONS "-ftrapping-math")
+    35	endif()
+    36	
+    37	add_llvm_component_library(LLVMAnalysis
+    38	  AliasAnalysis.cpp
+    39	  AliasAnalysisEvaluator.cpp
+    40	  AliasSetTracker.cpp
+    41	  Analysis.cpp
+    42	  AssumeBundleQueries.cpp
+    43	  AssumptionCache.cpp
+    44	  BasicAliasAnalysis.cpp
+    45	  BlockFrequencyInfo.cpp
+    46	  BlockFrequencyInfoImpl.cpp
+    47	  BranchProbabilityInfo.cpp
+    48	  CFG.cpp
+    49	  CFGPrinter.cpp
+    50	  CFGSCCPrinter.cpp
+    51	  CGSCCPassManager.cpp
+    52	  CallGraph.cpp
+    53	  CallGraphSCCPass.cpp
+    54	  CallPrinter.cpp
+    55	  CaptureTracking.cpp
+    56	  CmpInstAnalysis.cpp
+    57	  CostModel.cpp
+    58	  CodeMetrics.cpp
+    59	  ConstantFolding.cpp
+    60	  CtxProfAnalysis.cpp
+    61	  CycleAnalysis.cpp
+    62	  DDG.cpp
+    63	  DDGPrinter.cpp
+    64	  ConstraintSystem.cpp
+    65	  Delinearization.cpp
+    66	  DemandedBits.cpp
+    67	  DependenceAnalysis.cpp
+    68	  DependenceGraphBuilder.cpp
+    69	  DevelopmentModeInlineAdvisor.cpp
+    70	  DomConditionCache.cpp
+    71	  DomPrinter.cpp
+    72	  DomTreeUpdater.cpp
+    73	  DominanceFrontier.cpp
+    74	  DXILResource.cpp
+    75	  DXILMetadataAnalysis.cpp
+    76	  EphemeralValuesCache.cpp
+    77	  FloatingPointPredicateUtils.cpp
+    78	  FunctionPropertiesAnalysis.cpp
+    79	  GlobalsModRef.cpp
+    80	  GuardUtils.cpp
+    81	  HashRecognize.cpp
+    82	  HeatUtils.cpp
+    83	  IR2Vec.cpp
+    84	  IRSimilarityIdentifier.cpp
+    85	  IVDescriptors.cpp
+    86	  IVUsers.cpp
+    87	  ImportedFunctionsInliningStatistics.cpp
+    88	  IndirectCallPromotionAnalysis.cpp
+    89	  InlineCost.cpp
+    90	  InlineAdvisor.cpp
+    91	  InlineOrder.cpp
+    92	  InstCount.cpp
+    93	  InstructionPrecedenceTracking.cpp
+    94	  InstructionSimplify.cpp
+    95	  InteractiveModelRunner.cpp
+    96	  KernelInfo.cpp
+    97	  LastRunTrackingAnalysis.cpp
+    98	  LazyBranchProbabilityInfo.cpp
+    99	  LazyBlockFrequencyInfo.cpp
+   100	  LazyCallGraph.cpp
+   101	  LazyValueInfo.cpp
+   102	  Lint.cpp
+   103	  Loads.cpp
+   104	  Local.cpp
+   105	  LoopAccessAnalysis.cpp
+   106	  LoopAnalysisManager.cpp
+   107	  LoopCacheAnalysis.cpp
+   108	  LoopNestAnalysis.cpp
+   109	  LoopUnrollAnalyzer.cpp
+   110	  LoopInfo.cpp
+=== targeted source references ===
+llvm/include/llvm/Analysis/MLModelRunner.h:13:#include "llvm/Analysis/TensorSpec.h"
+llvm/include/llvm/Analysis/MLModelRunner.h:21:/// arguments, described via TensorSpecs, and returns a tensor. Currently, the
+llvm/include/llvm/Analysis/MLModelRunner.h:25:/// TFUtils.h)
+llvm/include/llvm/Analysis/MLModelRunner.h:63:  void setUpBufferForTensor(size_t Index, const TensorSpec &Spec,
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:1://===- ModelUnderTrainingRunner.h -- 'development' mode runner --*- C++ -*-===//
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:15:#include "llvm/Analysis/TensorSpec.h"
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:20:#include "llvm/Analysis/Utils/TFUtils.h"
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:26:/// ModelUnderTrainingRunner - training mode implementation. It uses TFLite
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:31:class ModelUnderTrainingRunner final : public MLModelRunner {
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:34:  ModelUnderTrainingRunner(const ModelUnderTrainingRunner &) = delete;
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:35:  ModelUnderTrainingRunner &
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:36:  operator=(const ModelUnderTrainingRunner &) = delete;
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:38:  const std::vector<TensorSpec> &extraOutputsForLoggingSpecs() const {
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:54:  static std::unique_ptr<ModelUnderTrainingRunner>
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:57:                       const std::vector<TensorSpec> &InputSpecs,
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:60:  ModelUnderTrainingRunner(
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:62:      const std::vector<TensorSpec> &InputSpecs,
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:63:      const std::vector<TensorSpec> &OutputSpecs,
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:64:      const std::vector<TensorSpec> &ExtraOutputsForLogging = {});
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:70:  const std::vector<TensorSpec> OutputSpecs;
+llvm/include/llvm/Analysis/ModelUnderTrainingRunner.h:71:  const std::vector<TensorSpec> ExtraOutputsForLogging;
+llvm/include/llvm/Analysis/MLInlineAdvisor.h:32:                      const std::vector<TensorSpec> &)>
+llvm/include/llvm/Analysis/MLInlineAdvisor.h:51:  const std::vector<TensorSpec> &getFeatureMap() const { return FeatureMap; };
+llvm/include/llvm/Analysis/MLInlineAdvisor.h:52:  static const std::vector<TensorSpec> &getInitialFeatureMap();
+llvm/include/llvm/Analysis/MLInlineAdvisor.h:72:  std::vector<TensorSpec> FeatureMap;
+llvm/include/llvm/Analysis/Utils/TrainingLogger.h:40:// {"features":[list of TensorSpecs], "score":<a tensor spec>}
+llvm/include/llvm/Analysis/Utils/TrainingLogger.h:60:#include "llvm/Analysis/TensorSpec.h"
+llvm/include/llvm/Analysis/Utils/TrainingLogger.h:94:  const std::vector<TensorSpec> FeatureSpecs;
+llvm/include/llvm/Analysis/Utils/TrainingLogger.h:95:  const TensorSpec RewardSpec;
+llvm/include/llvm/Analysis/Utils/TrainingLogger.h:100:  void writeHeader(std::optional<TensorSpec> AdviceSpec);
+llvm/include/llvm/Analysis/Utils/TrainingLogger.h:101:  void writeTensor(const TensorSpec &Spec, const char *RawData) {
+llvm/include/llvm/Analysis/Utils/TrainingLogger.h:114:                  const std::vector<TensorSpec> &FeatureSpecs,
+llvm/include/llvm/Analysis/Utils/TrainingLogger.h:115:                  const TensorSpec &RewardSpec, bool IncludeReward,
+llvm/include/llvm/Analysis/Utils/TrainingLogger.h:116:                  std::optional<TensorSpec> AdviceSpec = std::nullopt);
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:1://===- ModelUnderTrainingRunner.cpp - 'development' mode runner -----------===//
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:17:#include "llvm/Analysis/ModelUnderTrainingRunner.h"
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:25:  TensorSpec Spec;
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:52:    Ctx.emitError("Expected an array of {tensor_spec:<TensorSpec>, "
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:60:        if (auto TensorSpec = getTensorSpecFromJSON(Ctx, *SpecPart))
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:62:            if (!TensorSpec->isElementType<int64_t>() &&
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:63:                !TensorSpec->isElementType<int32_t>() &&
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:64:                !TensorSpec->isElementType<float>()) {
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:68:                  TensorSpec->name());
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:71:            Ret.push_back({*TensorSpec, LoggingName->str()});
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:78:        "with a json object describing a TensorSpec; and a 'logging_name' key, "
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:93:ModelUnderTrainingRunner::ModelUnderTrainingRunner(
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:95:    const std::vector<TensorSpec> &InputSpecs,
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:96:    const std::vector<TensorSpec> &OutputSpecs,
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:97:    const std::vector<TensorSpec> &ExtraOutputsForLogging)
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:113:void *ModelUnderTrainingRunner::evaluateUntyped() {
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:122:std::unique_ptr<ModelUnderTrainingRunner>
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:123:ModelUnderTrainingRunner::createAndEnsureValid(
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:125:    const std::vector<TensorSpec> &InputSpecs,
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:129:    std::unique_ptr<ModelUnderTrainingRunner> MUTR;
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:130:    std::vector<TensorSpec> OutputSpecs;
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:131:    std::vector<TensorSpec> ExtraOutputsForLogging;
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:139:                             return TensorSpec(LFS.LoggingName
+llvm/lib/Analysis/ModelUnderTrainingRunner.cpp:145:    MUTR.reset(new ModelUnderTrainingRunner(
+llvm/lib/Analysis/MLInlineAdvisor.cpp:28:#include "llvm/Analysis/ReleaseModeModelRunner.h"
+llvm/lib/Analysis/MLInlineAdvisor.cpp:30:#include "llvm/Analysis/TensorSpec.h"
+llvm/lib/Analysis/MLInlineAdvisor.cpp:81:  auto RunnerFactory = [&](const std::vector<TensorSpec> &InputFeatures)
+llvm/lib/Analysis/MLInlineAdvisor.cpp:85:      AOTRunner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
+llvm/lib/Analysis/MLInlineAdvisor.cpp:114:const std::vector<TensorSpec> &MLInlineAdvisor::getInitialFeatureMap() {
+llvm/lib/Analysis/MLInlineAdvisor.cpp:116:static std::vector<TensorSpec> FeatureMap{
+llvm/lib/Analysis/MLInlineAdvisor.cpp:117:#define POPULATE_NAMES(DTYPE, SHAPE, NAME, __) TensorSpec::createSpec<DTYPE>(#NAME, SHAPE),
+llvm/lib/Analysis/MLInlineAdvisor.cpp:130:const TensorSpec llvm::InlineDecisionSpec =
+llvm/lib/Analysis/MLInlineAdvisor.cpp:131:    TensorSpec::createSpec<int64_t>(DecisionName, {1});
+llvm/lib/Analysis/MLInlineAdvisor.cpp:133:const TensorSpec llvm::DefaultDecisionSpec =
+llvm/lib/Analysis/MLInlineAdvisor.cpp:134:    TensorSpec::createSpec<int64_t>(DefaultDecisionName, {1});
+llvm/lib/Analysis/MLInlineAdvisor.cpp:150:        std::unique_ptr<MLModelRunner>(const std::vector<TensorSpec> &)>
+llvm/lib/Analysis/MLInlineAdvisor.cpp:207:        TensorSpec::createSpec<float>("callee_embedding", {IR2VecDim}));
+llvm/lib/Analysis/MLInlineAdvisor.cpp:209:        TensorSpec::createSpec<float>("caller_embedding", {IR2VecDim}));
+llvm/include/llvm/Analysis/Utils/TFUtils.h:1://===- TFUtils.h - utilities for TFLite -------------------------*- C++ -*-===//
+llvm/include/llvm/Analysis/Utils/TFUtils.h:16:#include "llvm/Analysis/TensorSpec.h"
+llvm/include/llvm/Analysis/Utils/TFUtils.h:77:                   const std::vector<TensorSpec> &InputSpecs,
+llvm/include/llvm/Analysis/Utils/TFUtils.h:78:                   const std::vector<TensorSpec> &OutputSpecs,
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:17:#include "llvm/Analysis/TensorSpec.h"
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:20:#include "llvm/Analysis/ModelUnderTrainingRunner.h"
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:25:#include "llvm/Analysis/ReleaseModeModelRunner.h"
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:53:#include "RegAllocEvictModel.h"
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:54:using CompiledModelType = RegAllocEvictModel;
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:76:#include "llvm/Analysis/Utils/TFUtils.h"
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:209:static const TensorSpec DecisionSpec =
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:210:    TensorSpec::createSpec<int64_t>(DecisionName, {1});
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:352:  TensorSpec::createSpec<type>(#name, shape),
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:375:        Runner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:390:  std::vector<TensorSpec> InputFeatures;
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:428:static const TensorSpec Reward = TensorSpec::createSpec<float>("reward", {1});
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:435:  TensorSpec::createSpec<type>(std::string("action_") + #name, shape),
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:462:            TensorSpec::createSpec<float>("action_discount", {1}),
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:463:        TensorSpec::createSpec<int32_t>("action_step_type", {1}),
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:464:        TensorSpec::createSpec<float>("action_reward", {1})};
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:473:      Runner = ModelUnderTrainingRunner::createAndEnsureValid(
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:487:    std::vector<TensorSpec> LFS = InputFeatures;
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:488:    if (auto *MUTR = dyn_cast<ModelUnderTrainingRunner>(Runner.get()))
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:535:  std::vector<TensorSpec> InputFeatures;
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:536:  std::vector<TensorSpec> TrainingInputFeatures;
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:960:  if (isa<ModelUnderTrainingRunner>(getRunner())) {
+llvm/lib/CodeGen/MLRegAllocEvictAdvisor.cpp:993:  if (auto *MUTR = dyn_cast<ModelUnderTrainingRunner>(&getRunner()))
+llvm/lib/CodeGen/CMakeLists.txt:15:      RegAllocEvictModel
+llvm/lib/CodeGen/CMakeLists.txt:16:      llvm::RegAllocEvictModel
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:18:#include "llvm/Analysis/ReleaseModeModelRunner.h"
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:19:#include "llvm/Analysis/TensorSpec.h"
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:37:#include "llvm/Analysis/ModelUnderTrainingRunner.h"
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:58:#include "llvm/Analysis/Utils/TFUtils.h"
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:80:static const TensorSpec DecisionSpec =
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:81:    TensorSpec::createSpec<float>(DecisionName, {1});
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:114:  TensorSpec::createSpec<type>(#name, shape),
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:116:static const std::vector<TensorSpec> InputFeatures{
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:134:        Runner = std::make_unique<ReleaseModeModelRunner<CompiledModelType>>(
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:178:static const TensorSpec Reward = TensorSpec::createSpec<float>("reward", {1});
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:181:  TensorSpec::createSpec<type>(std::string("action_") + #name, shape),
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:183:static const std::vector<TensorSpec> TrainingInputFeatures{
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:185:         TensorSpec::createSpec<float>("action_discount", {1}),
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:186:     TensorSpec::createSpec<int32_t>("action_step_type", {1}),
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:187:     TensorSpec::createSpec<float>("action_reward", {1})}};
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:217:      Runner = ModelUnderTrainingRunner::createAndEnsureValid(
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:231:    std::vector<TensorSpec> LFS = InputFeatures;
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:232:    if (auto *MUTR = dyn_cast<ModelUnderTrainingRunner>(Runner.get()))
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:353:  if (isa<ModelUnderTrainingRunner>(getRunner())) {
+llvm/lib/CodeGen/MLRegAllocPriorityAdvisor.cpp:376:  if (auto *MUTR = dyn_cast<ModelUnderTrainingRunner>(&getRunner())) {
+llvm/include/llvm/Analysis/ReleaseModeModelRunner.h:1://===- ReleaseModeModelRunner.h - Fast, precompiled model runner  ---------===//
+llvm/include/llvm/Analysis/ReleaseModeModelRunner.h:19:#include "llvm/Analysis/TensorSpec.h"
+llvm/include/llvm/Analysis/ReleaseModeModelRunner.h:27:/// ReleaseModeModelRunner - production mode implementation of the
+llvm/include/llvm/Analysis/ReleaseModeModelRunner.h:55:class ReleaseModeModelRunner final : public MLModelRunner {
+llvm/include/llvm/Analysis/ReleaseModeModelRunner.h:60:  ReleaseModeModelRunner(LLVMContext &Ctx, const FType &InputSpec,
+llvm/include/llvm/Analysis/ReleaseModeModelRunner.h:74:                   TensorSpec::createSpec<uint64_t>("model_selector", {2}),
+llvm/include/llvm/Analysis/ReleaseModeModelRunner.h:109:  ~ReleaseModeModelRunner() override = default;
+llvm/include/llvm/Analysis/ReleaseModeModelRunner.h:119:  void populateTensor(size_t Pos, const TensorSpec &Spec, StringRef Prefix,
+llvm/include/llvm/Analysis/ReleaseModeModelRunner.h:139:/// A mock class satisfying the interface expected by ReleaseModeModelRunner for
+llvm/include/llvm/Analysis/InteractiveModelRunner.h:14:#include "llvm/Analysis/TensorSpec.h"
+llvm/include/llvm/Analysis/InteractiveModelRunner.h:42:                         const std::vector<TensorSpec> &Inputs,
+llvm/include/llvm/Analysis/InteractiveModelRunner.h:43:                         const TensorSpec &Advice, StringRef OutboundName,
+llvm/include/llvm/Analysis/InteractiveModelRunner.h:61:  const std::vector<TensorSpec> InputSpecs;
+llvm/include/llvm/Analysis/InteractiveModelRunner.h:62:  const TensorSpec OutputSpec;
+llvm/lib/Analysis/NoInferenceModelRunner.cpp:18:    LLVMContext &Ctx, const std::vector<TensorSpec> &Inputs)
+llvm/include/llvm/Analysis/InlineModelFeatureMaps.h:13:#include "llvm/Analysis/TensorSpec.h"
+llvm/include/llvm/Analysis/InlineModelFeatureMaps.h:164:LLVM_ABI extern const TensorSpec InlineDecisionSpec;
+llvm/include/llvm/Analysis/InlineModelFeatureMaps.h:166:LLVM_ABI extern const TensorSpec DefaultDecisionSpec;
+llvm/include/llvm/Analysis/NoInferenceModelRunner.h:16:class TensorSpec;
+llvm/include/llvm/Analysis/NoInferenceModelRunner.h:24:                                  const std::vector<TensorSpec> &Inputs);
+llvm/include/llvm/Analysis/TensorSpec.h:1://===- TensorSpec.h - type descriptor for a tensor --------------*- C++ -*-===//
+llvm/include/llvm/Analysis/TensorSpec.h:27:/// TensorSpec encapsulates the specification of a tensor: its dimensions, or
+llvm/include/llvm/Analysis/TensorSpec.h:28:/// "shape" (row-major), its type (see TensorSpec::getDataType specializations
+llvm/include/llvm/Analysis/TensorSpec.h:37:/// right is a name we can use to identify the type (to implement TensorSpec
+llvm/include/llvm/Analysis/TensorSpec.h:62:class TensorSpec final {
+llvm/include/llvm/Analysis/TensorSpec.h:65:  static TensorSpec createSpec(const std::string &Name,
+llvm/include/llvm/Analysis/TensorSpec.h:68:    return TensorSpec(Name, Port, getDataType<T>(), sizeof(T), Shape);
+llvm/include/llvm/Analysis/TensorSpec.h:76:  bool operator==(const TensorSpec &Other) const {
+llvm/include/llvm/Analysis/TensorSpec.h:81:  bool operator!=(const TensorSpec &Other) const { return !(*this == Other); }
+llvm/include/llvm/Analysis/TensorSpec.h:94:  TensorSpec(const std::string &NewName, const TensorSpec &Other)
+llvm/include/llvm/Analysis/TensorSpec.h:95:      : TensorSpec(NewName, Other.Port, Other.Type, Other.ElementSize,
+llvm/include/llvm/Analysis/TensorSpec.h:101:  LLVM_ABI TensorSpec(const std::string &Name, int Port, TensorType Type,
+llvm/include/llvm/Analysis/TensorSpec.h:116:                                         const TensorSpec &Spec);
+llvm/include/llvm/Analysis/TensorSpec.h:118:/// Construct a TensorSpec from a JSON dictionary of the form:
+llvm/include/llvm/Analysis/TensorSpec.h:125:LLVM_ABI std::optional<TensorSpec>
+llvm/include/llvm/Analysis/TensorSpec.h:126:getTensorSpecFromJSON(LLVMContext &Ctx, const json::Value &Value);
+llvm/include/llvm/Analysis/TensorSpec.h:129:  template <> LLVM_ABI TensorType TensorSpec::getDataType<T>();
+llvm/lib/Analysis/TFLiteUtils.cpp:1://===- TFUtils.cpp - TFLite-based evaluation utilities --------------------===//
+llvm/lib/Analysis/TFLiteUtils.cpp:16:#include "llvm/Analysis/Utils/TFUtils.h"
+llvm/lib/Analysis/TFLiteUtils.cpp:55:                       const std::vector<TensorSpec> &InputSpecs,
+llvm/lib/Analysis/TFLiteUtils.cpp:56:                       const std::vector<TensorSpec> &OutputSpecs,
+llvm/lib/Analysis/TFLiteUtils.cpp:94:                                const TensorSpec &Spec);
+llvm/lib/Analysis/TFLiteUtils.cpp:100:    StringRef SavedModelPath, const std::vector<TensorSpec> &InputSpecs,
+llvm/lib/Analysis/TFLiteUtils.cpp:101:    const std::vector<TensorSpec> &OutputSpecs, const char *Tags = "serve")
+llvm/lib/Analysis/TFLiteUtils.cpp:184:                                   const std::vector<TensorSpec> &InputSpecs,
+llvm/lib/Analysis/TFLiteUtils.cpp:185:                                   const std::vector<TensorSpec> &OutputSpecs,
+llvm/lib/Analysis/TFLiteUtils.cpp:196:                                                    const TensorSpec &Spec) {
+llvm/lib/Analysis/CMakeLists.txt:3:  set(LLVM_INLINER_MODEL_PATH_DEFAULT "models/inliner-Oz")
+llvm/lib/Analysis/CMakeLists.txt:9:      ${LLVM_INLINER_MODEL_PATH}
+llvm/lib/Analysis/CMakeLists.txt:11:      ${LLVM_INLINER_MODEL_PATH_DEFAULT}
+llvm/lib/Analysis/CMakeLists.txt:120:  ModelUnderTrainingRunner.cpp
+llvm/lib/Analysis/CMakeLists.txt:152:  TensorSpec.cpp
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:13:#include "llvm/Analysis/TensorSpec.h"
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:20:#include "llvm/Analysis/ModelUnderTrainingRunner.h"
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:22:#include "llvm/Analysis/Utils/TFUtils.h"
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:47:- "tensor_spec, followed by the TensorSpec description of the
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:96:  TrainingLogger(StringRef LogFileName, const ModelUnderTrainingRunner *MUTR,
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:97:                 const std::vector<TensorSpec> &FeatureMap);
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:105:  const ModelUnderTrainingRunner *const MUTR;
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:106:  const std::vector<TensorSpec> &FeatureMap;
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:145:          std::unique_ptr<MLModelRunner>(const std::vector<TensorSpec> &)>
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:212:static const std::vector<TensorSpec> TrainingOnlyFeatures{
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:213:    TensorSpec::createSpec<float>(TFFeedPrefix + "discount", {1}),
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:214:    TensorSpec::createSpec<float>(TFFeedPrefix + "reward", {1}),
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:215:    TensorSpec::createSpec<int32_t>(TFFeedPrefix + "step_type", {1})};
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:220:static const std::vector<TensorSpec>
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:221:convertInputFeatures(const std::vector<TensorSpec> &OriginalFeatures) {
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:222:  std::vector<TensorSpec> InputSpecs;
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:224:    InputSpecs.push_back(TensorSpec(TFFeedPrefix + Feature.name(), Feature));
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:232:                               const ModelUnderTrainingRunner *MUTR,
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:233:                               const std::vector<TensorSpec> &FeatureMap)
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:236:  std::vector<TensorSpec> FT(FeatureMap.begin(), FeatureMap.end());
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:252:                               TensorSpec::createSpec<int64_t>(RewardName, {1}),
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:289:        std::unique_ptr<MLModelRunner>(const std::vector<TensorSpec> &)>
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:293:      IsDoingInference(isa<ModelUnderTrainingRunner>(getModelRunner())) {
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:297:        TrainingLog, dyn_cast<ModelUnderTrainingRunner>(ModelRunner.get()),
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:332:  auto RunnerFactory = [&](const std::vector<TensorSpec> &InputFeatures)
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:335:    const std::vector<TensorSpec> ConvertedFeatures =
+llvm/lib/Analysis/DevelopmentModeInlineAdvisor.cpp:340:      Runner = ModelUnderTrainingRunner::createAndEnsureValid(
+llvm/lib/Analysis/InteractiveModelRunner.cpp:13:#include "llvm/Analysis/TensorSpec.h"
+llvm/lib/Analysis/InteractiveModelRunner.cpp:27:    LLVMContext &Ctx, const std::vector<TensorSpec> &Inputs,
+llvm/lib/Analysis/InteractiveModelRunner.cpp:28:    const TensorSpec &Advice, StringRef OutboundName, StringRef InboundName)
+llvm/lib/Analysis/TrainingLogger.cpp:13:#include "llvm/Analysis/TensorSpec.h"
+llvm/lib/Analysis/TrainingLogger.cpp:29:void Logger::writeHeader(std::optional<TensorSpec> AdviceSpec) {
+llvm/lib/Analysis/TrainingLogger.cpp:82:               const std::vector<TensorSpec> &FeatureSpecs,
+llvm/lib/Analysis/TrainingLogger.cpp:83:               const TensorSpec &RewardSpec, bool IncludeReward,
+llvm/lib/Analysis/TrainingLogger.cpp:84:               std::optional<TensorSpec> AdviceSpec)
+llvm/lib/Analysis/TensorSpec.cpp:1://===- TensorSpec.cpp - tensor type abstraction ---------------------------===//
+llvm/lib/Analysis/TensorSpec.cpp:18:#include "llvm/Analysis/TensorSpec.h"
+llvm/lib/Analysis/TensorSpec.cpp:33:  template <> TensorType TensorSpec::getDataType<T>() { return TensorType::E; }
+llvm/lib/Analysis/TensorSpec.cpp:50:void TensorSpec::toJSON(json::OStream &OS) const {
+llvm/lib/Analysis/TensorSpec.cpp:62:TensorSpec::TensorSpec(const std::string &Name, int Port, TensorType Type,
+llvm/lib/Analysis/TensorSpec.cpp:69:std::optional<TensorSpec> getTensorSpecFromJSON(LLVMContext &Ctx,
+llvm/lib/Analysis/TensorSpec.cpp:72:      [&](const llvm::Twine &Message) -> std::optional<TensorSpec> {
+llvm/lib/Analysis/TensorSpec.cpp:101:    return TensorSpec::createSpec<T>(TensorName, TensorShape, TensorPort);
+llvm/lib/Analysis/TensorSpec.cpp:107:std::string tensorValueToString(const char *Buffer, const TensorSpec &Spec) {
+=== relevant file history ===
+43db58633333 packaging: bump-up version to 22.1.8
+3d723549f603 Add packaging
+fd7a4929c0e4 (tag: accepted/tizen/base/x/20260819.220951, tag: accepted/tizen/base/20260813.060009, origin/tizen_base_next) Merge MLGO AOT compilation support and optimization improvements
+438f887080b6 [cmake] Make CMAKE_BUILD_TYPE=Release the default (#174520)
+9ac2d0a9b9ef Revert "[OpenMP] Remove LLVM_ENABLE_PROJECTS=openmp build mode (#152189)"
+20d0ec849804 [OpenMP] Remove LLVM_ENABLE_PROJECTS=openmp build mode (#152189)
+2c72af88213c [CMake] Error when specifying pstl in LLVM_ENABLE_PROJECTS
+56c0173d958b Revert "[llvm][clang] Enable IO sandbox for assert builds" (#173074)
+f83de973a5da [llvm][clang] Enable IO sandbox for assert builds (#171935)
+efd9dc83f26f Revert "[APFloat] Add exp function for APFloat::IEEESsingle using expf implementation from LLVM libc. (#143959)" (#172325)
+4190d576823c [APFloat] Add exp function for APFloat::IEEESsingle using expf implementation from LLVM libc. (#143959)
+8e999e3d7857 [llvm][clang] Sandbox filesystem reads (#165350)
+8fce476c8122 Implement a more seamless way to provide missing functions on z/OS (#167703)
+0957656a4077 [runtimes][GTest] LLVM-independent unittests  (#164794)
+2a65fab965d6 [z/OS] Improve compiler options on z/OS (#166415)
+780f69cd922d [Clang][CMake] Add CSSPGO support to LLVM_BUILD_INSTRUMENTED (#79942)
+00dc72fa1f32 [CAS] LLVM_ENABLE_ONDISK_CAS requires `flock` on UNIX (#159207)
+0a7a7d56fc88 [llvm][CAS] Enable CAS on 32-bit systems again (#159302)
+198ea2332584 [CAS] Disable OnDiskCAS build on Solaris (#159122)
+195ab4f807e4 [CAS] Default to only build OnDiskCAS on 64 bit machine (#158737)
+f9cd2ee119ff [CAS] Add MappedFileRegionArena (#114099)
+54c304cd4da2 NFC: stray whitespace cleanup in llvm/CMakeLists.txt
+829ddbe71928 build: make sanitizer builds use optimized tablegen (#156784)
+cd7f7cf5cca6 Reapply [IR] Remove options to make scalable TypeSize access a warning (#156336)
+95e76c14daff Revert "[IR] Remove options to make scalable TypeSize access a warning (#156336)"
+8f59a946740b [IR] Remove options to make scalable TypeSize access a warning (#156336)
+13e674ec2da9 [compiler-rt] Add some missing dependencies on Windows (#155019)
+63195d3d7a8b [NFC][CMake] quote ${CMAKE_SYSTEM_NAME} consistently (#154537)
+ee7a6a45bdba [ORC-RT] Initial check-in for a new, top-level ORC runtime project. (#113499)
+177866973952 [KeyInstr] Remove LLVM_EXPERIMENTAL_KEY_INSTRUCTIONS CMake flag (#152735)
+6cd6de5bc0c8 [llvm][cmake] Remove version number from runtimes in PROJECTS warnings (#152457)
+4cec4938c67b [SYCL] Add libsycl, a SYCL RT library implementation project (#144372)
+931228e28f55 [PGO] Drive profile validator from opt (#147418)
+e66eabee0022 [llvm][cmake] Add clang if not already present when building lldb (#149055)
+058056329982 [llvm] annotate interfaces in llvm-c for DLL export (#141701)
+85a11bce7d9a [KeyInstr] Enable Key Instructions support in LLVM (#144324)
+f59d270867cc [cmake] Ignore pstl in LLVM_ENABLE_PROJECTS (#146070)
+3ee8dabcc016 [CMake] Fix for #144598: Move LLVM_ENABLE_LLVM_EXPORT_ANNOTATIONS backwards
+f8ed45611b75 Remove PSTL from the top-level monorepo (#143717)
+e175ecff9362 [llvm] revisions to `LLVM_ABI` export macro definitions (#144598)
+049d61ad65b0 [flang][AArch64] Always link compiler-rt to flang after libgcc (#144710)
+cc365331af42 [DLCov] Origin-Tracking: Add config options (#143590)
+ad2a2b8eed2f [llvm] Add a tool to check mustache compliance against the public spec (#142813)
+6306f0fa2173 [libclc] Support LLVM_ENABLE_RUNTIMES when building (#141574)
+52ad2747d0da [libc][cmake] Make libc not included in LLVM_ENABLE_PROJECTS=all. (#142626)
+a9ee8e4a454e Create a EncodingConverter class with both iconv and icu support. (#138893)
+224ec839a41f [AIX] Opt in to per-target runtime dir (#139620)
+497fbd0ee0c4 [LLVM][Cygwin] Remove special case for CXX extensions on Cygwin. (#138328)
+0a4be7898aa4 [flang] Move LLVM_ENABLE_RUNTIMES definition above uses (#138136)
+d68c732473a1 [flang] Use precompiled headers in Frontend, Lower, Parser, Semantics and Evaluate (#131137)
+77581e27514d Reapply "[Flang] Remove FLANG_INCLUDE_RUNTIME (#124126)"
+705ceff7c1fc [TargetParser] Fix flaky installs of generated headers (#137853)
+bd4a7aa64a79 [Offload] Deprecate `openmp` and `offload` projects builds (#136314)
+ffbd6bae3e96 [CMake] Fix the check for Windows vs ccache (#137238)
+0fcc9ffafd35 [CMake] Support using precompiled headers with ccache in flang (#136856)
+667209e45122 Config: Move LLVM_HAS_*_TARGET definitions to a new header.
+2b58b3df0bad Revert "[CMake] Configure ccache using command line options" (#135664)
+904f1b17d303 [CMake] Configure ccache using command line options (#134857)
+25e08c0b9caf Revert "[CMake] Fix using precompiled headers with ccache" (#134848)
+e8dc8add3c04 [CMake] Fix using precompiled headers with ccache (#131397)
+2fb53f59c17a [CI] Refactor generate_test_report script
+27539c3f903b Revert "[Flang] Remove FLANG_INCLUDE_RUNTIME (#124126)"
+96d1baedefc3 [Flang] Remove FLANG_INCLUDE_RUNTIME (#124126)
+e5129b7e2092 [Flang] Implicitly add clang if flang enabled (#123964)
+f73da649cb57 Revert "[compiler-rt] Disable LLVM_ENABLE_PER_TARGET_RUNTIME_DIR=ON on AIX. (#131200)" (#132574)
+bd6df0fe21fa Reapply "[LLVM] Make the GPU loader utilities an LLVM tool (#132096)" (#132277)
+df2a56767d7e Revert "[LLVM] Make the GPU loader utilities an LLVM tool (#132096)"
+221b0117fd21 [LLVM] Make the GPU loader utilities an LLVM tool (#132096)
+8e773d8a10cc [compiler-rt] Disable LLVM_ENABLE_PER_TARGET_RUNTIME_DIR=ON on AIX. (#131200)
+f4feab927ba3 [NFC][KeyInstr] Add (LLVM_)EXPERIMENTAL_KEY_INSTRUCTIONS (cmake/)definition (#131344)
+1324dfe3e177 [AIX] Add -pthread to build on AIX (#129108)
+159b872b3736 [llvm][telemetry]Change Telemetry-disabling mechanism. (#128534)
+b55f7512a76f [Flang] LLVM_ENABLE_RUNTIMES=flang-rt (#110217)
+13ded6829bf7 [CMake] Fix typo in docstring: telemtry -> telemetry (NFC)
+bac62ee5b473 [llvm] Add CMake flag to compile out the telemetry framework (#124850)
+b593110d89ae [compiler-rt] Deprecate LLVM_ENABLE_PROJECTS in favor of LLVM_ENABLE_RUNTIMES (#124016)
+1bcf44be4c6a [MLOpt] Add tf_xla_runtime to LLVMDevelopmentExport (#124610)
+cda81b1ec96e [SPIR-V] Add SPIRV to LLVM_ALL_TARGETS (reapply) (#123733)
+3f0ac4653be5 Revert "[SPIR-V] Add SPIRV to LLVM_ALL_TARGETS (reapply)" (#123674)
+f427fef09265 [SPIR-V] Add SPIRV to LLVM_ALL_TARGETS (reapply) (#123654)
+5af79053023b Revert "[SPIR-V] Add SPIRV to LLVM_ALL_TARGETS" (#123532)
+c46df8538034 [SPIR-V] Add SPIRV to LLVM_ALL_TARGETS (#119653)
+e0ae7793fca0 [libc] delete hdrgen (#117220)
+5f881b7139bb [libc] Deprecate LLVM_ENABLE_PROJECTS in favor of LLVM_ENABLE_RUNTIMES. (#117265)
+461e58e75dc3 Introduce symbol versioning for clang-cpp (#116556)
+673b5dd380e8 Revert "Introduce symbol versioning for clang-cpp (#116556)"
+944478dd62a7 Introduce symbol versioning for clang-cpp (#116556)
+b88e938b1f95 [NFC] Remove whitespaces in `llvm/CMakeLists.txt`
+bb89988174e5 [AIX][CMake] Disable `openmp` as LLVM_ENABLE_PROJECTS  (#110152)
+84088d3a28fd [DLCov 1/5] Add CMake option for enhanced debug line coverage tracking (#107278)
+fea159671ae1 [llvm][cmake] Do not emit error on `libc`'s use of project + runtime build (#110038)
+5a038230b0a6 [llvm][cmake] Error when a runtime is in LLVM_ENABLE_PROJECTS and LLVM_ENABLE_RUNTIMES (#109791)
+59f8796aaabc Initial changes for llvm shared library build using explicit visibility annotations
+3ef64f7ab5b8 Revert "Enable logf128 constant folding for hosts with 128bit long double (#104929)"
+14c7e4a18449 Enable logf128 constant folding for hosts with 128bit long double (#104929)
+6300233de166 Revert "Reland logf128 constant folding (#103217)"
+3cab7c555ad6 Reland logf128 constant folding (#103217)
+f696489e534e [CMake] Don't pass -DBUILD_EXAMPLES to the build (#102838)
+a15de177728e Revert "Enable logf128 constant folding for hosts with 128bit floats (#96287)"
+ccb2b011e577 Enable logf128 constant folding for hosts with 128bit floats (#96287)
+01b488faabdf Reapply "[CMake] Fold export_executable_symbols_* into function args. (#101741)" (#102138)
+f9b69a378cb1 Revert "[CMake] Fold export_executable_symbols_* into function args. (#101741)"
+5c56b46a32a8 [CMake] Fold export_executable_symbols_* into function args. (#101741)
+a982cabea3cf [cmake][llvm] Limit the number of Xcode schemes created by default (#101243)
+ac9d34a2eed4 [clang-doc] revert asset bug fix (#97882)
+1ed84a862f9c [clang-doc] fix bug introduced by asset test (#97540)
+2dd14065571c [llvm] remove unusable llvm.spec.in (#96825)
+b7762f2e64af Bump required minimal Z3 version from 4.7.1 to 4.8.9 (#96682)
+67226bad1507 [Support] Vendor rpmalloc in-tree and use it for the Windows 64-bit release (#91862)
+33f4a77d9218 Reland "[python] Bump Python minimum version to 3.8 (#78828)"
+852aaf54071a Reapply "[Support] Remove terminfo dependency (#92865)" (#93889)
+fe82a3da3619 Revert "[Support] Remove terminfo dependency (#92865)"
+3613b2683107 Constant Fold logf128 calls (#90611)
+4ecbfacf9ecd [llvm] Revise IDE folder structure (#89741)
+6bf450c7a60f [Support] Remove terminfo dependency (#92865)
+efce8a05aa4e Revert "Constant Fold logf128 calls"
+034912d58361 [SystemZ][z/OS] Build in ASCII 64 bit mode on z/OS (#90630)
+088aa81a5454 Constant Fold logf128 calls
+330d8983d25d [Offload] Move `/openmp/libomptarget` to `/offload` (#75125)
+b6824c9d459d Revert "Reland "[python] Bump Python minimum version to 3.8 (#78828)""
+f2931182fc87 Reland "[python] Bump Python minimum version to 3.8 (#78828)"
+c26e9bf8fafe Revert "Constant Fold Logf128 calls (#84501)"
