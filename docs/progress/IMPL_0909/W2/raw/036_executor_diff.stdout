@@ -1,0 +1,27 @@
+--- docs/progress/IMPL_0908/code/lit_executor.py	2026-09-08 10:09:38.606524143 +0800
++++ docs/progress/IMPL_0909/W2/lit_executor.py	2026-09-09 13:23:51.502414181 +0800
+@@ -21,9 +21,15 @@
+  log.write(b'STDOUT\n'+done.stdout+b'\nSTDERR\n'+done.stderr+('\nEXITCODE='+str(done.returncode)+'\n').encode());log.flush()
+  if done.returncode: fault.touch();raise RuntimeError('SDB carrier failure')
+  return done.stdout.decode(errors='replace').replace('\r\n','\n')
+-def shell(command,test=False):
++def shell(command,test=False,cleanup=False):
+  text=call(SDB+['shell',command+'; impl_rc=$?; printf "\n__IMPL_EXIT__=%d\n" "$impl_rc"'],test)
+  m=re.search(r'\n__IMPL_EXIT__=(\d+)\n?$',text)
++ if not m and cleanup:
++  # Do not rerun the test or the deletion: independently verify both exact targets.
++  verify='test ! -e '+shlex.quote(remote)+' && test ! -L '+shlex.quote(remote)+' && test ! -e '+shlex.quote(shared)+' && test ! -L '+shlex.quote(shared)+' && test -d '+ROOT+'/runs && printf "CLEANUP_ABSENCE_CONFIRMED\\n"'
++  check=call(SDB+['shell',verify+'; verify_rc=$?; printf "\\n__VERIFY_EXIT__=%d\\n" "$verify_rc"'])
++  if 'CLEANUP_ABSENCE_CONFIRMED' in check and re.search(r'\n__VERIFY_EXIT__=0\n?$',check):
++   log.write(b'CLEANUP_LOST_RECEIPT_INDEPENDENTLY_VERIFIED=PASS\n');log.flush();return 0,check
+  if not m:fault.touch();raise RuntimeError('remote exit marker absent')
+  return int(m[1]),text[:m.start()]
+ if fault.exists():raise SystemExit('CONNECTION_FAILURE already recorded; refusing new board work')
+@@ -58,6 +64,6 @@
+   sys.stderr.write('EXECUTOR_ERROR: '+str(e)+'\n');result=90
+  finally:
+   if not fault.exists():
+-   rc,text=shell('rm -rf '+shlex.quote(remote)+' && rm -f '+shlex.quote(shared))
++   rc,text=shell('rm -rf '+shlex.quote(remote)+' && rm -f '+shlex.quote(shared),cleanup=True)
+    if rc:sys.stderr.write('CLEANUP_ERROR '+text+'\n');result=91
+ log.close();raise SystemExit(result)
