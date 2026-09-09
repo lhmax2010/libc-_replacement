@@ -1,6 +1,6 @@
 # Tizen libc++ cancellation support statement (final-review candidate)
 
-**Pending final human review. This round’s ARM completion data is still outstanding; this is not a complete delivery.**
+**Pending final human review. Both official-suite result denominators are complete; this does not mean every test passed or product-release acceptance is complete.**
 
 **For headquarters and business-team review; not a product-release guarantee.** This draft separates
 the proposed, evidence-bounded commitments from known limitations. A thread exiting, or a process
@@ -10,9 +10,9 @@ The implementation is on `sandbox/lhmax2025/libcxx-noexcept-relief`, commit
 `f3c1af692b579add991861e1f7c4950f6af39932`, on top of the four existing runtime patches.
 This work used isolated builds and did not replace product system libraries. The destructor-flush
 failure is now an accepted behavior change under this round’s three-way criterion; its raw FAIL is retained.
-The earlier ARM suite was interrupted. Continuation is still outstanding; the old residuals have now been removed and the board released,
-with 3,554 tests lacking valid results; a connectivity check does not fill that coverage gap. See the [validation report](../../IMPL_0908/W3/REPORT.md) and
-[checkpoint and residual files](../../IMPL_0908/W3/BOARD_RESIDUALS.md).
+The original 7,848 valid ARM results were preserved and the other 3,554 completed, giving 11,402 results with zero missing.
+The board has been cleaned and released. See the [earlier directed validation](../../IMPL_0908/W3/REPORT.md) and
+[complete official-suite comparison and cleanup](../W2/REPORT.md).
 
 ## What changes
 
@@ -70,7 +70,7 @@ Configuration and method basis: [build design](../../IMPL_0908/W2/REPORT.md),
 | Under these preconditions and in the tested forms, cancellation crosses ordinary, system-clock, steady-clock, and custom-Clock waits; cleanup count is 1 and the creator joins the cancelled thread. Basis: [native matrix](../../IMPL_0908/W3/matrix_x86_64_final.tsv), [physical-board matrix](../../IMPL_0908/W3/matrix_armv7l_final.tsv), five repetitions per cell. | “Clean exit” means these asserted events: crossing the boundary, running the observed cleanup, and joining the thread. Why: arbitrary application state, callbacks, and every scheduling interleaving were not exhausted. Successful joining alone does not prove process-wide correctness. |
 | After cancellation of the tested ordinary/timed shared-lock writer, reader state is retained, the writer flag is cleared, queued threads make progress, and subsequent readers/writers actually acquire and release the lock. Basis: [two-architecture state and contention comparisons](../../IMPL_0908/W3/REPORT.md), five repetitions per cell. | Timed rollback covers the tested steady-clock instance, not arbitrary Clocks, template arguments, callbacks, or scheduling fairness. Why: finite instances and contention runs cannot establish these wider properties; upgrading a library cannot add header-resident rollback to old consumer objects. |
 | The tested `timed_mutex`, ordinary `future::wait`, and `condition_variable_any` with a non-throwing user lock execute cleanup and remain reusable; the future yields exactly 42. Basis: [directed matrices](../../IMPL_0908/W3/REPORT.md). | This excludes final shared-state destruction for `std::async` and cv-any user locks that throw when relocked. Why: the former still has additional non-throwing frames; the latter calls user `lock()` inside a non-throwing guard destructor. Basis: [destructor call-chain inspection](../../R112/REPORT.md), [physical-board throwing-lock comparison](../../R115/W3/REPORT.md). |
-| Tested normal waits, notifications, timeouts, spurious wakeups, and shared-lock acquisition/release and multi-reader/multi-writer contention retain the same concrete values and states as the matched old baseline. Basis: [normal-path comparisons](../../IMPL_0908/W3/REPORT.md), five repetitions per cell on each architecture. | This is not a full product-regression pass or performance guarantee. Why: the destructor difference has been accepted but ARM full-suite coverage is incomplete, and real workloads, all optimization combinations, and stable production performance were not established. |
+| Tested normal waits, notifications, timeouts, spurious wakeups, and shared-lock acquisition/release and multi-reader/multi-writer contention retain the same concrete values and states as the matched old baseline. Basis: [normal-path comparisons](../../IMPL_0908/W3/REPORT.md), five repetitions per cell on each architecture. | This is not a full product-regression pass or performance guarantee. Why: the official suites retain existing failures and unsupported cases; real workloads, all optimization combinations, and stable production performance were not established. |
 | The tested conversion buffer produces complete output after successful explicit `pubsync()`; cancellation no longer enters the removed destructor-flush call. Basis: [buffer values and destructor-cancellation comparison](../../IMPL_0908/W3/REPORT.md). | Unflushed output is not guaranteed to survive, and arbitrary custom conversion facets are not covered. Why: removing automatic flushing is an intentional behavior change; user-defined resource destructors may still execute user code. |
 
 ## Objects that were not rebuilt: four binding cases
@@ -154,7 +154,7 @@ Basis: [uncaught-error backtrace, signal, and cleanup comparisons](../../R111/IT
 | Architecture/material | Coverage and limits on interpretation |
 |---|---|
 | x86_64 | Native host. 235 final directed runs; all 11,402 official libc++/libc++abi tests have results. The sole new failure is the destructor-flushing case above. |
-| armv7l | Raspberry Pi 4 Model B Rev 1.5 **physical board**. 235 final directed runs; 7,848 valid official results, with 3,554 lacking valid results, including all 81 libc++abi suite tests. Earlier work stopped after connectivity loss; continuation has not started, but the old residuals have been removed and the board released. These are not QEMU user-mode execution results. |
+| armv7l | Raspberry Pi 4 Model B Rev 1.5 **physical board**. 235 final directed runs; all 11,321 libc++ and 81 libc++abi tests have results, with zero missing. The original 7,848 were not rerun; 3,554 were completed. The board has been cleaned and released. These are not QEMU user-mode execution results. |
 | aarch64 | Dynamic validation of this implementation is `NOT_OBSERVED`. No equivalent-result commitment is made. Existing static Boost-artifact evidence does not fill this gap. |
 | External product/application components | Their denominator and rebuild policies remain `NOT_AVAILABLE`. A zero-use finding within the frozen repositories does not establish zero use or compatibility across the platform. |
 
@@ -164,7 +164,7 @@ The modern destructor change and limited dynamic results
 do not establish every language mode, compiler option, linker, or distribution configuration.
 Dual versioning here is a particular shared-ELF-library design; static linking, unversioned old ELFs,
 other ABI namespaces, and arbitrary `dlsym` usage have no equivalent commitment.
-Basis: [configuration, matrices, and gaps](../../IMPL_0908/W3/REPORT.md),
+Basis: [earlier configuration and matrices](../../IMPL_0908/W3/REPORT.md), [complete ARM official comparison](../W2/ARM_R81_COMPARISON.tsv),
 [external denominator and required materials](../../R110/W1_REPORT.md).
 
 ## Deployment ordering and release boundaries
@@ -184,8 +184,8 @@ are different events. This statement does not prove all 13 consumers migrated, o
 system supports atomic switching or rollback. Basis:
 [migration scope, build conditions, and transition evidence](../../R111/ITEM2_BOOST_TRANSITION_REPORT.md).
 
-Release acceptance must still address disclosure of the accepted destructor behavior change, incomplete ARM suite
-coverage, external-component materials, and actual product
+Release acceptance must still address disclosure of the accepted destructor behavior change, existing official-suite failures and unsupported cases,
+external-component materials, and actual product
 package/deployment identity. This round did not perform product GBS/RPM acceptance; the historical
 `SOURCE_PROVENANCE` file is not a new release certification for this sandbox. This draft does not
 replace those outstanding checks.
@@ -196,20 +196,31 @@ The native file-stream sample writes three wide characters with a complete nine-
 Without explicit synchronization: new libc++ emits three bytes, old libc++ nine, and libstdc++ zero,
 five out of five each. With explicit pubsync all three emit nine bytes, five out of five each.
 Under the user’s stated criterion—accept if libstdc++ also fails the original destructor-output
-expectation—the no-destructor-flush decision is retained. **New libc++ and libstdc++ do not emit identical
-byte counts.** The matching conclusion is the lack of a final-flush guarantee from destruction, not full
-observable equivalence. N4861 D.21.2 specifies disposal of the conversion object but does not require a
+expectation—the no-destructor-flush decision is retained. New libc++ and libstdc++ **align in not
+automatically flushing on destruction**, not in all observable behavior. The measured byte counts are
+3 for new libc++, 9 for old libc++, and 0 for libstdc++. The difference between new libc++ and libstdc++
+comes from their existing buffering strategies; this change did not introduce a new buffering strategy.
+Removing the destructor flush exposes data left buffered by those strategies. The change from 9 bytes
+in old libc++ to 3 in new libc++ is, however, a consequence of this destructor change. This distinction
+must not be read as saying that the change leaves output byte counts unchanged.
+Static evidence: the [complete destructor patch](../W4/patches/0003-libcxx-make-wbuffer_convert-destruction-independent-.patch)
+only removes the destructor's `__close()` call and adds comments; it does not modify the writing or buffering algorithms.
+N4861 D.21.2 specifies disposal of the conversion object but does not require a
 destructor flush. See [three-way results](../W1/REPORT.md) and [standard/expectation analysis](../W1/STANDARD_ANALYSIS.md).
 
 Native official coverage: 11,402 tests; libc++ has 10,009 PASS, 129 FAIL, 1,156 UNSUPPORTED and 27 XFAIL;
-libc++abi has 61 PASS and 20 UNSUPPORTED. The earlier valid ARM libc++ coverage is 7,848 tests:
-6,657 PASS, 136 FAIL, 1,027 UNSUPPORTED and 28 XFAIL. Another 3,554 are NOT_OBSERVED,
-including all 81 libc++abi tests. Within observed coverage the sole new failure is overflow, now
-classified as an accepted behavior change without changing its FAIL count. This round’s ARM completion
-results and new-failure analysis are pending; absence of other regressions is not established across
-the gap. See [current status](../../IMPL_STATUS_0909.md) and [open questions](../../IMPL_QUESTIONS_0909.md).
-All fourteen old residual targets were removed and individually checked; eight diagnostic ZIPs have verified host backups.
-See [cleanup evidence and the reason continuation has not started](../W2/REPORT.md).
+libc++abi has 61 PASS and 20 UNSUPPORTED. ARM now combines the original 7,848 results with 3,554 completed tests:
+**11,402 total, 10,080 PASS, 211 FAIL, 1,082 UNSUPPORTED, 29 XFAIL, zero missing**.
+ARM libc++ has 10,020 PASS, 211 FAIL, 1,061 UNSUPPORTED and 29 XFAIL; libc++abi has 60 PASS and 21 UNSUPPORTED.
+The only new FAIL on either architecture is overflow, classified as an accepted behavior change without changing the raw FAIL.
+There are zero new noexcept-assumption failures and zero other new FAILs. This is a per-test status comparison,
+not proof of identical causes for every existing failure or of problem-free business workloads. The three historical
+timeout FAIL-to-PASS changes retain the different-timeout-window qualification and are not credited to the patch.
+See the [complete two-architecture table](../W2/TWO_ARCHITECTURES.tsv), [new-failure classification](../W2/NEW_FAILURE_CLASSIFICATION.tsv)
+and [current status](../../IMPL_STATUS_0909.md).
+All fourteen old residual targets, the new task directory and 74 new diagnostic ZIPs were removed and checked;
+both the old eight ZIPs and the new diagnostics have verified host backups. The board has been cleaned and released.
+See [complete results, limitations and cleanup evidence](../W2/REPORT.md).
 
 ## How to verify independently
 
