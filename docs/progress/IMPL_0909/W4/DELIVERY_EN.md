@@ -1,8 +1,8 @@
 # Second runtime-change batch: delivery notes
 
-**For delivery after human review. Current status: PARTIAL. ARM completion is outstanding; old
-residuals have been removed and the board released. The support statement needs ARM data, and Gerrit requires Change-Id while all five
-commits lack it. This is not a release-approval record.**
+**For delivery after human review. The materials are complete: the ARM official suites are complete,
+the bilingual support statement is synchronized, and the board is cleaned and released.
+Gerrit's Change-Id receive prerequisite remains unmet by all five commits. This is not a release-approval record.**
 
 ## Source and five commits
 
@@ -87,15 +87,19 @@ Shared-lock probes use _Exit after assertions, so they do not cover global-objec
 Arbitrary Clocks, facets, callbacks and all interleavings were not exhausted. Dynamic aarch64
 validation remains NOT_OBSERVED.
 
-### Official suites and failure classification: currently valid coverage
+### Official suites and failure classification: complete results for both architectures
 
 | Architecture | Valid total | PASS | FAIL | UNSUPPORTED | XFAIL | Missing |
 |---|---:|---:|---:|---:|---:|---:|
 | x86_64, both suites combined | 11402 | 10070 | 129 | 1176 | 27 | 0 |
-| armv7l, currently libc++ only | 7848 | 6657 | 136 | 1027 | 28 | 3554 |
+| armv7l, both suites combined | 11402 | 10080 | 211 | 1082 | 29 | 0 |
 
 See the [native per-test comparison](../../IMPL_0908/W3/comparison_x86_64_new_full.tsv) and
-[current derived ARM comparison](../../IMPL_0908/W3/comparison_armv7l_new_combined.tsv).
+[complete ARM comparison with R81](../W2/ARM_R81_COMPARISON.tsv).
+ARM libc++ has 11321 results: 10020 PASS, 211 FAIL, 1061 UNSUPPORTED and 29 XFAIL;
+libc++abi has 81 results: 60 PASS and 21 UNSUPPORTED. The original 7848 results
+(6657 PASS, 136 FAIL, 1027 UNSUPPORTED, 28 XFAIL) were not rerun; 3554 were completed in this round.
+See [union provenance and counts](../W2/ARM_SUMMARY.json).
 ARM uses R81's owner-normalized per-test records, whose equivalence to the four-patch side was
 previously checked; [baseline provenance](raw/007_baseline_provenance.stdout) records the mapping.
 Native coverage uses the already-frozen complete historical baseline.
@@ -104,8 +108,14 @@ The newly failing case within observed coverage is overflow: **accepted destruct
 behavior change**, not a noexcept-assumption case; its raw FAIL remains. This package's three-way
 measurements satisfy the user's stated criterion, not byte-for-byte equivalence. Three earlier ARM
 timeout FAILs also changed to PASS under a different execution window; they were not credited to
-the patch. Another 3554 tests lack this package's completion results. They cannot be filled as PASS
-or used to claim no other regressions. This table still needs W2's completed results.
+the patch. The 3554 newly completed results add no further status differences. There are zero new
+noexcept-assumption failures and zero other new FAILs on either architecture. Raw FAILs remain;
+a complete denominator does not mean every test passed, identical causes for every existing failure,
+or problem-free products. See the [complete two-architecture table](../W2/TWO_ARCHITECTURES.tsv),
+[new-failure classification](../W2/NEW_FAILURE_CLASSIFICATION.tsv) and [raw-evidence archive entry](../W2/REPORT.md).
+New libc++ and libstdc++ align in not automatically flushing on destruction, not in all behavior.
+The actual 3/9/0 byte counts must remain distinguished: the libraries have different existing buffering
+strategies, and this patch does not change the buffering algorithms.
 
 ## Gerrit preparation status
 
@@ -135,11 +145,11 @@ formal-branch push or LLVM-upstream push was performed.
 
 ## Remaining gaps and delivery boundary
 
-ARM completion and corresponding support-statement data remain outstanding. Gerrit's
-Change-Id prerequisite is now established but is not met by the existing commits.
-All fourteen old residual targets were removed and checked, with verified host backups of eight diagnostic ZIPs.
-The board has been cleaned and released by this workstream. Continuation has not started because permission to
-compile missing test executables is awaiting clarification. [W2 record](../W2/REPORT.md).
+ARM completion and the bilingual support-statement update are finished. Gerrit's Change-Id
+prerequisite is established but still unmet; the commits were not rewritten. All fourteen old residual targets,
+the new task directory and 74 new diagnostic ZIPs were removed and checked. The old eight ZIPs and
+the new diagnostics have verified host backups. The board is cleaned and released. See the
+[complete W2 record](../W2/REPORT.md) and [post-test read-only source/remote verification](raw/023_final_sandbox_readonly.stdout).
 External-component denominators and rebuild policies are NOT_AVAILABLE;
 product GBS/RPM and actual release-identity acceptance are NOT_OBSERVED. Historical
 SOURCE_PROVENANCE anchors are not a release certification of this sandbox. These notes compile
