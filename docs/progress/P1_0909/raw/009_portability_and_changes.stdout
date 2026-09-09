@@ -1,0 +1,409 @@
+   400	      bool			_M_with_cvtstate = false;
+   401	      bool			_M_with_strings = false;
+   402	    };
+   403	
+   404	_GLIBCXX_END_NAMESPACE_CXX11
+   405	
+   406	  /// Buffer conversions
+   407	  template<typename _Codecvt, typename _Elem = wchar_t,
+   408		   typename _Tr = char_traits<_Elem>>
+   409	    class wbuffer_convert : public basic_streambuf<_Elem, _Tr>
+   410	    {
+   411	      typedef basic_streambuf<_Elem, _Tr> _Wide_streambuf;
+   412	
+   413	    public:
+   414	      typedef typename _Codecvt::state_type state_type;
+   415	
+   416	      /// Default constructor.
+   417	      wbuffer_convert() : wbuffer_convert(nullptr) { }
+   418	
+   419	      /** Constructor.
+   420	       *
+   421	       * @param  __bytebuf The underlying byte stream buffer.
+   422	       * @param  __pcvt    The facet to use for conversions.
+   423	       * @param  __state   Initial conversion state.
+   424	       *
+   425	       * Takes ownership of @p __pcvt and will delete it in the destructor.
+   426	       */
+   427	      explicit
+   428	      wbuffer_convert(streambuf* __bytebuf, _Codecvt* __pcvt = new _Codecvt,
+   429			      state_type __state = state_type())
+   430	      : _M_buf(__bytebuf), _M_cvt(__pcvt, "wbuffer_convert"),
+   431		_M_state(__state), _M_always_noconv(_M_cvt->always_noconv())
+   432	      {
+   433		if (_M_buf)
+   434		  {
+   435		    this->setp(_M_put_area, _M_put_area + _S_buffer_length);
+   436		    this->setg(_M_get_area + _S_putback_length,
+   437			       _M_get_area + _S_putback_length,
+   438			       _M_get_area + _S_putback_length);
+   439		  }
+   440	      }
+   441	
+   442	      ~wbuffer_convert() = default;
+   443	
+   444	      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+   445	      // 2176. Special members for wstring_convert and wbuffer_convert
+   446	      wbuffer_convert(const wbuffer_convert&) = delete;
+   447	      wbuffer_convert& operator=(const wbuffer_convert&) = delete;
+   448	
+   449	      streambuf* rdbuf() const noexcept { return _M_buf; }
+   450	
+   451	      streambuf*
+   452	      rdbuf(streambuf *__bytebuf) noexcept
+   453	      {
+   454		auto __prev = _M_buf;
+   455		_M_buf = __bytebuf;
+   456		return __prev;
+   457	      }
+   458	
+   459	      /// The conversion state following the last conversion.
+   460	      state_type state() const noexcept { return _M_state; }
+   461	
+   462	    protected:
+   463	      int
+   464	      sync()
+   465	      { return _M_buf && _M_conv_put() && !_M_buf->pubsync() ? 0 : -1; }
+   466	
+   467	      typename _Wide_streambuf::int_type
+   468	      overflow(typename _Wide_streambuf::int_type __out)
+   469	      {
+   470		if (!_M_buf || !_M_conv_put())
+   471		  return _Tr::eof();
+   472		else if (!_Tr::eq_int_type(__out, _Tr::eof()))
+   473		  return this->sputc(__out);
+   474		return _Tr::not_eof(__out);
+   475	      }
+   476	
+   477	      typename _Wide_streambuf::int_type
+   478	      underflow()
+   479	      {
+   480		if (!_M_buf)
+   481		  return _Tr::eof();
+   482	
+   483		if (this->gptr() < this->egptr() || (_M_buf && _M_conv_get()))
+   484		  return _Tr::to_int_type(*this->gptr());
+   485		else
+   486		  return _Tr::eof();
+   487	      }
+   488	
+   489	      streamsize
+   490	      xsputn(const typename _Wide_streambuf::char_type* __s, streamsize __n)
+   491	      {
+   492		if (!_M_buf || __n == 0)
+   493		  return 0;
+   494		streamsize __done = 0;
+   495		do
+   496		{
+   497		  auto __nn = std::min<streamsize>(this->epptr() - this->pptr(),
+   498						   __n - __done);
+   499		  _Tr::copy(this->pptr(), __s + __done, __nn);
+   500		  this->pbump(__nn);
+   501		  __done += __nn;
+   502		} while (__done < __n && _M_conv_put());
+   503		return __done;
+   504	      }
+   505	
+   506	    private:
+   507	      // fill the get area from converted contents of the byte stream buffer
+   508	      bool
+   509	      _M_conv_get()
+   510	      {
+   511		const streamsize __pb1 = this->gptr() - this->eback();
+   512		const streamsize __pb2 = _S_putback_length;
+   513		const streamsize __npb = std::min(__pb1, __pb2);
+   514	
+   515		_Tr::move(_M_get_area + _S_putback_length - __npb,
+   516			  this->gptr() - __npb, __npb);
+   517	
+   518		streamsize __nbytes = sizeof(_M_get_buf) - _M_unconv;
+   519		__nbytes = std::min(__nbytes, _M_buf->in_avail());
+   520		if (__nbytes < 1)
+   521		  __nbytes = 1;
+   522		__nbytes = _M_buf->sgetn(_M_get_buf + _M_unconv, __nbytes);
+   523		if (__nbytes < 1)
+   524		  return false;
+   525		__nbytes += _M_unconv;
+   526	
+   527		// convert _M_get_buf into _M_get_area
+   528	
+   529		_Elem* __outbuf = _M_get_area + _S_putback_length;
+   530		_Elem* __outnext = __outbuf;
+   531		const char* __bnext = _M_get_buf;
+   532	
+   533		codecvt_base::result __result;
+   534		if (_M_always_noconv)
+   535		  __result = codecvt_base::noconv;
+   536		else
+   537		  {
+   538		    _Elem* __outend = _M_get_area + _S_buffer_length;
+   539	
+   540		    __result = _M_cvt->in(_M_state,
+   541					  __bnext, __bnext + __nbytes, __bnext,
+   542					  __outbuf, __outend, __outnext);
+   543		  }
+   544	
+   545		if (__result == codecvt_base::noconv)
+   546		  {
+   547		    // cast is safe because noconv means _Elem is same type as char
+   548		    auto __get_buf = reinterpret_cast<const _Elem*>(_M_get_buf);
+   549		    _Tr::copy(__outbuf, __get_buf, __nbytes);
+   550		    _M_unconv = 0;
+   551		    return true;
+   552		  }
+   553	
+   554		if ((_M_unconv = _M_get_buf + __nbytes - __bnext))
+   555		  char_traits<char>::move(_M_get_buf, __bnext, _M_unconv);
+   556	
+   557		this->setg(__outbuf, __outbuf, __outnext);
+   558	
+   559		return __result != codecvt_base::error;
+   560	      }
+   561	
+   562	      // unused
+   563	      bool
+   564	      _M_put(...)
+   565	      { return false; }
+   566	
+   567	      bool
+   568	      _M_put(const char* __p, streamsize __n)
+   569	      {
+   570		if (_M_buf->sputn(__p, __n) < __n)
+   571		  return false;
+   572		return true;
+   573	      }
+   574	
+   575	      // convert the put area and write to the byte stream buffer
+   576	      bool
+   577	      _M_conv_put()
+   578	      {
+   579		_Elem* const __first = this->pbase();
+   580		const _Elem* const __last = this->pptr();
+   581		const streamsize __pending = __last - __first;
+   582	
+   583		if (_M_always_noconv)
+   584		  return _M_put(__first, __pending);
+   585	
+   586		char __outbuf[2 * _S_buffer_length];
+   587	
+   588		const _Elem* __next = __first;
+   589		const _Elem* __start;
+   590		do
+   591		  {
+   592		    __start = __next;
+   593		    char* __outnext = __outbuf;
+   594		    char* const __outlast = __outbuf + sizeof(__outbuf);
+   595		    auto __result = _M_cvt->out(_M_state, __next, __last, __next,
+   596						__outnext, __outlast, __outnext);
+   597		    if (__result == codecvt_base::error)
+   598		      return false;
+   599		    else if (__result == codecvt_base::noconv)
+   600		      return _M_put(__next, __pending);
+   601	
+   602		    if (!_M_put(__outbuf, __outnext - __outbuf))
+   603		      return false;
+   604		  }
+   605		while (__next != __last && __next != __start);
+   606	
+   607		if (__next != __last)
+   608		  _Tr::move(__first, __next, __last - __next);
+   609	
+   610		this->pbump(__first - __next);
+   611		return __next != __first;
+   612	      }
+   613	
+   614	      streambuf*			_M_buf;
+   615	      __detail::_Scoped_ptr<_Codecvt>	_M_cvt;
+   616	      state_type			_M_state;
+   617	
+   618	      static const streamsize	_S_buffer_length = 32;
+   619	      static const streamsize	_S_putback_length = 3;
+   620	      _Elem                     _M_put_area[_S_buffer_length];
+   621	      _Elem                     _M_get_area[_S_buffer_length];
+   622	      streamsize		_M_unconv = 0;
+   623	      char			_M_get_buf[_S_buffer_length-_S_putback_length];
+   624	      bool			_M_always_noconv;
+   625	    };
+   626	
+   627	  /// @} group locales
+   628	
+   629	_GLIBCXX_END_NAMESPACE_VERSION
+   630	} // namespace
+   631	
+   632	#endif // __cplusplus
+   633	
+   634	#endif /* _LOCALE_CONV_H */
+15:#    include <version>
+17:#    include <ciso646>
+20:#  include <ciso646>
+103:// This is deliberately different than _LIBCPP_STD_VER to discourage matching them up.
+110:#include <features.h>
+223:#ifdef _LIBCPP_USE_FROZEN_CXX03_HEADERS
+224:#  ifdef _LIBCPP_HAS_NO_ALIGNED_ALLOCATION
+227:#elif defined(_LIBCPP_VERSION) && !_LIBCPP_HAS_ALIGNED_ALLOCATION
+253:#if defined(_LIBCPP_VERSION)
+267:#ifdef _LIBCPP_USE_FROZEN_CXX03_HEADERS
+281:#ifdef _LIBCPP_USE_FROZEN_CXX03_HEADERS
+283:#elif !defined(_LIBCPP_VERSION) || _LIBCPP_AVAILABILITY_HAS_FROM_CHARS_FLOATING_POINT
+304:#include <stdlib.h>
+342:#include <intrin.h>
+412:#if defined(_LIBCPP_VERSION) && !_LIBCPP_HAS_WIDE_CHARACTERS
+416:#if defined(_LIBCPP_VERSION) && !_LIBCPP_HAS_UNICODE
+422:#ifdef _LIBCPP_USE_FROZEN_CXX03_HEADERS
+423:#  ifdef _LIBCPP_HAS_OPEN_WITH_WCHAR
+426:#elif defined(_LIBCPP_VERSION) && _LIBCPP_HAS_OPEN_WITH_WCHAR
+430:#ifdef _LIBCPP_USE_FROZEN_CXX03_HEADERS
+431:#  ifdef _LIBCPP_HAS_NO_INT128
+434:#elif (defined(_LIBCPP_VERSION) && !_LIBCPP_HAS_INT128) || defined(_MSVC_STL_VERSION)
+438:#if defined(_LIBCPP_VERSION) && !_LIBCPP_HAS_LOCALIZATION
+446:#if defined(_LIBCPP_VERSION) && !_LIBCPP_HAS_THREADS
+450:#if defined(_LIBCPP_VERSION) && !_LIBCPP_HAS_FILESYSTEM
+451:#  define TEST_HAS_NO_FILESYSTEM
+454:#ifdef _LIBCPP_USE_FROZEN_CXX03_HEADERS
+455:#  ifdef _LIBCPP_HAS_NO_C8RTOMB_MBRTOC8
+458:#elif defined(_LIBCPP_VERSION) && !_LIBCPP_HAS_C8RTOMB_MBRTOC8
+462:#if defined(_LIBCPP_VERSION) && !_LIBCPP_HAS_RANDOM_DEVICE
+466:#ifdef _LIBCPP_USE_FROZEN_CXX03_HEADERS
+469:#elif defined(_LIBCPP_VERSION) && !_LIBCPP_HAS_EXPERIMENTAL_TZDB
+473:#if defined(_LIBCPP_VERSION) && !_LIBCPP_HAS_TIME_ZONE_DATABASE
+511:#ifdef _LIBCPP_SHORT_WCHAR
+515:#ifdef _LIBCPP_ABI_MICROSOFT
+     1	LLVM_22 {
+     2	  global:
+     3	    *;
+     4	  local:
+     5	    __libcpp_tizen_cv_*;
+     6	};
+     7	
+     8	LLVM_22_TIZEN_1 {
+     9	} LLVM_22;
+diff --git a/libcxx/CMakeLists.txt b/libcxx/CMakeLists.txt
+index 00ea2deef196..d867acf97eff 100644
+--- a/libcxx/CMakeLists.txt
++++ b/libcxx/CMakeLists.txt
+@@ -318,6 +318,13 @@ endif()
+ # about #include_next which is used everywhere.
+ option(LIBCXX_ENABLE_PEDANTIC "Compile with pedantic enabled." OFF)
+ option(LIBCXX_ENABLE_WERROR "Fail and stop if a warning is triggered." OFF)
++option(LIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS
++  "Provide legacy and unwind-capable Tizen condition-variable symbol versions." OFF)
++if (LIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS)
++  if (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT LIBCXX_ABI_NAMESPACE STREQUAL "__1")
++    message(FATAL_ERROR "Tizen condition-variable versions require Linux ELF and ABI namespace __1")
++  endif()
++endif()
+ 
+ set(LIBCXX_HERMETIC_STATIC_LIBRARY_DEFAULT OFF)
+ if (WIN32)
+diff --git a/libcxx/include/shared_mutex b/libcxx/include/shared_mutex
+index 028bbf565025..176f8dedd229 100644
+--- a/libcxx/include/shared_mutex
++++ b/libcxx/include/shared_mutex
+@@ -244,6 +244,17 @@ public:
+       }
+     }
+     __base_.__state_ |= __base_.__write_entered_;
++    // Restore the writer reservation while __lk still owns the internal mutex.
++    struct __rollback_guard {
++      __shared_mutex_base& __base;
++      bool __completed = false;
++      ~__rollback_guard() {
++        if (!__completed) {
++          __base.__state_ &= ~__base.__write_entered_;
++          __base.__gate1_.notify_all();
++        }
++      }
++    } __rollback{__base_};
+     if (__base_.__state_ & __base_.__n_readers_) {
+       while (true) {
+         cv_status __status = __base_.__gate2_.wait_until(__lk, __abs_time);
+@@ -252,10 +263,12 @@ public:
+         if (__status == cv_status::timeout) {
+           __base_.__state_ &= ~__base_.__write_entered_;
+           __base_.__gate1_.notify_all();
++          __rollback.__completed = true;
+           return false;
+         }
+       }
+     }
++    __rollback.__completed = true;
+     return true;
+   }
+ 
+diff --git a/libcxx/src/CMakeLists.txt b/libcxx/src/CMakeLists.txt
+index 2c04cbd1b272..59d4969430a0 100644
+--- a/libcxx/src/CMakeLists.txt
++++ b/libcxx/src/CMakeLists.txt
+@@ -189,6 +189,9 @@ set_target_properties(cxx_shared
+     DEFINE_SYMBOL ""
+ )
+ cxx_add_common_build_flags(cxx_shared)
++if (LIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS)
++  target_compile_definitions(cxx_shared PRIVATE _LIBCPP_TIZEN_CONDVAR_VERSIONS)
++endif()
+ 
+ if(ZOS)
+   add_custom_command(TARGET cxx_shared POST_BUILD
+diff --git a/libcxx/src/shared_mutex.cpp b/libcxx/src/shared_mutex.cpp
+index 618083373695..697c3a3f5e22 100644
+--- a/libcxx/src/shared_mutex.cpp
++++ b/libcxx/src/shared_mutex.cpp
+@@ -24,8 +24,20 @@ void __shared_mutex_base::lock() {
+   while (__state_ & __write_entered_)
+     __gate1_.wait(lk);
+   __state_ |= __write_entered_;
++  // Restore the writer reservation before lk releases the internal mutex.
++  struct __rollback_guard {
++    __shared_mutex_base& __base;
++    bool __completed = false;
++    ~__rollback_guard() {
++      if (!__completed) {
++        __base.__state_ &= ~__base.__write_entered_;
++        __base.__gate1_.notify_all();
++      }
++    }
++  } __rollback{*this};
+   while (__state_ & __n_readers_)
+     __gate2_.wait(lk);
++  __rollback.__completed = true;
+ }
+ 
+ bool __shared_mutex_base::try_lock() {
+diff --git a/packaging/libcxx-llvm22.map b/packaging/libcxx-llvm22.map
+index 277f8bb6e4c7..371e65abc811 100644
+--- a/packaging/libcxx-llvm22.map
++++ b/packaging/libcxx-llvm22.map
+@@ -1,4 +1,9 @@
+ LLVM_22 {
+   global:
+     *;
++  local:
++    __libcpp_tizen_cv_*;
+ };
++
++LLVM_22_TIZEN_1 {
++} LLVM_22;
+diff --git a/packaging/libcxx-runtimes.spec b/packaging/libcxx-runtimes.spec
+index f2a0c0c0e8ab..2c842ae27759 100644
+--- a/packaging/libcxx-runtimes.spec
++++ b/packaging/libcxx-runtimes.spec
+@@ -23,8 +23,8 @@ BuildRequires:  libgcc
+ 
+ %description
+ Source package for the LLVM libc++ standard library and libc++abi runtime.
+-The libraries use libgcc_s as the unwinder and export only default-version
+-LLVM_22 symbols.
++The libraries use libgcc_s as the unwinder. Existing interfaces retain LLVM_22;
++condition-variable waits also provide unwind-capable LLVM_22_TIZEN_1 defaults.
+ 
+ %package -n libc++
+ Summary:        LLVM C++ standard library runtime
+@@ -92,6 +92,7 @@ cmake -G Ninja \
+   -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+   -DLLVM_INCLUDE_TESTS=OFF \
+   -DLIBCXX_ENABLE_SHARED=ON \
++  -DLIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS=ON \
+   -DLIBCXX_ENABLE_STATIC=OFF \
+   -DLIBCXX_INSTALL_SHARED_LIBRARY=ON \
+   -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF \
+5

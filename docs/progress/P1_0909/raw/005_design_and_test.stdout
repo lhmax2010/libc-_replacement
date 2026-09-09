@@ -1,0 +1,363 @@
+# 实施分支的两架构验证
+
+阶段结论：`REGRESSION_FOUND`；同时存在 ARM 官方全量覆盖缺口（`PARTIAL`）与板端清理阻塞。
+已确认一个由预定析构行为变化引起的新增官方失败，不能按 noexcept 假设测试豁免。
+ARM 因失联停止；三次恢复尝试后仍不可达，不再启动测试。此结论不等于整套通过。
+当前源码：`f3c1af692b579add991861e1f7c4950f6af39932`，已推送指定 sandbox。
+原基线 `c3f8578a4db871d9d6de96d751f4c2ea7b1638fa`；正式平台分支与原回移植 sandbox 未改动。
+截至证据封存用时约 3 小时 16 分，未触及六小时上限；停止原因是实板连接恢复失败。
+
+## 已完成的定向验证
+
+x86_64 原生与 armv7l **物理板**各 45 格 × 5 次，共 **450 次最终运行**，
+逐轮值断言均通过。[原生矩阵](matrix_x86_64_final.tsv)、[物理板矩阵](matrix_armv7l_final.tsv)、
+[独立核验](raw/059_matrix_verification.stdout)。先前失败与旧测法运行不计入此分母。
+
+另补真实 system-clock 定时入口旧／新版本 × 两架构 × 5 次，共 20 次；
+最终定向证据合计 **470 次**。旧 ELF 的实际导入为 LLVM_22，终止处理标记退出 86；
+新对象导入 LLVM_22_TIZEN_1，canceled=1、cleanup_count=1、线程回收成功。
+两组都加载本轮新库，并逐次以 maps 核验。该补测覆盖 ARM 修饰名修复后的旧定时包装，
+不是仅由普通 wait 的四种绑定外推。见 [定时版本矩阵](timed_versions.tsv)、raw/081–084。
+
+| 每架构的格数 | 内容 | 断言与观测 |
+|---|---|---|
+| 4 | 普通、system、steady、自定义 Clock 等待取消 | canceled=1、cleanup_count=1，线程已回收 |
+| 3 | timed_mutex、future::wait、condition_variable_any | 清理 1、重新使用成功；future 精确值 42；用户 mutex 解锁且再次等待超时 |
+| 4 | 四种头文件／链接时点绑定 | 旧 ELF 与新对象预链旧库为 terminate；旧 quiet.o 重链为清理/解锁 0、锁滞留；新对象新库为清理/解锁 1、竞争者成功 |
+| 2 | 析构同步取消的旧／新对照 | 旧析构进入底层阻塞刷新后 terminate；新析构已返回、未进入刷新，后续显式取消点回收且清理 1 |
+| 6 | 条件变量与缓冲正常路径，旧／新两组 | 谓词值 42、通知回收、虚假唤醒不误进展、steady/system 超时仍持锁；显式同步输出完整，非显式同步记录具体损失 |
+| 20 | 普通／定时共享锁正常路径，旧／新两组 | 立即获取、两阶段正常获得、两阶段定时超时、多读多写精确值；写者位、读者计数与最终零状态 |
+| 6 | 普通／定时写者取消，三种排队情况 | 无排队者保留一个原读者并清写者位；排队读者或写者真实获得进展；取消者清理 1，后续新读者/写者均可获得并释放 |
+
+正常竞争为两写者各 1000 次、两读者各 1000 次，最终 value=2000、checksum=14003。
+定时超时分别检查原写者仍保有写者位，或超时写者清位并唤醒排队读者。
+每次探针均读取 `/proc/self/maps`，核对完整 libc++、libc++abi 来自指定目录；
+没有链接实验覆盖 DSO，也没有在实施库加入回滚计数钩子。
+共享锁探针在完成线程回收、后续读写进展和全部断言后用 `_Exit(0)` 结束隔离进程；
+它没有据此覆盖进程全局对象的析构。缓冲对象的析构则在探针作用域内真实执行。
+
+缓冲用例写入 `abcdef`：析构前两组都已输出 `a`。显式 pubsync 两组均返回 0 并输出全部
+6 字节；不显式同步时，旧组最终 6 字节，新组最终 1 字节、未输出 5 字节。
+这项预定变化单独列出，不能混称所有原行为不变。
+
+## 构建与架构
+
+- 两架构均从完整实施树构建 libc++、libc++abi 与实验功能 archive，并构建同配置基线；
+  不用抽取实现的覆盖库替代完整运行库。
+- 定向探针 C++20；普通与绑定探针 O0，正常/共享锁探针 O2；头内等待与定时写者随探针重编。
+- 原生为工作主机；ARM 为 SDB 连接的 Raspberry Pi 4 Model B Rev 1.5、armv7l Linux 6.12.80 物理板，
+  当前硬件身份原文见 raw/075。
+  QEMU 仅用于主机运行 ARM 编译工具，不用于运行本报告的 ARM 探针或官方测试。
+- ARM 两侧完整构建各有 78 条相同的 `--ld-path` 编译阶段未使用提示，修复重编另有同种提示 1 条，
+  未观察到新增警告文本；同一检索器以既有提示作正向对照。ARM 两侧 WERROR 能力检查均未通过，
+  不把请求 WERROR 误写成已接受；原生修复重编零警告且 WERROR 已接受。见 raw/069。
+- aarch64：`NOT_OBSERVED`。任意模板参数、用户 Clock、facet、回调、其他编译模式、所有调度交错，
+  均不因本轮有限实例通过而变成“全部已验证”。
+
+本轮为隔离 CMake 构建与运行库实测，没有执行产品 GBS/RPM 构建，也没有替换系统运行库。
+打包中的 `SOURCE_PROVENANCE` 仍记录先前 validated tree 与单节点 LLVM_22，是历史锚点；
+打包脚本仍会安装该文件（原文见 raw/076）。本轮没有把它改写为新的产品认证记录，
+因此不能用它证明本次 sandbox 的发布身份。实际源码以本文完整提交 SHA 为准，
+实际运行库以构建/部署 SHA256 与双节点 ELF 证据为准；新产品打包及发布身份核验为 `NOT_OBSERVED`。
+
+## 实际发现与修正
+
+### ARM 定时符号的目标类型编码
+
+初始完整 ARM 库构建成功，但正常定时探针无法链接。旧库真实导出和新对象的未定义引用均使用
+`ratioILx1ELx1000000000`，原别名错误地用了 x86_64 的 `ratioILl1ELl1000000000`。
+见 raw/020、024、025；这是实施缺陷，不是测试环境失败。
+
+修复按目标 long 宽度选择 intmax_t 的编码，并以 static_assert 核对真实类型，未改变等待算法、
+版本契约或私有布局。追加提交 `f3c1af69`，未 amend/rebase/force 前四个已推提交。
+两架构别名均与各自真实旧库成员名逐字相等，且旧／新节点齐备，见 raw/035；
+最终矩阵在修复后运行。初始错误动态表仍保留，不能用“节点存在”代替成员 ABI 拼写验证。
+
+### 排队格的观察瞬时竞争
+
+修复后一次原生定时排队读者格在 `internal_mutex_unlocked` 失败，见
+raw/matrix_x86_64_fixed/44_new_shared_2。原观测器只做一次 trylock；有合法排队者时，
+返回忙不足以证明取消者遗留锁。该次具体持锁者未观测到，不能事后断言是谁持有。
+
+后续排队格在首次 EBUSY 时使用一秒有界获取，并打印首次/最终返回码；无排队者仍要求立即成功。
+这保持对持久残留的失败判据，并消除把瞬时争用直接当作残留的测法缺陷。
+运行库没有为这次观察调整；观测器前版本与失败均保留，最终矩阵重新完整运行。
+
+### 官方缓冲测试的新增失败
+
+两架构定向官方测试各 129 项：122 PASS、6 UNSUPPORTED、1 FAIL。唯一相对历史新增失败是
+`std/localization/locales/locale.convenience/conversions/conversions.buffer/overflow.pass.cpp`。
+同配置当前旧基线在两架构单项均 PASS；不是仅凭历史 PASS 推定来源。
+
+该源码第 94–99 行写三个宽字符，未调用 pubsync 即退出作用域；第 106 行要求读到第二个字符的
+首字节。新析构不刷新剩余缓冲，因此断言失败。见 [源码原文](raw/023_overflow_source.stdout)、
+[原生对照](summary_x86_64_new_focused.json)、[ARM 对照](summary_armv7l_new_focused.json)。
+它不是 noexcept 静态假设测试，不自行豁免、不修改官方测试，也不把该失败藏在总通过数中。
+原生全量运行的残留输出文件另经字节检查，仅有 `e4 b9 91` 三字节（第一个字符），
+而该测试期待九字节，见 raw/077、078；这一文件检查不外推为 ARM 文件转储证据。
+原生官方全量已完成，逐项对照唯一状态变化就是此项 PASS → FAIL；ARM 在已获得有效结果的
+范围内也只有此项新增失败，不能外推未执行部分。
+
+### 原生官方全量结果
+
+完整记录 11,402 项，与历史清单的交集为全部 11,402 项，双方均无缺项。
+libc++：10,009 PASS、129 FAIL、1,156 UNSUPPORTED、27 XFAIL；
+libc++abi：61 PASS、20 UNSUPPORTED。
+相对历史 libc++ 的 10,010 PASS、128 FAIL，仅上述缓冲析构项由 PASS 变 FAIL，
+其他所有状态不变；不是仅比较总数。见
+[逐项清单](comparison_x86_64_new_full.tsv)、[汇总](summary_x86_64_new_full.json)、
+[唯一变化核验](raw/082_native_changed_status.stdout)。运行正常完成，官方返回 1 表示存在失败；
+未以包装器返回值覆盖官方结果。
+
+### 实板官方套件的一次中断与续跑
+
+首轮在记录 6,315 项后，由执行器的 `CONNECTION_FAILURE` 标记触发停止；不是全套完成。
+原始 JSON 记录 5,129 PASS、143 FAIL、1,017 UNSUPPORTED、26 XFAIL，另有 5,087 项未执行。
+其中 9 个相对历史新增 FAIL 没有有效的板上测试执行结果：首个用例的准备命令虽返回主机 0，
+但缺失远端退出码标记，尚未发起测试启动命令；后续 8 个被执行器拒绝启动。
+缺失标记的具体传输根因为 `NOT_OBSERVED`，不能断言物理网络或板端故障。
+原文见 raw/lit_armv7l_new_full/executor/run-7610e781ded34a4487806c1f82e90d08.log，
+[逐项分类](ARM_INTERRUPTION_CLASSIFICATION.tsv)、[首轮汇总](summary_armv7l_new_full.json)。
+
+第一次通道复查成功；16 个部署文件的摘要、运行库映射、正常条件变量值 42 均重新通过。
+按允许的至多三次重试，启动第 1 次续跑，保留 6,306 项有效结果，只选择 9 项无有效执行结果
+与 5,087 项未执行项，共 5,096 项。使用独立输出目录，原首轮标记、日志及失败不删除。
+9 项在第 1 次续跑中均为 PASS。选择清单与参数见 [续跑计划](ARM_RESUME_PLAN.json)、
+arm_resume1.args，恢复证据见 raw/087–090。最终汇总必须说明来自两次执行，不能伪称一次完整运行。
+
+第 1 次续跑记录 1,581 项后再次因准备命令缺少返回码标记停止，其中 39 项无有效板上执行结果；
+保留的 1,542 项有效结果中包含已确认的缓冲析构失败。第 2 次恢复检查通过，随后的续跑
+在配置发现阶段即遇到 `target not found`，没有生成正式测试结果 JSON。
+第 3 次恢复检查仍无目标，显式 sdb connect 也报告连接失败；不再重试。
+见 raw/097–103、[第二次续跑计划](ARM_RESUME2_PLAN.json)。缺失标记与随后失联之间的
+因果关系 `NOT_OBSERVED`，没有改写成已证明的网络根因。
+
+派生汇总保留首轮 6,306 项和第 1 次续跑 1,542 项有效结果，共 **7,848 个不同用例**：
+6,657 PASS、136 FAIL、1,027 UNSUPPORTED、28 XFAIL；均为 libc++。
+与历史逐项相比，在该有效覆盖范围内唯一新增失败是 overflow；另 **3,554 项 `NOT_OBSERVED`**，
+其中 39 项仅有基础设施失败、3,515 项尚未运行，包含 libc++abi 的全部 81 项。
+48 条原始基础设施失败（9＋39）仍完整保存，不伪造为产品失败或通过。
+见 [派生汇总](summary_armv7l_new_combined.json)、[选择来源](ARM_RESULT_SELECTION.tsv)、
+[逐项对照](comparison_armv7l_new_combined.tsv)、[未观测清单](ARM_UNOBSERVED.tsv)。
+
+另有三项历史 FAIL → 本轮 PASS，分别为随机分布的 geometric、negative-binomial、discrete
+`eval.pass.cpp`。历史输出均为退出 124，记录用时约 113.7 秒；本轮分别为约 112.8、176.0、
+123.8 秒后退出 0。本轮执行器窗口为 180 秒，与旧窗口不同；没有在当前实板环境重跑这三项旧源码，
+因此不把通过归功于补丁。完整双侧输出见 `changed_to_pass_details/`，核验见 raw/109。
+raw/107 的首次检查错误地把“唯一新增失败”当成“唯一状态变化”，断言失败；该检查原文保留，
+修正后的核查同时列出一个新增失败和三个转为通过的状态变化，没有隐藏后者。
+
+## 官方执行方法与基线
+
+官方套件采用 C++26，与既有对照相同；每架构一个编译工作进程，总并行度 2，nice 15、ionice idle。
+ARM 以 owner(5001) 运行，独立每项工作目录和临时夹具，真实返回码由远端标记返回；
+主机 SDB 退出 0 不代表测试成功。执行器先经实际运行库映射和正常值探针验证。
+板上没有 timeout/busybox，采用 setsid 独立进程组、主机 180 秒限制、超时停止该组；
+lit 单项 240 秒上限包含编译与执行。与旧超时配置的差异会在超时项中保留，不能自动归因于源码。
+
+历史逐项状态固定于 [historical_baseline.tsv](historical_baseline.tsv)，原文件 SHA256 见 raw/016。
+ARM 使用已由先前逐项对照证明与四补丁 owner 侧一致的 owner 标准化状态；
+不把旧 root 身份结果或旧超时边界直接作为新回归证据。
+
+## 失败记录、交付与清理
+
+- 缺少板上 timeout 的预检失败保留于 raw/006、008；未安装软件或改系统配置。
+- 打包脚本变量重名导致输出 archive 文件名错误，第一次上传未找到文件；SDB 仍返回 host 0。
+  部署随后缺少 archive 退出远端 2。均保留；修正文件名后重新上传、逐文件 SHA256 核验，16/16 一致。
+  空部署目录仅用 rmdir 重建，没有删除其他数据。
+- 板端时间与主机差异导致 tar 时间戳提示；文件内容摘要验证通过，未同步或修改板上时钟。
+- 板端 core_pattern 使用系统 crash-manager 管道；即使测试设置 core 大小为零，仍可能生成诊断 ZIP。
+  归属方法已用一份 ZIP 的 cwd 作正向对照；由于随后失联，下载与清理均未执行。
+- **板端清理未完成**，最终进程/文件状态不可得；[残留与断点](BOARD_RESIDUALS.md) 给出已知路径、
+  已试连接方法及尚未执行的清理步骤。没有为补齐结果改用 QEMU，没有替换系统库或配置。
+- 官方完整原始记录以 `official_evidence.tgz` 无损归档，逐文件摘要见
+  `OFFICIAL_EVIDENCE_MANIFEST.tsv`；脚本/构建配置/五提交 diff 见 `snapshots/` 与 `SNAPSHOT_SHA256SUMS`。
+  空结果中断同样保留，不生成伪造的 result.json。
+- 仓库忽略 `*.tar.gz`，首次暂存归档被拒绝（其余文件已暂存）；改用未被忽略的 `.tgz` 后缀，
+  内容 SHA256 不变，未使用 force、未改 .gitignore，首次暂存失败原文保留于 delivery/016。
+- 正式构建、执行、提交、推送均有命令原文与退出码。少量交互只读翻阅仅留会话记录，不补造原始日志。
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	
+     9	// <locale>
+    10	
+    11	// ADDITIONAL_COMPILE_FLAGS: -D_LIBCPP_DISABLE_DEPRECATION_WARNINGS -D_LIBCPP_ENABLE_CXX26_REMOVED_CODECVT -D_LIBCPP_ENABLE_CXX26_REMOVED_WSTRING_CONVERT
+    12	
+    13	// wbuffer_convert<Codecvt, Elem, Tr>
+    14	
+    15	// int_type overflow(int_type c = traits::eof());
+    16	
+    17	// This test is not entirely portable
+    18	
+    19	// XFAIL: no-wide-characters
+    20	
+    21	#include <locale>
+    22	#include <cassert>
+    23	#include <codecvt>
+    24	#include <fstream>
+    25	#include <sstream>
+    26	
+    27	#include "test_macros.h"
+    28	
+    29	struct test_buf
+    30	    : public std::wbuffer_convert<std::codecvt_utf8<wchar_t> >
+    31	{
+    32	    typedef std::wbuffer_convert<std::codecvt_utf8<wchar_t> > base;
+    33	    typedef base::char_type   char_type;
+    34	    typedef base::int_type    int_type;
+    35	    typedef base::traits_type traits_type;
+    36	
+    37	    explicit test_buf(std::streambuf* sb) : base(sb) {}
+    38	
+    39	    char_type* pbase() const {return base::pbase();}
+    40	    char_type* pptr()  const {return base::pptr();}
+    41	    char_type* epptr() const {return base::epptr();}
+    42	    void gbump(int n) {base::gbump(n);}
+    43	
+    44	    virtual int_type overflow(int_type c = traits_type::eof()) {return base::overflow(c);}
+    45	};
+    46	
+    47	int main(int, char**)
+    48	{
+    49	    {
+    50	        std::string s;
+    51	        {
+    52	            std::ostringstream out;
+    53	            test_buf f(out.rdbuf());
+    54	            assert(f.pbase() == 0);
+    55	            assert(f.pptr() == 0);
+    56	            assert(f.epptr() == 0);
+    57	            assert(f.overflow(L'a') == L'a');
+    58	            assert(f.pbase() != 0);
+    59	            assert(f.pptr() == f.pbase());
+    60	            assert(f.epptr() - f.pbase() == 4095);
+    61	            s = out.str();
+    62	        }
+    63	        {
+    64	            std::istringstream in(s);
+    65	            test_buf f(in.rdbuf());
+    66	            assert(f.sgetc() == L'a');
+    67	        }
+    68	    }
+    69	    {
+    70	        std::string s;
+    71	        {
+    72	            std::ostringstream out;
+    73	            test_buf f(out.rdbuf());
+    74	            f.pubsetbuf(0, 0);
+    75	            assert(f.pbase() == 0);
+    76	            assert(f.pptr() == 0);
+    77	            assert(f.epptr() == 0);
+    78	            assert(f.overflow('a') == 'a');
+    79	            assert(f.pbase() == 0);
+    80	            assert(f.pptr() == 0);
+    81	            assert(f.epptr() == 0);
+    82	            s = out.str();
+    83	        }
+    84	        {
+    85	            std::istringstream in(s);
+    86	            test_buf f(in.rdbuf());
+    87	            assert(f.sgetc() == L'a');
+    88	        }
+    89	    }
+    90	    // TODO: Move this to std::stringstream once https://llvm.org/PR59083 has been resolved
+    91	#ifndef TEST_HAS_NO_FILESYSTEM
+    92	    {
+    93	        {
+    94	            std::ofstream bs("overflow.dat");
+    95	            test_buf f(bs.rdbuf());
+    96	            assert(f.sputc(0x4E51) == 0x4E51);
+    97	            assert(f.sputc(0x4E52) == 0x4E52);
+    98	            assert(f.sputc(0x4E53) == 0x4E53);
+    99	        }
+   100	        {
+   101	            std::ifstream f("overflow.dat");
+   102	            assert(f.is_open());
+   103	            assert(f.get() == 0xE4);
+   104	            assert(f.get() == 0xB9);
+   105	            assert(f.get() == 0x91);
+   106	            assert(f.get() == 0xE4);
+   107	            assert(f.get() == 0xB9);
+   108	            assert(f.get() == 0x92);
+   109	            assert(f.get() == 0xE4);
+   110	            assert(f.get() == 0xB9);
+   111	            assert(f.get() == 0x93);
+   112	            assert(f.get() == -1);
+   113	        }
+   114	        std::remove("overflow.dat");
+   115	    }
+   116	#endif // TEST_HAS_NO_FILESYSTEM
+   117	
+   118	    return 0;
+   119	}
+commit f3c1af692b579add991861e1f7c4950f6af39932
+Author: He Fangyu <fangyu.he@samsung.com>
+Date:   Tue Sep 8 10:21:37 2026 +0800
+
+    libcxx: match timed-wait aliases to the target intmax_t ABI
+    
+    The chrono ratio parameters use intmax_t. Its Itanium name encodes long
+    on the supported LP64 target but long long on armv7l. The original alias
+    spelling exported the LP64 name on ARM as well, so normal timed-wait
+    callers failed to link despite a successful shared-library build.
+    
+    Select the spelling from the target long width and assert the exact
+    intmax_t type at compile time. Keep both version contracts, native-handle
+    access and all waiting algorithms unchanged. This is a follow-up fix;
+    the previously published implementation commits are not rewritten.
+    
+    Validation: compare both aliases against each architecture's actual
+    single-version baseline export, and rebuild both complete runtimes.
+    The original ARM link failure and the independent undefined-symbol
+    comparison are retained with the two-architecture validation evidence.
+    Evidence: https://github.com/lhmax2010/libc-_replacement/tree/codex/runtime-validation/docs/progress/IMPL_0908/W3
+    
+    中文说明：ARM 的 ratio 非类型参数使用 long long，符号编码为 x；原先
+    复用 x86_64 的 l 编码导致定时等待调用方无法链接。按目标类型选择并做
+    静态断言，不改版本契约、等待算法或既有提交；失败原文与逐架构旧库对照保留。
+
+ libcxx/src/condition_variable.cpp | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:35:static void __condvar_wait_body(condition_variable::native_handle_type cv, unique_lock<mutex>& lk) {
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:38:  int ec = __libcpp_condvar_wait(cv, lk.mutex()->native_handle());
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:43:static void __condvar_timed_wait_body(condition_variable::native_handle_type cv, unique_lock<mutex>& lk,
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:62:  int ec = __libcpp_condvar_timedwait(cv, lk.mutex()->native_handle(), &ts);
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:67:#if defined(_LIBCPP_TIZEN_CONDVAR_VERSIONS)
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:84:__libcpp_tizen_cv_wait_old(condition_variable*, unique_lock<mutex>&) noexcept;
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:86:__libcpp_tizen_cv_wait_new(condition_variable*, unique_lock<mutex>&);
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:87:_LIBCPP_EXPORTED_FROM_ABI void __libcpp_tizen_cv_timed_old(
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:89:_LIBCPP_EXPORTED_FROM_ABI void __libcpp_tizen_cv_timed_new(
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:92:void __libcpp_tizen_cv_wait_old(condition_variable* self, unique_lock<mutex>& lk) noexcept {
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:93:  __condvar_wait_body(self->native_handle(), lk);
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:95:void __libcpp_tizen_cv_wait_new(condition_variable* self, unique_lock<mutex>& lk) {
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:96:  __condvar_wait_body(self->native_handle(), lk);
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:98:void __libcpp_tizen_cv_timed_old(condition_variable* self, unique_lock<mutex>& lk,
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:100:  __condvar_timed_wait_body(self->native_handle(), lk, tp);
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:102:void __libcpp_tizen_cv_timed_new(condition_variable* self, unique_lock<mutex>& lk,
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:104:  __condvar_timed_wait_body(self->native_handle(), lk, tp);
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:110:asm(".symver __libcpp_tizen_cv_wait_old,"
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:111:    "_ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE@LLVM_22, remove");
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:112:asm(".symver __libcpp_tizen_cv_wait_new,"
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:113:    "_ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE@@LLVM_22_TIZEN_1, remove");
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:114:asm(".symver __libcpp_tizen_cv_timed_old,"
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:117:    "1EL" _LIBCPP_TIZEN_INTMAX_ABI "1000000000EEEEEEE@LLVM_22, remove");
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:118:asm(".symver __libcpp_tizen_cv_timed_new,"
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:121:    "1EL" _LIBCPP_TIZEN_INTMAX_ABI "1000000000EEEEEEE@@LLVM_22_TIZEN_1, remove");
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:127:void condition_variable::wait(unique_lock<mutex>& lk) { __condvar_wait_body(native_handle(), lk); }
+tmp/IMPL_0908/source/libcxx/src/condition_variable.cpp:131:  __condvar_timed_wait_body(native_handle(), lk, tp);
+tmp/IMPL_0908/source/packaging/libcxx-llvm22.map:1:LLVM_22 {
+tmp/IMPL_0908/source/packaging/libcxx-llvm22.map:5:    __libcpp_tizen_cv_*;
+tmp/IMPL_0908/source/packaging/libcxx-llvm22.map:8:LLVM_22_TIZEN_1 {
+tmp/IMPL_0908/source/packaging/libcxx-llvm22.map:9:} LLVM_22;
+tmp/IMPL_0908/source/packaging/libcxx-runtimes.spec:26:The libraries use libgcc_s as the unwinder. Existing interfaces retain LLVM_22;
+tmp/IMPL_0908/source/packaging/libcxx-runtimes.spec:27:condition-variable waits also provide unwind-capable LLVM_22_TIZEN_1 defaults.
+tmp/IMPL_0908/source/packaging/libcxx-runtimes.spec:95:  -DLIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS=ON \
+tmp/IMPL_0908/source/packaging/libcxx-runtimes.spec:157:- Migrate to the verbatim platform llvm-22.1.8 source tarball and LLVM_22 symbol node.
+tmp/IMPL_0908/source/libcxx/CMakeLists.txt:321:option(LIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS
+tmp/IMPL_0908/source/libcxx/CMakeLists.txt:323:if (LIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS)
+tmp/IMPL_0908/source/packaging/SOURCE_PROVENANCE:41:symbol_version_node=LLVM_22

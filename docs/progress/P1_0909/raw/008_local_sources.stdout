@@ -1,0 +1,385 @@
+tmp/IMPL_0908/source/packaging/libcxx-llvm22.map
+tmp/IMPL_0908/source/libcxx/include/__cxx03/__config_site.in
+tmp/IMPL_0908/source/libcxx/include/__config_site.in
+tmp/IMPL_0908/source/libcxx/test/support/test_macros.h
+     1	//===----------------------------------------------------------------------===//
+     2	//
+     3	// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+     4	// See https://llvm.org/LICENSE.txt for license information.
+     5	// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+     6	//
+     7	//===----------------------------------------------------------------------===//
+     8	
+     9	#include <condition_variable>
+    10	#include <cstdint>
+    11	#include <limits>
+    12	#include <ratio>
+    13	#include <thread>
+    14	#include <type_traits>
+    15	#include <__chrono/duration.h>
+    16	#include <__chrono/system_clock.h>
+    17	#include <__chrono/time_point.h>
+    18	#include <__system_error/throw_system_error.h>
+    19	
+    20	#if defined(__ELF__) && defined(_LIBCPP_LINK_PTHREAD_LIB)
+    21	#  pragma comment(lib, "pthread")
+    22	#endif
+    23	
+    24	_LIBCPP_PUSH_MACROS
+    25	#include <__undef_macros>
+    26	
+    27	_LIBCPP_BEGIN_NAMESPACE_STD
+    28	
+    29	// ~condition_variable is defined elsewhere.
+    30	
+    31	void condition_variable::notify_one() noexcept { __libcpp_condvar_signal(&__cv_); }
+    32	
+    33	void condition_variable::notify_all() noexcept { __libcpp_condvar_broadcast(&__cv_); }
+    34	
+    35	static void __condvar_wait_body(condition_variable::native_handle_type cv, unique_lock<mutex>& lk) {
+    36	  if (!lk.owns_lock())
+    37	    std::__throw_system_error(EPERM, "condition_variable::wait: mutex not locked");
+    38	  int ec = __libcpp_condvar_wait(cv, lk.mutex()->native_handle());
+    39	  if (ec)
+    40	    std::__throw_system_error(ec, "condition_variable wait failed");
+    41	}
+    42	
+    43	static void __condvar_timed_wait_body(condition_variable::native_handle_type cv, unique_lock<mutex>& lk,
+    44	                                     chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) {
+    45	  using namespace chrono;
+    46	  if (!lk.owns_lock())
+    47	    std::__throw_system_error(EPERM, "condition_variable::timed wait: mutex not locked");
+    48	  nanoseconds d = tp.time_since_epoch();
+    49	  if (d > nanoseconds(0x59682F000000E941))
+    50	    d = nanoseconds(0x59682F000000E941);
+    51	  __libcpp_timespec_t ts;
+    52	  seconds s = duration_cast<seconds>(d);
+    53	  typedef decltype(ts.tv_sec) ts_sec;
+    54	  constexpr ts_sec ts_sec_max = numeric_limits<ts_sec>::max();
+    55	  if (s.count() < ts_sec_max) {
+    56	    ts.tv_sec  = static_cast<ts_sec>(s.count());
+    57	    ts.tv_nsec = static_cast<decltype(ts.tv_nsec)>((d - s).count());
+    58	  } else {
+    59	    ts.tv_sec  = ts_sec_max;
+    60	    ts.tv_nsec = giga::num - 1;
+    61	  }
+    62	  int ec = __libcpp_condvar_timedwait(cv, lk.mutex()->native_handle(), &ts);
+    63	  if (ec != 0 && ec != ETIMEDOUT)
+    64	    std::__throw_system_error(ec, "condition_variable timed_wait failed");
+    65	}
+    66	
+    67	#if defined(_LIBCPP_TIZEN_CONDVAR_VERSIONS)
+    68	
+    69	// ratio's non-type parameters are intmax_t: long on LP64, but long long
+    70	// on the supported 32-bit Linux ABI. Validate the type behind the spelling
+    71	// rather than assuming the x86_64 mangled name also applies to ARM.
+    72	#  if __SIZEOF_LONG__ == 8
+    73	static_assert(is_same<intmax_t, long>::value, "unexpected intmax_t ABI");
+    74	#    define _LIBCPP_TIZEN_INTMAX_ABI "l"
+    75	#  else
+    76	static_assert(is_same<intmax_t, long long>::value, "unexpected intmax_t ABI");
+    77	#    define _LIBCPP_TIZEN_INTMAX_ABI "x"
+    78	#  endif
+    79	
+    80	// Native handles are public: no private-member access or object-layout cast is
+    81	// needed. The explicit first argument is the member function's Itanium ABI this.
+    82	extern "C" {
+    83	_LIBCPP_EXPORTED_FROM_ABI void
+    84	__libcpp_tizen_cv_wait_old(condition_variable*, unique_lock<mutex>&) noexcept;
+    85	_LIBCPP_EXPORTED_FROM_ABI void
+    86	__libcpp_tizen_cv_wait_new(condition_variable*, unique_lock<mutex>&);
+    87	_LIBCPP_EXPORTED_FROM_ABI void __libcpp_tizen_cv_timed_old(
+    88	    condition_variable*, unique_lock<mutex>&, chrono::time_point<chrono::system_clock, chrono::nanoseconds>) noexcept;
+    89	_LIBCPP_EXPORTED_FROM_ABI void __libcpp_tizen_cv_timed_new(
+    90	    condition_variable*, unique_lock<mutex>&, chrono::time_point<chrono::system_clock, chrono::nanoseconds>);
+    91	
+    92	void __libcpp_tizen_cv_wait_old(condition_variable* self, unique_lock<mutex>& lk) noexcept {
+    93	  __condvar_wait_body(self->native_handle(), lk);
+    94	}
+    95	void __libcpp_tizen_cv_wait_new(condition_variable* self, unique_lock<mutex>& lk) {
+    96	  __condvar_wait_body(self->native_handle(), lk);
+    97	}
+    98	void __libcpp_tizen_cv_timed_old(condition_variable* self, unique_lock<mutex>& lk,
+    99	                                chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) noexcept {
+   100	  __condvar_timed_wait_body(self->native_handle(), lk, tp);
+   101	}
+   102	void __libcpp_tizen_cv_timed_new(condition_variable* self, unique_lock<mutex>& lk,
+   103	                                chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) {
+   104	  __condvar_timed_wait_body(self->native_handle(), lk, tp);
+   105	}
+   106	}
+   107	
+   108	// Remove implementation names from the object symbol table as well as marking
+   109	// their namespace local in the version script. Only the ABI aliases are public.
+   110	asm(".symver __libcpp_tizen_cv_wait_old,"
+   111	    "_ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE@LLVM_22, remove");
+   112	asm(".symver __libcpp_tizen_cv_wait_new,"
+   113	    "_ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE@@LLVM_22_TIZEN_1, remove");
+   114	asm(".symver __libcpp_tizen_cv_timed_old,"
+   115	    "_ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEE"
+   116	    "NS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioIL" _LIBCPP_TIZEN_INTMAX_ABI
+   117	    "1EL" _LIBCPP_TIZEN_INTMAX_ABI "1000000000EEEEEEE@LLVM_22, remove");
+   118	asm(".symver __libcpp_tizen_cv_timed_new,"
+   119	    "_ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEE"
+   120	    "NS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioIL" _LIBCPP_TIZEN_INTMAX_ABI
+   121	    "1EL" _LIBCPP_TIZEN_INTMAX_ABI "1000000000EEEEEEE@@LLVM_22_TIZEN_1, remove");
+   122	
+   123	#  undef _LIBCPP_TIZEN_INTMAX_ABI
+   124	
+   125	#else
+   126	
+   127	void condition_variable::wait(unique_lock<mutex>& lk) { __condvar_wait_body(native_handle(), lk); }
+   128	
+   129	void condition_variable::__do_timed_wait(unique_lock<mutex>& lk,
+   130	                                         chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) {
+   131	  __condvar_timed_wait_body(native_handle(), lk, tp);
+   132	}
+   133	
+   134	#endif
+   135	
+   136	void notify_all_at_thread_exit(condition_variable& cond, unique_lock<mutex> lk) {
+   137	  auto& tl_ptr = __thread_local_data();
+   138	  // If this thread was not created using std::thread then it will not have
+   139	  // previously allocated.
+   140	  if (tl_ptr.get() == nullptr) {
+   141	    tl_ptr.set_pointer(new __thread_struct);
+   142	  }
+   143	  __thread_local_data()->notify_all_at_thread_exit(&cond, lk.release());
+   144	}
+   145	
+   146	_LIBCPP_END_NAMESPACE_STD
+   147	
+   148	_LIBCPP_POP_MACROS
+// -*- C++ -*-
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef SUPPORT_TEST_MACROS_HPP
+#define SUPPORT_TEST_MACROS_HPP
+
+#ifdef __has_include
+#  if __has_include(<version>)
+#    include <version>
+#  else
+#    include <ciso646>
+#  endif
+#else
+#  include <ciso646>
+#endif
+
+#define TEST_STRINGIZE_IMPL(...) #__VA_ARGS__
+#define TEST_STRINGIZE(...) TEST_STRINGIZE_IMPL(__VA_ARGS__)
+
+#define TEST_CONCAT1(X, Y) X##Y
+#define TEST_CONCAT(X, Y) TEST_CONCAT1(X, Y)
+
+#ifdef __has_feature
+#define TEST_HAS_FEATURE(X) __has_feature(X)
+#else
+#define TEST_HAS_FEATURE(X) 0
+#endif
+
+#ifndef __has_include
+#define __has_include(...) 0
+#endif
+
+#ifdef __has_extension
+#define TEST_HAS_EXTENSION(X) __has_extension(X)
+#else
+#define TEST_HAS_EXTENSION(X) 0
+#endif
+
+#ifdef __has_warning
+#define TEST_HAS_WARNING(X) __has_warning(X)
+#else
+#define TEST_HAS_WARNING(X) 0
+#endif
+
+#ifdef __has_builtin
+#define TEST_HAS_BUILTIN(X) __has_builtin(X)
+#else
+#define TEST_HAS_BUILTIN(X) 0
+#endif
+#ifdef __is_identifier
+// '__is_identifier' returns '0' if '__x' is a reserved identifier provided by
+// the compiler and '1' otherwise.
+#define TEST_HAS_BUILTIN_IDENTIFIER(X) !__is_identifier(X)
+#else
+#define TEST_HAS_BUILTIN_IDENTIFIER(X) 0
+#endif
+
+#if defined(__EDG__)
+# define TEST_COMPILER_EDG
+#elif defined(__clang__)
+# define TEST_COMPILER_CLANG
+# if defined(__apple_build_version__)
+#  define TEST_COMPILER_APPLE_CLANG
+# endif
+#elif defined(_MSC_VER)
+# define TEST_COMPILER_MSVC
+#elif defined(__GNUC__)
+# define TEST_COMPILER_GCC
+#endif
+
+#if defined(__apple_build_version__)
+// Given AppleClang XX.Y.Z, TEST_APPLE_CLANG_VER is XXYZ (e.g. AppleClang 14.0.3 => 1403)
+#define TEST_APPLE_CLANG_VER (__apple_build_version__ / 10000)
+#elif defined(__clang_major__)
+#define TEST_CLANG_VER (__clang_major__ * 100) + __clang_minor__
+#elif defined(__GNUC__)
+// Given GCC XX.YY.ZZ, TEST_GCC_VER is XXYYZZ
+#define TEST_GCC_VER ((__GNUC__ * 10000) + (__GNUC_MINOR__ * 100) + __GNUC_PATCHLEVEL__)
+#endif
+
+/* Make a nice name for the standard version */
+#ifndef TEST_STD_VER
+#if  __cplusplus <= 199711L
+# define TEST_STD_VER 3
+#elif __cplusplus <= 201103L
+# define TEST_STD_VER 11
+#elif __cplusplus <= 201402L
+# define TEST_STD_VER 14
+#elif __cplusplus <= 201703L
+# define TEST_STD_VER 17
+#elif __cplusplus <= 202002L
+# define TEST_STD_VER 20
+#elif __cplusplus <= 202302L
+# define TEST_STD_VER 23
+#else
+# define TEST_STD_VER 99    // greater than current standard
+// This is deliberately different than _LIBCPP_STD_VER to discourage matching them up.
+#endif
+#endif
+
+// Attempt to deduce the GLIBC version
+#if (defined(__has_include) && __has_include(<features.h>)) || \
+    defined(__linux__)
+#include <features.h>
+#if defined(__GLIBC_PREREQ)
+#define TEST_HAS_GLIBC
+#define TEST_GLIBC_PREREQ(major, minor) __GLIBC_PREREQ(major, minor)
+#endif
+#endif
+
+#if TEST_STD_VER >= 11
+# define TEST_ALIGNOF(...) alignof(__VA_ARGS__)
+# define TEST_ALIGNAS(...) alignas(__VA_ARGS__)
+# define TEST_CONSTEXPR constexpr
+# define TEST_NOEXCEPT noexcept
+# define TEST_NOEXCEPT_FALSE noexcept(false)
+# define TEST_NOEXCEPT_COND(...) noexcept(__VA_ARGS__)
+#else
+#   if defined(TEST_COMPILER_CLANG)
+#    define TEST_ALIGNOF(...) _Alignof(__VA_ARGS__)
+#   else
+#    define TEST_ALIGNOF(...) __alignof(__VA_ARGS__)
+#   endif
+# define TEST_ALIGNAS(...) __attribute__((__aligned__(__VA_ARGS__)))
+# define TEST_CONSTEXPR
+# define TEST_NOEXCEPT throw()
+# define TEST_NOEXCEPT_FALSE
+# define TEST_NOEXCEPT_COND(...)
+#endif
+
+#if TEST_STD_VER >= 11
+# define TEST_THROW_SPEC(...)
+#else
+# define TEST_THROW_SPEC(...) throw(__VA_ARGS__)
+#endif
+
+#if defined(__cpp_lib_is_constant_evaluated) && __cpp_lib_is_constant_evaluated >= 201811L
+# define TEST_IS_CONSTANT_EVALUATED std::is_constant_evaluated()
+#elif TEST_HAS_BUILTIN(__builtin_is_constant_evaluated)
+# define TEST_IS_CONSTANT_EVALUATED __builtin_is_constant_evaluated()
+#else
+# define TEST_IS_CONSTANT_EVALUATED false
+#endif
+
+312:      // 2176. Special members for wstring_convert and wbuffer_convert
+409:    class wbuffer_convert : public basic_streambuf<_Elem, _Tr>
+417:      wbuffer_convert() : wbuffer_convert(nullptr) { }
+428:      wbuffer_convert(streambuf* __bytebuf, _Codecvt* __pcvt = new _Codecvt,
+430:      : _M_buf(__bytebuf), _M_cvt(__pcvt, "wbuffer_convert"),
+435:	    this->setp(_M_put_area, _M_put_area + _S_buffer_length);
+442:      ~wbuffer_convert() = default;
+445:      // 2176. Special members for wstring_convert and wbuffer_convert
+446:      wbuffer_convert(const wbuffer_convert&) = delete;
+447:      wbuffer_convert& operator=(const wbuffer_convert&) = delete;
+468:      overflow(typename _Wide_streambuf::int_type __out)
+564:      _M_put(...)
+568:      _M_put(const char* __p, streamsize __n)
+584:	  return _M_put(__first, __pending);
+600:	      return _M_put(__next, __pending);
+602:	    if (!_M_put(__outbuf, __outnext - __outbuf))
+620:      _Elem                     _M_put_area[_S_buffer_length];
+  732   665 owner    Ssl  19-18:47:12 isf
+  741     1 graphic+ Ss   19-18:47:12 bash
+  747   665 owner    Ss   19-18:47:12 launchpad-proce
+  767     1 multime+ Ssl  19-18:47:12 muse-server
+  791   747 owner    Ssl  19-18:47:12 ise-default
+  809     1 location Ssl  19-18:47:11 lbs-server
+  810     1 root     Ssl  19-18:47:11 pass
+  835     1 securit+ Ssl  19-18:47:11 security-manage
+  842   665 owner    Ss   19-18:47:11 dbus-daemon
+  845   665 owner    Ssl  19-18:47:11 starter
+  851   835 securit+ S    19-18:47:11 security-manage
+  863   747 owner    Ss   19-18:47:11 dotnet-hydra-lo
+  910     1 ui_fw    Ssl  19-18:47:10 ise-engine-load
+  919   747 owner    Ssl  19-18:47:10 org.tizen.multi
+  921   747 owner    Ssl  19-18:47:10 runner
+  938   665 owner    Ssl  19-18:47:10 at-spi-bus-laun
+  960     1 network+ Ssl  19-18:47:10 mtp-responder
+  961     1 sdk      Ssl  19-18:47:10 sdbd
+ 1005   863 owner    Ssl  19-18:47:09 dotnet-hydra-lo
+ 1006   863 owner    Ssl  19-18:47:09 SystemUI.dll
+ 1029   863 owner    Ss   19-18:47:08 dotnet-hydra-lo
+ 1030     1 app_fw   Ssl  19-18:47:08 theme-provider
+ 1642   472 root     Ss+  19-18:45:08 bash
+ 2575     2 root     I       09:00:20 kworker/u20:1-kvfree_rcu_reclaim
+ 2980     2 root     I<    1-13:26:43 kworker/2:0H-kblockd
+ 4376     2 root     I<    7-02:08:14 kworker/3:1H-kblockd
+ 5500     2 root     I       01:07:44 kworker/0:2-mm_percpu_wq
+ 6629     2 root     I       22:28:04 kworker/u18:3-kvfree_rcu_reclaim
+ 8384     2 root     I       18:16:43 kworker/u17:0-events_unbound
+ 8553     2 root     I       18:16:07 kworker/u20:0-events_unbound
+ 8604     1 sdk      S    11-14:24:44 sdbd-service
+10607     1 nobody   Ss   14-20:16:21 pacrunner
+11133     2 root     I<      21:59:19 kworker/0:3H-mmc_complete
+11539     2 root     I          46:04 kworker/u16:1-v3d_tfu
+12191     2 root     I       04:34:39 kworker/u20:2-events_unbound
+13799     2 root     I       04:28:52 kworker/u17:1-kvfree_rcu_reclaim
+16001     2 root     I          30:04 kworker/3:0-events_freezable_pwr_efficient
+17273     2 root     I<         25:28 kworker/1:2H
+18155     2 root     I       02:17:42 kworker/u19:1-events_unbound
+18698     2 root     I<         20:22 kworker/2:2H
+18951     2 root     I<         19:29 kworker/0:0H
+19135     2 root     I<         18:49 kworker/3:0H
+19757     2 root     I          16:34 kworker/u16:2-v3d_render
+19758     2 root     I          16:34 kworker/1:0-events
+20977     2 root     I          12:12 kworker/3:2-events
+21176     2 root     I          11:29 kworker/2:1-rcu_gp
+21865     2 root     I          09:01 kworker/1:1-events
+22317     2 root     I          07:23 kworker/0:0-rcu_gp
+22629     2 root     I          06:14 kworker/u16:3-v3d_bin
+22701     2 root     I          06:00 kworker/2:0-events
+22882     2 root     I       13:33:39 kworker/u19:0-kvfree_rcu_reclaim
+23138     2 root     I          04:25 kworker/3:1-mm_percpu_wq
+23755     2 root     I          02:14 kworker/0:1-events
+24122     2 root     I          00:54 kworker/u16:0-v3d_render
+24222     2 root     I          00:32 kworker/2:2-events
+24292     2 root     I       07:42:29 kworker/u18:0-events_unbound
+24378   741 graphic+ S          00:01 sleep
+24383     1 root     Ss+        00:00 sh
+24389 24383 root     R+         00:00 ps
+26696     2 root     I       07:33:52 kworker/u18:1-kvfree_rcu_reclaim
+26893     2 root     I       07:33:09 kworker/u19:2-kvfree_rcu_reclaim
+29643     2 root     I       15:05:02 kworker/u17:2-kvfree_rcu_reclaim
+31095     2 root     I<      03:26:44 kworker/1:0H-kblockd
+
+P1_STATUS_RC=0
+rg: tmp/IMPL_0908/source/libcxx/lib/libcxx-llvm22.map: No such file or directory (os error 2)
