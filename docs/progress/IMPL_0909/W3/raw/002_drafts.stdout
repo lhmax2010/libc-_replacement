@@ -1,0 +1,354 @@
+# Tizen libc++ 取消支持范围声明（草稿）
+
+**供总部与业务部门审阅，尚非产品发布承诺。** 本文区分拟承诺的已验证行为与已知限制，
+不把“线程退出”或“进程没有崩溃”当作资源、状态均已恢复。
+
+实施源码为 `sandbox/lhmax2025/libcxx-noexcept-relief`，提交
+`f3c1af692b579add991861e1f7c4950f6af39932`，位于既有四个运行时补丁之上。
+本轮是隔离构建和验证，没有替换产品系统库。原生官方套件有一个新增失败，ARM 官方套件
+因开发板失联未跑完，板端清理也未完成；详见[验证报告](../W3/REPORT.md)与[断点及残留](../W3/BOARD_RESIDUALS.md)。
+
+## 本次改动是什么
+
+**允许等待中的取消穿过，并恢复共享锁写者状态。** 取消线程时，底层运行时会沿调用链退回，
+执行沿途的资源清理；这称为“强制展开”。`noexcept` 表示函数不允许异常越过的契约，
+原先会在目标等待边界触发终止。本次解除普通等待及三种定时等待的相应契约，并给
+`shared_mutex` 普通写者和 `shared_timed_mutex` 定时写者增加回滚：等待中途退出时，
+清除该写者设置的标记并通知排队者，而不抹掉仍合法持锁的读者状态。
+验证依据：[实施差异与构建](../W1/REPORT.md)、[两架构状态和值断言](../W3/REPORT.md)。
+
+**为已链接旧程序保留旧入口。** 同一个库同时保留旧契约和新契约，用“符号版本”区分。
+它只为普通等待和 system-clock 定时等待这两个库内函数保留旧 `LLVM_22` 入口，
+新链接的默认入口为 `LLVM_22_TIZEN_1`。它不重新编译旧程序，也不修复旧程序内部缺少的清理代码。
+验证依据：[双版本设计](../W2/REPORT.md)、[两架构最终版本核验](../W3/raw/035_alias_verification.stdout)、
+[定时入口逐轮实测](../W3/timed_versions.tsv)。
+
+**转换缓冲对象析构时不再自动刷新。** `wbuffer_convert` 是把宽字符转换后写入底层缓冲的设施。
+本次移除其现代头文件析构中的自动同步调用，保留资源释放，以及显式 `pubsync()` 同步路径。
+需要输出完整时，不能再把析构当作最后一次刷新。这里的刷新是把转换缓冲交给下层，不承诺物理介质持久化。
+验证依据：[源码调用与资源核查](../../R111/ITEM1_WBUFFER_CLOSE_REPORT.md)、[新旧输出值对照](../W3/REPORT.md)。
+
+**Boost 与消费方使用兼容的 C++ 对象约定。** ABI 是二进制间对函数调用、对象表示和所有权的约定。
+既定处理是让相关 Boost 提供方与迁移后的消费方统一到 libc++，避免跨 libstdc++／libc++ 解释同一对象。
+既有适配已覆盖 Clang toolchain 条件下的 Boost 提供方；本轮没有重新实施 Boost 迁移，
+也没有取得全部 13 个消费方已重建、同批部署的证据。计划范围不等于实际完成。
+验证依据：[90 条边、13 个消费方与适配条件核查](../../R111/ITEM2_BOOST_TRANSITION_REPORT.md)。
+
+## 承诺的适用前提
+
+下表是草稿中的**有限承诺**，并非任意 C++ 程序的取消安全保证。前提为：使用本次验证的
+配套 libc++／libc++abi 和 GNU 展开器配置；启用 Linux `__1` 命名空间的共享库双版本开关
+`LIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS`；相关调用链对象用一致的新头重编并链接双版本库；
+启用 C++ 异常及相应清理信息；使用**延迟取消**（在线程到达取消点时处理请求），不是异步取消。
+调用链不得另有阻止展开的 `noexcept` 帧，调用方不得吞掉强制展开；正常 API 的锁所有权等前置条件仍适用。
+实测线程用裸 `pthread_create` 创建，其他线程封装与此测法的等同性未在本轮证明。
+配置与测法依据：[构建设计](../W2/REPORT.md)、[最终实测与限定](../W3/REPORT.md)。
+
+| 承诺（含验证依据） | 已知限制（及为什么） |
+|---|---|
+| 在上述前提及被测形态下，普通、system-clock、steady-clock、自定义 Clock 等待的取消能穿过目标边界，清理计数为 1，创建方取得已取消线程并完成回收。验证依据：[原生矩阵](../W3/matrix_x86_64_final.tsv)、[实板矩阵](../W3/matrix_armv7l_final.tsv)，每格 5 次。 | “干净退出”在这里指展开穿过、沿途被断言的清理执行、线程回收三件事。为什么：任意业务状态、其他回调和所有调度交错并未穷尽，不能据回收成功证明整个进程状态正确。 |
+| 被测普通／定时共享锁写者取消后，原读者计数保留、写者位清除，排队者获得进展，后续读者和写者能真实获取并释放锁。验证依据：[两架构共享锁状态与竞争对照](../W3/REPORT.md)，各格 5 次。 | 定时回滚覆盖当前 steady-clock 实例，不承诺任意 Clock、模板参数、用户回调和调度公平性。为什么：有限实例与有限竞争轮次不能证明这些范围；旧头内的定时回滚代码也不会由换库补齐。 |
+| 被测 `timed_mutex`、普通 `future::wait` 和使用不抛出用户锁的 `condition_variable_any`，取消后清理执行且对象可再次使用；future 值为 42。验证依据：[两架构定向矩阵](../W3/REPORT.md)。 | 不包括 `std::async` 最后共享状态的析构释放，也不包括 cv-any 用户锁重新加锁时抛出。为什么：前者仍有额外不抛帧；后者在不抛的解锁守卫析构内执行用户 `lock()`。依据：[析构路径静态核查](../../R112/REPORT.md)、[抛锁实板对照](../../R115/W3/REPORT.md)。 |
+| 被测正常等待、通知、超时、虚假唤醒，以及共享锁正常获取、释放和多读多写竞争，与匹配旧基线保持相同的具体值和状态。验证依据：[正常路径对照](../W3/REPORT.md)，两架构各格 5 次。 | 不等于完整产品回归通过或性能承诺。为什么：官方新增失败未豁免，ARM 全套有缺口，真实业务负载、所有优化组合及稳定性能未在本轮证明。 |
+| 被测转换缓冲在显式 `pubsync()` 成功后输出完整，取消不再进入已经移除的析构刷新调用。验证依据：[两架构缓冲值与析构取消对照](../W3/REPORT.md)。 | 不承诺未同步的数据自动保留，也不覆盖任意自定义转换 facet（编码转换对象）的行为。为什么：析构不再刷新是明确变化，而自定义资源析构仍可能包含用户代码。 |
+
+## 未重编对象：四种绑定情形
+
+ELF 是 Linux 可执行文件和共享库采用的二进制文件格式；`.o` 是编译后的目标文件，
+`.a` 是目标文件归档。**编译决定调用点和清理代码，链接决定使用的符号版本。两步不能互相替代。**
+
+以下旧 ELF 特指已经记录 `LLVM_22` 等待引用的对象；不是对任意无版本旧文件或任意动态查找方式的保证。
+每行普通等待已在原生和实板各测 5 次，旧／新 system-clock 入口另各测 5 次；依据为
+[两架构最终矩阵](../W3/REPORT.md)、[版本表与具体行为](../W2/REPORT.md)、[定时补测](../W3/timed_versions.tsv)。
+
+| 编译与链接情形 | 运行时入口 | 取消结局与边界 |
+|---|---|---|
+| 已链接旧程序，等待引用已记录旧节点 | `LLVM_22` | 保留旧不抛契约，进入终止处理。探针用标记处理器退出 86；86 不是默认系统信号的名称。 |
+| 旧 `.o`／`.a` 中的对象不重编，只重新链接双版本库 | 新默认 `LLVM_22_TIZEN_1` | **依赖旧机器码和异常清理表布局**：可能执行清理，也可能线程已回收而锁滞留。本轮 quiet 帧实测清理/解锁为 0，竞争者无法取得锁；不在干净退出承诺内。 |
+| 新头重编对象，并链接双版本库 | 新默认 `LLVM_22_TIZEN_1` | 在前述调用链前提下，清理和解锁各为 1，竞争者可取得锁，线程干净回收。 |
+| 新头重编对象，但先链接旧单版本库，之后运行时才换新库 | `LLVM_22` | 已记录的旧版本需求仍保留，进入旧终止路径；仅更新运行时库不会重选链接时已记录的版本。 |
+
+旧对象重新链接为何不能预测为统一结局：旧编译器按“不抛出”假设，可以不为该调用点生成清理区域。
+附近是否存在其他可抛调用、编译选项及优化会影响清理表覆盖的机器码范围；重新链接不补生成这些代码。
+先前同源旧头“邻近可抛调用”与 quiet 两种形态，已在 x86_64 原生、armv7l 实板分别观察到
+“执行清理”和“锁滞留”。这不是随机概率，也不是说每个旧对象都必然滞留；这里的“布局”
+指**调用点与清理表覆盖布局**，与 Boost 的 C++ 对象内存布局问题不同。
+验证依据：[旧调用方两种形态及底层锁状态](../../R115/W3/REPORT.md)。
+
+## 三处头文件实现不能靠动态库升级修正
+
+“内联”在此指实现已随头文件编入消费方，而非必须在最终汇编中消失。单独更新动态库
+无法改写旧对象中已有的这些实现；可靠生效需要重编所有相关翻译单元（一次源文件编译的单位）。
+
+| 头文件实现 | 为什么旧对象必须重编 |
+|---|---|
+| steady-clock 定时等待 | 不抛契约和相应调用点信息已编入消费方，库端双版本没有对应的可靠修补位置。 |
+| 自定义 Clock 定时等待模板 | 模板实例在消费方生成；换库不重新实例化旧代码。 |
+| `wbuffer_convert` 析构 | 旧析构中的自动同步调用已经编入消费方；新库不能把那段旧代码删掉。 |
+
+共享锁**定时写者的回滚守卫**也在头文件内，相关对象同样必须重编。
+不得把新旧头生成的实现混合后偶然选中某个副本当作兼容保证；先前已观察到同名模板副本合并时的
+链接顺序影响。静态及实验依据：[内联与混合对象核查](../../R112/REPORT.md)、[本次版本边界](../W2/REPORT.md)。
+
+## 不覆盖的情形
+
+| 承诺范围 | 已知限制（及为什么） |
+|---|---|
+| 仅覆盖前述延迟取消形态。 | **异步取消不覆盖。** lightweight-web-engine 与 OpenMP 的特定条件路径设置异步模式；取消可能落在其他不抛帧或状态更新中间。x86_64 独立 `atomic<int>::wait` 探针避开本次目标入口仍触发终止，因此修好这些入口不等于保护那两个组件。依据：[条件可达性与独立实测](../../R108/W3_REPORT.md)。不声称每个产品必然触发，也不把该独立探针外推到 ARM。 |
+| 普通 future 等待的已测范围。 | **`std::async` 析构路径不覆盖。** 最后共享状态释放仍经过不抛析构/回调；解除底层等待规格没有删除这些上层边界。依据：[静态调用链](../../R112/REPORT.md)。 |
+| cv-any 使用不抛出的普通用户锁。 | **用户锁重新加锁时抛出不覆盖。** 守卫析构仍是不抛函数，实测进入终止处理；更改等待入口不能更改用户锁契约。依据：[原生与实板对照](../../R115/W3/REPORT.md)。 |
+| 仅对实际验证的编译、运行库和回调实例作结论。 | **不覆盖禁用 C++ 异常的对象、额外不抛帧、吞掉强制展开、任意模板参数/Clock/facet/回调。** 为什么：清理信息可能缺失，或另有阻止展开的边界；旧无异常样本已出现“线程回收但锁残留”。依据：[旧对象实板证据](../../R115/W3/REPORT.md)。 |
+| 不改变 `call_once` 自身等待者路径。 | **未承诺修复其既有取消风险。** 静态调用链直接使用原生等待，不经过本次改动入口；没有加入回滚。是否实际残留全局锁仍未动态观测。依据：[调用链核查](../../R115/W4/CALL_ONCE.md)。 |
+
+## 外部可观察的行为变化
+
+转换缓冲样本写入 `abcdef`：显式同步时，新旧两组都输出 6 字节；不显式同步时，旧组输出
+6 字节，新组只输出 `a`，**本样本未输出 5 字节**，不是普遍固定损失量。
+官方 `overflow.pass.cpp` 依赖析构刷新，在两架构新库均失败，而匹配旧基线单项均通过。
+这不是 `noexcept` 假设测试，当前验收没有将它豁免。验证依据：[具体输出与官方对照](../W3/REPORT.md)。
+
+普通错误在**新入口**可以抛出 `system_error`（携带系统错误信息的异常），旧入口仍因不抛契约终止。
+这不把“调用时未持有锁”等不满足前置条件的用法变成受支持的正常 API。
+**无人捕获普通异常时，最终仍会终止进程，清理也不保证执行。** 既有 x86_64 实测中，
+两种构建默认处理器均为 SIGABRT、诊断相同、局部清理均为 0；区别是终止发生的边界与传播路径。
+不能把取消清理通过写成普通错误一定改善。验证依据：[无人捕获错误的回溯、信号与清理对照](../../R111/ITEM3_CONDVAR_UNWIND_REPORT.md)。
+
+## 架构覆盖与证据强度
+
+| 架构/材料 | 本次覆盖及不能扩大的结论 |
+|---|---|
+| x86_64 | 主机原生。最终定向 235 次；官方 libc++＋libc++abi 全部 11,402 项有结果，唯一新增失败为上述析构同步用例。 |
+| armv7l | Raspberry Pi 4 Model B Rev 1.5 **物理板**。最终定向 235 次；官方套件有 7,848 项有效结果，另 3,554 项未取得有效结果，包含 libc++abi 全套 81 项。失联后停止，清理未完成。不是 QEMU 用户态运行结果。 |
+| aarch64 | 本次实施的动态验证 `NOT_OBSERVED`，不承诺与其他架构相同。既有 Boost 产物静态证据不补足此缺口。 |
+| 外部产品/应用组件 | 外部分母与重建策略仍 `NOT_AVAILABLE`。已覆盖冻结仓范围内的零使用调查，不等于全平台零使用或全平台兼容。 |
+
+定向探针为 C++20；官方套件为既有配置的 C++26。C++03 等待镜像已同步修改，
+本次未修改 C++03 镜像的 `wbuffer_convert` 析构；现代析构修改和
+有限动态结果不等于所有语言模式、编译选项、链接器及发行配置均已验证。
+本次双版本是特定共享 ELF 库设计；静态链接、无版本旧 ELF、其他 ABI 命名空间及任意 `dlsym` 用法没有相同承诺。
+验证依据：[运行配置、完整矩阵与缺口](../W3/REPORT.md)、[外部材料分母与所需资料](../../R110/W1_REPORT.md)。
+
+## 部署顺序约束与发布边界
+
+要落入“新头、新节点”的承诺格，**新头必须先于相关对象重编，双版本库必须先于最终链接可用**。
+运行时再替换库不能改写此前已经记录的旧版本需求，也不能补回旧对象清理代码。
+还须部署配套的、包含既有运行时补丁的 libc++／libc++abi；不能只部署本次其中一个入口改动。
+验证依据：[四种真实绑定及加载身份](../W2/REPORT.md)、[两架构复核](../W3/REPORT.md)。
+
+Boost 的提供方和消费方须在实际对象边界上采用兼容 ABI，才有统一对象约定的前提。
+只替换 Boost，而让旧消费方继续使用 libstdc++，可能形成混用窗口；构建完成与进入同一产品镜像
+不是同一事件。本声明未证明全部 13 个消费方已迁移，也未证明发布系统支持原子切换或回滚。
+依据：[迁移范围、构建条件与过渡期证据](../../R111/ITEM2_BOOST_TRANSITION_REPORT.md)。
+
+发布验收仍须正视：新增官方失败的人工审阅、ARM 全量缺口、失联板清理、外部组件材料，
+以及产品实际打包/部署身份。本轮没有进行产品 GBS/RPM 验收；历史 `SOURCE_PROVENANCE` 文件
+不构成本次 sandbox 的新发布认证。本文不替代这些未完成的核验。
+# Tizen libc++ cancellation support statement (draft)
+
+**For headquarters and business-team review; not a product-release guarantee.** This draft separates
+the proposed, evidence-bounded commitments from known limitations. A thread exiting, or a process
+not crashing, does not establish that its resources and shared state were cleaned up correctly.
+
+The implementation is on `sandbox/lhmax2025/libcxx-noexcept-relief`, commit
+`f3c1af692b579add991861e1f7c4950f6af39932`, on top of the four existing runtime patches.
+This round used isolated builds and did not replace product system libraries. There is one new
+official-test failure. The ARM official suite was interrupted by loss of board connectivity,
+and board cleanup remains incomplete. See the [validation report](../W3/REPORT.md) and
+[checkpoint and residual files](../W3/BOARD_RESIDUALS.md).
+
+## What changes
+
+**Let cancellation cross the waiting boundary, and restore shared-lock writer state.** During
+cancellation, the runtime walks back through the call chain and runs cleanup code; this is called
+*forced unwinding*. A `noexcept` contract forbids an exception from leaving a function and previously
+caused termination at the affected waiting boundary. The change removes that contract from ordinary
+waiting and three timed-wait variants. It also adds rollback to the ordinary `shared_mutex` writer
+and timed `shared_timed_mutex` writer: an interrupted wait clears the writer's flag and notifies
+queued waiters without erasing the state of readers that still legitimately hold the lock.
+Validation basis: [implementation and builds](../W1/REPORT.md),
+[state and value assertions on both architectures](../W3/REPORT.md).
+
+**Keep an old entry point for already-linked old programs.** Symbol versioning lets the same library
+retain old and new contracts. Only ordinary waiting and the system-clock timed-wait library function
+receive an old `LLVM_22` entry and a new default `LLVM_22_TIZEN_1` entry. This does not recompile
+old programs or generate cleanup code missing from them. Validation basis:
+[versioning design](../W2/REPORT.md), [final symbol checks](../W3/raw/035_alias_verification.stdout),
+and [timed-entry measurements](../W3/timed_versions.tsv).
+
+**Stop automatically flushing the conversion buffer during destruction.** `wbuffer_convert`
+converts wide characters and writes them to an underlying buffer. Its modern-header destructor
+no longer requests automatic synchronization. Resource release and explicit `pubsync()` remain.
+Code requiring complete output can no longer treat destruction as the final flush. Flushing here
+means passing converted buffered output downstream, not a guarantee of durable physical storage.
+Validation basis: [call sites and resource ownership](../../R111/ITEM1_WBUFFER_CLOSE_REPORT.md),
+[old/new output-value comparison](../W3/REPORT.md).
+
+**Use compatible C++ object conventions on both sides of Boost boundaries.** An ABI is the binary
+agreement for calls, object representation, and ownership. The established approach is to use
+libc++ for the relevant Boost providers and migrated consumers, avoiding different libstdc++/libc++
+interpretations of the same object. Existing adaptation covers the Boost providers under the Clang
+toolchain condition. This round did not redo Boost migration or obtain evidence that all 13 consumers
+have been rebuilt and deployed together. Being in the migration plan is not evidence of completion.
+Validation basis: [90 edges, 13 consumers, and build conditions](../../R111/ITEM2_BOOST_TRANSITION_REPORT.md).
+
+## Preconditions for the commitments
+
+The following are **limited proposed commitments**, not cancellation safety for arbitrary C++ code.
+They assume the tested, matched libc++/libc++abi and GNU unwinder configuration; the Linux `__1`
+shared-library configuration with `LIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS` enabled; all relevant
+call-chain objects rebuilt with consistent new headers and linked against the dual-version library;
+and C++ exceptions and the corresponding cleanup information enabled.
+
+They apply to **deferred cancellation**, which handles a request at a cancellation point, not
+asynchronous cancellation. The call chain must not contain additional `noexcept` barriers, and
+callers must not swallow forced unwinding. Normal API preconditions, including lock ownership,
+still apply. Measured threads were created with bare `pthread_create`; equivalence of other
+thread wrappers to this method was not established in this round.
+Configuration and method basis: [build design](../W2/REPORT.md),
+[final measurements and limitations](../W3/REPORT.md).
+
+| Commitment, with validation basis | Known limitation, and why |
+|---|---|
+| Under these preconditions and in the tested forms, cancellation crosses ordinary, system-clock, steady-clock, and custom-Clock waits; cleanup count is 1 and the creator joins the cancelled thread. Basis: [native matrix](../W3/matrix_x86_64_final.tsv), [physical-board matrix](../W3/matrix_armv7l_final.tsv), five repetitions per cell. | “Clean exit” means these asserted events: crossing the boundary, running the observed cleanup, and joining the thread. Why: arbitrary application state, callbacks, and every scheduling interleaving were not exhausted. Successful joining alone does not prove process-wide correctness. |
+| After cancellation of the tested ordinary/timed shared-lock writer, reader state is retained, the writer flag is cleared, queued threads make progress, and subsequent readers/writers actually acquire and release the lock. Basis: [two-architecture state and contention comparisons](../W3/REPORT.md), five repetitions per cell. | Timed rollback covers the tested steady-clock instance, not arbitrary Clocks, template arguments, callbacks, or scheduling fairness. Why: finite instances and contention runs cannot establish these wider properties; upgrading a library cannot add header-resident rollback to old consumer objects. |
+| The tested `timed_mutex`, ordinary `future::wait`, and `condition_variable_any` with a non-throwing user lock execute cleanup and remain reusable; the future yields exactly 42. Basis: [directed matrices](../W3/REPORT.md). | This excludes final shared-state destruction for `std::async` and cv-any user locks that throw when relocked. Why: the former still has additional non-throwing frames; the latter calls user `lock()` inside a non-throwing guard destructor. Basis: [destructor call-chain inspection](../../R112/REPORT.md), [physical-board throwing-lock comparison](../../R115/W3/REPORT.md). |
+| Tested normal waits, notifications, timeouts, spurious wakeups, and shared-lock acquisition/release and multi-reader/multi-writer contention retain the same concrete values and states as the matched old baseline. Basis: [normal-path comparisons](../W3/REPORT.md), five repetitions per cell on each architecture. | This is not a full product-regression pass or performance guarantee. Why: the new official failure has not been exempted, ARM full-suite coverage is incomplete, and real workloads, all optimization combinations, and stable production performance were not established. |
+| The tested conversion buffer produces complete output after successful explicit `pubsync()`; cancellation no longer enters the removed destructor-flush call. Basis: [buffer values and destructor-cancellation comparison](../W3/REPORT.md). | Unflushed output is not guaranteed to survive, and arbitrary custom conversion facets are not covered. Why: removing automatic flushing is an intentional behavior change; user-defined resource destructors may still execute user code. |
+
+## Objects that were not rebuilt: four binding cases
+
+ELF is the binary format used for Linux executables and shared libraries. A `.o` is a compiled
+object file; a `.a` is an archive of object files. **Compilation determines call-site and cleanup
+code; linking selects symbol versions. Neither step substitutes for the other.**
+
+Here, an “old ELF” specifically has an existing `LLVM_22` requirement for the waiting reference.
+This is not a guarantee for every unversioned old file or arbitrary dynamic-symbol lookup.
+Each ordinary-wait case below was tested five times natively and five times on the physical board;
+old/new system-clock entries were also tested five times each. Basis:
+[final two-architecture matrices](../W3/REPORT.md), [versions and observed behavior](../W2/REPORT.md),
+[timed supplement](../W3/timed_versions.tsv).
+
+| Compilation and linking history | Runtime entry | Cancellation outcome and boundary |
+|---|---|---|
+| Already-linked old program whose reference records the old node | `LLVM_22` | The old non-throwing contract is retained; termination is entered. Probes use a marker handler that exits with 86; 86 is not the name of a default operating-system signal. |
+| Old `.o`/objects from `.a`, relinked against the dual-version library without recompilation | New default `LLVM_22_TIZEN_1` | **Depends on existing machine-code and exception-cleanup-table coverage.** Cleanup may run, or the thread may be joined while the lock remains stuck. In this round's quiet frame, cleanup/unlock counts were 0 and a contender could not acquire the lock. No clean-exit commitment applies. |
+| Objects rebuilt with new headers and linked against the dual-version library | New default `LLVM_22_TIZEN_1` | Under the stated call-chain preconditions, cleanup/unlock counts are 1, a contender acquires the lock, and the cancelled thread is joined cleanly. |
+| Objects rebuilt with new headers but linked against the old single-version library before the runtime library is upgraded | `LLVM_22` | The already-recorded old version requirement remains, so the old termination path is entered. A later runtime upgrade does not reselect that link-time requirement. |
+
+Why relinked old objects have no uniform predicted outcome: the old compiler could assume the
+call would not throw and omit its cleanup region. Nearby potentially throwing calls, compiler
+options, and optimization can change the machine-code range covered by cleanup tables. Relinking
+does not generate the missing code. Earlier old-header “nearby throwing call” and quiet variants
+demonstrated both cleanup and stuck-lock outcomes on native x86_64 and physical armv7l.
+This is not a random probability, nor a claim that every old object must leave a lock stuck.
+Here, **layout means call-site and cleanup-table coverage**, distinct from Boost's C++ object-memory
+layout issue. Validation basis: [old-caller variants and native mutex state](../../R115/W3/REPORT.md).
+
+## Three header implementations cannot be repaired by a shared-library upgrade
+
+“Inline” here means implementation compiled into the consumer from a header; it does not require
+the function to disappear from the final assembly. Updating a shared library cannot rewrite those
+implementations already present in old objects. Reliable adoption requires rebuilding every relevant
+translation unit, meaning each source-file compilation.
+
+| Header implementation | Why old objects must be rebuilt |
+|---|---|
+| Steady-clock timed wait | The non-throwing contract and call-site information are already in the consumer; library symbol versioning has no corresponding reliable repair point. |
+| Custom-Clock timed-wait template | The consumer generates the template instance; replacing a library does not instantiate the old code again. |
+| `wbuffer_convert` destructor | The old automatic synchronization call is already compiled into the consumer; the new library cannot remove that old code. |
+
+The **timed shared-lock writer's rollback guard** is also in a header and requires rebuilding its
+relevant objects. Accidentally selecting one copy from mixed old/new-header objects is not a
+compatibility guarantee: earlier experiments observed link-order effects when same-name template
+copies were merged. Basis: [inline and mixed-object inspection](../../R112/REPORT.md),
+[current versioning boundary](../W2/REPORT.md).
+
+## Exclusions
+
+| Commitment boundary | Known limitation, and why |
+|---|---|
+| Only the stated deferred-cancellation forms. | **Asynchronous cancellation is excluded.** Conditional paths in lightweight-web-engine and OpenMP enable it; a request may arrive in another non-throwing frame or midway through a state update. An independent x86_64 `atomic<int>::wait` probe still terminated while avoiding the modified entry points. Fixing those entries therefore does not protect these components generally. Basis: [conditional reachability and independent measurement](../../R108/W3_REPORT.md). This does not assert that every product triggers it or extend that independent probe to ARM. |
+| The measured ordinary future-wait forms. | **`std::async` destruction is excluded.** Final shared-state release still crosses non-throwing destructor/callback frames; changing the lower waiting contract does not remove them. Basis: [static call-chain inspection](../../R112/REPORT.md). |
+| Cv-any with an ordinary, non-throwing user lock. | **A user lock throwing during relocking is excluded.** The guard destructor remains non-throwing, and measurements entered termination. Changing the waiting entry does not change the user's lock contract. Basis: [native and physical-board comparison](../../R115/W3/REPORT.md). |
+| Only the configurations and callback instances actually validated. | **Objects built without C++ exceptions, additional non-throwing frames, swallowed forced unwinding, and arbitrary template arguments/Clocks/facets/callbacks are excluded.** Why: cleanup information may be absent or another barrier may remain. Old no-exception samples demonstrated “joined thread, stuck lock.” Basis: [old-object physical-board evidence](../../R115/W3/REPORT.md). |
+| No change to the waiting side of `call_once` itself. | **No commitment to repair its existing cancellation risk.** Its inspected waiting chain directly uses native waiting and does not cross the changed entries; no rollback was added. A residual global lock on that path has not been dynamically demonstrated. Basis: [call-chain inspection](../../R115/W4/CALL_ONCE.md). |
+
+## Externally observable behavior changes
+
+In the `abcdef` buffer sample, explicit synchronization produces all six bytes in both old and new
+builds. Without it, the old build produces six bytes and the new build only `a`: **five bytes are
+not emitted in this sample**, not a universal fixed loss. The official `overflow.pass.cpp` relies
+on destructor flushing and fails with the new library on both architectures; the matched old
+baseline passes the individual test on both. This is not a `noexcept`-assumption test and has not
+been exempted from acceptance. Basis: [output values and official comparisons](../W3/REPORT.md).
+
+Ordinary errors can throw `system_error`, an exception carrying system error information, through
+the **new entry**. The old entry still terminates under its non-throwing contract. This does not
+make lock-precondition violations supported normal API usage. **An uncaught ordinary exception
+still ultimately terminates the process, and cleanup is not guaranteed.** Earlier native x86_64
+measurements observed SIGABRT, identical diagnostics, and zero local cleanup in both builds using
+the default handler. The difference was the termination boundary and propagation path. Successful
+cancellation cleanup must not be presented as an unconditional improvement to ordinary errors.
+Basis: [uncaught-error backtrace, signal, and cleanup comparisons](../../R111/ITEM3_CONDVAR_UNWIND_REPORT.md).
+
+## Architecture coverage and strength of evidence
+
+| Architecture/material | Coverage and limits on interpretation |
+|---|---|
+| x86_64 | Native host. 235 final directed runs; all 11,402 official libc++/libc++abi tests have results. The sole new failure is the destructor-flushing case above. |
+| armv7l | Raspberry Pi 4 Model B Rev 1.5 **physical board**. 235 final directed runs; 7,848 valid official results, with 3,554 lacking valid results, including all 81 libc++abi suite tests. Work stopped after connectivity loss; cleanup remains incomplete. These are not QEMU user-mode execution results. |
+| aarch64 | Dynamic validation of this implementation is `NOT_OBSERVED`. No equivalent-result commitment is made. Existing static Boost-artifact evidence does not fill this gap. |
+| External product/application components | Their denominator and rebuild policies remain `NOT_AVAILABLE`. A zero-use finding within the frozen repositories does not establish zero use or compatibility across the platform. |
+
+Directed probes use C++20; the official suite uses the established C++26 configuration. C++03
+waiting declarations were updated; this round did not change the C++03 `wbuffer_convert` destructor.
+The modern destructor change and limited dynamic results
+do not establish every language mode, compiler option, linker, or distribution configuration.
+Dual versioning here is a particular shared-ELF-library design; static linking, unversioned old ELFs,
+other ABI namespaces, and arbitrary `dlsym` usage have no equivalent commitment.
+Basis: [configuration, matrices, and gaps](../W3/REPORT.md),
+[external denominator and required materials](../../R110/W1_REPORT.md).
+
+## Deployment ordering and release boundaries
+
+To enter the “new headers, new node” case, **new headers must precede rebuilding the relevant
+objects, and the dual-version library must be available before final linking**. A later runtime
+replacement cannot rewrite an old version requirement or generate old-object cleanup code.
+The matched libc++/libc++abi, including the existing runtime patches, must also be deployed;
+deploying only an individual changed entry does not reproduce the validated configuration.
+Basis: [four real binding cases and loaded-library identity](../W2/REPORT.md),
+[two-architecture revalidation](../W3/REPORT.md).
+
+Boost providers and consumers must actually use compatible ABIs at each object boundary to meet
+the unified-object-convention premise. Replacing only Boost while old consumers remain on
+libstdc++ can create a mixed window; completing a build and deploying it in the same product image
+are different events. This statement does not prove all 13 consumers migrated, or that the release
+system supports atomic switching or rollback. Basis:
+[migration scope, build conditions, and transition evidence](../../R111/ITEM2_BOOST_TRANSITION_REPORT.md).
+
+Release acceptance must still address review of the new official failure, incomplete ARM suite
+coverage, cleanup of the disconnected board, external-component materials, and actual product
+package/deployment identity. This round did not perform product GBS/RPM acceptance; the historical
+`SOURCE_PROVENANCE` file is not a new release certification for this sandbox. This draft does not
+replace those outstanding checks.
+# 支持范围草稿审阅清单 / Draft review checklist
+
+此表用于逐项核对材料，**不是审批通过记录**。The checklist is not an approval record.
+
+| 核对事项 / Check | 材料中的限定 / Required qualification |
+|---|---|
+| 四项处理 / Four changes | 等待与回滚、旧/新版本、现代析构不同步、Boost 两端 ABI；Boost 计划不等于全量部署完成。 / Waiting and rollback, versioned contracts, modern destructor behavior, and both sides of Boost; plans are not deployment proof. |
+| 干净退出 / Clean exit | 展开穿过、清理执行、线程回收均有断言，不能只看退出码。 / Asserted unwinding, cleanup, and joining, not exit status alone. |
+| 共享锁 / Shared locks | 清写者位、保留读者、排队者进展、正常值对照；不外推任意模板与调度。 / Writer rollback, reader preservation, queued progress, and normal values; no arbitrary-template or scheduling claim. |
+| 四种绑定 / Four bindings | 旧已链接终止；旧对象重链布局依赖；新头新链接干净；新头先链旧库仍终止。 / Old linked: termination; old relinked: layout-dependent; new/new: clean; new headers linked to old library: termination. |
+| “布局”含义 / Meaning of layout | 旧对象为调用点/清理表覆盖，不与 Boost 对象内存布局混用。 / Call-site/cleanup-table coverage for old objects, not Boost object representation. |
+| 三处头内实现 / Three header implementations | 两种头内定时等待和转换缓冲析构须重编；定时写者回滚也须重编。 / Rebuild both header timed waits and the buffer destructor, as well as timed-writer rollback. |
+| 排除范围 / Exclusions | 异步取消、async 析构、用户锁抛出、无异常信息、额外不抛帧、任意 Clock/回调、call_once 既有风险。 / Async cancellation, async destruction, throwing user locks, missing exception support, extra barriers, arbitrary Clocks/callbacks, and existing call_once risk. |
+| 普通错误 / Ordinary errors | 新入口可抛；无人捕获仍终止，既有原生样本清理为零，不能许诺普遍改善。 / New entry can throw; uncaught still terminates, with zero cleanup in prior native samples; no general improvement claim. |
+| 输出变化 / Output change | 六字节样本新析构只留一字节；显式同步完整。损失量不是普适常数。 / One of six bytes without explicit synchronization in the new sample; explicit synchronization completes output; loss is sample-specific. |
+| 验证覆盖 / Coverage | 两架构各 235 次定向；原生官方 11,402，ARM 有效 7,848、缺口 3,554；aarch64 未测。 / 235 directed runs per architecture; native official 11,402, ARM valid 7,848 and gap 3,554; aarch64 unmeasured. |
+| 验收与收尾 / Acceptance and cleanup | 新增官方失败不豁免；ARM 失联清理未完成；文稿保持草稿。 / New official failure not exempted; disconnected-board cleanup incomplete; document remains a draft. |
+| 外部与部署 / External scope and deployment | 外部分母不可得；新头先于重编、双版本库先于链接，匹配运行库与 Boost ABI；产品发布未认证。 / External denominator unavailable; headers before rebuild, dual-version library before link, matched runtimes/Boost ABI; no product-release certification. |
+
+中英文正文的仓内证据链接及 SHA256 见 [EVIDENCE_INDEX.tsv](EVIDENCE_INDEX.tsv)。
+Repository evidence links and SHA256 values for both drafts are indexed there.
