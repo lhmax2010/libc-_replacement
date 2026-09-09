@@ -1,7 +1,7 @@
 # 第二批运行时改动交付说明
 
 **待人工审阅后交付。当前状态 PARTIAL：ARM 补测及清理未完成，支持声明相应数据待补；
-Gerrit 直接接收条件未验证。本文不是发布通过记录。**
+Gerrit 已查明要求 Change-Id，而现有五提交均缺该字段。本文不是发布通过记录。**
 
 ## 源码与五个提交
 
@@ -100,16 +100,23 @@ ARM 参照 R81 owner 标准化逐项记录；其与四补丁侧一致性有先�
 说明结构相符。**但五个提交均无 Change-Id footer**；检测器以基线打包提交的有效 Change-Id
 作正向对照，见 [格式核验](raw/005_verify_delivery.stdout)。不能声称已符合所有 Gerrit 接收条件。
 
+后续只读核查已取得项目配置完整继承链：platform/upstream/llvm →
+scm/acls/domain_system/toolchain → scm/acls/domain_system → scm/acls/domains → All-Projects。
+最近的显式值在 scm/acls/domains，为 `receive.requireChangeId=true`；All-Projects 的 false
+被这一层覆盖。见 [配置链与各版本 SHA](GERRIT_CONFIG_CHAIN.tsv)、[实际查询](raw/019_read_config_chain.stdout)。
+因此现有五提交**至少未满足 Change-Id 这一项直接 review 接收前置条件**（静态配置核查）。
 Gerrit 官方说明指出，配置为要求 Change-Id 的项目会拒绝缺少它的 review 提交；
-本次没有取得 Tizen 项目当前接收配置，也没有向 refs/for 试推，因此直接 review 接收为
-**NOT_OBSERVED**，不是已确认成功或已确认拒绝。
+本次没有向 refs/for 试推，实际拒绝输出仍为 NOT_OBSERVED，不伪造服务器已拒绝的回执。
 [Gerrit 官方说明](https://gerrit-review.googlesource.com/Documentation/error-missing-changeid.html)。
+继承解释依据 [官方项目配置文档](https://gerrit-review.googlesource.com/Documentation/config-project-config.html#receive.requireChangeId)。
+HTTP 两种公开配置 URL 均返回 404；随后在 tmp 隔离裸仓只读获取 refs/meta/config，
+没有改项目配置、源仓或服务器。仅记录父项目和接收选项，不输出权限成员或凭据。
 既有 sandbox 推送成功证明的是该分支上的代码可取用，不是 review 接收规则已经通过。
 是否以及何时准备正式 review 由人工决定；本包未 amend/rebase、未 force、未推正式分支或 LLVM 上游。
 
 ## 尚缺与交付边界
 
-ARM 补测及清理、支持声明对应数据更新、Gerrit 接收前置确认仍未完成。
+ARM 补测及清理、支持声明对应数据更新尚未完成；Gerrit 的 Change-Id 前置已查明但现有提交未满足。
 外部组件分母及重建策略 NOT_AVAILABLE；产品 GBS/RPM 和实际发布身份验收 NOT_OBSERVED。
 历史 SOURCE_PROVENANCE 锚点不是本次 sandbox 的发布认证。
 本材料只汇编已有事实与本包三方结果，不在这些缺口上补造成功。

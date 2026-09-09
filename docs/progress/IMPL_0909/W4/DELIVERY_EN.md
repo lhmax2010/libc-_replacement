@@ -1,8 +1,8 @@
 # Second runtime-change batch: delivery notes
 
 **For delivery after human review. Current status: PARTIAL. ARM completion and cleanup are
-outstanding, the support statement needs those data, and direct Gerrit review acceptance has not
-been verified. This is not a release-approval record.**
+outstanding, the support statement needs those data, and Gerrit requires Change-Id while all five
+commits lack it. This is not a release-approval record.**
 
 ## Source and five commits
 
@@ -116,18 +116,28 @@ structure. **None of the five has a Change-Id footer.** Detection was positively
 the packaging base commit's valid footer; see [format verification](raw/005_verify_delivery.stdout).
 This does not establish all Gerrit receive requirements.
 
-Gerrit's official documentation states that projects configured to require Change-Id reject
-review submissions missing it. This task did not obtain Tizen's current receive configuration or
-attempt refs/for pushing. Direct review acceptance is therefore **NOT_OBSERVED**, not confirmed
-acceptance or confirmed rejection. [Official Gerrit documentation](https://gerrit-review.googlesource.com/Documentation/error-missing-changeid.html).
+Follow-up read-only inspection obtained the complete configuration chain: platform/upstream/llvm →
+scm/acls/domain_system/toolchain → scm/acls/domain_system → scm/acls/domains → All-Projects.
+The nearest explicit value is `receive.requireChangeId=true` in scm/acls/domains, overriding the
+root's false. See [configuration chain and revision SHAs](GERRIT_CONFIG_CHAIN.tsv) and
+[actual queries](raw/019_read_config_chain.stdout). Therefore the five commits **do not satisfy at
+least the Change-Id prerequisite for direct review submission**, based on static configuration inspection.
+Gerrit's official documentation states that projects requiring Change-Id reject review submissions
+missing it. No refs/for push was attempted; an actual rejection response is still NOT_OBSERVED,
+not a fabricated server receipt. [Official Gerrit documentation](https://gerrit-review.googlesource.com/Documentation/error-missing-changeid.html).
+Inheritance follows the [official project-configuration rules](https://gerrit-review.googlesource.com/Documentation/config-project-config.html#receive.requireChangeId).
+Both public HTTP configuration URLs returned 404; refs/meta/config was then fetched read-only into
+an isolated bare repository under tmp. No project configuration, source repository or server was
+modified. Only parent-project and receive options were recorded, not access-group membership or credentials.
 Successful sandbox pushing establishes source availability on that branch, not successful review
 admission. Humans decide whether and when to prepare formal review. No amend/rebase, force push,
 formal-branch push or LLVM-upstream push was performed.
 
 ## Remaining gaps and delivery boundary
 
-ARM completion/cleanup, corresponding support-statement data and Gerrit receive prerequisites
-remain outstanding. External-component denominators and rebuild policies are NOT_AVAILABLE;
+ARM completion/cleanup and corresponding support-statement data remain outstanding. Gerrit's
+Change-Id prerequisite is now established but is not met by the existing commits.
+External-component denominators and rebuild policies are NOT_AVAILABLE;
 product GBS/RPM and actual release-identity acceptance are NOT_OBSERVED. Historical
 SOURCE_PROVENANCE anchors are not a release certification of this sandbox. These notes compile
 observed facts and the new three-way results without filling gaps with fabricated success.

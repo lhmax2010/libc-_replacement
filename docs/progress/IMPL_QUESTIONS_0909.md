@@ -25,7 +25,9 @@ pointer_string.pass.cpp 等输出可执行文件不存在；已完成的 overflo
 ## W4：Gerrit review 接收前置（留人工审阅）
 
 五个实施提交均没有 Change-Id；已有打包基线的 Change-Id 作为检测正向对照存在。
-Gerrit 官方说明：要求 Change-Id 的项目会拒绝缺少它的 review 提交。本次未取得
-Tizen 项目当前接收配置，未向 refs/for 试推，故直接 review 接收为 NOT_OBSERVED。
-说明结构及源码内容已核，但不能宣称所有接收条件满足；何时、如何准备 review 由人工决定。
+Gerrit 官方说明：要求 Change-Id 的项目会拒绝缺少它的 review 提交。后续只读取得完整继承链，
+查明该项目继承 scm/acls/domains 的 requireChangeId=true，覆盖根 All-Projects 的 false。
+现有五提交至少未满足这一前置；未向 refs/for 试推，实际拒绝回执仍为 NOT_OBSERVED。
+说明结构及源码内容已核；何时、如何准备 review 由人工决定。
 没有自行改写既有提交。证据：`IMPL_0909/W4/raw/005_verify_delivery.stdout`。
+配置证据：`IMPL_0909/W4/GERRIT_CONFIG_CHAIN.tsv`、`raw/019_read_config_chain.stdout`。
