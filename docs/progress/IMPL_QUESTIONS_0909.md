@@ -21,3 +21,11 @@ pointer_string.pass.cpp 等输出可执行文件不存在；已完成的 overflo
 
 已询问：是否允许 lit 编译缺失测试可执行文件，但完全复用既有 libc++／libc++abi 和工具链？
 答复前不开始测试编译。板卡释放轮询继续仅查本机文档，不访问开发板。
+
+## W4：Gerrit review 接收前置（留人工审阅）
+
+五个实施提交均没有 Change-Id；已有打包基线的 Change-Id 作为检测正向对照存在。
+Gerrit 官方说明：要求 Change-Id 的项目会拒绝缺少它的 review 提交。本次未取得
+Tizen 项目当前接收配置，未向 refs/for 试推，故直接 review 接收为 NOT_OBSERVED。
+说明结构及源码内容已核，但不能宣称所有接收条件满足；何时、如何准备 review 由人工决定。
+没有自行改写既有提交。证据：`IMPL_0909/W4/raw/005_verify_delivery.stdout`。

@@ -1,0 +1,280 @@
+f3c1af692b579add991861e1f7c4950f6af39932
+commit 753ed75f299eb7d693df490a7a36834599199de4
+Author: He Fangyu <fangyu.he@samsung.com>
+Commit: He Fangyu <fangyu.he@samsung.com>
+
+    libcxx: allow forced unwind through condition-variable waits
+    
+    Remove the non-throwing specifications from the four wait entry points,
+    including matching declarations and the C++03 mirrors. Keep notification
+    specifications unchanged. This allows deferred thread cancellation to
+    continue through the wait boundary; ordinary system errors may propagate
+    as well. Compatibility for previously linked consumers is handled by a
+    separate symbol-version change.
+    
+    Validation: native x86_64 libc++/libc++abi and matched baseline builds pass
+    with compiler warnings treated as errors. Four wait shapes each pass five
+    cancel/join/cleanup assertions against the complete rebuilt library.
+    Evidence: https://github.com/lhmax2010/libc-_replacement/tree/codex/runtime-validation/docs/progress/IMPL_0908/W1
+    
+    中文说明：解除四种等待的异常规格并同步声明与 C++03 镜像；不改变通知
+    接口。强制展开可继续执行沿途清理，普通错误也可以向上传播。旧调用方的
+    兼容版本另行提交。验证记录包含完整库构建和每格五次的具体行为断言。
+
+commit 2b94110f0ef5e036a17e8cfea80d0c69b0330935
+Author: He Fangyu <fangyu.he@samsung.com>
+Commit: He Fangyu <fangyu.he@samsung.com>
+
+    libcxx: roll back interrupted shared-mutex writer reservations
+    
+    Create a local completion guard after reserving the writer bit in ordinary
+    and timed exclusive acquisition. On an incomplete exit, clear only that
+    bit and notify the first gate while the internal mutex remains locked.
+    Mark successful completion and the existing timed-out cleanup as complete
+    so that normal paths retain their original state transitions.
+    
+    No object members or layout are changed. This does not claim asynchronous
+    cancellation safety or coverage of arbitrary user Clock and callback code.
+    Validation: native x86_64 strict-warning runtime build and header value
+    smoke pass; the guard follows the previously validated ordinary/timed
+    writer rollback shape, including its normal-timeout completion rule.
+    Evidence: https://github.com/lhmax2010/libc-_replacement/tree/codex/runtime-validation/docs/progress/IMPL_0908/W1
+    
+    中文说明：普通与定时写者在置写者位后创建守卫；异常离开时在内部锁仍被
+    持有的阶段清写者位、通知第一等待队列。成功及正常超时显式标记完成，
+    不增加对象成员，不扩展为任意异步取消或用户回调均安全的承诺。
+
+commit aafbe73ba928785fff19baf964b5a31c33be91b8
+Author: He Fangyu <fangyu.he@samsung.com>
+Commit: He Fangyu <fangyu.he@samsung.com>
+
+    libcxx: make wbuffer_convert destruction independent of synchronization
+    
+    Do not call __close from the destructor. Keep codecvt and buffer deletion
+    unchanged, and retain the helper with a comment recording that this class
+    no longer calls it internally. Callers requiring complete output must use
+    pubsync explicitly before destruction.
+    
+    Validation: strict-warning native runtime build and five repeated exact
+    output checks. Explicit synchronization preserves all six sample bytes;
+    without it the already-emitted first byte remains and the five buffered
+    bytes are not emitted during destruction. Resource deletion code and ABI
+    annotations are unchanged.
+    Evidence: https://github.com/lhmax2010/libc-_replacement/tree/codex/runtime-validation/docs/progress/IMPL_0908/W1
+    
+    中文说明：析构不再自动同步，资源删除及 ABI 标注保持不变；保留 __close
+    本身并标注此类已无内部调用。显式同步的输出完整性与不显式同步的内容差异
+    已逐值验证，不能把不自动刷新误写为写入过程中完全没有输出。
+
+commit 72e7a0f21ceeb1a2a4de60fc5137be194c748b90
+Author: He Fangyu <fangyu.he@samsung.com>
+Commit: He Fangyu <fangyu.he@samsung.com>
+
+    libcxx: retain versioned condition-variable wait contracts
+    
+    Keep non-throwing ordinary and system-clock wait wrappers at LLVM_22 and
+    publish throwing implementations as the LLVM_22_TIZEN_1 defaults. Share
+    the existing wait bodies and use public native_handle() access rather
+    than private-member tricks or object-layout casts. The ELF member aliases
+    use an explicit this argument and retain the existing parameter ABI.
+    
+    Enable this platform-specific scheme for the shared runtime through an
+    opt-in CMake option and the package recipe. Remove helper assembler names
+    and also localize their namespace in the version map. Header-only clock
+    overloads have no library symbol hook and still require recompilation.
+    
+    Validation: a full native x86_64 libc++/libc++abi build, dynamic symbol
+    inspection, four caller/linking cases repeated five times, and both timed
+    entry versions repeated five times. The old quiet object relinked to the
+    new default retains its lock; this is an observed compatibility limit,
+    not a claim that all old object layouts behave identically.
+    Evidence: https://github.com/lhmax2010/libc-_replacement/tree/codex/runtime-validation/docs/progress/IMPL_0908/W2
+    
+    中文说明：普通和 system-clock 等待保留 LLVM_22 不抛出包装，新增默认
+    LLVM_22_TIZEN_1；公开 native_handle 取得原生对象，不猜私有布局。
+    真实库的四种绑定与两个定时入口共 30 次值断言通过；旧目标文件重链接
+    不能补回编译时缺失的清理路径，头文件内联入口仍须重编。
+
+commit f3c1af692b579add991861e1f7c4950f6af39932
+Author: He Fangyu <fangyu.he@samsung.com>
+Commit: He Fangyu <fangyu.he@samsung.com>
+
+    libcxx: match timed-wait aliases to the target intmax_t ABI
+    
+    The chrono ratio parameters use intmax_t. Its Itanium name encodes long
+    on the supported LP64 target but long long on armv7l. The original alias
+    spelling exported the LP64 name on ARM as well, so normal timed-wait
+    callers failed to link despite a successful shared-library build.
+    
+    Select the spelling from the target long width and assert the exact
+    intmax_t type at compile time. Keep both version contracts, native-handle
+    access and all waiting algorithms unchanged. This is a follow-up fix;
+    the previously published implementation commits are not rewritten.
+    
+    Validation: compare both aliases against each architecture's actual
+    single-version baseline export, and rebuild both complete runtimes.
+    The original ARM link failure and the independent undefined-symbol
+    comparison are retained with the two-architecture validation evidence.
+    Evidence: https://github.com/lhmax2010/libc-_replacement/tree/codex/runtime-validation/docs/progress/IMPL_0908/W3
+    
+    中文说明：ARM 的 ratio 非类型参数使用 long long，符号编码为 x；原先
+    复用 x86_64 的 l 编码导致定时等待调用方无法链接。按目标类型选择并做
+    静态断言，不改版本契约、等待算法或既有提交；失败原文与逐架构旧库对照保留。
+commit c3f8578a4db871d9d6de96d751f4c2ea7b1638fa
+Author: hao.lin <hao.lin@samsung.com>
+Commit: hao.lin <hao.lin@samsung.com>
+
+    packaging: select Clang explicitly for libc++ runtimes
+    
+    Select the target-prefixed Clang drivers directly in the libc++ runtimes
+    CMake configuration.  The previous package-local _toolchain_override did
+    not affect the RPM compiler macros in the Tizen-Base build environment, so
+    GCC was still selected and rejected the Clang-only --rtlib=libgcc option.
+    
+    When an aarch64 GCC-default environment invokes this Clang-only package,
+    normalize only the GCC-specific composite -mtune value to cortex-a53.  This
+    matches the value already supplied by the LLVM project configuration; all
+    other environment flags remain unchanged.
+    
+    The resulting spec was built in the armv7l and aarch64 GCC-default and LLVM
+    environments.  All four builds used Clang 22.1.8, completed successfully,
+    linked libc++ and libc++abi against libgcc_s.so.1, and installed the five
+    checked forced-unwind header changes.
+    
+    中文说明：显式使用目标三元组前缀的 Clang。此前的
+    _toolchain_override 在 Tizen-Base 环境中不会改变 RPM 编译器宏，因而
+    仍会选中 GCC。对于“GCC 默认环境中由本包指定 Clang”的 aarch64 组合，
+    仅将 GCC 专用的复合 -mtune 参数规范化为 LLVM 配置所用的 cortex-a53；
+    其余参数保持不变。两架构、两环境共四格验证均已通过。
+    
+    Change-Id: I088643ca32ce84bd4f065309a3cd32fb5a6e7a19
+
+commit dd4beffc30be18841818651756f4dbe1f54b0016
+Author: hao.lin <hao.lin@samsung.com>
+Commit: hao.lin <hao.lin@samsung.com>
+
+    packaging: force Clang for libc++ runtimes
+    
+    This addresses review feedback that %{__cc} and %{__cxx} can resolve to GCC while the runtime configuration passes the Clang driver option --rtlib=libgcc. Force the platform toolchain selector to Clang, following the existing llvm.spec convention, while leaving target triples and cross-compilation settings unchanged.
+    
+    中文说明：回应评审关于编译器宏可能解析为 GCC 的意见。明确强制使用 Clang，保留现有目标三元组与交叉编译设置不变。
+    
+    Change-Id: Ib5ad0875af75aed81c767ae96b954b065e7c2877
+
+commit 48fc3a299ba20dd321a7d4a37c4e13ce095176cd
+Author: hao.lin <hao.lin@samsung.com>
+Commit: hao.lin <hao.lin@samsung.com>
+
+    packaging: make libc++ provenance topology-independent
+    
+    Record stable source and release content anchors instead of branch-specific patch topology. The exact package revision remains available in the VCS field generated by GBS.
+    
+    This is a packaging metadata-only correction; runtime sources and build configuration are unchanged.
+    
+    中文说明：删除会随 squash、rebase 或 cherry-pick 失效的补丁拓扑与提交字段，改用稳定的源码子树、标签及归档校验和。包的精确 revision 由 GBS 生成的 spec VCS 字段记录；本提交不改运行库源码或构建配置。
+    
+    Change-Id: Ie00b27c05f4e04bac524ff9d13b40e358e4304f2
+
+commit 08a64b6eb95ed74339f1d862a6c22a2f93fa78f9
+Author: He Fangyu <fangyu.he@samsung.com>
+Commit: hao.lin <hao.lin@samsung.com>
+
+    libcxx: preserve forced unwind in library-delivered handlers
+    
+    Catch-all handlers in explicitly instantiated iostream paths consume foreign
+    forced unwind and can turn pthread cancellation into process termination.
+    Add typed handlers at the thirty sites whose implementation is delivered by
+    the shared libc++ library, preserving stream state before rethrowing.
+    
+    For the badbit and failbit aggregation helpers, classify and rethrow while
+    the nested handler remains active; a later bare rethrow has no active
+    exception for foreign exception paths.  Streambuf extraction commits its
+    state with the non-throwing setter before rethrowing so an exception mask
+    cannot replace the forced unwind.
+    
+    This library batch is separate from consumer-instantiated header sites and
+    depends on the libc++abi forced-unwind marker and unwind fixes.
+    
+    中文说明：
+    为由 libc++ 动态库交付的三十处 iostream 站点补齐强制展开防护。
+    badbit/failbit 汇聚函数在活动 handler 内完成条件重抛，streambuf
+    提取路径以不抛异常的接口先提交状态位，再继续传播取消展开。
+    
+    Validation covers x86_64 and armv7l cancellation paths, library-only
+    replacement, stream exception masks, state-bit assertions, and normal I/O
+    failure behavior.  Other architectures, unaudited LTO modes, mixed runtimes,
+    and dynamic loading boundaries are not covered.
+
+commit 9039afa48d5bdbd30f63589b0ca68e3c564f45ab
+Author: NOT_AVAILABLE <not-available@invalid>
+Commit: hao.lin <hao.lin@samsung.com>
+
+    libcxx: preserve forced unwind in consumer-instantiated handlers
+    
+    Catch-all handlers in consumer-instantiated iostream, future, and string
+    paths intercept pthread cancellation's foreign forced unwind.  Preserve the
+    stream state updates and future state-machine obligations, then rethrow the
+    GNU ABI marker before the generic handlers can consume it.
+    
+    Keep deferred work retryable after cancellation.  For async results, split
+    result construction from readiness publication so cancellation in the
+    pre-publication window atomically publishes broken_promise.  Reference
+    results use the same protocol without taking ownership of the referenced
+    object, and value-result destruction runs after releasing the shared-state
+    mutex.
+    
+    The twenty guarded sites are delivered in this header batch because their
+    code may be instantiated into consumers under the supported build modes.
+    This change depends on the libc++abi forced-unwind marker and unwind fixes.
+    
+    中文说明：
+    为消费者侧可能实例化的 iostream、future 与 string 共二十处站点补齐
+    强制展开防护；保留原状态更新后重抛取消展开。deferred 取消后恢复为
+    可重试；async 在发布前窗口原子完成为 broken_promise，引用结果不取得
+    对象所有权，值对象析构移到共享状态锁外。
+    
+    Validation covers x86_64 and armv7l cancellation paths, async reference
+    results, concurrent waiters, stream state assertions, and normal exception
+    propagation.  Other architectures, LTO variants outside the audited set,
+    mixed runtimes, and dynamic loading boundaries are not covered.
+
+commit 82afebabd7782ed25017e248f319c10284f7bec7
+Author: R51 Evidence <r51@example.invalid>
+Commit: hao.lin <hao.lin@samsung.com>
+
+    libc++abi: expose GNU forced-unwind marker type
+    
+    GNU C++ code protects pthread cancellation with a handler for
+    __cxxabiv1::__forced_unwind, but libc++abi does not expose or map that marker.
+    Define the same abstract class shape used by libstdc++, with an out-of-line
+    virtual destructor so libc++abi owns one exported strong typeinfo definition.
+    Map a forced foreign exception to this type during personality matching.
+    
+    This extension depends on the Layer A forced-unwind rethrow and ARM EHABI
+    handler fixes, at least on armv7l, because the matched handler rethrows the
+    foreign exception. Validation covers x86_64 native and armv7l hardware with
+    libgcc_s. It does not cover aarch64, LLVM libunwind, concurrent cancellation,
+    or mixed-runtime frame traversal.
+    
+    中文说明：移植 GNU 强制展开标记类型及 personality 映射；采用抽象类
+    和库内 key function，保证消费者引用 libc++abi 中唯一的强 typeinfo。
+    该扩展在 armv7l 上依赖层 A。
+ libcxx/CMakeLists.txt                              |  7 ++
+ .../__condition_variable/condition_variable.h      | 12 ++--
+ .../__condition_variable/condition_variable.h      | 12 ++--
+ libcxx/include/__locale_dir/wbuffer_convert.h      |  3 +-
+ libcxx/include/shared_mutex                        | 13 ++++
+ libcxx/src/CMakeLists.txt                          |  3 +
+ libcxx/src/condition_variable.cpp                  | 81 ++++++++++++++++++++--
+ libcxx/src/shared_mutex.cpp                        | 12 ++++
+ packaging/libcxx-llvm22.map                        |  5 ++
+ packaging/libcxx-runtimes.spec                     |  5 +-
+ 10 files changed, 133 insertions(+), 20 deletions(-)
+f3c1af692b579add991861e1f7c4950f6af39932	refs/heads/sandbox/lhmax2025/libcxx-noexcept-relief
+docs/progress/R69/REPORT.md
+docs/progress/R69/code/patches/0003-Layer-C-header-batch-20-sites.patch
+docs/progress/R69/code/patches/0004-Layer-C-library-batch-30-sites.patch
+docs/progress/R69/code/patches/0002-Layer-B-add-GNU-forced-unwind-marker.patch
+docs/progress/R69/code/patches/0001-Layer-A-fix-foreign-forced-unwind-resume.patch
+docs/progress/R69/code/patches/SHA256SUMS
+docs/progress/R69/code/tools/README.md

@@ -1,0 +1,150 @@
+From 753ed75f299eb7d693df490a7a36834599199de4 Mon Sep 17 00:00:00 2001
+From: He Fangyu <fangyu.he@samsung.com>
+Date: Tue, 8 Sep 2026 09:44:19 +0800
+Subject: [PATCH 1/5] libcxx: allow forced unwind through condition-variable
+ waits
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Remove the non-throwing specifications from the four wait entry points,
+including matching declarations and the C++03 mirrors. Keep notification
+specifications unchanged. This allows deferred thread cancellation to
+continue through the wait boundary; ordinary system errors may propagate
+as well. Compatibility for previously linked consumers is handled by a
+separate symbol-version change.
+
+Validation: native x86_64 libc++/libc++abi and matched baseline builds pass
+with compiler warnings treated as errors. Four wait shapes each pass five
+cancel/join/cleanup assertions against the complete rebuilt library.
+Evidence: https://github.com/lhmax2010/libc-_replacement/tree/codex/runtime-validation/docs/progress/IMPL_0908/W1
+
+中文说明：解除四种等待的异常规格并同步声明与 C++03 镜像；不改变通知
+接口。强制展开可继续执行沿途清理，普通错误也可以向上传播。旧调用方的
+兼容版本另行提交。验证记录包含完整库构建和每格五次的具体行为断言。
+---
+ .../__condition_variable/condition_variable.h        | 12 ++++++------
+ .../__condition_variable/condition_variable.h        | 12 ++++++------
+ libcxx/src/condition_variable.cpp                    |  4 ++--
+ 3 files changed, 14 insertions(+), 14 deletions(-)
+
+diff --git a/libcxx/include/__condition_variable/condition_variable.h b/libcxx/include/__condition_variable/condition_variable.h
+index b7151930e922..f11234a2d705 100644
+--- a/libcxx/include/__condition_variable/condition_variable.h
++++ b/libcxx/include/__condition_variable/condition_variable.h
+@@ -104,7 +104,7 @@ public:
+   void notify_one() _NOEXCEPT;
+   void notify_all() _NOEXCEPT;
+ 
+-  void wait(unique_lock<mutex>& __lk) _NOEXCEPT;
++  void wait(unique_lock<mutex>& __lk);
+ 
+   template <class _Predicate>
+   _LIBCPP_HIDE_FROM_ABI void wait(unique_lock<mutex>& __lk, _Predicate __pred) {
+@@ -174,14 +174,14 @@ public:
+ 
+ private:
+   void
+-  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>) _NOEXCEPT;
++  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>);
+ #  if _LIBCPP_HAS_COND_CLOCKWAIT
+   _LIBCPP_HIDE_FROM_ABI void
+-  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>) _NOEXCEPT;
++  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>);
+ #  endif
+   template <class _Clock>
+   _LIBCPP_HIDE_FROM_ABI void
+-  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>) _NOEXCEPT;
++  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>);
+ };
+ #endif // _LIBCPP_HAS_THREADS
+ 
+@@ -195,7 +195,7 @@ condition_variable::wait_for(unique_lock<mutex>& __lk, const chrono::duration<_R
+ 
+ #  if _LIBCPP_HAS_COND_CLOCKWAIT
+ inline void condition_variable::__do_timed_wait(
+-    unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds> __tp) _NOEXCEPT {
++    unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds> __tp) {
+   using namespace chrono;
+   if (!__lk.owns_lock())
+     std::__throw_system_error(EPERM, "condition_variable::timed wait: mutex not locked");
+@@ -219,7 +219,7 @@ inline void condition_variable::__do_timed_wait(
+ 
+ template <class _Clock>
+ inline void condition_variable::__do_timed_wait(unique_lock<mutex>& __lk,
+-                                                chrono::time_point<_Clock, chrono::nanoseconds> __tp) _NOEXCEPT {
++                                                chrono::time_point<_Clock, chrono::nanoseconds> __tp) {
+   wait_for(__lk, __tp - _Clock::now());
+ }
+ 
+diff --git a/libcxx/include/__cxx03/__condition_variable/condition_variable.h b/libcxx/include/__cxx03/__condition_variable/condition_variable.h
+index af0325095fc9..4628d75745bd 100644
+--- a/libcxx/include/__cxx03/__condition_variable/condition_variable.h
++++ b/libcxx/include/__cxx03/__condition_variable/condition_variable.h
+@@ -57,7 +57,7 @@ public:
+   void notify_one() _NOEXCEPT;
+   void notify_all() _NOEXCEPT;
+ 
+-  void wait(unique_lock<mutex>& __lk) _NOEXCEPT;
++  void wait(unique_lock<mutex>& __lk);
+   template <class _Predicate>
+   _LIBCPP_METHOD_TEMPLATE_IMPLICIT_INSTANTIATION_VIS void wait(unique_lock<mutex>& __lk, _Predicate __pred);
+ 
+@@ -82,14 +82,14 @@ public:
+ 
+ private:
+   void
+-  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>) _NOEXCEPT;
++  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::system_clock, chrono::nanoseconds>);
+ #  if defined(_LIBCPP_HAS_COND_CLOCKWAIT)
+   _LIBCPP_HIDE_FROM_ABI void
+-  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>) _NOEXCEPT;
++  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds>);
+ #  endif
+   template <class _Clock>
+   _LIBCPP_HIDE_FROM_ABI void
+-  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>) _NOEXCEPT;
++  __do_timed_wait(unique_lock<mutex>& __lk, chrono::time_point<_Clock, chrono::nanoseconds>);
+ };
+ #endif // !_LIBCPP_HAS_NO_THREADS
+ 
+@@ -207,7 +207,7 @@ condition_variable::wait_for(unique_lock<mutex>& __lk, const chrono::duration<_R
+ 
+ #  if defined(_LIBCPP_HAS_COND_CLOCKWAIT)
+ inline void condition_variable::__do_timed_wait(
+-    unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds> __tp) _NOEXCEPT {
++    unique_lock<mutex>& __lk, chrono::time_point<chrono::steady_clock, chrono::nanoseconds> __tp) {
+   using namespace chrono;
+   if (!__lk.owns_lock())
+     __throw_system_error(EPERM, "condition_variable::timed wait: mutex not locked");
+@@ -231,7 +231,7 @@ inline void condition_variable::__do_timed_wait(
+ 
+ template <class _Clock>
+ inline void condition_variable::__do_timed_wait(unique_lock<mutex>& __lk,
+-                                                chrono::time_point<_Clock, chrono::nanoseconds> __tp) _NOEXCEPT {
++                                                chrono::time_point<_Clock, chrono::nanoseconds> __tp) {
+   wait_for(__lk, __tp - _Clock::now());
+ }
+ 
+diff --git a/libcxx/src/condition_variable.cpp b/libcxx/src/condition_variable.cpp
+index a87399d1b71b..548bdf5b2170 100644
+--- a/libcxx/src/condition_variable.cpp
++++ b/libcxx/src/condition_variable.cpp
+@@ -30,7 +30,7 @@ void condition_variable::notify_one() noexcept { __libcpp_condvar_signal(&__cv_)
+ 
+ void condition_variable::notify_all() noexcept { __libcpp_condvar_broadcast(&__cv_); }
+ 
+-void condition_variable::wait(unique_lock<mutex>& lk) noexcept {
++void condition_variable::wait(unique_lock<mutex>& lk) {
+   if (!lk.owns_lock())
+     std::__throw_system_error(EPERM, "condition_variable::wait: mutex not locked");
+   int ec = __libcpp_condvar_wait(&__cv_, lk.mutex()->native_handle());
+@@ -39,7 +39,7 @@ void condition_variable::wait(unique_lock<mutex>& lk) noexcept {
+ }
+ 
+ void condition_variable::__do_timed_wait(unique_lock<mutex>& lk,
+-                                         chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) noexcept {
++                                         chrono::time_point<chrono::system_clock, chrono::nanoseconds> tp) {
+   using namespace chrono;
+   if (!lk.owns_lock())
+     std::__throw_system_error(EPERM, "condition_variable::timed wait: mutex not locked");

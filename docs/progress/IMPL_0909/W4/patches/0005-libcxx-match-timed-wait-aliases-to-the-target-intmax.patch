@@ -1,0 +1,83 @@
+From f3c1af692b579add991861e1f7c4950f6af39932 Mon Sep 17 00:00:00 2001
+From: He Fangyu <fangyu.he@samsung.com>
+Date: Tue, 8 Sep 2026 10:21:37 +0800
+Subject: [PATCH 5/5] libcxx: match timed-wait aliases to the target intmax_t
+ ABI
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The chrono ratio parameters use intmax_t. Its Itanium name encodes long
+on the supported LP64 target but long long on armv7l. The original alias
+spelling exported the LP64 name on ARM as well, so normal timed-wait
+callers failed to link despite a successful shared-library build.
+
+Select the spelling from the target long width and assert the exact
+intmax_t type at compile time. Keep both version contracts, native-handle
+access and all waiting algorithms unchanged. This is a follow-up fix;
+the previously published implementation commits are not rewritten.
+
+Validation: compare both aliases against each architecture's actual
+single-version baseline export, and rebuild both complete runtimes.
+The original ARM link failure and the independent undefined-symbol
+comparison are retained with the two-architecture validation evidence.
+Evidence: https://github.com/lhmax2010/libc-_replacement/tree/codex/runtime-validation/docs/progress/IMPL_0908/W3
+
+中文说明：ARM 的 ratio 非类型参数使用 long long，符号编码为 x；原先
+复用 x86_64 的 l 编码导致定时等待调用方无法链接。按目标类型选择并做
+静态断言，不改版本契约、等待算法或既有提交；失败原文与逐架构旧库对照保留。
+---
+ libcxx/src/condition_variable.cpp | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/libcxx/src/condition_variable.cpp b/libcxx/src/condition_variable.cpp
+index e83b15afd4c0..975e1dcdfce4 100644
+--- a/libcxx/src/condition_variable.cpp
++++ b/libcxx/src/condition_variable.cpp
+@@ -7,9 +7,11 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include <condition_variable>
++#include <cstdint>
+ #include <limits>
+ #include <ratio>
+ #include <thread>
++#include <type_traits>
+ #include <__chrono/duration.h>
+ #include <__chrono/system_clock.h>
+ #include <__chrono/time_point.h>
+@@ -64,6 +66,17 @@ static void __condvar_timed_wait_body(condition_variable::native_handle_type cv,
+ 
+ #if defined(_LIBCPP_TIZEN_CONDVAR_VERSIONS)
+ 
++// ratio's non-type parameters are intmax_t: long on LP64, but long long
++// on the supported 32-bit Linux ABI. Validate the type behind the spelling
++// rather than assuming the x86_64 mangled name also applies to ARM.
++#  if __SIZEOF_LONG__ == 8
++static_assert(is_same<intmax_t, long>::value, "unexpected intmax_t ABI");
++#    define _LIBCPP_TIZEN_INTMAX_ABI "l"
++#  else
++static_assert(is_same<intmax_t, long long>::value, "unexpected intmax_t ABI");
++#    define _LIBCPP_TIZEN_INTMAX_ABI "x"
++#  endif
++
+ // Native handles are public: no private-member access or object-layout cast is
+ // needed. The explicit first argument is the member function's Itanium ABI this.
+ extern "C" {
+@@ -100,10 +113,14 @@ asm(".symver __libcpp_tizen_cv_wait_new,"
+     "_ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE@@LLVM_22_TIZEN_1, remove");
+ asm(".symver __libcpp_tizen_cv_timed_old,"
+     "_ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEE"
+-    "NS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE@LLVM_22, remove");
++    "NS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioIL" _LIBCPP_TIZEN_INTMAX_ABI
++    "1EL" _LIBCPP_TIZEN_INTMAX_ABI "1000000000EEEEEEE@LLVM_22, remove");
+ asm(".symver __libcpp_tizen_cv_timed_new,"
+     "_ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEE"
+-    "NS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE@@LLVM_22_TIZEN_1, remove");
++    "NS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioIL" _LIBCPP_TIZEN_INTMAX_ABI
++    "1EL" _LIBCPP_TIZEN_INTMAX_ABI "1000000000EEEEEEE@@LLVM_22_TIZEN_1, remove");
++
++#  undef _LIBCPP_TIZEN_INTMAX_ABI
+ 
+ #else
+ 
