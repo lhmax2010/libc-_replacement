@@ -214,4 +214,3 @@ the gap. See [current status](../../IMPL_STATUS_0909.md) and [open questions](..
 See [reproduction steps and the existing probes](SELF_VERIFY_EN.md), including the specific wait
 reference’s version requirement, actual loaded-library maps, and cleanup assertions for four bare-pthread
 waiting forms. A version-node name or exit code alone does not establish application safety.
-
