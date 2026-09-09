@@ -67,3 +67,15 @@ tools/source_tree_diff_gate.py \
 退出码为 `0` 表示所有 hunk 均有且只有一条有效说明；`2` 表示存在无说明差异或已失效的多余说明；`10` 表示参数、输入或脚本自身错误。默认忽略 `.git`、`__pycache__` 和 `*.pyc`，可用重复的 `--exclude NAME` 追加生成物目录名。`--include` 可重复指定要完整比较的源码子树；不指定时比较输入树的全部内容。调用方不得用已知文件清单代替完整的受影响源码子树。
 
 调用方必须保存完整 diff、hunk 清单、说明文件和运行输出，并逐条人工审阅说明内容。只有正式门禁返回 `0` 才能继续交付；`--inventory-only` 仅用于准备说明文件，不代表门禁通过。
+
+# QuickBuild 日志拉取
+
+`quickbuild_logs.py` 使用仓库根目录权限为 `600` 的两行 `.quickbuild-credentials` 登录 QuickBuild，可先列出再按单包、全部失败包或完整 GBS reports 下载日志。凭据不接受命令行参数，cookie 只保存在进程内存，输出固定落入已忽略的 `logs/quickbuild/`。
+
+```sh
+python3 -B tools/quickbuild_logs.py 1165447 list --package lapack
+python3 -B tools/quickbuild_logs.py 1165447 download --package lapack
+python3 -B tools/quickbuild_logs.py 1165447 download --package lapack --yes
+```
+
+完整凭据创建方式、批量模式、断点恢复和限制见 `docs/progress/P2_0909/USAGE.md`。
