@@ -10,7 +10,7 @@ The implementation is on `sandbox/lhmax2025/libcxx-noexcept-relief`, commit
 `f3c1af692b579add991861e1f7c4950f6af39932`, on top of the four existing runtime patches.
 This work used isolated builds and did not replace product system libraries. The destructor-flush
 failure is now an accepted behavior change under this round’s three-way criterion; its raw FAIL is retained.
-The earlier ARM suite was interrupted. This round’s continuation and cleanup are still outstanding,
+The earlier ARM suite was interrupted. Continuation is still outstanding; the old residuals have now been removed and the board released,
 with 3,554 tests lacking valid results; a connectivity check does not fill that coverage gap. See the [validation report](../../IMPL_0908/W3/REPORT.md) and
 [checkpoint and residual files](../../IMPL_0908/W3/BOARD_RESIDUALS.md).
 
@@ -154,7 +154,7 @@ Basis: [uncaught-error backtrace, signal, and cleanup comparisons](../../R111/IT
 | Architecture/material | Coverage and limits on interpretation |
 |---|---|
 | x86_64 | Native host. 235 final directed runs; all 11,402 official libc++/libc++abi tests have results. The sole new failure is the destructor-flushing case above. |
-| armv7l | Raspberry Pi 4 Model B Rev 1.5 **physical board**. 235 final directed runs; 7,848 valid official results, with 3,554 lacking valid results, including all 81 libc++abi suite tests. Earlier work stopped after connectivity loss; this round’s continuation and cleanup remain incomplete. These are not QEMU user-mode execution results. |
+| armv7l | Raspberry Pi 4 Model B Rev 1.5 **physical board**. 235 final directed runs; 7,848 valid official results, with 3,554 lacking valid results, including all 81 libc++abi suite tests. Earlier work stopped after connectivity loss; continuation has not started, but the old residuals have been removed and the board released. These are not QEMU user-mode execution results. |
 | aarch64 | Dynamic validation of this implementation is `NOT_OBSERVED`. No equivalent-result commitment is made. Existing static Boost-artifact evidence does not fill this gap. |
 | External product/application components | Their denominator and rebuild policies remain `NOT_AVAILABLE`. A zero-use finding within the frozen repositories does not establish zero use or compatibility across the platform. |
 
@@ -185,7 +185,7 @@ system supports atomic switching or rollback. Basis:
 [migration scope, build conditions, and transition evidence](../../R111/ITEM2_BOOST_TRANSITION_REPORT.md).
 
 Release acceptance must still address disclosure of the accepted destructor behavior change, incomplete ARM suite
-coverage, board cleanup, external-component materials, and actual product
+coverage, external-component materials, and actual product
 package/deployment identity. This round did not perform product GBS/RPM acceptance; the historical
 `SOURCE_PROVENANCE` file is not a new release certification for this sandbox. This draft does not
 replace those outstanding checks.
@@ -208,6 +208,8 @@ including all 81 libc++abi tests. Within observed coverage the sole new failure 
 classified as an accepted behavior change without changing its FAIL count. This round’s ARM completion
 results and new-failure analysis are pending; absence of other regressions is not established across
 the gap. See [current status](../../IMPL_STATUS_0909.md) and [open questions](../../IMPL_QUESTIONS_0909.md).
+All fourteen old residual targets were removed and individually checked; eight diagnostic ZIPs have verified host backups.
+See [cleanup evidence and the reason continuation has not started](../W2/REPORT.md).
 
 ## How to verify independently
 

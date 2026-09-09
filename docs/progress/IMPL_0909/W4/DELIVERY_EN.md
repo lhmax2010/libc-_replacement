@@ -1,7 +1,7 @@
 # Second runtime-change batch: delivery notes
 
-**For delivery after human review. Current status: PARTIAL. ARM completion and cleanup are
-outstanding, the support statement needs those data, and Gerrit requires Change-Id while all five
+**For delivery after human review. Current status: PARTIAL. ARM completion is outstanding; old
+residuals have been removed and the board released. The support statement needs ARM data, and Gerrit requires Change-Id while all five
 commits lack it. This is not a release-approval record.**
 
 ## Source and five commits
@@ -135,8 +135,11 @@ formal-branch push or LLVM-upstream push was performed.
 
 ## Remaining gaps and delivery boundary
 
-ARM completion/cleanup and corresponding support-statement data remain outstanding. Gerrit's
+ARM completion and corresponding support-statement data remain outstanding. Gerrit's
 Change-Id prerequisite is now established but is not met by the existing commits.
+All fourteen old residual targets were removed and checked, with verified host backups of eight diagnostic ZIPs.
+The board has been cleaned and released by this workstream. Continuation has not started because permission to
+compile missing test executables is awaiting clarification. [W2 record](../W2/REPORT.md).
 External-component denominators and rebuild policies are NOT_AVAILABLE;
 product GBS/RPM and actual release-identity acceptance are NOT_OBSERVED. Historical
 SOURCE_PROVENANCE anchors are not a release certification of this sandbox. These notes compile

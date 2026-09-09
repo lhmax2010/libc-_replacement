@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""单架构官方测试，30 秒资源/连接/截止点检查；输出 JSON 由 lit 生成。"""
+import datetime,json,os,pathlib,shlex,signal,subprocess,sys,time
+r=pathlib.Path.cwd();arch,variant,label=sys.argv[1:4];pattern=sys.argv[4] if len(sys.argv)>4 else None
+base=r/'docs/progress/IMPL_0908/W3';raw=base/'raw'/('lit_'+arch+'_'+variant+'_'+label);raw.mkdir(parents=True,exist_ok=True)
+suffix='native' if arch=='x86_64' else 'armv7l'
+build=r/'tmp/IMPL_0908'/('build-'+('baseline-' if variant=='old' else '')+suffix)
+src=r/'tmp/IMPL_0908'/('source' if variant=='new' else 'baseline-source')
+executor=r/'docs/progress/IMPL_0908/code/lit_executor.py'
+jobs=os.environ.get('IMPL_LIT_JOBS','2');assert jobs in ('1','2')
+cmd=['nice','-n','15','ionice','-c','3','python3',str(src/'llvm/utils/lit/lit.py'),'-j',jobs,'-D','std=c++26','--timeout=240','--order=lexical','--show-unsupported','--show-skipped','--time-tests','-v','-o',str(raw/'result.json')]
+if arch=='armv7l':cmd+=['-D','compiler=/home/toolchain/development/libc++_replacement/progress/R68/tools/armv7l_lit_host_clangxx.sh','-D','executor=python3 '+str(executor)]
+if pattern:cmd+=['--filter',pattern]
+if os.environ.get('IMPL_LIT_ARGS_FILE'):
+ args_file=pathlib.Path(os.environ['IMPL_LIT_ARGS_FILE']).resolve();assert args_file.is_file()
+ cmd+=['@'+str(args_file)]
+cmd+=[str(build/'libcxx/test'),str(build/'libcxxabi/test')]
+deadline=datetime.datetime.fromisoformat(json.loads((base/'raw/001_resource.time.json').read_text())['start']).timestamp()+6*3600
+env=os.environ.copy();env['IMPL_LIT_LOG']=str(raw/'executor');env['IMPL_LIT_VARIANT']=variant
+(raw/'command.txt').write_text('cwd: '+str(r)+'\ncommand: '+shlex.join(cmd)+'\nIMPL_LIT_LOG='+env['IMPL_LIT_LOG']+'\nIMPL_LIT_VARIANT='+variant+'\n')
+start=datetime.datetime.now(datetime.timezone.utc).isoformat();reason='COMPLETE'
+with (raw/'stdout').open('xb') as out,(raw/'stderr').open('xb') as err:
+ proc=subprocess.Popen(cmd,stdout=out,stderr=err,env=env,start_new_session=True)
+ while True:
+  try:rc=proc.wait(timeout=30);break
+  except subprocess.TimeoutExpired:
+   mem=int(next(s for s in pathlib.Path('/proc/meminfo').read_text().splitlines() if s.startswith('MemAvailable:')).split()[1])
+   with (raw/'resources.tsv').open('a') as f:f.write(f'{time.time()}\t{mem}\t{os.getloadavg()}\n')
+   if (raw/'executor/CONNECTION_FAILURE').exists():reason='CONNECTION_FAILURE'
+   elif time.time()>=deadline-180:reason='TASK_TIME_LIMIT' # reserve bounded stop/cleanup
+   elif mem<4*1024*1024:reason='RESOURCE_STOP'
+   else:continue
+   os.killpg(proc.pid,signal.SIGINT)
+   try:rc=proc.wait(timeout=10)
+   except subprocess.TimeoutExpired:
+    os.killpg(proc.pid,signal.SIGTERM)
+    try:rc=proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:os.killpg(proc.pid,signal.SIGKILL);rc=proc.wait()
+   break
+(raw/'exitcode').write_text(str(rc)+'\n')
+(raw/'time.json').write_text(json.dumps({'start':start,'end':datetime.datetime.now(datetime.timezone.utc).isoformat(),'reason':reason},indent=2)+'\n')
+print('LIT_RUN',arch,variant,label,'exit',rc,'reason',reason,'json_present',(raw/'result.json').exists())
+raise SystemExit(rc if rc>=0 else 128-rc)
+#!/usr/bin/env python3
+"""独立 owner 夹具的物理板 lit 执行器；每次保存原命令、双流及真实退出码。"""
+import argparse,hashlib,io,os,pathlib,re,shlex,subprocess,sys,tarfile,tempfile,uuid
+ROOT='/opt/usr/impl_0908_lit'
+VARIANT=os.environ.get('IMPL_LIT_VARIANT','new')
+assert VARIANT in ('old','new')
+RUNTIME=ROOT+('/runtime' if VARIANT=='new' else '/baseline')
+SDB=['/home/toolchain/.local/bin/sdb','-s','192.168.108.26:26101']
+p=argparse.ArgumentParser();p.add_argument('--execdir',required=True);p.add_argument('--env',nargs='*',default=[]);p.add_argument('--prepend_env',nargs='*',default=[]);p.add_argument('command',nargs='+');args=p.parse_args()
+run_id='run-'+uuid.uuid4().hex
+remote=ROOT+'/runs/'+run_id;shared='/opt/usr/home/owner/share/tmp/impl_0908_'+run_id+'.tar'
+raw=pathlib.Path(os.environ['IMPL_LIT_LOG']);raw.mkdir(parents=True,exist_ok=True)
+log=(raw/(run_id+'.log')).open('xb');fault=raw/'CONNECTION_FAILURE'
+def call(command,test=False):
+ log.write(('COMMAND='+shlex.join(command)+'\n').encode());log.flush()
+ try:done=subprocess.run(command,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=180)
+ except subprocess.TimeoutExpired as e:
+  log.write(b'STDOUT\n'+(e.stdout or b'')+b'\nSTDERR\n'+(e.stderr or b'')+b'\nEXITCODE=NOT_OBSERVED HOST_TIMEOUT=180\n');log.flush()
+  if not test:fault.touch()
+  raise
+ log.write(b'STDOUT\n'+done.stdout+b'\nSTDERR\n'+done.stderr+('\nEXITCODE='+str(done.returncode)+'\n').encode());log.flush()
+ if done.returncode: fault.touch();raise RuntimeError('SDB carrier failure')
+ return done.stdout.decode(errors='replace').replace('\r\n','\n')
+def shell(command,test=False):
+ text=call(SDB+['shell',command+'; impl_rc=$?; printf "\n__IMPL_EXIT__=%d\n" "$impl_rc"'],test)
+ m=re.search(r'\n__IMPL_EXIT__=(\d+)\n?$',text)
+ if not m:fault.touch();raise RuntimeError('remote exit marker absent')
+ return int(m[1]),text[:m.start()]
+if fault.exists():raise SystemExit('CONNECTION_FAILURE already recorded; refusing new board work')
+local=pathlib.Path(args.execdir).resolve();assert local.is_dir()
+stdin=b'' if sys.stdin.isatty() else sys.stdin.buffer.read()
+with tempfile.TemporaryDirectory(prefix='impl0908-lit-') as temp:
+ archive=pathlib.Path(temp)/'payload.tar'
+ with tarfile.open(archive,'w') as f:
+  f.add(local,arcname='test');item=tarfile.TarInfo('test/.stdin');item.size=len(stdin);item.mode=0o644;f.addfile(item,io.BytesIO(stdin))
+ try:
+  call(SDB+['push',str(archive),shared])
+  setup=' && '.join(['test -d '+ROOT,'mkdir '+remote,'tar -xf '+shared+' -C '+remote+' --strip-components 1','chown -R owner '+remote,'chmod u+rwx '+remote])
+  rc,text=shell(setup)
+  if rc:raise RuntimeError('setup failed: '+text)
+  def mapped(s):return remote+s[len(str(local)):] if s.startswith(str(local)+'/') else s
+  env={'LD_LIBRARY_PATH':RUNTIME,'TMPDIR':ROOT+'/fixtures','TMP':ROOT+'/fixtures','TEMP':ROOT+'/fixtures'}
+  env.update(x.split('=',1) for x in args.env)
+  for item in args.prepend_env:
+   k,v=item.split('=',1);env[k]=v+(':'+env[k] if k in env else '')
+  # The experimental runtime must be first even if the test specifies search paths.
+  if not env['LD_LIBRARY_PATH'].startswith(RUNTIME):env['LD_LIBRARY_PATH']=RUNTIME+':'+env['LD_LIBRARY_PATH']
+  owner='ulimit -c 0; cd '+remote+' && '+shlex.join(['env',*[k+'='+v for k,v in env.items()],'nice','-n','15','ionice','-c','3',*map(mapped,args.command)])+' < '+remote+'/.stdin'
+  launch='printf "%d\\n" "$$" > '+remote+'/.pgid; exec su owner -c '+shlex.quote(owner)
+  rc,text=shell('setsid sh -c '+shlex.quote(launch),test=True)
+  sys.stdout.write(text)
+  result=rc
+ except subprocess.TimeoutExpired:
+  stop='p=$(cat '+remote+'/.pgid); case "$p" in ""|*[!0-9]*) exit 92;; esac; test "$p" -gt 1 && pkill -KILL -g "$p"; true'
+  rc,text=shell(stop)
+  sys.stderr.write('TEST_TIMEOUT=180 remote process group stopped\n'+text);result=124
+ except Exception as e:
+  sys.stderr.write('EXECUTOR_ERROR: '+str(e)+'\n');result=90
+ finally:
+  if not fault.exists():
+   rc,text=shell('rm -rf '+shlex.quote(remote)+' && rm -f '+shlex.quote(shared))
+   if rc:sys.stderr.write('CLEANUP_ERROR '+text+'\n');result=91
+log.close();raise SystemExit(result)
+#!/usr/bin/env python3
+"""由 ZIP 中的进程 cwd 认领本批崩溃诊断，保存原件后逐个清理；不读环境字段。"""
+import csv,datetime,hashlib,json,pathlib,re,shlex,subprocess,sys,zipfile
+r=pathlib.Path.cwd();base=r/'docs/progress/IMPL_0908/W3';raw=base/'raw';sdb=['/home/toolchain/.local/bin/sdb','-s','192.168.108.26:26101'];n=0
+for d in raw.glob('lit_armv7l_*'):assert (d/'exitcode').exists(),('tests still running',d)
+def run(label,cmd,remote=False):
+ global n
+ n+=1;stem=raw/f'crashes_{n:03}_{label}'
+ if remote:cmd=[*sdb,'shell',cmd+'; impl_rc=$?; printf "\\nREMOTE_EXIT=%d\\n" "$impl_rc"']
+ done=subprocess.run([sys.executable,'docs/progress/R114/code/record.py',str(stem),'timeout','40',*cmd])
+ text=pathlib.Path(str(stem)+'.stdout').read_text()
+ assert done.returncode==0,('carrier failure; STOP',stem)
+ if remote:assert re.search(r'REMOTE_EXIT=0\s*$',text),('remote failure; STOP',stem)
+ return text
+text=run('inventory',"find /opt/usr/share/crash/dump -maxdepth 1 -type f -name 't.tmp.exe_*.zip' -printf '%T@ %p\\n'",True)
+start=datetime.datetime.fromisoformat(json.loads((raw/'001_resource.time.json').read_text())['start']).timestamp()-300
+files=[];prior=[]
+for line in text.splitlines():
+ m=re.fullmatch(r'([0-9.]+) (/opt/usr/share/crash/dump/t\.tmp\.exe_[0-9]+_[0-9]{14}\.zip)',line)
+ if m:(files if float(m[1])>=start else prior).append(m[2])
+assert files and prior,'candidate and historical positive controls required'
+out=r/'tmp/IMPL_0908/board-crash-preserved';out.mkdir(exist_ok=False);rows=[];owned=[]
+for path in sorted(files):
+ cwd=run('cwd',"unzip -p "+shlex.quote(path)+" '*/proc/*/cwd'",True).split('REMOTE_EXIT=',1)[0].strip('\x00 \r\n')
+ if not (cwd.startswith('/opt/usr/impl_0908_lit/') or cwd.startswith('/var/tmp/impl_0908/')):
+  rows.append([path,cwd,'NOT_OWNED_PRESERVED','','']);continue
+ local=out/pathlib.Path(path).name
+ run('preserve',[*sdb,'pull',path,str(local)])
+ digest=hashlib.sha256(local.read_bytes()).hexdigest()
+ with zipfile.ZipFile(local) as archive:
+  cwd_members=[z for z in archive.infolist() if re.search(r'/proc/[0-9]+/cwd$',z.filename)]
+  assert len(cwd_members)==1 and cwd_members[0].file_size<4096
+  assert archive.read(cwd_members[0]).decode().strip('\x00 \r\n')==cwd
+ actual=run('hash','sha256sum '+shlex.quote(path),True)
+ assert actual.split()[0]==digest
+ owned.append(path);rows.append([path,cwd,'OWNED_BACKED_UP',digest,str(local)])
+assert owned,'ownership positive control required'
+with (base/'BOARD_CRASH_CLEANUP.tsv').open('w') as f:
+ w=csv.writer(f,delimiter='\t',lineterminator='\n');w.writerow(['board_file','process_cwd','classification','sha256','host_backup']);w.writerows(rows)
+guards=' && '.join('test ! -L '+shlex.quote(p) for p in owned)
+run('remove',guards+' && rm -f -- '+' '.join(map(shlex.quote,owned)),True)
+run('verify',' && '.join('test ! -e '+shlex.quote(p) for p in owned)+' && test -f '+shlex.quote(prior[0])+' && printf "TASK_CRASHES_ABSENT=PASS HISTORICAL_FILE_RETAINED=PASS\\n"',True)
+print('CRASH_REPORT_CLEANUP=PASS removed='+str(len(owned))+' non_task_candidates_preserved='+str(len(files)-len(owned)))
+print('RECOVERABLE_FROM_HOST='+str(out)+'; ZIP environment fields were not printed or committed')
+#!/usr/bin/env python3
+"""保留历次有效结果，仅重跑传输无结果项及未执行项；最多三次。"""
+import csv,json,pathlib,re,sys
+r=pathlib.Path('docs/progress/IMPL_0908/W3');retry=int(sys.argv[1]) if len(sys.argv)>1 else 1
+assert 1<=retry<=3
+labels=['full']+['resume'+str(i) for i in range(1,retry)];good={};all_names=set();bad=[];sources=[]
+for label in labels:
+ p=r/('raw/lit_armv7l_new_'+label+'/result.json');assert (p.parent/'exitcode').exists()
+ sources.append(str(p));data=json.loads(p.read_text())
+ for e in data['tests']:
+  all_names.add(e['name']);output=e.get('output','')
+  if 'EXECUTOR_ERROR: remote exit marker absent' in output or 'CONNECTION_FAILURE already recorded; refusing new board work' in output:
+   assert e['code']=='FAIL';bad.append((label,e));continue
+  assert e['name'] not in good,('unexpected valid overlap',e['name']);good[e['name']]=e
+pending={e['name'] for _,e in bad}-set(good)
+assert pending and good
+out=r/f'arm_resume{retry}.args';pattern='^(?:'+'|'.join(re.escape(name) for name in good)+')$';rx=re.compile(pattern)
+assert all(rx.search(name) for name in good) and not any(rx.search(name) for name in pending)
+out.write_text('--filter-out\n'+pattern+'\n')
+classification=r/('ARM_INTERRUPTION_CLASSIFICATION.tsv' if retry==1 else f'ARM_INTERRUPTION{retry}_CLASSIFICATION.tsv')
+with classification.open('w') as f:
+ w=csv.writer(f,delimiter='\t',lineterminator='\n');w.writerow(['run','test','original_code','classification','reason'])
+ for label,e in bad:w.writerow([label,e['name'],e['code'],'NO_VALID_BOARD_EXECUTION','missing exit marker before launch' if 'EXECUTOR_ERROR:' in e['output'] else 'refused after connection flag'])
+plan={'retry_number':retry,'preserve_valid_records':len(good),'outstanding_infrastructure_records_to_rerun':len(pending),'historical_infrastructure_records_preserved':len(bad),'previously_not_observed':11402-len(all_names),'expected_resume_tests':11402-len(good),'args_file':str(out),'source_results':sources}
+dest=r/('ARM_RESUME_PLAN.json' if retry==1 else f'ARM_RESUME{retry}_PLAN.json');assert not dest.exists()
+dest.write_text(json.dumps(plan,indent=2)+'\n');print(json.dumps(plan,indent=2))
+--filter-out
+^(?:llvm\-libc\+\+\-shared\.cfg\.in\ ::\ /home/toolchain/development/libcxx_runtime_validation/tmp/IMPL_0908/build\-armv7l/libcxx/test/extensions/clang/clang_modules_include\.gen\.py/algorithm\.compile\.pass\.cpp|llvm\-libc\+\+\-shared\.cfg\.in\ ::\ /home/toolchain/development/libcxx_runtime_validation/tmp/IMPL_0908/build\-armv7l/libcxx/test/extensions/clang/clang_modules_include\.gen\.py/any\.compile\.pass\.cpp|llvm\-libc\+\+\-shared\.cfg\.in\ ::\ /home/toolchain/development/libcxx
