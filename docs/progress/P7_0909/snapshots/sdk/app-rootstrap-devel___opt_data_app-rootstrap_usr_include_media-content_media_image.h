@@ -1,0 +1,174 @@
+/*
+* Copyright (c) 2011 Samsung Electronics Co., Ltd All Rights Reserved
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+* http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*/
+
+
+
+#ifndef __TIZEN_CONTENT_MEDIA_IMAGE_H__
+#define __TIZEN_CONTENT_MEDIA_IMAGE_H__
+
+#include <media_content_type.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+
+/**
+ * @brief This file contains the image metadata API and related functions to proceed with them.
+ *        Functions include cloning and destroying the image metadata, getting image metadata such as width, height, \n
+ *        orientation, date taken.
+ */
+
+/**
+ * @addtogroup CAPI_CONTENT_MEDIA_IMAGE_META_MODULE
+ * @{
+ */
+
+
+/**
+ * @brief Clones the image metadata.
+ * @details The function copies the image metadata handle from a source to destination.
+ *
+ * @since_tizen 2.3
+ *
+ * @remarks The @a dst should be released using image_meta_destroy().
+ *
+ * @param[out] dst The destination handle to the image metadata
+ * @param[in] src The source handle to the image metadata
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE              Successful
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_PARAMETER Invalid parameter
+ * @retval #MEDIA_CONTENT_ERROR_OUT_OF_MEMORY     Out of memory
+ *
+ * @see image_meta_destroy()
+ */
+int image_meta_clone(image_meta_h *dst, image_meta_h src);
+
+/**
+ * @brief Destroys the image metadata.
+ * @details The function frees all resources related to the image metadata handle. This handle
+ *          no longer can be used to perform any operations. A new handle has to
+ *          be created before next usage.
+ *
+ * @since_tizen 2.3
+ *
+ * @param[in] image The handle to the image metadata
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE Successful
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_PARAMETER Invalid parameter
+ *
+ * @pre Get a copy of image_meta handle by calling image_meta_clone().
+ *
+ * @see image_meta_clone()
+ */
+int image_meta_destroy(image_meta_h image);
+
+/**
+ * @brief Gets the ID of an image.
+ * @since_tizen 2.3
+ *
+ * @remarks The @a media_id should be released using free().
+ *
+ * @param[in] image The handle to the image metadata
+ * @param[out] media_id The media ID
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE              Successful
+ * @retval #MEDIA_CONTENT_ERROR_OUT_OF_MEMORY     Out of memory
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_PARAMETER Invalid parameter
+ */
+int image_meta_get_media_id(image_meta_h image, char **media_id);
+
+/**
+ * @brief Gets the image width in pixels.
+ * @since_tizen 2.3
+ *
+ * @param[in] image The handle to the image metadata
+ * @param[out] width The image width in pixels
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE              Successful
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_PARAMETER Invalid parameter
+ */
+int image_meta_get_width(image_meta_h image, int *width);
+
+/**
+ * @brief Gets the image height in pixels.
+ * @since_tizen 2.3
+ *
+ * @param[in] image The handle to the image metadata
+ * @param[out] height The image height in pixels
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE              Successful
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_PARAMETER Invalid parameter
+ */
+int image_meta_get_height(image_meta_h image, int *height);
+
+/**
+ * @brief Gets the image orientation.
+ * @since_tizen 2.3
+ *
+ * @param[in] image The handle to the image metadata
+ * @param[out] orientation The image orientation
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE              Successful
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_PARAMETER Invalid parameter
+ */
+int image_meta_get_orientation(image_meta_h image, media_content_orientation_e *orientation);
+
+/**
+ * @brief Gets the image creation time.
+ * @since_tizen 2.3
+ *
+ * @remarks The @a date_taken should be released using free().
+ *
+ * @param[in] image The handle to the image metadata
+ * @param[out] date_taken The time, when image was taken (in seconds, since the Epoch)
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE              Successful
+ * @retval #MEDIA_CONTENT_ERROR_OUT_OF_MEMORY     Out of memory
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_PARAMETER Invalid parameter
+ */
+int image_meta_get_date_taken(image_meta_h image, char **date_taken);
+
+/**
+ * @}
+ */
+
+
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
+
+#endif /*__TIZEN_CONTENT_MEDIA_IMAGE_H__*/

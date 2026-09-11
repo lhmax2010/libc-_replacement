@@ -1,0 +1,215 @@
+/*
+ * Copyright (c) 2000 - 2016 Samsung Electronics Co., Ltd. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * @file        rua.h
+ * @brief       RUA API declaration header file.
+ * @author      Jinwoo Nam (jwoo.nam@samsung.com)
+ * @version     0.1
+ * @history     0.1: RUA API Declarations, structure declaration
+ */
+
+#ifndef __RUA_H__
+#define __RUA_H__
+
+#include <time.h>
+#include <sys/types.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * @defgroup RUA rua
+ * @{
+ */
+
+/**
+ * @}
+ */
+
+/**
+ * @addtogroup RUA
+ * @{
+ */
+
+/**
+ * @struct rua_rec
+ * @brief RUA record info structure
+ */
+struct rua_rec {
+	int id;			/**< primary key */
+	char *pkg_name;		/**< package name */
+	char *app_path;		/**< application path */
+	char *arg;		/**< application launching argument */
+	time_t launch_time;	/**< application launching time */
+	char *instance_id;	/**< Instance ID */
+	char *instance_name;	/**< Instance Name */
+	char *icon;		/**< Icon path */
+	char *uri;		/**< URI */
+	char *image;		/**< Image path */
+	char *comp_id;		/**< Component ID */
+};
+
+/**
+ * @brief Called when the history is updated.
+ * @param[in] table db table pointer
+ * @param[in] nrows the number of record
+ * @param[in] ncols the number of field
+ * @param[in] user_data  The user data passed from rua_register_update_cb()
+ */
+typedef void (*rua_history_update_cb) (
+		char **table,
+		int nrows,
+		int ncols,
+		void *user_data);
+
+/**
+ * @brief	Add history
+ * @param[in]	pkg_name package name to delete history
+ * @return	0 on success, otherwise a nagative error value
+ * @retval	0 on successful
+ * @retval	-1 on failed
+ */
+int rua_add_history_for_uid(char *pkg_name, char *app_path, char *arg, uid_t uid);
+
+/**
+ * @brief	Delete history with pkg_name
+ * @param[in]	pkg_name package name to delete history
+ * @return	0 on success, otherwise a nagative error value
+ * @retval	0 on successful
+ * @retval	-1 on failed
+ */
+int rua_delete_history_with_pkgname(char *pkg_name);
+int rua_delete_history_with_pkgname_for_uid(char *pkg_name, uid_t uid);
+
+/**
+ * @brief	Delete history with app_path
+ * @param[in]	app_path package name to delete history
+ * @return	0 on success, otherwise a nagative error value
+ * @retval	0 on successful
+ * @retval	-1 on failed
+ */
+int rua_delete_history_with_apppath(char *app_path);
+int rua_delete_history_with_apppath_for_uid(char *app_path, uid_t uid);
+
+/**
+ * @brief	Clear history
+ * @return	0 on success, otherwise a nagative error value
+ * @retval	0 on successful
+ * @retval	-1 on failed
+ */
+int rua_clear_history(void);
+int rua_clear_history_for_uid(uid_t uid);
+
+/**
+ * @brief	Load recently used application history db.
+ * @param[out]	table db table pointer
+ * @param[out]	nrows the number of record
+ * @param[out]	ncols the number of field
+ * @return	0 on success, otherwise a nagative error value
+ * @retval	0 on successful
+ * @retval	-1 on failed
+ */
+int rua_history_load_db(char ***table, int *nrows, int *ncols);
+int rua_history_load_db_for_uid(char ***table, int *nrows, int *ncols, uid_t uid);
+
+/**
+ * @brief	Unload recently used application history db.
+ * @param[in]	table db table pointer to unload
+ * @return	0 on success, otherwise a nagative error value
+ * @retval	0 on successful
+ * @retval	-1 on failed
+ */
+int rua_history_unload_db(char ***table);
+
+/**
+ * @brief	Load recently used application record.
+ * @param[out]	rec record to load
+ * @param[in]	table db table pointer
+ * @param[in]	nrows the number of record
+ * @param[in]	ncols the number of field
+ * @param[in]	row record index to load
+ * @return	0 on success, otherwise a nagative error value
+ * @retval	0 on successful
+ * @retval	-1 on failed
+ */
+int rua_history_get_rec(struct rua_rec *rec, char **table,
+				int nrows, int ncols, int row);
+
+/**
+ * @brief	Check some package is latest or not with package name
+ * @param[in]	pkg_name package name
+ * @return	0 on success, otherwise a nagative error value
+ * @retval	0 if given pkg_name is lastest application
+ * @retval	-1 if not lastest applicaton or on failed
+ */
+int rua_is_latest_app(const char *pkg_name);
+int rua_is_latest_app_for_uid(const char *pkg_name, uid_t uid);
+
+/**
+ * @brief       Delete rua history with instance id
+ * @param[in]   app_id The application ID
+ * @param[in]   instance_id The instance ID
+ * @return      0 on success, otherwise a negative error value
+ */
+int rua_delete_history_with_instance_id(const char *app_id,
+		const char *instance_id);
+
+/**
+ * @brief	Registers a callback function to be invoked when the history is updated
+ * @param[in]	callback The callback function to be registered
+ * @param[in]	user_data The user data passed to rua_register_update_cb()
+ * @param[out]	callback_id Added callback id
+ * @return	0 on success, otherwise a nagative error value
+ * @retval	0 if on successful
+ * @retval	-1 if it is already registered or on failed
+ */
+int rua_register_update_cb(rua_history_update_cb callback,
+		void *user_data, int *callback_id);
+int rua_register_update_cb_for_uid(rua_history_update_cb callback,
+		void *user_data, int *callback_id, uid_t uid);
+
+/**
+ * @brief	Unregisters a callback function
+ * @param[in]	callback_id Target callback id
+ * @return	0 on success, otherwise a nagative error value
+ * @retval	0 if on successful
+ * @retval	-1 if the callback was not registered or on failed
+ */
+int rua_unregister_update_cb(int callback_id);
+int rua_unregister_update_cb_for_uid(int callback_id, uid_t uid);
+
+/**
+ * @brief	Initialize rua
+ * @return	0 on success, otherwise a nagative error value
+ * @retval	0 on successful
+ * @retval	-1 on failed
+ */
+int rua_init(void);
+
+/**
+ * @brief	Finalize rua
+ * @return	0 on success, otherwise a nagative error value
+ * @retval	0 on successful
+ * @retval	-1 on failed
+ */
+int rua_fini(void);
+
+#ifdef __cplusplus
+}
+#endif
+#endif				/*__RUA_H__*/

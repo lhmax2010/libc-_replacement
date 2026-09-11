@@ -1,0 +1,166 @@
+#ifndef ELM_WIDGET_NAVIFRAME_H
+#define ELM_WIDGET_NAVIFRAME_H
+
+#include "Elementary.h"
+
+/* DO NOT USE THIS HEADER UNLESS YOU ARE PREPARED FOR BREAKING OF YOUR
+ * CODE. THIS IS ELEMENTARY'S INTERNAL WIDGET API (for now) AND IS NOT
+ * FINAL. CALL elm_widget_api_check(ELM_INTERNAL_API_VERSION) TO CHECK
+ * IT AT RUNTIME.
+ */
+
+/**
+ * @internal
+ * @addtogroup Widget
+ * @{
+ *
+ * @section elm-naviframe-class The Elementary Naviframe Class
+ *
+ * Elementary, besides having the @ref Naviframe widget, exposes its
+ * foundation -- the Elementary Naviframe Class -- in order to create other
+ * widgets which are a naviframe with some more logic on top.
+ */
+
+/**
+ * Base layout smart data extended with naviframe instance data.
+ */
+typedef struct _Elm_Naviframe_Data Elm_Naviframe_Data;
+struct _Elm_Naviframe_Data
+{
+   Evas_Object          *obj; /* the object itself */
+   Eina_Inlist          *stack; /* top item is the list's LAST item */
+   Eina_List            *popping;
+   Eina_List            *ops;
+   Evas_Object          *dummy_edje;
+   Evas_Display_Mode     dispmode;
+   Ecore_Event_Handler    *prop_hdl;
+   Eina_Bool              fully_obscured;
+
+   Eina_Bool             preserve : 1;
+   Eina_Bool             on_deletion : 1;
+   Eina_Bool             auto_pushed : 1;
+   Eina_Bool             freeze_events : 1;
+   Eina_Bool             default_label_enabled : 1;
+};
+
+typedef struct _Elm_Naviframe_Item_Data Elm_Naviframe_Item_Data;
+struct _Elm_Naviframe_Item_Data
+{
+   Elm_Widget_Item_Data *base;
+   EINA_INLIST;
+
+   Eina_Inlist *content_list;
+   Eina_Inlist *text_list;
+   Evas_Object *content;
+   Evas_Object *title_prev_btn;
+   Evas_Object *title_next_btn;
+   Evas_Object *title_icon;
+   Evas_Object *auto_pushed_btn;
+   Evas_Display_Mode dispmode;
+   Elm_Naviframe_Item_Pop_Cb pop_cb;
+   void        *pop_data;
+   const char  *title_label;
+   const char  *subtitle_label;
+   //TIZEN_ONLY(28Jan2020): Seamless Transition
+   Evas_Object *perspective_obj;
+   //
+
+   Evas_Coord   minw;
+   Evas_Coord   minh;
+
+   Eina_Bool    title_enabled : 1;
+   Eina_Bool    pushing : 1; /**< a flag to notify the item is on pushing. This flag is set true at the start of item push. */
+   Eina_Bool    popping : 1; /**< a flag to notify the item is on poping. this flag is set true at the start of item pop. */
+   Eina_Bool    delete_me : 1; /**< a flag to notify the item is on deletion. this flag is set true at the start of item deletion. */
+   //TIZEN_ONLY(20201112): Use invalidation flag not to call _title_content_del
+   //                      in item invalidation.
+   Eina_Bool    invalidate_me : 1; /**< a flag to notify the item is on invalidation. this flag is set true at the start of item invalidation. */
+   //
+};
+
+typedef struct _Elm_Naviframe_Op Elm_Naviframe_Op;
+struct _Elm_Naviframe_Op
+{
+   Elm_Naviframe_Item_Data *self;
+   Elm_Naviframe_Item_Data *related;
+
+   Eina_Bool push : 1;
+};
+
+typedef struct _Elm_Naviframe_Content_Item_Pair Elm_Naviframe_Content_Item_Pair;
+struct _Elm_Naviframe_Content_Item_Pair
+{
+   EINA_INLIST;
+   const char *part;
+   Evas_Object *content;
+   Elm_Naviframe_Item_Data *it;
+};
+
+typedef struct _Elm_Naviframe_Text_Item_Pair Elm_Naviframe_Text_Item_Pair;
+struct _Elm_Naviframe_Text_Item_Pair
+{
+   EINA_INLIST;
+   const char *part;
+};
+
+//TIZEN ONLY(20160829): Support tizen transition
+typedef struct _Elm_Naviframe_Mod_Api Elm_Naviframe_Mod_Api;
+struct _Elm_Naviframe_Mod_Api
+{
+   void (*tizen_push_effect)(Evas_Object *nf, Evas_Object *view, Eina_Bool is_cur_view);
+   void (*tizen_pop_effect)(Evas_Object *nf, Evas_Object *view, Eina_Bool is_cur_view);
+   void (*tizen_push_deferred_effect)(Evas_Object *nf, Evas_Object *view, Eina_Bool is_cur_view);
+   void (*tizen_pop_deferred_effect)(Evas_Object *nf, Evas_Object *view, Eina_Bool is_cur_view);
+   //TIZEN_ONLY(28Jan2020): Seamless Transition
+   void (*tizen_seamless_push_deferred_effect)(Evas_Object *nf, Evas_Object *view, Eina_Bool is_cur_view,
+                                               Evas_Object *perspective_obj);
+   void (*tizen_seamless_pop_deferred_effect)(Evas_Object *nf, Evas_Object *view, Eina_Bool is_cur_view,
+                                              Evas_Object *perspective_obj);
+   //
+
+   Eina_Bool (*tizen_effect_enabled_get)(Evas_Object *view);
+   void (*tizen_effect_cancel)(Evas_Object *view);
+};
+//
+
+/**
+ * @}
+ */
+
+#define ELM_NAVIFRAME_DATA_GET(o, sd) \
+  Elm_Naviframe_Data * sd = efl_data_scope_get(o, ELM_NAVIFRAME_CLASS)
+
+#define ELM_NAVIFRAME_DATA_GET_OR_RETURN(o, ptr)     \
+  ELM_NAVIFRAME_DATA_GET(o, ptr);                    \
+  if (EINA_UNLIKELY(!ptr))                           \
+    {                                                \
+       ERR("No widget data for object %p (%s)",      \
+           o, evas_object_type_get(o));              \
+       return;                                       \
+    }
+
+#define ELM_NAVIFRAME_DATA_GET_OR_RETURN_VAL(o, ptr, val) \
+  ELM_NAVIFRAME_DATA_GET(o, ptr);                         \
+  if (EINA_UNLIKELY(!ptr))                                \
+    {                                                     \
+       ERR("No widget data for object %p (%s)",           \
+           o, evas_object_type_get(o));                   \
+       return val;                                        \
+    }
+
+#define ELM_NAVIFRAME_CHECK(obj)                                 \
+  if (EINA_UNLIKELY(!efl_isa((obj), ELM_NAVIFRAME_CLASS)))    \
+    return
+
+#define ELM_NAVIFRAME_ITEM_CHECK(it)                        \
+  if (EINA_UNLIKELY(!efl_isa((it->base->eo_obj), ELM_NAVIFRAME_ITEM_CLASS))) \
+    return
+
+#define ELM_NAVIFRAME_ITEM_CHECK_OR_RETURN(it, ...)        \
+  if (EINA_UNLIKELY(!efl_isa((it->base->eo_obj), ELM_NAVIFRAME_ITEM_CLASS))) \
+    return __VA_ARGS__;
+
+#define ELM_NAVIFRAME_ITEM_DATA_GET(o, sd) \
+  Elm_Naviframe_Item_Data *sd = efl_data_scope_get(o, ELM_NAVIFRAME_ITEM_CLASS)
+
+#endif

@@ -1,0 +1,264 @@
+/*
+ *  Copyright (c) 2016-2020 Samsung Electronics Co., Ltd All Rights Reserved
+ *
+ *  Contact: Krzysztof Jackiewicz <k.jackiewicz@samsung.com>
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License
+ */
+
+
+/**
+ * @file yaca_encrypt.h
+ *
+ * @brief Advanced API for the symmetric encryption.
+ */
+
+
+#ifndef __TIZEN_CORE_YACA_ENCRYPT_H__
+#define __TIZEN_CORE_YACA_ENCRYPT_H__
+
+
+#include <stddef.h>
+#include <yaca_types.h>
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
+/**
+ * @addtogroup CAPI_YACA_ENCRYPTION_MODULE
+ * @{
+ */
+
+
+/**
+ * @brief Returns the recommended/default length of the Initialization Vector for a given encryption configuration.
+ *
+ * @since_tizen 3.0
+ *
+ * @remarks If returned @a iv_bit_len equals 0 that means that for this
+ *          specific algorithm and its parameters Initialization Vector is not used.
+ *
+ * @param[in] algo Encryption algorithm
+ * @param[in] bcm Chain mode
+ * @param[in] key_bit_len Key length in bits
+ * @param[out] iv_bit_len Recommended Initialization Vector length in bits
+ *
+ * @return @c 0 on success, otherwise a negative error value
+ * @retval #YACA_ERROR_NONE Successful
+ * @retval #YACA_ERROR_INVALID_PARAMETER Required parameters have incorrect values (NULL,
+ *                                       invalid @a algo, @a bcm or @a key_bit_len not
+ *                                       divisible by 8)
+ * @retval #YACA_ERROR_INTERNAL Internal error
+ */
+int yaca_encrypt_get_iv_bit_length(yaca_encrypt_algorithm_e algo,
+                                   yaca_block_cipher_mode_e bcm,
+                                   size_t key_bit_len,
+                                   size_t *iv_bit_len);
+
+
+/**
+ * @brief Initializes an encryption context.
+ *
+ * @since_tizen 3.0
+ *
+ * @remarks The @a ctx should be released using yaca_context_destroy().
+ *
+ * @param[out] ctx Newly created context
+ * @param[in] algo Encryption algorithm that will be used
+ * @param[in] bcm Chaining mode that will be used
+ * @param[in] sym_key Symmetric key that will be used
+ * @param[in] iv Initialization Vector that will be used
+ *
+ * @return @c 0 on success, otherwise a negative error value
+ * @retval #YACA_ERROR_NONE Successful
+ * @retval #YACA_ERROR_INVALID_PARAMETER Required parameters have incorrect values (NULL,
+ *                                       invalid @a algo, @a bcm, @a sym_key or @a iv)
+ * @retval #YACA_ERROR_OUT_OF_MEMORY Out of memory error
+ * @retval #YACA_ERROR_INTERNAL Internal error
+ *
+ * @see #yaca_encrypt_algorithm_e
+ * @see #yaca_block_cipher_mode_e
+ * @see yaca_encrypt_update()
+ * @see yaca_encrypt_finalize()
+ * @see yaca_context_destroy()
+ */
+int yaca_encrypt_initialize(yaca_context_h *ctx,
+                            yaca_encrypt_algorithm_e algo,
+                            yaca_block_cipher_mode_e bcm,
+                            const yaca_key_h sym_key,
+                            const yaca_key_h iv);
+
+
+/**
+ * @brief Encrypts chunk of the data.
+ *
+ * @since_tizen 3.0
+ *
+ * @remarks The @a ciphertext buffer must be allocated by client (see yaca_context_get_output_length()).
+ *
+ * @param[in,out] ctx Context created by yaca_encrypt_initialize()
+ * @param[in] plaintext Plaintext to be encrypted
+ * @param[in] plaintext_len Length of the plaintext
+ * @param[out] ciphertext Buffer for the encrypted data
+ * @param[out] ciphertext_len Length of the encrypted data (the number of returned written bytes)
+ *
+ * @return @c 0 on success, otherwise a negative error value
+ * @retval #YACA_ERROR_NONE Successful
+ * @retval #YACA_ERROR_INVALID_PARAMETER Required parameters have incorrect values (NULL, 0,
+ *                                       invalid @a ctx)
+ * @retval #YACA_ERROR_INTERNAL Internal error
+ *
+ * @see yaca_encrypt_initialize()
+ * @see yaca_encrypt_finalize()
+ * @see yaca_context_get_output_length()
+ */
+int yaca_encrypt_update(yaca_context_h ctx,
+                        const char *plaintext,
+                        size_t plaintext_len,
+                        char *ciphertext,
+                        size_t *ciphertext_len);
+
+
+/**
+ * @brief Encrypts the final chunk of the data.
+ *
+ * @since_tizen 3.0
+ *
+ * @remarks Skipping yaca_encrypt_update() and calling only yaca_encrypt_finalize() will produce an encryption of an empty message.
+ * @remarks The @a ciphertext buffer must be allocated by client (see yaca_context_get_output_length()).
+ *
+ * @param[in,out] ctx A valid encrypt context
+ * @param[out] ciphertext Final piece of the encrypted data
+ * @param[out] ciphertext_len Length of the final piece (the number of returned written bytes)
+ *
+ * @return @c 0 on success, otherwise a negative error value
+ * @retval #YACA_ERROR_NONE Successful
+ * @retval #YACA_ERROR_INVALID_PARAMETER Required parameters have incorrect values (NULL,
+ *                                       invalid @a ctx)
+ * @retval #YACA_ERROR_INTERNAL Internal error
+ *
+ * @see yaca_encrypt_initialize()
+ * @see yaca_encrypt_update()
+ * @see yaca_context_get_output_length()
+ */
+int yaca_encrypt_finalize(yaca_context_h ctx,
+                          char *ciphertext,
+                          size_t *ciphertext_len);
+
+
+/**
+ * @brief Initializes a decryption context.
+ *
+ * @since_tizen 3.0
+ *
+ * @remarks The @a ctx should be released using yaca_context_destroy().
+ *
+ * @param[out] ctx Newly created context
+ * @param[in] algo Encryption algorithm that was used to encrypt the data
+ * @param[in] bcm Chaining mode that was used to encrypt the data
+ * @param[in] sym_key Symmetric key that was used to encrypt the data
+ * @param[in] iv Initialization Vector that was used to encrypt the data
+ *
+ * @return @c 0 on success, otherwise a negative error value
+ * @retval #YACA_ERROR_NONE Successful
+ * @retval #YACA_ERROR_INVALID_PARAMETER Required parameters have incorrect values (NULL,
+ *                                       invalid @a algo, @a bcm, @a sym_key or @a iv)
+ * @retval #YACA_ERROR_OUT_OF_MEMORY Out of memory error
+ * @retval #YACA_ERROR_INTERNAL Internal error
+ *
+ * @see #yaca_encrypt_algorithm_e
+ * @see #yaca_block_cipher_mode_e
+ * @see yaca_decrypt_update()
+ * @see yaca_decrypt_finalize()
+ * @see yaca_context_destroy()
+ */
+int yaca_decrypt_initialize(yaca_context_h *ctx,
+                            yaca_encrypt_algorithm_e algo,
+                            yaca_block_cipher_mode_e bcm,
+                            const yaca_key_h sym_key,
+                            const yaca_key_h iv);
+
+
+/**
+ * @brief Decrypts chunk of the data.
+ *
+ * @since_tizen 3.0
+ *
+ * @remarks The @a plaintext buffer must be allocated by client (see yaca_context_get_output_length()).
+ *
+ * @param[in,out] ctx Context created by yaca_decrypt_initialize()
+ * @param[in] ciphertext Ciphertext to be decrypted
+ * @param[in] ciphertext_len Length of the ciphertext
+ * @param[out] plaintext Buffer for the decrypted data
+ * @param[out] plaintext_len Length of the decrypted data (the number of returned written bytes)
+ *
+ * @return @c 0 on success, otherwise a negative error value
+ * @retval #YACA_ERROR_NONE Successful
+ * @retval #YACA_ERROR_INVALID_PARAMETER Required parameters have incorrect values (NULL, 0,
+ *                                       invalid @a ctx), wrong #YACA_PROPERTY_CCM_AAD or
+ *                                       wrong #YACA_PROPERTY_CCM_TAG was used
+ * @retval #YACA_ERROR_INTERNAL Internal error
+ *
+ * @see yaca_decrypt_initialize()
+ * @see yaca_decrypt_finalize()
+ * @see yaca_context_get_output_length()
+ */
+int yaca_decrypt_update(yaca_context_h ctx,
+                        const char *ciphertext,
+                        size_t ciphertext_len,
+                        char *plaintext,
+                        size_t *plaintext_len);
+
+
+/**
+ * @brief Decrypts the final chunk of the data.
+ *
+ * @since_tizen 3.0
+ *
+ * @remarks Skipping yaca_decrypt_update() and calling only yaca_decrypt_finalize() will produce a decryption of an empty ciphertext.
+ * @remarks The @a plaintext buffer must be allocated by client (see yaca_context_get_output_length()).
+ *
+ * @param[in,out] ctx A valid decrypt context
+ * @param[out] plaintext Final piece of the decrypted data
+ * @param[out] plaintext_len Length of the final piece (the number of returned written bytes)
+ *
+ * @return @c 0 on success, otherwise a negative error value
+ * @retval #YACA_ERROR_NONE Successful
+ * @retval #YACA_ERROR_INVALID_PARAMETER Required parameters have incorrect values (NULL,
+ *                                       invalid @a ctx), wrong #YACA_PROPERTY_GCM_AAD or
+ *                                       wrong #YACA_PROPERTY_GCM_TAG was used
+ * @retval #YACA_ERROR_INTERNAL Internal error
+ *
+ * @see yaca_decrypt_initialize()
+ * @see yaca_decrypt_update()
+ * @see yaca_context_get_output_length()
+ */
+int yaca_decrypt_finalize(yaca_context_h ctx,
+                          char *plaintext,
+                          size_t *plaintext_len);
+
+
+/**
+ * @}
+ */
+
+
+#ifdef __cplusplus
+} /* extern */
+#endif
+
+
+#endif /* __TIZEN_CORE_YACA_ENCRYPT_H__ */

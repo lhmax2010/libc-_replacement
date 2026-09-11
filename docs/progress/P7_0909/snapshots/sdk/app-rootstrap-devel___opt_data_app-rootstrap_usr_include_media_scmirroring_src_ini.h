@@ -1,0 +1,162 @@
+/*
+* Copyright (c) 2011 Samsung Electronics Co., Ltd All Rights Reserved
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+* http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*/
+
+#ifndef __SCMIRRORING_SRC_INI_H__
+#define __SCMIRRORING_SRC_INI_H__
+
+#include <glib.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define ERROR_NONE 0
+
+#define SCMIRRORING_SRC_INI_DEFAULT_PATH	SYSCONFDIR"/multimedia/scmirroring_src.ini"/*sysconfdir is defined at .spec file*/
+#define SCMIRRORING_SRC_INI_GST_START_PARAMS_NUM	5
+
+#define SCMIRRORING_SRC_INI() scmirroring_src_ini_get_structure()
+
+#define SCMIRRORING_SRC_INI_MAX_STRLEN	80
+#define SCMIRRORING_SRC_INI_MAX_PARAM_STRLEN 256
+
+
+typedef enum __scmirroring_ini_videosrc_element {
+	SCMIRRORING_INI_VSRC_XIMAGESRC,
+	SCMIRRORING_INI_VSRC_XVIMAGESRC,
+	SCMIRRORING_INI_VSRC_CAMERASRC,
+	SCMIRRORING_INI_VSRC_VIDEOTESTSRC,
+	SCMIRRORING_INI_VSRC_WAYLANDSRC,
+	SCMIRRORING_INI_VSRC_NUM
+} SCMIRRORING_INI_VSRC_ELEMENT;
+
+typedef enum __scmirroring_ini_session_mode {
+	SCMIRRORING_INI_AUDIO_VIDEO_MUXED,
+	SCMIRRORING_INI_VIDEO_ONLY,
+	SCMIRRORING_INI_AUDIO_ONLY,
+	SCMIRRORING_INI_AUDIO_VIDEO_SAPERATE
+} SCMIRRORING_INI_SESSION_MODE;
+
+
+/* NOTE : MMPlayer has no initalizing API for library itself
+ * so we cannot decide when those ini values to be released.
+ * this is the reason of all string items are static array.
+ * make it do with malloc when MMPlayerInitialize() API created
+ * before that time, we should be careful with size limitation
+ * of each string item.
+ */
+
+/* @ mark means the item has tested */
+typedef struct __scmirroring_src_ini {
+	/* general */
+	SCMIRRORING_INI_VSRC_ELEMENT videosrc_element;
+	gchar name_of_video_encoder[SCMIRRORING_SRC_INI_MAX_STRLEN];
+	gchar name_of_video_converter[SCMIRRORING_SRC_INI_MAX_STRLEN];
+	gboolean skip_rescan;
+	gboolean generate_dot;
+	gboolean provide_clock;
+	gint mtu_size;
+
+	gchar name_of_audio_device[SCMIRRORING_SRC_INI_MAX_STRLEN];
+	gchar name_of_audio_device_property[SCMIRRORING_SRC_INI_MAX_STRLEN];
+	gchar name_of_audio_encoder_aac[SCMIRRORING_SRC_INI_MAX_STRLEN];
+	gchar name_of_audio_encoder_ac3[SCMIRRORING_SRC_INI_MAX_STRLEN];
+	guint audio_codec;
+	gint audio_latency_time;
+	gint audio_buffer_time;
+	gint audio_do_timestamp;
+	guint video_codec;
+	guint64 video_reso_supported;
+	guint decide_udp_bitrate[21];
+	gint video_native_resolution;
+	gint hdcp_enabled;
+	guint8 uibc_gen_capability;
+
+	gchar gst_param[SCMIRRORING_SRC_INI_GST_START_PARAMS_NUM][SCMIRRORING_SRC_INI_MAX_PARAM_STRLEN];
+	gboolean disable_segtrap;
+
+	gint dump_ts;
+
+	gint wfd2_supported;
+} scmirroring_src_ini_t;
+
+/* default values if each values are not specified in inifile */
+/* general */
+#define DEFAULT_SKIP_RESCAN				TRUE
+#define DEFAULT_GENERATE_DOT				FALSE
+#define DEFAULT_PROVIDE_CLOCK				TRUE
+#define DEFAULT_VIDEOSRC				SCMIRRORING_INI_VSRC_WAYLANDSRC
+#define DEFAULT_VIDEOENC				"omxenc_h264"
+#define DEFAULT_VIDEO_BITRATE_INIT_1			1048576 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MIN_1				838861 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MAX_1				1572864 /* bps */
+#define DEFAULT_VIDEO_BITRATE_INIT_2			5242880 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MIN_2				3670016 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MAX_2				6291456 /* bps */
+#define DEFAULT_VIDEO_BITRATE_INIT_3			2621440 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MIN_3				1572864 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MAX_3				3145728 /* bps */
+#define DEFAULT_VIDEO_BITRATE_INIT_4			2621440 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MIN_4				1572864 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MAX_4				3145728 /* bps */
+#define DEFAULT_VIDEO_BITRATE_INIT_5			838861 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MIN_5				314573 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MAX_5				1048576 /* bps */
+#define DEFAULT_VIDEO_BITRATE_INIT_6			838861 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MIN_6				314573 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MAX_6				838861 /* bps */
+#define DEFAULT_VIDEO_BITRATE_INIT_7			1572864 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MIN_7				838861 /* bps */
+#define DEFAULT_VIDEO_BITRATE_MAX_7				1572864 /* bps */
+#define DEFAULT_MTU_SIZE        1400 /* bytes */
+#define DEFAULT_GST_PARAM				""
+#define DEFAULT_DISABLE_SEGTRAP				TRUE
+#define DEFAULT_VIDEO_CONVERTER				""
+/* hw accel */
+#define DEFAULT_AUDIO_EXYNOS_DEVICE_NAME "alsa_output.hw_0_0.analog-stereo.monitor"
+#define DEFAULT_AUDIO_QC_DEVICE_NAME "hw:0,8"
+#define DEFAULT_AUDIO_DEVICE_PROPERTY_NAME "props,media.role=loopback-mirroring"
+#define DEFAULT_AUDIOENC_AAC				"avenc_aac"
+#define DEFAULT_AUDIOENC_AC3				"avenc_ac3"
+#define DEFAULT_AUDIO_CODEC	3
+#define DEFAULT_AUDIO_LATENCY_TIME	10000
+#define DEFAULT_AUDIO_EXYNOS_BUFFER_TIME	200000
+#define DEFAULT_AUDIO_QC_BUFFER_TIME	1000
+#define DEFAULT_AUDIO_DO_TIMESTAMP	0
+#define DEFAULT_VIDEO_CODEC 1
+#define DEFAULT_VIDEO_RESOLUTION_SUPPORTED	0x000000ab
+#define DEFAULT_NATIVE_VIDEO_RESOLUTION  0
+#define DEFAULT_HDCP_ENABLED 1
+#define DEFAULT_UIBC_GEN_CAPABILITY 15
+#define DEFAULT_DUMP_TS				0
+
+/* R2 features */
+#define DEFAULT_WFD2_SUPPORTED 0
+
+
+
+int
+scmirroring_src_ini_load(void);
+
+scmirroring_src_ini_t*
+scmirroring_src_ini_get_structure(void);
+
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

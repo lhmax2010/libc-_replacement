@@ -1,0 +1,251 @@
+/*
+* Copyright (c) 2011 Samsung Electronics Co., Ltd All Rights Reserved
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+* http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*/
+
+#ifndef __TIZEN_CONTENT_MEDIA_CONTENT_H__
+#define __TIZEN_CONTENT_MEDIA_CONTENT_H__
+
+#include <media_audio.h>
+#include <media_filter.h>
+#include <media_folder.h>
+#include <media_image.h>
+#include <media_info.h>
+#include <media_tag.h>
+#include <media_video.h>
+#include <media_group.h>
+#include <media_playlist.h>
+#include <media_bookmark.h>
+#include <media_book.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+
+/**
+ * @file media_content.h
+ * @brief This file contains API providing functions for media content in DB. \n
+ *        Operations include connect and disconnect the media content service, scanning media file and folder with subfolders, \n
+ *        subscribing and unsubscribing notifications of media DB change.
+ */
+
+/**
+ * @addtogroup CAPI_MEDIA_CONTENT_MODULE
+ * @{
+ */
+
+/**
+ * @brief Connects to the media content service.
+ * @details Any media content related function call should be invoked after this function call.
+ *
+ * @since_tizen 2.3
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE      Successful
+ * @retval #MEDIA_CONTENT_ERROR_DB_FAILED DB operation failed
+ *
+ * @post media_content_disconnect()
+ *
+ * @see media_content_disconnect()
+ */
+int media_content_connect(void);
+
+/**
+ * @brief Disconnects from the media content service.
+ * @details This function closes connection to the media content service. Any further media content related operation
+ *          cannot be performed after this function is called.
+ *
+ * @since_tizen 2.3
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE      Successful
+ * @retval #MEDIA_CONTENT_ERROR_DB_FAILED DB operation failed
+ *
+ * @pre media_content_connect()
+ *
+ * @see media_content_connect()
+ *
+ */
+int media_content_disconnect(void);
+
+/**
+ * @brief Requests to scan a media file.
+ * @details This function requests to scan a media file to the media server.
+ *          If media file is not registered to DB yet, that media file information will be added to the media DB. If it is already registered to the DB, then this tries to refresh information. \n
+ *          If requested file does not exist on file system, information of the media file will be removed from the media DB. \n
+ *          If file information does not exist in DB, this function will be return #MEDIA_CONTENT_ERROR_INVALID_PARAMETER.
+ *
+ * @since_tizen 2.3
+ *
+ * @privlevel public
+ * @privilege %http://tizen.org/privilege/content.write \n
+ *                   %http://tizen.org/privilege/mediastorage \n
+ *                   %http://tizen.org/privilege/externalstorage
+ *
+ * @remarks You must add privilege %http://tizen.org/privilege/content.write. And You add more privilege depending on your choice of contents path. \n
+ *                   If you want to access only internal storage by using this function, you should add privilege %http://tizen.org/privilege/mediastorage. \n
+ *                   Or if you want to access only external storage by using this function, you should add privilege %http://tizen.org/privilege/externalstorage. \n
+ *                   If you can access both storage, you must add all privilege. \n
+ *                   Since 4.0, This function does not allow a symbolic link.\n
+ * @remarks Since 4.0, this function is related to the following feature:\n
+ *              %http://tizen.org/feature/content.scanning.others\n
+ *              If this feature is not supported on the device, MEDIA_CONTENT_TYPE_OTHERS type file is not scanned.
+ *
+ * @param[in] path The file path
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE Successful
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_PARAMETER Invalid parameter
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_OPERATION Invalid operation
+ * @retval #MEDIA_CONTENT_ERROR_PERMISSION_DENIED Permission denied
+ * @retval #MEDIA_CONTENT_ERROR_DB_FAILED    DB Operation failed
+ * @retval #MEDIA_CONTENT_ERROR_DB_BUSY    DB Operation busy
+ * @retval #MEDIA_CONTENT_ERROR_NOT_SUPPORTED     Not supported
+ *
+ * @pre This function requires opened connection to content service by media_content_connect().
+ * @see media_content_connect()
+ */
+int media_content_scan_file(const char *path);
+
+/**
+ * @brief Requests to scan a media folder, asynchronously.
+ * @details This function requests to scan a media folder to the media server with given completed callback function.
+ *          media_scan_completed_cb() function will be called when the scanning is finished.
+ *          The sub folders are also scanned, if there are sub folders in that folder. \n
+ *          After adding or removing a folder from the filesystem, call this function on its source location
+ *          (this will add or remove an entry from the database). \n
+ *          After moving or renaming a folder in the filesystem, call this function on its source location
+ *          (this will remove an entry from the database) and call this function again on its destination location
+ *          (this will add a new entry to the database).\n
+ *          Alternatively, you can call this function on any parent of source location and on any parent of destination location.\n
+ *          You can also call the function once, on a folder which is a parent of both source and destination.\n
+ *
+ * @since_tizen 2.3
+ *
+ * @privlevel public
+ * @privilege %http://tizen.org/privilege/content.write \n
+ *                   %http://tizen.org/privilege/mediastorage \n
+ *                   %http://tizen.org/privilege/externalstorage
+ *
+ * @remarks You must add privilege %http://tizen.org/privilege/content.write. And You add more privilege depending on your choice of contents path. \n
+ *                   If you want to access only internal storage by using this function, you should add privilege %http://tizen.org/privilege/mediastorage. \n
+ *                   Or if you want to access only external storage by using this function, you should add privilege %http://tizen.org/privilege/externalstorage. \n
+ *                   If you can access both storage, you must add all privilege. \n
+ *                   Since 4.0, this function does not allow a symbolic link. \n
+ *                   Since 10.0, skipping the specific folder scanning using ".scan_igfile" file is not supported.
+ *
+ * @param[in] path The folder path
+ * @param[in] is_recursive Set @c true to scan recursively subdirectories,
+ *                         otherwise @c false to scan only the current directory
+ * @param[in] callback The callback to be invoked when the scanning is finished
+ * @param[in] user_data The user data to be passed to the callback function
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE Successful
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_PARAMETER Invalid parameter
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_OPERATION Invalid operation
+ * @retval #MEDIA_CONTENT_ERROR_PERMISSION_DENIED Permission denied
+ * @retval #MEDIA_CONTENT_ERROR_OUT_OF_MEMORY     Out of memory
+ * @retval #MEDIA_CONTENT_ERROR_DB_FAILED    DB Operation failed
+ * @retval #MEDIA_CONTENT_ERROR_DB_BUSY    DB Operation busy
+ * @retval #MEDIA_CONTENT_ERROR_NETWORK   Network fail
+ *
+ * @pre This function requires opened connection to content service by media_content_connect().
+ * @see media_scan_completed_cb()
+ * @see media_content_connect()
+ */
+int media_content_scan_folder(const char *path, bool is_recursive, media_scan_completed_cb callback, void *user_data);
+
+/**
+ * @brief Requests to cancel the media folder scanning.
+ * @since_tizen 2.4
+ *
+ * @param[in] path The folder path
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE Successful
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_PARAMETER Invalid parameter
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_OPERATION Invalid operation
+ *
+ * @pre media_content_scan_folder()
+ */
+int media_content_cancel_scan_folder(const char *path);
+
+/**
+ * @brief Subscribes notifications of the media DB change.
+ * @details This function subscribes notifications of the media DB change which are published by the media server or other apps. \n
+ *          media_content_db_update_cb() function will be called when notification of the media DB change is subscribed. \n
+ *          Using this function, multiple callback is possible to register in one process.
+ *
+ * @since_tizen 3.0
+ *
+ * @remarks The @a noti_handle should be released using media_content_remove_db_updated_cb(). \n
+ *           If you set the same callback that you previously added, this function returns MEDIA_CONTENT_ERROR_INVALID_OPERATION error. \n
+ *
+ * @param[in] callback The callback to be invoked when the scanning is finished
+ * @param[in] user_data The user data to be passed to the callback function
+ * @param[out] noti_handle The handle to db updated notification
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE Successful
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_PARAMETER Invalid parameter
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_OPERATION Invalid operation
+ * @retval #MEDIA_CONTENT_ERROR_OUT_OF_MEMORY     Out of memory
+ *
+ * @see media_content_db_update_cb()
+ * @see media_content_remove_db_updated_cb()
+ */
+int media_content_add_db_updated_cb(media_content_db_update_cb callback, void *user_data, media_content_noti_h *noti_handle);
+
+/**
+ * @brief Removes notifications of the media DB change.
+ * @details This function unsubscribes notifications of the media DB change which are published by the media server or other apps.
+ *
+ * @since_tizen 3.0
+ *
+ * @param[in] noti_handle The handle to db updated notification
+ *
+ * @return @c 0 on success,
+ *         otherwise a negative error value
+ *
+ * @retval #MEDIA_CONTENT_ERROR_NONE Successful
+ * @retval #MEDIA_CONTENT_ERROR_INVALID_PARAMETER Invalid parameter
+ *
+ * @pre media_content_add_db_updated_cb()
+ *
+ * @see media_content_add_db_updated_cb()
+ */
+int media_content_remove_db_updated_cb(media_content_noti_h noti_handle);
+
+/**
+ * @}
+ */
+
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
+
+#endif /* __TIZEN_CONTENT_MEDIA_CONTENT_H__ */
