@@ -1,5 +1,7 @@
 # Second runtime-change batch: delivery notes
 
+> Branch consolidation, 2026-09-11: the current LLVM implementation branch is `sandbox/lhmax2025/libcxx-ehabi-backport`. The same five commits, trees and Change-Ids are retained; no tests were rerun. Historical logs describe the branch used at the time, not a current dependency. [Branch mapping and verification](../../P6B_0909/BRANCH_MAPPING.md).
+
 **For delivery after human review. The materials are complete: the ARM official suites are complete,
 the bilingual support statement is synchronized, and the board is cleaned and released.
 All five commits now have unique Change-Ids from Gerrit's standard hook, and the original sandbox was updated with authorization; code trees are unchanged. This is not a release-approval record.**
@@ -10,7 +12,7 @@ measurements were not rerun or rewritten. Historical raw logs retain the origina
 
 ## Source and five commits
 
-Branch: `sandbox/lhmax2025/libcxx-noexcept-relief`.
+Branch: `sandbox/lhmax2025/libcxx-ehabi-backport`.
 Base: `c3f8578a4db871d9d6de96d751f4c2ea7b1638fa`.
 Local and remote HEAD after adding Change-Ids: `c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13`.
 There are five linear commits above that base and the source worktree is clean. This task did not

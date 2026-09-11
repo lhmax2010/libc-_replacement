@@ -1,11 +1,13 @@
 # Tizen libc++ 取消支持范围声明（草稿）
 
+> 2026-09-11 分支归并：当前 LLVM 实施分支为 `sandbox/lhmax2025/libcxx-ehabi-backport`；五个提交的 SHA、tree 与 Change-Id 不变，没有重跑测试。历史记录中的分支名仅说明当时操作，不再是当前取件依赖。[分支映射与核验](../../P6B_0909/BRANCH_MAPPING.md)。
+
 > 2026-09-11 元数据同步：提交引用已换为补齐 Change-Id 的等树新提交；原测试日期、结果与支持边界不变，历史原始记录对应旧提交。[新旧映射与树核验](../../P6_0909/resume/SHA_MAPPING.tsv)。
 
 **供总部与业务部门审阅，尚非产品发布承诺。** 本文区分拟承诺的已验证行为与已知限制，
 不把“线程退出”或“进程没有崩溃”当作资源、状态均已恢复。
 
-实施源码为 `sandbox/lhmax2025/libcxx-noexcept-relief`，提交
+实施源码为 `sandbox/lhmax2025/libcxx-ehabi-backport`，提交
 `c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13`，位于既有四个运行时补丁之上。
 本轮是隔离构建和验证，没有替换产品系统库。原生官方套件有一个新增失败，ARM 官方套件
 因开发板失联未跑完，板端清理也未完成；详见[验证报告](../W3/REPORT.md)与[断点及残留](../W3/BOARD_RESIDUALS.md)。

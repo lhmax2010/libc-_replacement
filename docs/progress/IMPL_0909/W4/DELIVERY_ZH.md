@@ -1,5 +1,7 @@
 # 第二批运行时改动交付说明
 
+> 2026-09-11 分支归并：当前 LLVM 实施分支为 `sandbox/lhmax2025/libcxx-ehabi-backport`；五个提交的 SHA、tree 与 Change-Id 不变，没有重跑测试。历史记录中的分支名仅说明当时操作，不再是当前取件依赖。[分支映射与核验](../../P6B_0909/BRANCH_MAPPING.md)。
+
 **待人工审阅后交付。材料已补齐：ARM 官方套件完整、支持声明中英文已同步，板子已清理并释放。
 五提交已由 Gerrit 标准 hook 补齐唯一 Change-Id，并经授权更新原 sandbox；代码树未变。本文不是发布通过记录。**
 
@@ -8,7 +10,7 @@
 
 ## 源码与五个提交
 
-源码分支：`sandbox/lhmax2025/libcxx-noexcept-relief`。
+源码分支：`sandbox/lhmax2025/libcxx-ehabi-backport`。
 基线：`c3f8578a4db871d9d6de96d751f4c2ea7b1638fa`；
 补齐 Change-Id 后，本地与远端 HEAD：`c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13`。
 相对基线共五个线性提交，工作树干净；不是在本包又实施了一轮改动。

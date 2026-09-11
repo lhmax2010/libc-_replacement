@@ -1,5 +1,7 @@
 # 交付材料阶段记录
 
+> 2026-09-11 分支归并：当前 LLVM 实施分支为 `sandbox/lhmax2025/libcxx-ehabi-backport`；五个提交的 SHA、tree 与 Change-Id 不变，没有重跑测试。历史记录中的分支名仅说明当时操作，不再是当前取件依赖。[分支映射与核验](../../P6B_0909/BRANCH_MAPPING.md)。
+
 ## 当前元数据状态（2026-09-11 更新）
 
 五个提交已补齐唯一 Change-Id；获人工授权，仅更新原 sandbox 的历史，代码树逐提交不变。

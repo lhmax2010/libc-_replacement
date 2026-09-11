@@ -1,0 +1,140 @@
+# 第二批运行时改动交付说明
+
+**待人工审阅后交付。材料已补齐：ARM 官方套件完整、支持声明中英文已同步，板子已清理并释放。
+五提交已由 Gerrit 标准 hook 补齐唯一 Change-Id，并经授权更新原 sandbox；代码树未变。本文不是发布通过记录。**
+
+2026-09-11 元数据修订：下文提交及交付补丁引用已更新，原构建／实测结果没有重跑或改写。
+历史原始日志仍记录当时旧 SHA，须结合[新旧映射与 tree 核验](../../P6_0909/resume/SHA_MAPPING.tsv)阅读。
+
+## 源码与五个提交
+
+源码分支：`sandbox/lhmax2025/libcxx-noexcept-relief`。
+基线：`c3f8578a4db871d9d6de96d751f4c2ea7b1638fa`；
+补齐 Change-Id 后，本地与远端 HEAD：`c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13`。
+相对基线共五个线性提交，工作树干净；不是在本包又实施了一轮改动。
+[历史远端与提交原文](raw/002_sandbox_readiness.stdout)、[历史补测后复核](raw/023_final_sandbox_readonly.stdout)、
+[元数据更新后的远端与树核验](../../P6_0909/resume/raw/017_post_push_verify.stdout)。
+
+五份 [补丁快照](patches/) 从原提交导出，逐份核对 commit 标识、SHA256 和稳定 patch-id
+（用于比较补丁内容的标识），均与原提交相符；未在另一棵源码树执行 git am，不能称有新增应用验证。
+完整名称、摘要及格式核查在 [COMMIT_INDEX.tsv](COMMIT_INDEX.tsv) 与
+[元数据更新后的补丁验证](../../P6_0909/resume/raw/026_verify_delivery.stdout)；
+[历史只读验证记录](raw/005_verify_delivery.stdout)保留旧消息与旧摘要，不冒充当前补丁身份。
+
+| 提交（完整 SHA 见索引） | 改动与原因 | 验证依据 |
+|---|---|---|
+| 16a73b0a | 移除普通等待及 system／steady／custom 定时等待的相应异常规格，同步声明、定义及 C++03 镜像；让取消的强制展开穿过这些边界，通知接口不变 | [完整库构建与初测](../../IMPL_0908/W1/REPORT.md)、[两架构等待和清理矩阵](../../IMPL_0908/W3/REPORT.md) |
+| 72e89332 | 普通／定时共享锁写者预占写者位后创建局部回滚守卫；异常离开时保留读者位、清写者位、通知排队者，成功或正常超时标记完成；不增加对象字段 | [源码与初测](../../IMPL_0908/W1/REPORT.md)、[状态、进展及正常路径](../../IMPL_0908/W3/REPORT.md) |
+| 8e833583 | 现代 wbuffer_convert 析构不再调用 __close；资源删除和 helper 保留；不依赖析构完成最终同步 | [资源与调用面核查](../../R111/ITEM1_WBUFFER_CLOSE_REPORT.md)、[三方九字节用例](../W1/REPORT.md) |
+| 4c5ba1fa | 普通／system-clock 库入口保留旧 LLVM_22 包装，增加新默认 LLVM_22_TIZEN_1；公开 native_handle 访问底层句柄，版本脚本隐藏 helper，平台开关显式启用 | [真实双版本库与四种绑定](../../IMPL_0908/W2/REPORT.md)、[最终两架构符号](../../IMPL_0908/W3/raw/035_alias_verification.stdout) |
+| c68f376f | 修复 ARM intmax_t 为 long long 时的定时入口符号拼写，避免把 LP64 的 long 编码带入 ARM；类型静态断言，不变等待算法和版本契约 | [原缺陷与修复记录](../../IMPL_0908/W3/REPORT.md)、[旧／新定时入口两架构独立五轮](../../IMPL_0908/W3/timed_versions.tsv) |
+
+## 与第一批四个补丁的关系
+
+第一批分别处理：外来强制展开的 libc++abi 状态保存、GNU 强制展开标记类型、
+消费方实例化的二十处处理器、由库交付的三十处处理器。其目的是让运行时和 catch-all
+处理器识别并继续传播取消，而不是吞掉展开或破坏其状态。
+[第一批交付](../../R69/REPORT.md)、[第一批原补丁](../../R69/code/patches/)。
+
+第二批在这些补丁及既有打包基线之上，解决的是**不抛边界、展开后的写者状态、析构同步、
+旧新契约兼容**。强制展开是取消时沿调用链退出并执行清理的机制；`noexcept` 是禁止异常
+越过函数边界的契约。两批不是相互替代关系，只安装第二批不能重现已验证配置。
+本次再次逐文件核对第一批覆盖内容不变，见 [保护检查](raw/006_original_patch_check.stdout)。
+
+按本包和 P1 列示的四类实施改动计数：解除规格、写者回滚、现代析构不同步、双版本，
+**四类均已实施**。这不等于所有配置和产品已验收，也不声称 Boost 全部消费方已迁移部署；
+后者不由这五个提交实现。C++03 的转换缓冲析构没有随本批修改。
+
+## 兼容性与部署约束
+
+ABI 是二进制对调用与对象表示的约定。本次不改变共享锁对象字段；双版本仅覆盖两个库内
+等待入口，要求 Linux ELF、`__1` 命名空间、配套共享 libc++／libc++abi 与 GNU 展开器，
+且 `LIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS` 开启。不是静态库或任意 ABI 命名空间的保护承诺。
+
+| 调用方 | 实测绑定与后果 |
+|---|---|
+| 已链接且记录旧节点的 ELF | LLVM_22，旧不抛契约及终止路径保留 |
+| 旧对象仅重链接 | 新默认节点；清理布局依赖，quiet 样本线程已回收但锁滞留，不能保证干净退出 |
+| 新头重编，再链接双版本库 | 新默认节点；被测调用链清理、解锁、竞争者进展通过 |
+| 新头对象先链接旧单版本库，再换运行库 | 仍记录旧节点，进入旧终止路径 |
+
+新头必须先于相关对象重编，双版本库必须在最终链接时可用，并在运行时实际加载配套库。
+换库不会重选已记录的符号版本，也不会补回旧对象缺少的清理代码。两个头内定时等待、
+转换缓冲析构以及定时写者回滚均须随相关消费方重编。
+旧对象的“布局”指调用点和异常清理表覆盖，不是 Boost 的对象内存布局；同为旧头编译的
+quiet 和邻近可抛调用形态可以出现不同清理结果，不能从一个通过样本外推全部旧二进制。
+[支持范围中英候审版](../W3/REPORT.md)、[独立核验步骤](../W3/SELF_VERIFY_ZH.md)。
+
+## 验证汇总
+
+| 项目 | x86_64 原生 | armv7l 物理板 | 原始材料入口 |
+|---|---|---|---|
+| 最终定向矩阵 | 45 格 × 5＝225 | 45 格 × 5＝225 | [原生逐轮](../../IMPL_0908/W3/matrix_x86_64_final.tsv)、[实板逐轮](../../IMPL_0908/W3/matrix_armv7l_final.tsv) |
+| 定时旧／新版本补测 | 2 格 × 5＝10 | 2 格 × 5＝10 | [逐轮表](../../IMPL_0908/W3/timed_versions.tsv) |
+| 等待取消 | 四种形态 canceled=1、cleanup=1 | 同样四种形态的独立实测 | [完整报告与 raw](../../IMPL_0908/W3/REPORT.md) |
+| 共享锁回滚 | 原读者保留、写者位清除、排队者进展、后续读写可用 | 对应格独立实测 | [状态与正常竞争](../../IMPL_0908/W3/REPORT.md) |
+| 正常路径 | 等待谓词 42、通知／虚假唤醒／超时持锁；竞争 value=2000、checksum=14003 | 对应格独立实测 | [正常路径原文入口](../../IMPL_0908/W3/REPORT.md) |
+| 析构三方最小用例 | 本包 30 次；未显式同步新／旧／GNU＝3／9／0 字节，显式均 9 | 本包三方未重跑；保留此前新旧缓冲和析构取消证据 | [本包三方矩阵](../W1/matrix.tsv)、[此前实板](../../IMPL_0908/W3/REPORT.md) |
+
+前两行合计 470 次，包含预期的旧入口终止、旧 quiet 对象锁滞留等负向格。
+“断言符合预期”不等于每格都没有问题。正常路径不变也**不包括有意改变的析构输出行为**。
+共享锁探针在断言后用 _Exit 结束隔离进程，未据此覆盖全局对象析构；任意 Clock、facet、
+回调和所有调度交错均未穷尽。aarch64 动态验证为 NOT_OBSERVED。
+
+### 官方套件与失败分类（两架构完整结果）
+
+| 架构 | 有效总数 | PASS | FAIL | UNSUPPORTED | XFAIL | 缺项 |
+|---|---:|---:|---:|---:|---:|---:|
+| x86_64（两套件合计） | 11402 | 10070 | 129 | 1176 | 27 | 0 |
+| armv7l（两套件合计） | 11402 | 10080 | 211 | 1082 | 29 | 0 |
+
+原生分项统计、逐项比较见 [原生对照](../../IMPL_0908/W3/comparison_x86_64_new_full.tsv)；
+ARM 当前派生结果及逐项比较见 [ARM 与 R81 完整对照](../W2/ARM_R81_COMPARISON.tsv)。
+ARM 的 libc++ 为 11321 项：10020 PASS、211 FAIL、1061 UNSUPPORTED、29 XFAIL；
+libc++abi 为 81 项：60 PASS、21 UNSUPPORTED。原 7848 项（6657 PASS、136 FAIL、1027 UNSUPPORTED、28 XFAIL）
+无一重跑，本轮补齐 3554 项；[合并来源与统计](../W2/ARM_SUMMARY.json)。
+ARM 参照 R81 owner 标准化逐项记录；其与四补丁侧一致性有先前核对，来源映射见
+[基线脚本记录](raw/007_baseline_provenance.stdout)。原生沿用已固定的完整历史基线。
+
+已覆盖范围相对基线新增 FAIL 是 overflow：归为**已接受析构同步行为变化**，不是 noexcept
+假设类，保留原始 FAIL。本包三方实测支持用户已给定的接受标准，不代表字节数完全相同。
+此前 ARM 另有三个历史超时 FAIL 转 PASS，执行窗口不同，未归功于补丁。
+本轮补齐的 3554 项没有增加新的状态差异；两架构新增 noexcept 假设类及其他新增 FAIL 均为 0。
+原始 FAIL 保留，结果分母齐备不代表全部通过、所有既有失败原因相同或所有产品无问题。
+[完整两架构表](../W2/TWO_ARCHITECTURES.tsv)、[新增失败分类](../W2/NEW_FAILURE_CLASSIFICATION.tsv)、
+[原始测试归档及清单](../W2/REPORT.md)。新库与 libstdc++ 在“析构不自动刷新”上行为对齐；
+3／9／0 的实际字节数必须分开说明，两套库既有缓冲策略不同，本次未修改缓冲算法。
+
+## Gerrit 准备状态
+
+五提交线性、工作树干净、远端 SHA 一致，源码差异检查通过，补丁快照 patch-id 一致。
+提交说明均有 libcxx 主题、动机、中文说明、Validation 和 Evidence，与既有运行时补丁的
+说明结构相符。**五个当前提交都有唯一 Change-Id footer**；实际标准 hook 从 Gerrit 获取，
+逐项验证仅新增 footer 与必要分隔空行，原消息字节及 author 保留，committer 为 hao.lin。
+见[元数据重建记录](../../P6_0909/resume/REPORT.md)及[当前格式核验](../../P6_0909/resume/raw/026_verify_delivery.stdout)。
+历史无 footer 的[旧格式核验](raw/005_verify_delivery.stdout)保留作前后对照，不能声称已满足所有 Gerrit 接收条件。
+
+后续只读核查已取得项目配置完整继承链：platform/upstream/llvm →
+scm/acls/domain_system/toolchain → scm/acls/domain_system → scm/acls/domains → All-Projects。
+最近的显式值在 scm/acls/domains，为 `receive.requireChangeId=true`；All-Projects 的 false
+被这一层覆盖。见 [配置链与各版本 SHA](GERRIT_CONFIG_CHAIN.tsv)、[实际查询](raw/019_read_config_chain.stdout)。
+此前五提交缺少这一字段；当前五提交**已补齐 Change-Id 这一项前置**，不等于全部 review 接收条件已验证。
+Gerrit 官方说明指出，配置为要求 Change-Id 的项目会拒绝缺少它的 review 提交；
+本次没有向 refs/for 试推，实际拒绝输出仍为 NOT_OBSERVED，不伪造服务器已拒绝的回执。
+[Gerrit 官方说明](https://gerrit-review.googlesource.com/Documentation/error-missing-changeid.html)。
+继承解释依据 [官方项目配置文档](https://gerrit-review.googlesource.com/Documentation/config-project-config.html#receive.requireChangeId)。
+HTTP 两种公开配置 URL 均返回 404；随后在 tmp 隔离裸仓只读获取 refs/meta/config，
+没有改项目配置、源仓或服务器。仅记录父项目和接收选项，不输出权限成员或凭据。
+既有 sandbox 推送成功证明的是该分支上的代码可取用，不是 review 接收规则已经通过。
+是否以及何时准备正式 review 由人工决定。原交付整理阶段未改写；2026-09-11 后续元数据任务
+获人工授权，仅对该 sandbox 使用带旧 HEAD 校验的 force-with-lease。其他 132 个分支引用未变，
+未推正式分支、refs/for 或 LLVM 上游；[全部分支逐项对照](../../P6_0909/resume/ALL_BRANCH_COMPARISON.tsv)。
+
+## 尚缺与交付边界
+
+ARM 补测和中英文支持声明的数据更新已经完成；Change-Id 已经后续授权的等树重建补齐，
+其余发布前置仍待人工审阅。原十四项残留及本轮任务目录、74 份新诊断均清理并核验；
+旧八份及新诊断均有已验摘要的主机备份，板子已清理并释放。[W2 完整记录](../W2/REPORT.md)。
+外部组件分母及重建策略 NOT_AVAILABLE；产品 GBS/RPM 和实际发布身份验收 NOT_OBSERVED。
+历史 SOURCE_PROVENANCE 锚点不是本次 sandbox 的发布认证。
+本材料只汇编已有事实与本包三方结果，不在这些缺口上补造成功。

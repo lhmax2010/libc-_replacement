@@ -1,5 +1,7 @@
 # 两天任务包开工前的四项确认
 
+> 2026-09-11 分支归并：当前 LLVM 实施分支为 `sandbox/lhmax2025/libcxx-ehabi-backport`；五个提交的 SHA、tree 与 Change-Id 不变，没有重跑测试。历史记录中的分支名仅说明当时操作，不再是当前取件依赖。[分支映射与核验](../P6B_0909/BRANCH_MAPPING.md)。
+
 > 2026-09-11 元数据同步：正文提交引用已换为补齐 Change-Id 的等树新提交；“本次只读／未推送”等描述仍指原确认阶段，未改写历史动作或实测记录。[新旧映射与树核验](../P6_0909/resume/SHA_MAPPING.tsv)。
 
 核查日期：2026-09-09。性质：只读查证、历史实测证据复核；本次没有构建或运行测试，
@@ -18,7 +20,7 @@
 ## 一、双版本的实施状态
 
 **静态核查**：[原阶段报告](../IMPL_0908/W2/REPORT.md) 与当前源码一致。
-当前分支 `sandbox/lhmax2025/libcxx-noexcept-relief` 的本地与远端 HEAD 均为
+当前分支 `sandbox/lhmax2025/libcxx-ehabi-backport` 的本地与远端 HEAD 均为
 `c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13`，本次只做 `ls-remote`，没有推送该分支。
 见 [当前提交和远端查询](raw/002_local_status.stdout) 末尾。
 

@@ -1,5 +1,7 @@
 # 两日任务包：运行时验证线状态
 
+> 2026-09-11 分支归并：当前 LLVM 实施分支为 `sandbox/lhmax2025/libcxx-ehabi-backport`；五个提交的 SHA、tree 与 Change-Id 不变，没有重跑测试。历史记录中的分支名仅说明当时操作，不再是当前取件依赖。[分支映射与核验](P6B_0909/BRANCH_MAPPING.md)。
+
 分支 `codex/runtime-validation`；实施分支只读核对。本包产物在 `IMPL_0909/`。
 时间采用原始记录 UTC 时间计算；任务上限分别为 2 / 6 / 4 / 4 小时。
 
