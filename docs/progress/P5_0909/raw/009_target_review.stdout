@@ -1,0 +1,264 @@
+
+关于取消：有展开器强制展开实现与 ARM 修复，ChromeOS 作者也报告过混合展开器的真实问题；没有获得 ChromeOS 迁移时按取消方式、库版本、架构划分的完整验收矩阵。不能写“全部验证过”，也不能写“因为完全不用取消所以没有验证”。
+
+## 总部八项适用性核对
+
+DSO 指动态共享对象；下表“镜像”特指集成后的实际系统，不包括本机隔离进程。
+
+| 项 | 配置／静态事实 | 本次实测或实际镜像观察 | Tizen 适用性分析与缺口 |
+|---|---|---|---|
+| 提供方布局 | 本次 llvm-libgcc 别名最终指向 `libunwind.so.1.0`，SONAME 为 `libunwind.so.1`；ChromeOS 当前构建方式不同。 | 本机每次确认实验路径；Tizen／ChromeOS 替换镜像 `NOT_OBSERVED`。 | 能加载不等于符合安装器、沙箱、加载命名规则；不能直接照搬本次安装布局。 |
+| 导出与版本 | Tizen x86 sysroot 198 个已定义符号／版本组合，实验库 231 个；前者有 108 个组合不在后者集合。 | ELF 实查；不是运行镜像符号分母。 | 整体兼容未成立。缺少组合不一定缺同名函数，可能版本不同；须有实际消费者导入集合才能判定受影响产物。 |
+| 上述计数的单位限定 | 此口径包含平台表的 15 个 ABS 版本节点名。 | 沿用已定义符号／版本组合口径。 | 不是 108 个缺失函数或 108 个失败消费者。 |
+| `pthread_cancel` | glibc 使用强制展开；上层 ABI、异常规格、回滚仍参与。 | 本机两提供方结果一致，见下节；目标镜像 `NOT_OBSERVED`。 | 有限配置可行，不证明吞取消、异步取消、所有标准库内部路径安全。 |
+| `backtrace` | glibc 动态取得展开入口。 | 本机主程序及插件栈帧数量断言通过，各提供方 5 次；镜像 `NOT_OBSERVED`。 | 未覆盖信号上下文、优化尾调用、JIT／动态登记帧和生产崩溃报告器。 |
+| 跨 DSO | 上下文及 personality 必须形成一致协议。 | 插件抛出整数 42，主程序捕获且清理计数 1，各提供方 5 次；镜像 `NOT_OBSERVED`。 | 同一 ABI 对的异常样本通过；不同标准库对象布局、深绑定、多提供方顺序不在本次覆盖。 |
+| `dlopen` 插件 | 动态加载可能引入其他提供方及新版本需求。 | `RTLD_NOW|RTLD_LOCAL` 加载／异常／关闭通过，逐次 maps 核实；镜像 `NOT_OBSERVED`。 | 不包括 `dlmopen`、`RTLD_DEEPBIND`、带静态展开器的插件或旧产品插件。 |
+| 预编译产物 | 平台有 GNU 依赖产物；外部产品分母仍不可得。 | 本次只测自建探针，外部预编译集合 `NOT_AVAILABLE`。 | 当前证据不支持承诺兼容；缺 BOM、产物、导入版本、重建声明与更新边界。 |
+| armv7l gnu-eabi | 文档列 armv7a gnueabihf；Tizen 宏检查有 ARM EABI/VFP 指令能力，但无 `__ARM_PCS_VFP`。版本脚本判定未检查该调用约定宏。 | 脚本预处理通过、现有 ARM sysroot ELF 已读取；实验库 ARM 运行和替换镜像均 `NOT_OBSERVED`。 | 预处理接受不证明浮点调用约定或 EHABI 兼容；不能把 gnueabi 与 gnueabihf 无条件等同。 |
+
+证据：[实验库身份](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/023_experimental_identity.stdout)、[符号差异](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/symbol_comparison.tsv)、[ARM 宏](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/034_arm_macros.stdout)、[版本脚本](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/gcc_s.ver.in)、[ARM ELF 与源码版本](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/053_local_arch_metadata.stdout)、[实测设计](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/MEASUREMENTS.md)。
+
+## 本地展开器对照结果：实测
+
+环境为 x86_64 原生 Ubuntu glibc 2.39，使用 Tizen 编译包装器及既有 libc++／libc++abi 产物；不是 Tizen 原生镜像或 QEMU。实验构建、复制的运行库和探针只在隔离目录；每次正式运行检查 `/proc/self/maps` 和符号实际归属，排除实验组混入系统 GNU 展开器。保留异常规格组的终止处理器输出诊断并以 86 退出；不是把 86 误称成默认 SIGABRT。[宿主身份](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/051_host_environment.stdout)、[测量方法](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/MEASUREMENTS.md)。
+
+| 用例 | GNU 提供方 | LLVM 提供方 | 行为断言 |
+|---|---|---|---|
+| 保留规格：普通等待及三个时钟变体 | 每格 5/5 终止 | 每格 5/5 终止 | 进入终止处理器，外层清理计数 0。 |
+| 解除规格：相同四种等待 | 每格 5/5 取消退出 | 每格 5/5 取消退出 | join 返回取消标记，清理计数 1。内联头文件已随探针重编。 |
+| 无回滚：普通／定时写者 | 每格 5/5 残留 | 每格 5/5 残留 | 原读者释放后仍有写者位 2147483648，新读／写获取失败。进程退出 0 表示“预期损坏被准确断言”，不是正常状态。 |
+| 有回滚：普通／定时写者 | 每格 5/5 通过 | 每格 5/5 通过 | 清除写者位、保留已有读者，后续读／写真实进展，最终状态 0。 |
+| backtrace＋插件跨 DSO 异常 | 5/5 通过 | 5/5 通过 | 栈帧阈值、整数 42、清理 1、关闭成功。 |
+| 修补 ABI 对，捕获后重抛取消 | 5/5 通过 | 5/5 通过 | 捕获 1、清理 1、线程取消退出。 |
+
+For cancellation, implementations, ARM fixes and reports of mixed-unwinder problems exist. A complete ChromeOS matrix covering cancellation mode, library combination and architecture was not obtained. Neither universal validation nor universal nonuse is justified.
+
+## Tizen applicability: the eight requested categories
+
+DSO means a dynamic shared object. “Image” below means an integrated target system, not an isolated host process.
+
+| Category | Configuration or static evidence | Measured / image evidence | Applicability and missing evidence |
+|---|---|---|---|
+| Provider layout | Local aliases resolve to `libunwind.so.1.0`, SONAME `libunwind.so.1`; ChromeOS's configured physical layout differs. | Experimental mapping verified per host run; replacement target images not observed. | Loader success does not establish sandbox, installer or dependency-scanner compatibility. |
+| Exports and versions | 198 defined name/version pairs in the Tizen x86 sysroot; 231 in the experiment; 108 platform pairs absent from the experimental set. | ELF inspection, not a running-image denominator. | The export set is not a superset. Some names exist under different/no versions; actual consumer imports are needed to identify affected binaries. |
+| Counting-unit qualification | This count includes 15 ABS version-node names in the platform table. | The unit remains defined name/version pairs. | It does not mean 108 missing functions or 108 failing consumers. |
+| `pthread_cancel` | glibc forced unwinding still traverses ABI-library and language/cleanup boundaries. | GNU and LLVM host cells agree; target images not observed. | Limited feasibility, not safety for every catch site, asynchronous cancellation or library algorithm. |
+| `backtrace` | glibc dynamically resolves unwinder entry points. | Main/program-plugin frame-count assertions passed five times per provider. | Signal contexts, JIT registration, optimized production stacks and crash reporters remain outside coverage. |
+| Cross-DSO behavior | Context and personality implementations must form a coherent protocol. | Plugin throws integer 42; caller catches; cleanup count 1, five times per provider. | One coherent ABI-pair sample, not cross-standard-library object-layout validation or mixed-provider ordering. |
+| `dlopen` plugins | Plugins can introduce providers and version requirements. | `RTLD_NOW|RTLD_LOCAL`, throw/cleanup and close passed with mapping checks. | No production legacy plugins, deep binding, separate link namespaces or static embedded unwinders tested. |
+| Prebuilt binaries | GNU-dependent platform artifacts exist; external-product denominator unavailable. | Only purpose-built probes ran. | Compatibility cannot be promised without BOMs, binaries, version imports, rebuild declarations and update boundaries. |
+| armv7l gnu-eabi | Documentation names armv7a gnueabihf; Tizen macros show EABI/VFP instruction capability but not `__ARM_PCS_VFP`. Script acceptance does not check that calling-convention macro. | Preprocessing and existing sysroot ELF inspected; experimental ARM runs/images not observed. | gnueabi and gnueabihf cannot be equated; actual floating-point calling convention and EHABI combinations remain unvalidated. |
+
+Evidence: [DSO identity](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/023_experimental_identity.stdout), [symbol comparison](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/symbol_comparison.tsv), [ARM macros](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/034_arm_macros.stdout), [version script](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/gcc_s.ver.in), [ARM ELF](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/053_local_arch_metadata.stdout), [test design](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/MEASUREMENTS.md).
+
+## Local measurements and their interpretation
+
+This was native x86_64 on Ubuntu glibc 2.39, using Tizen compiler wrappers and existing libc++/libc++abi artifacts—not a native Tizen image or QEMU. All experimental binaries were under the isolated directory. Every formal run checked `/proc/self/maps` and the versioned forced-unwind symbol's provider. The LLVM cells rejected other detected libgcc_s/libunwind shared mappings. [Host identity](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/051_host_environment.stdout), [design and raw evidence](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/MEASUREMENTS.md).
+
+| Case | GNU provider | LLVM provider | Behavioral result |
+|---|---|---|---|
+| Retained specification: ordinary wait and three clock variants | 5/5 per cell | 5/5 per cell | Terminate handler entered; outer cleanup count 0. |
+| Removed specification: same four variants | 5/5 per cell | 5/5 per cell | Joined as cancelled; cleanup count 1. Inline paths were recompiled with the corresponding headers. |
+| Ordinary/timed writer without rollback | 5/5 per cell | 5/5 per cell | Writer bit 2147483648 remained after the original reader left; subsequent acquisition failed. |
+| Ordinary/timed writer with rollback | 5/5 per cell | 5/5 per cell | Writer bit cleared, existing reader preserved, subsequent real reader/writer progress, final state 0. |
+| Backtrace and plugin exception | 5/5 | 5/5 | Frame-count thresholds, exact value 42, cleanup 1 and successful close. |
+| Patched ABI pair: cancellation caught and rethrown | 5/5 | 5/5 | Catch 1, cleanup 1, cancelled join. |
+| Unpatched coherent ABI pair: same rethrow | 5/5 SIGABRT | 5/5 SIGABRT | Foreign-exception diagnostic, not a clean cancelled join. |
+
+Total: 30 cells × 5 runs. Retained-specification exit 86 is an instrumented terminate-handler marker, not a signal. A damaged-state control exiting zero means the expected damage was asserted, not that the library is healthy. Smoke tests and an initial incoherent-library loading failure were excluded from the matrix and retained separately.
+# Boost 剩余符号边实测（本轮）
+
+## 结论边界
+
+本轮结论为 **`PARTIAL`**。在既有 27/90 条已测边基础上，本轮在
+**aarch64、QEMU 用户态**新增测到 22 条边，累计为 **49/90**；仍有
+**41/90** 未在其对应架构和符号组上实测。本轮没有把 QEMU aarch64
+结果外推到物理 aarch64、x86_64、armv7l，也没有把一个代表符号组的
+结果外推到同一边上的所有 C++ 符号。
+
+## 选取及理由
+
+沿用上一轮的 90 条边分类，并严格按以下次序选择：
+
+1. 先补 aarch64 上已有同符号组、但该架构尚未观测的布局敏感边：
+   Boost.Test 7 条、Boost.Filesystem 4 条、Boost.Iostreams 1 条、
+   Boost.Program Options 2 条，共 14 条。
+2. 再补“C++ ABI 耦合但布局未证明”：Boost.Test 5 条、Boost.Thread
+   3 条，共 8 条。Boost.Thread 在 x86_64 通过只能说明该架构和该符号
+   组的实测结果，不能代替 aarch64 实测；Boost.Test 在这一分类中也
+   不能因分类名含“未证明”而默认安全。
+
+逐边清单见 `tables/w3_selected_edges.tsv`，更新后的完整 90 条表见
+`tables/w3_edges_90_results.tsv`。
+
+## 方法和正向对照
+
+- provider 均来自 R11 Base aarch64 二进制 RPM，实际加载的是平台的
+  Boost 1.83.0 DSO，不是模拟 provider。五个 provider 的 SHA256 记录在
+  `raw/080_extract_selected_r11_boost_providers.stdout`。
+- consumer 以 aarch64 目标编译，使用 R11 的 libc++ 22.1.8 或
+  libstdc++ 14.2.0 头文件和运行库。构建产物经 `file` 确认为 aarch64
+  ELF；混合格的动态依赖包含 libc++、libc++abi 与 libstdc++。
+- 每个混合格执行 5 次；每个对应的 libstdc++ 同库正向对照也执行
+  5 次，共 10 格、50 次。
+- 每次由进程自身读取 `/proc/self/maps`。所有 25 次混合格均确认
+  `libc++.so.1`、`libstdc++.so.6` 与相应 provider 同时加载；所有 25 次
+  对照格确认仅有 libstdc++ 和 provider（没有 libc++）。
+- 每格断言具体状态或具体值；同时观察析构。Boost.Thread 的
+  `once_flag` 是平凡析构类型，故销毁路径标为 `COMPLETED_TRIVIAL`，
+  不是把“不适用”伪装成非平凡析构已测。
+- Boost.Test 的输入使用平台 Boost 头文件中已核对的两个指针布局，
+  并保留用户声明拷贝构造所导致的“非平凡按值参数”调用属性；源定义
+  证据在 `raw/086`、`raw/088`。这一步用于让目标编译器生成正确的
+  AArch64 参数与隐藏返回值约定，而不是沿用 x86_64 的寄存器假设。
+
+执行环境是 QEMU 用户态而非物理板。它足以观测本轮确定性的对象布局、
+返回值、状态转换与析构结果；不据此声明真实内核时序、信号交付或设备
+行为已覆盖。
+
+## 实测结果
+
+| provider / 调用形态 | 混合运行库 5 轮 | libstdc++ 对照 5 轮 | 析构观察 |
+|---|---|---|---|
+| Boost.Test `normalize_test_case_name`，provider 返回 `std::string` | 5/5 返回后读取为长度 56，期望长度 16；具体值断言失败，退出 41 | 5/5 长度 16，十六进制为 `616c7068615f626574615f67616d6d61`（`alpha_beta_gamma`），退出 0 | 混合侧 5/5 consumer 析构完成且 `dlclose` 完成 |
+| Boost.Filesystem `status` + `read_symlink` | 5/5 `status_ok=0`、`value_ok=0`；返回路径长度 8 且文本损坏，退出 41 | 5/5 `status_ok=1`，精确返回 `payload.txt`（长度 11），退出 0 | 两格均 5/5 完成 provider 构造对象的 consumer 析构 |
+| Boost.Iostreams `mapped_file_source::open` | 5/5 在给出值断言前抛出 `std::length_error` 并终止，退出 134 | 5/5 打开成功、长度 19、内容精确匹配，退出 0 | 混合侧 5/5 析构未观测；对照 5/5 完成 |
+| Boost.Program Options `variables_map` | 5/5 初始大小 0、插入后大小 1、值 82 精确通过；随后在作用域退出的析构阶段 SIGSEGV，退出 139 | 5/5 值与析构均通过，退出 0 | 混合侧 5/5 值正确但析构未完成；对照 5/5 完成 |
+| Boost.Thread `enter/rollback/commit_once_region` | 5/5 精确状态 `1,1,0`，退出 0 | 5/5 精确状态 `1,1,0`，退出 0 | `once_flag` 为平凡析构，5/5 作用域退出完成 |
+
+完整逐轮结构化结果为 `build/w3/runtime_results.tsv`；逐轮命令与退出码
+为 `build/w3/runtime_commands.tsv`；逐轮 stdout/stderr 均在
+`build/w3/`。最终矩阵自校验输出
+`ASSERTIONS=PASS architecture=aarch64 cases=10 repeats_per_case=5 controls=PASS maps=PASS`。
+
+这些结果同时给出三种不同形态：静默错值但析构完成、值正确但析构
+崩溃、以及精确通过。因此不能用“没有崩溃”替代值与所有权正确性判断，
+也不能用“值正确”替代销毁路径正确性判断。
+
+## 覆盖变化
+
+| 分类 | 本轮新增 | 累计已测 | 本轮后仍未测 |
+|---|---:|---:|---:|
+| 布局敏感 | 14 | 33 | 30 |
+| C++ ABI 耦合但布局未证明 | 8 | 16 | 11 |
+| 合计 | 22 | 49 | 41 |
+
+累计数字中的“已测”表示该边上选定的代表符号组已在该架构实测，仍不
+表示该边的全部 C++ 符号均逐个测试。
+
+## 剩余 41 条及风险说明
+
+- 布局敏感 30 条：其中 21 条仍没有被选中的符号组，2 条是既有
+  Filesystem 代表组在 armv7l 之外的架构尚缺，7 条是 Boost.Test
+  代表组在 armv7l 尚缺。已有多个家族和架构出现错值、异常终止或
+  析构失败，但未测条目仍记 `NOT_OBSERVED`，不以家族结果代填。
+- C++ ABI 耦合但布局未证明 11 条：3 条仍未选符号组，8 条为已选
+  Boost.Test/Boost.Thread 组在 armv7l 尚缺。Boost.Test 本轮出错而
+  Boost.Thread 本轮通过，实测再次表明这一分类内部不能统一推定
+  “安全”或“必然失败”。
+- 逐条剩余清单和原风险字段见 `tables/w3_remaining_edges.tsv`；分类和
+  状态计数见 `tables/w3_edge_status_summary.tsv`。
+
+## 失败尝试与测法校准
+
+- 最初复用 x86_64 的显式隐藏返回指针写法；AArch64 ABI 不同，该构建
+  被主动停止，不能算运行时结果（`raw/042`、`raw/045`）。
+- 外部挂载目录读取头文件发生长时间块等待；已保存进程状态后停止，
+  改从同一 R11 RPM 在 `/tmp/r110_w3_build` 展开头文件和运行库，最终
+  构建命令仍逐条记录（`raw/093`、`raw/095`、`raw/101`）。
+- 第一版最小 `basic_cstring` 只复现两指针数据布局，遗漏其非平凡拷贝
+  构造导致的 AArch64 间接传参属性，混合格和对照格均 5/5 `bad_alloc`。
+  因正向对照同时失败，该批结果被判定为测法错误并修正；最终对照
+  5/5 通过（`raw/107`、`raw/110`）。
+- Filesystem 与 Iostreams 首轮因 provider 的运行时依赖未加入搜索路径
+  而退出 127；补入同一 R11 的 Boost.Atomic、zlib、libbz2 后重跑，
+  最终矩阵通过自校验（`raw/114`、`raw/117`、`raw/121`、`raw/122`）。
+
+## 可复核产物
+
+- `code/w3_build_aarch64.sh`：最终 SHA256
+  `0755ff2995c9629eeef555b0b176cf6057bb0596f6db7872ebb4235f26e04bd7`。
+- `code/w3_run_aarch64_matrix.sh`：最终 SHA256
+  `b8c95a889773ebd4d55f14f703061caebecedf0bf31bd82e90a1a3310c4a1925`。
+- `code/w3_boost_test_portable.cpp`：最终 SHA256
+  `d96176991dd35fc47485f0fe94dc05c88e1ea02f5a748fdba40f9955c289567b`。
+- `code/w3_maps_probe.hpp`：SHA256
+  `2c1a37f58a2b3a10d76595f43d23785a251ed65b537e4b97d87347e6a6d29a33`。
+- `code/w3_update_edges.py`：SHA256
+  `cf1099bdc74b43b0873168b8dcb981634e19302f24e1c0fca99015618723cdcf`。
+- 原始命令、stdout、stderr、退出码：`raw/040` 至 `raw/124`；构建与逐轮
+  运行的子命令分别在 `build/w3/build_commands.tsv` 和
+  `build/w3/runtime_commands.tsv`。
+
+本报告只补充事实，不对迁移方案、优先级或是否接受风险作决定。
+# Chromium 的 libc++ 使用方式与 LLVM 展开器对 Tizen 的适用性
+
+证据截至 2026-09-07。用途：总部技术评审；不构成实施或选型建议。
+
+## 摘要
+
+1. **“Chromium／Google 在规范层面统一禁止 `pthread_cancel`”未得到证实。** Chromium 的 `base::Thread` 确实采用请求退出并等待线程结束的协作方式；但本次固定版本主仓扫描，在随仓 gRPC 的 POSIX 实现中发现了真实取消调用。公开 Google C++ Style Guide 的“不使用 C++ 异常”不等于禁止 POSIX 线程取消；内部规范不可得。[线程实现](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/base/threading/thread.cc)、[gRPC 实现](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/third_party/grpc/source/src/core/util/posix/thd.cc)、[公开风格指南](https://google.github.io/styleguide/cppguide.html)。
+2. **llvm-libgcc 可以在隔离目录构建，并支持本次 x86_64 强制展开探针；它不是已经验证的 Tizen 即插即用替代库。** 150 次运行区分了 GNU／LLVM 提供方、异常规格保留／解除、写者回滚有／无及 ABI 库修补有／无。换成 LLVM 展开器没有消除 `noexcept` 终止、写者状态残留或未修补 ABI 库的重抛终止。[实测记录](MEASUREMENTS.md)、[逐格结果](measurement_summary.tsv)。
+3. **ChromeOS 的迁移是真实的，但不能当作任意旧二进制兼容的证明。** 正式提交记录显示 2021 年 12 月启用所有板型、更新 SDK 和系统依赖；原始参考提案本身已废弃，不能把它的草案测试栏当成发布验证。公开材料描述受控 SDK 构建前提，不提供 Tizen 外部二进制分母、更新时序或兼容承诺。[全板启用](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3335237)、[SDK 更新](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3339453)、[原提案](https://reviews.llvm.org/D106703?id=361316)。
+4. 本次无 Tizen／ChromeOS 替换后实际镜像；ARM 与 aarch64 的实验展开器运行均为 `NOT_OBSERVED`。八项适用性中，已有的是部分源码、构建和本机探针证据，**没有一项可以外推为整个平台迁移验收通过**。
+
+## 证据口径
+
+“静态核查”指读取源码、构建配置、ELF（可执行文件与共享库格式）或提交；“外部报告”指项目作者报告的结果，不等于本组重现；“实测”只指本次执行并保存原始输出的探针；“分析”明确表示条件性推论。`NOT_OBSERVED` 为未观测，`NOT_AVAILABLE` 为材料不可得。本文不把“没有崩溃”当成对象状态、资源释放或 ABI 正确的证明。
+
+主仓固定在 `ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1`，其 libc++ 依赖固定在 `97b436da4c33663581d394f4ee0a5977fc38c2f4`。本次构建的 LLVM 源树版本另为 `5ed6c77278dfa7a470667cf1a137723d3c96fe60`，**没有把 Chromium 的依赖版本当作本地实验版本**。完整来源与获取失败记录见[引用索引](REFERENCES.md)。
+
+## Chromium 如何使用 libc++
+
+### 构建和退出机制：静态核查
+
+默认启用自带 libc++；组件构建时可共享链接，非组件构建采用静态形式，不能概括成“一律静态”。libc++abi 是对应的 C++ ABI 支持库；具体目标类型还随是否由可执行文件导出符号而变化。自带 LLVM libunwind 的默认条件是 Fuchsia 或 Android；**Linux 默认并不是一并使用自带 libunwind**。libc++ ABI 命名空间设置为 `__Cr`、ABI 版本为 2，以隔离标准库符号；这不转换跨边界对象布局。[标准库配置](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/c++/c++.gni)、[展开器配置](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/unwind.gni)、[ABI 配置](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/buildtools/third_party/libc++/__config_site)。
+
+`base::Thread::StopSoon()` 投递退出工作；`Stop()` 等待底层线程结束。这证明这一封装的协作退出策略，不证明所有第三方代码都受同一机制约束。[源码](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/base/threading/thread.cc)。
+
+### 使用检索：静态核查，不是产品运行覆盖
+
+归档有 505,965 个普通文件；选择源码、头文件、构建及文档等后缀和指定文件名后扫描 195,796 个文本文件，排除 310,156 个非选定后缀及 13 个含 NUL 文件。不包括另行获取的全部 DEPS 仓库，也不检查宏展开、别名调用或二进制。每个检索词都有独立合成正向对照，另有真实线程源码正向对照。[命中明细](chromium_usage.tsv)、[扫描原始输出](raw/054_scan_full_archive.stdout)、[正向对照和补查](raw/057_supplement.stdout)。
+
+| 检索项 | 结果与解释 |
+|---|---|
+| `pthread_cancel` | 1 个文件、2 行：gRPC `thd.cc:204` 为调用，206 为日志文字；不是两个调用点。非 Android 的 POSIX `Thread::Kill()` 实现会取消线程。 |
+| 间接调用 | `work_stealing_thread_pool.cc:162` 的 `DumpSignalHandler` 调用 `Thread::Kill`；`third_party/grpc/BUILD.gn:2285` 列入 POSIX 源文件。是否被某一最终产品启用／执行仍为 `NOT_OBSERVED`。 |
+| `pthread_setcanceltype`、`PTHREAD_CANCEL_ASYNCHRONOUS` | 选定文本范围内均零命中；有正向对照；不等于全依赖、全产品无异步取消。 |
+| `std::shared_mutex` | 仅一份性能说明文档的两行文字命中，不是当前实例化代码；`std::shared_timed_mutex` 零命中。不能覆盖别名和独立依赖仓。 |
+| `wbuffer_convert` | 一处头文件清单命中，不是使用者；不能据此宣称所有产品无使用者。 |
+| `#include <boost/...>` | `third_party/protobuf/third_party/utf8_range/boost.cpp:1` 命中 `boost/locale.hpp`；没有证明该文件进入 Chrome 产品，也不能写“仓内完全没有 Boost”。 |
+
+历史上，Chromium 的 StatisticsRecorder **确实尝试过** `std::shared_mutex`，讨论记录在 2023 年说明已回到 `base::Lock`。理由包括该工作负载的读写锁开销及对原锁使用方式的改进；这不是取消回滚修复，也不是标准库从未使用过的证据。[维护者讨论](https://groups.google.com/a/chromium.org/g/cxx/c/bIlGr1URn8I)。
+
+公开 Google Style Guide 本次文本中，取消相关精确词检索零命中，异常章节提供正向对照；没有找到可引用的全 Google 取消禁令。内部规范为 `NOT_AVAILABLE`，不能从公开异常规则推断其内容。[指南快照](sources/google_style.txt)、[原始检索](raw/015_chromium_search.stdout)。
+
+### lightweight-web-engine 与 Tizen 的前提
+
+本地源码包 README 将项目标识为 **Starfish**，列出自己的引擎构建及 `liblightweight-web-engine` 产物；它不是一份能证明 Chromium 衍生关系的材料。`WorkerThread.cpp` 在 `OS_POSIX && !STARFISH_ANDROID` 下启用异步取消并调用 `pthread_cancel`，并非仅凭代码条件就能认定为 Tizen 特有追加。私有上游历史不可得，Tizen 公共远端本次返回 HTTP 403；因此“谁、何时引入”和确切派生关系为 `NOT_AVAILABLE`，不能补写为 Chromium 上游行为。[包内 README 与代码快照](snapshot_origins.tsv)、[代码上下文](raw/049_lwe_context.stdout)、[远端获取结果](raw/048_lwe_remote.stderr)。
+
+分析：Tizen 已有取消调用、异步取消组件、跨标准库语义边和未覆盖的外部二进制。它不能仅通过改用 Chromium 的链接方式获得相同使用约束；协作退出只在调用方实际遵守该协议时消除对应取消路径。这是应用语义前提，不是展开器选择带来的效果。
+
+## llvm-libgcc：接口、强制展开及边界
+
+llvm-libgcc 将 compiler-rt 的编译器内建运算支持与 LLVM libunwind 的栈展开实现组合，提供 libgcc 风格文件及符号版本；它不提供 libc++ 容器布局、取消回滚守卫或旧版 libc++ 函数语义。文档明确把完整发行版兼容责任留给集成者，要求显式启用。[项目说明](https://github.com/llvm/llvm-project/blob/main/llvm-libgcc/docs/LLVMLibgcc.md)、[本次构建版本快照](snapshots/LLVMLibgcc.rst)。
+
+强制展开是 glibc 取消线程时驱动栈清理的协议，不等于普通 C++ 异常搜索。LLVM 的 DWARF 实现有 `_Unwind_ForcedUnwind`，保存停止回调及其参数并执行带强制展开标志的清理阶段；GNU 也实现该协议。相同入口名不保证两家私有上下文能交叉使用。ARM 的 EHABI（ARM 异常处理 ABI）又有独立的数据结构与继续展开约定，不能用 x86 DWARF 实测代替。[LLVM DWARF 快照](snapshots/UnwindLevel1.c)、[LLVM EHABI 快照](snapshots/Unwind-EHABI.cpp)、[GNU 快照](snapshots/gcc-unwind.inc)。
+
+本地 glibc 2.40 源码通过 `libgcc_s.so.1` 查找 `_Unwind_Backtrace`、`_Unwind_ForcedUnwind`、`_Unwind_GetCFA`、按架构配置的 `_Unwind_GetIP`、`_Unwind_Resume` 和 `__gcc_personality_v0`；另有架构条件扩展，不能将六个入口当成所有架构全集。本次实验 DSO 导出 x86_64 核查所需六项，实际宿主 glibc 的取消和 backtrace 探针通过。**这只确认对应接口子集，不确认整个 GNU libgcc ABI。**[glibc 接口快照](snapshots/glibc-unwind-link.c)、[符号核对](raw/041_analysis.stdout)。
+
+已知限制包括：混合 GNU／LLVM 展开器的私有上下文交叉使用、ARM 强制展开的历史缺陷、文件别名与 SONAME（共享库内部登记名称）不一致引起的加载问题，以及不同版本的内建运算导出差异。LLVM ARM 修复于 2021 年落地；这反证“他们根本不处理强制展开”的绝对说法，但不是 ChromeOS 全产品取消测试证明。[ARM 修复](https://reviews.llvm.org/D109856)、[混合提供方讨论](https://reviews.llvm.org/D150897)、[发行版取消崩溃报告](https://github.com/llvm/llvm-project/issues/90041)。
+
+## ChromeOS 迁移：已确认的历史及不能补全的部分
+
+Chrome 浏览器改用 libc++ 与 ChromeOS 系统展开器切换是两件事。2017 年的浏览器公告将 C++14 与 CFI（控制流完整性）作为迁移动机之一；不能据此声称整个操作系统的第三方 C++ 库同时换成 libc++。[公告](https://groups.google.com/a/chromium.org/g/chromium-os-dev/c/e8pJRHLisIg)。
+
+| 时间／证据性质 | 可确认事实 |
+|---|---|
+| 2021 年提案，外部讨论 | D106703 描述受控工具链：ChromeOS SDK 产生相关构建产物，而非任意外部工具链二进制；还讨论了静态 libgcc 与混合展开器问题。提案及关联早期变更已废弃，不能作为最终落地提交。 |
+| 2021-10-27，已合入提交 | NaCl 加载故障推动改成真实文件 `libgcc_s.so.1`、`libunwind` 指向它，作者报告 NaCl 测试通过。 |
+| 2021-11，已合入提交 | binutils 补显式 pthread 链接；Breakpad 删除阻碍 arm32 上构建 64 位崩溃报告器的硬编码库路径。 |
+| 2021-12，已合入提交 | 所有板型默认启用 libunwind，SDK 更新，并加入隐式系统依赖。提交报告多个板型测试；未取得当时完整测试日志或运行镜像。 |
+| 2022-02，LLVM 上游 | 后续 llvm-libgcc 项目经 D108416 落地；不能以其上游落地日期替代 ChromeOS 下游启用日期。 |
+| 2023-07，已合入提交 | glibc 引导构建因 llvm-libunwind 提前安装而发生问题，调整构建时 sysroot 应用；这不是运行系统全面退回 GNU 展开器。 |

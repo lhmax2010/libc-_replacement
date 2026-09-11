@@ -1,0 +1,1527 @@
+file	line	text
+abi_comparison_preliminary.md	1	# libstdc++ 与 libc++ 的 ABI 差异（初步版）
+abi_comparison_preliminary.md	2	
+abi_comparison_preliminary.md	3	- 日期：2026-09-09
+abi_comparison_preliminary.md	4	- 修订：P5，2026-09-11；证据以本次核对的既有记录为界，不代表当日重新进行产品验证。
+abi_comparison_preliminary.md	5	- 本报告不是全部产品验收结论；支持范围以配套候审声明为准。
+abi_comparison_preliminary.md	6	- 状态：**初步版** —— 成员级的内部实现比对尚未完成，见第五节
+abi_comparison_preliminary.md	7	- 大小／对齐探针：x86_64；GNU 侧宿主 GCC 13.3.0；LLVM 侧 Clang 21.1.1 与缓存的平台 libc++／libc++abi。libc++ 头版本宏 220108 即 22.1.8，不是编译器版本。GCC 14.2 平台源码及基线符号清单是另一个输入。
+abi_comparison_preliminary.md	8	
+abi_comparison_preliminary.md	9	---
+abi_comparison_preliminary.md	10	
+abi_comparison_preliminary.md	11	## 一、哪些层一致、哪些层不同
+abi_comparison_preliminary.md	12	
+abi_comparison_preliminary.md	13	这一点是理解全部差异的前提。
+abi_comparison_preliminary.md	14	
+abi_comparison_preliminary.md	15	| 层 | 两套库 | 后果 |
+abi_comparison_preliminary.md	16	|---|---|---|
+abi_comparison_preliminary.md	17	| 名字修饰规则 | 同属 Itanium C++ ABI，实际名称仍受命名空间、ABI tag 等影响 | 本例可匹配，不代表所有接口可链接 |
+abi_comparison_preliminary.md	18	| 函数调用约定 | 须核对目标 ABI、完整定义及编译选项 | 一致是兼容的前提，不是完整安全性证明 |
+abi_comparison_preliminary.md	19	| 内置类型与 POD 的布局 | 满足同一目标 ABI 等条件时可设计兼容边界 | Engine／Rect 对应跨库调用实测为 NOT_OBSERVED；隐式 this、生命周期和异常路径也须核对 |
+abi_comparison_preliminary.md	20	| **标准库类型的表示** | 已测部分大小／对齐不同，其余尚未证明完整等价 | 有静默错值反例，不是每个类型必然以同一方式失败 |
+abi_comparison_preliminary.md	21	| 内联命名空间 | 不同（`__cxx11` / `__1`） | 部分符号名不同，链接会失败 |
+abi_comparison_preliminary.md	22	| 异常与 RTTI | 实际运行时、personality 及符号绑定影响匹配 | 所测 GNU 插件→libc++ 的 BoundaryError 未进 typed catch；不能概括为所有类型信息丢失 |
+abi_comparison_preliminary.md	23	| 分配器与内部状态 | 需核对实际分配器、析构、对齐及生命周期契约 | 加载两套库不等于两套独立堆；new[]／free 不配对即使同库也错误 |
+abi_comparison_preliminary.md	24	
+abi_comparison_preliminary.md	25	**链接成功不足以保证正确。** 接口数据、生命周期、异常／取消路径及实际 ABI 配置共同决定
+abi_comparison_preliminary.md	26	兼容条件。固定 C 接口样本通过不代表任意 C 接口安全；未统一 ABI 的标准对象、异常和
+abi_comparison_preliminary.md	27	所有权直接跨界不在当前支持承诺内。部分组合链接即失败，部分可运行但产生错值。
+abi_comparison_preliminary.md	28	
+abi_comparison_preliminary.md	29	---
+abi_comparison_preliminary.md	30	
+abi_comparison_preliminary.md	31	## 二、对象布局的差异
+abi_comparison_preliminary.md	32	
+abi_comparison_preliminary.md	33	固定 x86_64 探针的 33 个具体类型实例中，10 个 sizeof 或 alignof 不同，23 个两项均相同；
+abi_comparison_preliminary.md	34	没有完成成员偏移、节点、控制块及操作语义等价性验证。
+abi_comparison_preliminary.md	35	
+abi_comparison_preliminary.md	36	### 2.1 大小或对齐不同的类型
+abi_comparison_preliminary.md	37	
+abi_comparison_preliminary.md	38	| 类型 | libstdc++ | libc++ | 差值 |
+abi_comparison_preliminary.md	39	|---|---:|---:|---:|
+abi_comparison_preliminary.md	40	| `std::any` | 16 | **32** | +16 |
+abi_comparison_preliminary.md	41	| `std::function<void()>` | 32 | **48** | +16 |
+abi_comparison_preliminary.md	42	| `std::deque<int>` | **80** | 48 | −32 |
+abi_comparison_preliminary.md	43	| `std::map<int,int>` | **48** | 24 | −24 |
+abi_comparison_preliminary.md	44	| `std::set<int>` | **48** | 24 | −24 |
+abi_comparison_preliminary.md	45	| `std::unordered_map<int,int>` | **56** | 40 | −16 |
+abi_comparison_preliminary.md	46	| `std::unordered_set<int>` | **56** | 40 | −16 |
+abi_comparison_preliminary.md	47	| `std::string` | **32** | 24 | −8 |
+abi_comparison_preliminary.md	48	| `std::future<int>` | **16** | 8 | −8 |
+abi_comparison_preliminary.md	49	| `std::promise<int>` | **24** | 8 | −16 |
+abi_comparison_preliminary.md	50	
+abi_comparison_preliminary.md	51	**注意方向不一致** —— 有的 libc++ 更大，有的更小。这说明两套库的设计取舍
+abi_comparison_preliminary.md	52	"不同，不是简单的""新版本更紧凑""。"
+abi_comparison_preliminary.md	53	
+abi_comparison_preliminary.md	54	表中数值和差值单位为字节，差值为 libc++ 减 libstdc++。std::function<void()> 的对齐亦不同：GNU／LLVM 为 8／16 字节。
+abi_comparison_preliminary.md	55	
+abi_comparison_preliminary.md	56	### 2.2 大小与对齐相同的类型
+abi_comparison_preliminary.md	57	
+abi_comparison_preliminary.md	58	其余 23 个（`std::array`、`std::pair`、`std::vector`、`std::unique_ptr`、
+abi_comparison_preliminary.md	59	`std::shared_ptr` 等）大小与对齐相同。
+abi_comparison_preliminary.md	60	
+abi_comparison_preliminary.md	61	**但大小相同不等于可以跨边界传递** —— 内部字段的含义与不变式仍可能不同。
+abi_comparison_preliminary.md	62	本轮只比对了大小与对齐，**成员级比对未做**（见第五节）。
+abi_comparison_preliminary.md	63	
+abi_comparison_preliminary.md	64	### 2.3 实测的后果
+abi_comparison_preliminary.md	65	
+abi_comparison_preliminary.md	66	以下为原实验核心片段，提供方和消费方是不同翻译单元；省略头文件、打印及辅助函数定义。
+abi_comparison_preliminary.md	67	
+abi_comparison_preliminary.md	68	```cpp
+abi_comparison_preliminary.md	69	// 提供方（libstdc++ 构建）
+abi_comparison_preliminary.md	70	std::deque<int>* make_payload() {
+abi_comparison_preliminary.md	71	    return new std::deque<int>{11, 22, 33, 44};
+abi_comparison_preliminary.md	72	}
+abi_comparison_preliminary.md	73	
+abi_comparison_preliminary.md	74	// 消费方（libc++ 构建）
+abi_comparison_preliminary.md	75	int main() {
+abi_comparison_preliminary.md	76	    auto* payload = make_payload();
+abi_comparison_preliminary.md	77	    const auto producer_view = provider_size(payload);
+abi_comparison_preliminary.md	78	    const auto consumer_view = payload->size();
+abi_comparison_preliminary.md	79	    destroy_payload(payload);       // 由提供方 delete
+abi_comparison_preliminary.md	80	    return producer_view == consumer_view ? 0 : 42;
+abi_comparison_preliminary.md	81	}
+abi_comparison_preliminary.md	82	```
+abi_comparison_preliminary.md	83	
+abi_comparison_preliminary.md	84	**链接和加载成功，无信号崩溃，但主动退出 42 标记错值。** provider／consumer 的 sizeof
+abi_comparison_preliminary.md	85	为 80／48，长度视图为 4／106884723786536，并由 provider 的 destroy_payload 释放对象。
+abi_comparison_preliminary.md	86	错误长度是当次输出，不是每次运行的固定值。
+abi_comparison_preliminary.md	87	
+abi_comparison_preliminary.md	88	**为什么本例可链接**：普通非模板函数 make_payload 的返回类型未直接编码进 Itanium 名字
+abi_comparison_preliminary.md	89	`_Z12make_payloadv`。`_Z9make_datav` 正确编码 make_data，但不是原实验符号。
+abi_comparison_preliminary.md	90	模板函数、函数类型规则不同，ABI tag 也可能改变名字；原 string 版本就因 abi:cxx11 tag 链接失败。
+abi_comparison_preliminary.md	91	
+abi_comparison_preliminary.md	92	---
+abi_comparison_preliminary.md	93	
+abi_comparison_preliminary.md	94	## 三、导出符号的差异
+abi_comparison_preliminary.md	95	
+abi_comparison_preliminary.md	96	| 项 | libstdc++ | libc++ |
+abi_comparison_preliminary.md	97	|---|---:|---:|
+abi_comparison_preliminary.md	98	| 去版本、按符号名去重的输入条目数 | 6,057（GCC x86_64 基线清单） | 1,969（缓存平台 libc++ 已定义导出记录） |
+abi_comparison_preliminary.md	99	| **忽略版本的精确同名交集** | **17** | |
+abi_comparison_preliminary.md	100	
+abi_comparison_preliminary.md	101	6,057＝4,546 FUNC＋1,511 OBJECT；不是全部公共 C++ API 数，也不是两份现场库用同一命令
+abi_comparison_preliminary.md	102	得到的直接规模比较。构造／析构 ABI 变体各计符号名。17 项在 GNU 为 GLIBCXX_*／CXXABI_*，
+abi_comparison_preliminary.md	103	在 LLVM 为 LLVM_22，版本契约不同。
+abi_comparison_preliminary.md	104	
+abi_comparison_preliminary.md	105	**17 个同名符号已逐项静态核对标准层用途；在各自正确配对运行时中，分组行为探针输出一致。**
+abi_comparison_preliminary.md	106	未证明错误配对、符号抢占／dlsym、双运行时 TLS、异常对象跨 provider 复制析构等组合可互换；
+abi_comparison_preliminary.md	107	不能由同名同用途推出任意混用安全。
+abi_comparison_preliminary.md	108	
+abi_comparison_preliminary.md	109	**差异的来源**：
+abi_comparison_preliminary.md	110	
+abi_comparison_preliminary.md	111	1. **内联命名空间** —— libstdc++ 用 `std::__cxx11`、libc++ 用 `std::__1`，
+abi_comparison_preliminary.md	112	   因此大量同名类型的修饰名不同；
+abi_comparison_preliminary.md	113	2. **实现策略** —— libc++ 大量使用头文件内联（`_LIBCPP_HIDE_FROM_ABI`），
+abi_comparison_preliminary.md	114	   代码编进使用方而非导出；libstdc++ 更多编在库中；
+abi_comparison_preliminary.md	115	
+abi_comparison_preliminary.md	116	**第 2 点的后果**：libc++ 的很多实现**随使用方编译进其二进制**，
+abi_comparison_preliminary.md	117	更新库改变不了已编译的那些副本。
+abi_comparison_preliminary.md	118	
+abi_comparison_preliminary.md	119	---
+abi_comparison_preliminary.md	120	
+abi_comparison_preliminary.md	121	## 四、线程取消相关的差异
+abi_comparison_preliminary.md	122	
+abi_comparison_preliminary.md	123	本表对照固定未打本地补丁的源码，不代表已修补运行库的当前状态。GNU 为 GCC 14.2
+abi_comparison_preliminary.md	124	源码 49c50605… 的 include/src/libsupc++，LLVM 为 5ed6c772… 的 libcxx/include、src。
+abi_comparison_preliminary.md	125	typed-catch 句法点包含扩展、兼容源码及未求值条件分支，不代表编译后实例、可达取消点或问题数。
+abi_comparison_preliminary.md	126	LLVM 统计不含 libcxxabi 自身的识别逻辑；原始零命中已有正向对照。
+abi_comparison_preliminary.md	127	
+abi_comparison_preliminary.md	128	| 项 | libstdc++ | libc++ |
+abi_comparison_preliminary.md	129	|---|---|---|
+abi_comparison_preliminary.md	130	| 识别强制展开的标记类型 | **提供**（`abi::__forced_unwind`） | **不提供** |
+abi_comparison_preliminary.md	131	| 所述源码目录内显式 typed-catch 识别句法点 | 65 处／16 文件 | 0 处（原始未补丁 libcxx） |
+abi_comparison_preliminary.md	132	| `condition_variable::wait` 的异常规格 | **无**（GCC 为支持取消移除过） | **有 `noexcept`** |
+abi_comparison_preliminary.md	133	| `wbuffer_convert` 析构 | `= default`，不同步 | 调用同步 |
+abi_comparison_preliminary.md	134	| `shared_mutex` 的实现 | 所核配置使用 pthread_rwlock；宏可选择 CV fallback | 自己的状态机 |
+abi_comparison_preliminary.md	135	
+abi_comparison_preliminary.md	136	**最后一行的边界**：glibc 2.40 的 pthread 读写锁具有用户态状态、原子操作与 futex；其获取
+abi_comparison_preliminary.md	137	路径不提供延迟取消点，不能称为“取消后由内核自动恢复”。libstdc++ 后端受
+abi_comparison_preliminary.md	138	_GLIBCXX_USE_PTHREAD_RWLOCK_T 等宏控制，不能由架构名推广所有构建。
+abi_comparison_preliminary.md	139	原 libc++ 写者预占写者位后等待，若取消展开能穿过等待而无回滚，会留下状态；保留规格时
+abi_comparison_preliminary.md	140	可能先终止。本批已加入相应回滚。两种后端均不能据此宣称任意异步取消安全。
+abi_comparison_preliminary.md	141	
+abi_comparison_preliminary.md	142	---
+abi_comparison_preliminary.md	143	
+abi_comparison_preliminary.md	144	## 五、本版未覆盖的内容
+abi_comparison_preliminary.md	145	
+abi_comparison_preliminary.md	146	**以下项目尚未完成；工期与工作安排需由人工另行确认：**
+abi_comparison_preliminary.md	147	
+abi_comparison_preliminary.md	148	"1. **成员级的布局比对** —— 本版只比对了大小与对齐。要说清""内部实现差距"""
+abi_comparison_preliminary.md	149	   需要逐个类型比对：
+abi_comparison_preliminary.md	150	   - 数据成员的类型、顺序、填充；
+abi_comparison_preliminary.md	151	   - 虚表结构与虚函数顺序；
+abi_comparison_preliminary.md	152	   - 内部辅助类型（节点、控制块、迭代器表示）；
+abi_comparison_preliminary.md	153	   - 分配策略与增长策略；
+abi_comparison_preliminary.md	154	
+abi_comparison_preliminary.md	155	2. **大小相同的 23 个类型是否真的等价** —— 大小相同不代表字段含义相同；
+abi_comparison_preliminary.md	156	
+abi_comparison_preliminary.md	157	3. **同名 17 个符号的混用可互换性** —— 用途核查与正确配对探针已有，缺的是第三节所列混用组合；
+abi_comparison_preliminary.md	158	
+abi_comparison_preliminary.md	159	4. **全部异常／RTTI 组合** —— 已测 GNU 插件抛 BoundaryError{77}：x86_64 原生及 armv7l 实板
+abi_comparison_preliminary.md	160	   均进 catch-all、退出 12。相关 libc++abi personality 的 typed catch 先要求 native_exception，
+abi_comparison_preliminary.md	161	   foreign 路径不匹配；不是所有 RTTI 丢失。任意类型、方向及符号绑定仍未覆盖；
+abi_comparison_preliminary.md	162	
+abi_comparison_preliminary.md	163	5. **架构覆盖** —— 33 类型全表及 deque 仅 x86_64；ICU 单入口仅 armv7l 实板；受控 C ABI
+abi_comparison_preliminary.md	164	   和上述异常有 x86_64 原生／armv7l 实板记录。Boost 另有原生 x86_64、armv7l QEMU、aarch64 QEMU
+abi_comparison_preliminary.md	165	   代表边；aarch64 新增 22 条、累计代表组 49/90，不是全边覆盖。aarch64 完整取消／本批官方套件仍未完成。
+abi_comparison_preliminary.md	166	
+abi_comparison_preliminary.md	167	其他未覆盖范围包括任意旧调用方、额外 noexcept／无异常帧、任意模板／回调、异步取消、
+abi_comparison_preliminary.md	168	自定义分配器、任意插件加载组合、全量成员布局和第三方实际接口；外部组件分母不可得。
+abi_comparison_preliminary.md	169	
+abi_comparison_preliminary.md	170	### 旧／新绑定与头文件限制
+abi_comparison_preliminary.md	171	
+abi_comparison_preliminary.md	172	编译决定清理代码，链接决定符号版本。旧 ELF 在此特指已记录旧等待节点的二进制。
+abi_comparison_preliminary.md	173	
+abi_comparison_preliminary.md	174	| 编译／链接形态 | 等待入口 | 已测边界 |
+abi_comparison_preliminary.md	175	|---|---|---|
+abi_comparison_preliminary.md	176	| 已链接旧 ELF | LLVM_22 | 保留旧终止契约 |
+abi_comparison_preliminary.md	177	| 旧 .o／.a 不重编，只重新链接双版本库 | LLVM_22_TIZEN_1（新默认） | 依赖调用点与清理表布局；quiet 样本线程回收但锁滞留，不保证干净退出 |
+abi_comparison_preliminary.md	178	| 新头重编并链接双版本库 | LLVM_22_TIZEN_1 | 被测前提下清理、解锁与后续进展通过 |
+abi_comparison_preliminary.md	179	| 新头对象先链接旧单版本库，再更新运行库 | LLVM_22 | 仍走链接时记录的旧节点 |
+abi_comparison_preliminary.md	180	
+abi_comparison_preliminary.md	181	双版本只覆盖普通等待和 system-clock 定时等待两个库内入口。steady-clock、自定义 Clock 等待、
+abi_comparison_preliminary.md	182	wbuffer_convert 析构，以及定时写者回滚均有头文件实现；旧对象中的副本不能靠更新动态库修正，须重编相关翻译单元。
+abi_comparison_preliminary.md	183	
+abi_comparison_preliminary.md	184	---
+abi_comparison_preliminary.md	185	
+abi_comparison_preliminary.md	186	## 六、哪些差异需要保持一致
+abi_comparison_preliminary.md	187	
+abi_comparison_preliminary.md	188	**本节陈述本项目已采用的处理原则，不是标准强制要求，也不是两套库全部行为等价的实测结论。**
+abi_comparison_preliminary.md	189	以下只描述已裁决项目的具体对齐目标及边界；“标准不要求”不能推出“技术上绝无可能”。
+abi_comparison_preliminary.md	190	
+abi_comparison_preliminary.md	191	| 差异 | 是否需要一致 | 我们的处理 |
+abi_comparison_preliminary.md	192	|---|---|---|
+abi_comparison_preliminary.md	193	| 线程取消的识别机制 | 已定目标 | 第一批补丁补标记类型；覆盖 50 站点＝20 头侧＋30 库侧，实际新增 36 typed handler＝20＋14＋2；两处汇聚 handler 覆盖库侧 16 站点 |
+abi_comparison_preliminary.md	194	| `condition_variable` 的异常规格 | **需要** | 解除，与 libstdc++ 一致 |
+abi_comparison_preliminary.md	195	| `wbuffer_convert` 析构行为 | 已定目标 | 不再自动刷新；不是全部输出字节数一致 |
+abi_comparison_preliminary.md	196	| `shared_mutex` 的取消安全性 | 已定目标 | 两写者路径加状态回滚；GNU pthread 后端获取不提供延迟取消点，不等于自动回滚 |
+abi_comparison_preliminary.md	197	| **对象布局** | 不在本轮追求互换范围 | 通过接口边界管理，不作技术不可能性断言 |
+abi_comparison_preliminary.md	198	| 导出符号集合 | 不需要 | 实现策略不同，属正常差异 |
+abi_comparison_preliminary.md	199	| 内联命名空间 | 不需要 | 它反而提供了部分保护（符号不撞名） |
+abi_comparison_preliminary.md	200	
+abi_comparison_preliminary.md	201	等待取消展开、普通错误处理、读写锁取消响应及析构输出必须分别看。libc++ 仍保留错误检查；
+abi_comparison_preliminary.md	202	未捕获普通错误仍可终止，清理不保证执行。wbuffer_convert 对齐的是析构不再自动刷新：
+abi_comparison_preliminary.md	203	新／旧／GNU 探针输出 3／9／0 字节，缓冲算法未改；GNU 与 libc++ 的缓冲策略原已不同，
+abi_comparison_preliminary.md	204	旧 libc++ 9 字节变为新库 3 字节则是移除析构刷新的结果。对象布局与符号集合不在本轮追求互换的范围内。
+abi_comparison_preliminary.md	205	
+abi_comparison_preliminary.md	206	---
+abi_comparison_preliminary.md	207	
+abi_comparison_preliminary.md	208	## 七、数据来源
+abi_comparison_preliminary.md	209	
+abi_comparison_preliminary.md	210	- 布局比对：33 个类型，x86_64，随附 `abi_layout_comparison.tsv`；
+abi_comparison_preliminary.md	211	- 跨库实例：真实构造并运行，x86_64；
+abi_comparison_preliminary.md	212	- 符号统计：GCC x86_64 baseline manifest 与缓存平台 libc++ 的 defined-export 文本，按第三节口径解析；
+abi_comparison_preliminary.md	213	- 取消相关差异：固定未补丁源码核查与修补后分项实测分开，不能将源码句法数视作运行结果。
+abi_comparison_preliminary.md	214	
+abi_comparison_preliminary.md	215	可复核来源：[大小／对齐、deque 与 17 同名符号](https://github.com/lhmax2010/libc-_replacement/tree/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/R80)、
+abi_comparison_preliminary.md	216	[数值及源树复核索引](https://github.com/lhmax2010/libc-_replacement/blob/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/P4_0909/NUMBER_AUDIT.md)、
+abi_comparison_preliminary.md	217	[配套候审支持声明及逐项原始记录](https://github.com/lhmax2010/libc-_replacement/blob/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/IMPL_0909/W3/SUPPORT_SCOPE_ZH.md)。
+abi_comparison_preliminary_EN.md	1	# ABI Differences Between libstdc++ and libc++ (Preliminary)
+abi_comparison_preliminary_EN.md	2	
+abi_comparison_preliminary_EN.md	3	- Date: 2026-09-09
+abi_comparison_preliminary_EN.md	4	- Revision: P5, 2026-09-11; evidence is limited to the existing records checked for this revision, not a new product validation on that date.
+abi_comparison_preliminary_EN.md	5	- This is not acceptance of all products; the accompanying support statement remains subject to human review.
+abi_comparison_preliminary_EN.md	6	- Status: **Preliminary** — member-level comparison of internal
+abi_comparison_preliminary_EN.md	7	  implementations is not yet done; see section 5
+abi_comparison_preliminary_EN.md	8	- Size/alignment probes: x86_64; host GCC 13.3.0 on the GNU side; Clang 21.1.1 with cached platform libc++/libc++abi on the LLVM side. The libc++ header macro 220108 means 22.1.8, not the compiler version. Platform GCC 14.2 sources and its baseline symbol manifest are separate inputs.
+abi_comparison_preliminary_EN.md	9	
+abi_comparison_preliminary_EN.md	10	---
+abi_comparison_preliminary_EN.md	11	
+abi_comparison_preliminary_EN.md	12	## 1. Which layers agree and which differ
+abi_comparison_preliminary_EN.md	13	
+abi_comparison_preliminary_EN.md	14	This distinction underlies everything else.
+abi_comparison_preliminary_EN.md	15	
+abi_comparison_preliminary_EN.md	16	| Layer | The two libraries | Consequence |
+abi_comparison_preliminary_EN.md	17	|---|---|---|
+abi_comparison_preliminary_EN.md	18	| Name mangling rules | Both use Itanium C++ ABI; actual names still depend on namespaces, ABI tags and other details | This instance matches, not every interface necessarily links |
+abi_comparison_preliminary_EN.md	19	| Calling convention | Target ABI, complete definitions and compiler options must be checked | Agreement is a prerequisite, not complete proof of safety |
+abi_comparison_preliminary_EN.md	20	| Built-in types and PODs | Compatible boundaries can be designed under matching target ABI and other conditions | Matching Engine/Rect cross-library calls are NOT_OBSERVED; implicit this, lifetime and exceptions also matter |
+abi_comparison_preliminary_EN.md	21	| **Standard-library representations** | Some measured sizes/alignments differ; full equivalence of the remainder is unproved | A silent wrong-value counterexample exists, not a universal same-failure result |
+abi_comparison_preliminary_EN.md	22	| Inline namespace | Different (`__cxx11` / `__1`) | Some symbol names differ; linking fails |
+abi_comparison_preliminary_EN.md	23	| Exceptions and RTTI | Actual runtimes, personality and symbol binding affect matching | BoundaryError from the tested GNU plugin to libc++ did not enter typed catch; this is not loss of all type information |
+abi_comparison_preliminary_EN.md	24	| Allocators and internal state | Actual allocator, destructor, alignment and lifetime contracts must be checked | Two loaded libraries do not imply two independent heaps; new[]/free is invalid even within one library |
+abi_comparison_preliminary_EN.md	25	
+abi_comparison_preliminary_EN.md	26	**Linking successfully does not establish correctness.** Interface data, lifetimes, exception/cancellation
+abi_comparison_preliminary_EN.md	27	paths and the actual ABI configuration jointly determine compatibility. Fixed C samples passing do not
+abi_comparison_preliminary_EN.md	28	prove arbitrary C interfaces safe. Direct standard-object, exception and ownership transfer across an
+abi_comparison_preliminary_EN.md	29	unaligned ABI is outside the current guarantee. Some combinations fail to link; others run with wrong values.
+abi_comparison_preliminary_EN.md	30	
+abi_comparison_preliminary_EN.md	31	---
+abi_comparison_preliminary_EN.md	32	
+abi_comparison_preliminary_EN.md	33	## 2. Object layout differences
+abi_comparison_preliminary_EN.md	34	
+abi_comparison_preliminary_EN.md	35	Under the fixed x86_64 configuration, 10 of 33 concrete type instances differed in sizeof or alignof;
+abi_comparison_preliminary_EN.md	36	23 matched on both. Member offsets, nodes, control blocks and operational equivalence have not been fully verified.
+abi_comparison_preliminary_EN.md	37	
+abi_comparison_preliminary_EN.md	38	### 2.1 Types whose size or alignment differs
+abi_comparison_preliminary_EN.md	39	
+abi_comparison_preliminary_EN.md	40	| Type | libstdc++ | libc++ | Delta |
+abi_comparison_preliminary_EN.md	41	|---|---:|---:|---:|
+abi_comparison_preliminary_EN.md	42	| `std::any` | 16 | **32** | +16 |
+abi_comparison_preliminary_EN.md	43	| `std::function<void()>` | 32 | **48** | +16 |
+abi_comparison_preliminary_EN.md	44	| `std::deque<int>` | **80** | 48 | −32 |
+abi_comparison_preliminary_EN.md	45	| `std::map<int,int>` | **48** | 24 | −24 |
+abi_comparison_preliminary_EN.md	46	| `std::set<int>` | **48** | 24 | −24 |
+abi_comparison_preliminary_EN.md	47	| `std::unordered_map<int,int>` | **56** | 40 | −16 |
+abi_comparison_preliminary_EN.md	48	| `std::unordered_set<int>` | **56** | 40 | −16 |
+abi_comparison_preliminary_EN.md	49	| `std::string` | **32** | 24 | −8 |
+abi_comparison_preliminary_EN.md	50	| `std::future<int>` | **16** | 8 | −8 |
+abi_comparison_preliminary_EN.md	51	| `std::promise<int>` | **24** | 8 | −16 |
+abi_comparison_preliminary_EN.md	52	
+abi_comparison_preliminary_EN.md	53	**Note the direction is not consistent** — libc++ is larger for some types
+abi_comparison_preliminary_EN.md	54	and smaller for others. This reflects different design trade-offs, not
+abi_comparison_preliminary_EN.md	55	simply a more compact newer implementation.
+abi_comparison_preliminary_EN.md	56	
+abi_comparison_preliminary_EN.md	57	Values and deltas are bytes; delta means libc++ minus libstdc++. Alignment of std::function<void()> also differs: GNU/LLVM is 8/16 bytes.
+abi_comparison_preliminary_EN.md	58	
+abi_comparison_preliminary_EN.md	59	### 2.2 Types with matching size and alignment
+abi_comparison_preliminary_EN.md	60	
+abi_comparison_preliminary_EN.md	61	The remaining 23 (`std::array`, `std::pair`, `std::vector`,
+abi_comparison_preliminary_EN.md	62	`std::unique_ptr`, `std::shared_ptr` and others) have the same size and
+abi_comparison_preliminary_EN.md	63	alignment.
+abi_comparison_preliminary_EN.md	64	
+abi_comparison_preliminary_EN.md	65	**Equal size does not mean they can safely cross the boundary** — the
+abi_comparison_preliminary_EN.md	66	meaning and invariants of the internal fields may still differ. This round
+abi_comparison_preliminary_EN.md	67	compared size and alignment only; **member-level comparison has not been
+abi_comparison_preliminary_EN.md	68	done** (see section 5).
+abi_comparison_preliminary_EN.md	69	
+abi_comparison_preliminary_EN.md	70	### 2.3 The measured consequence
+abi_comparison_preliminary_EN.md	71	
+abi_comparison_preliminary_EN.md	72	These are core fragments of the original experiment. Provider and consumer are separate translation
+abi_comparison_preliminary_EN.md	73	units; headers, printing and helper definitions are omitted.
+abi_comparison_preliminary_EN.md	74	
+abi_comparison_preliminary_EN.md	75	```cpp
+abi_comparison_preliminary_EN.md	76	// Provider, built against libstdc++
+abi_comparison_preliminary_EN.md	77	std::deque<int>* make_payload() {
+abi_comparison_preliminary_EN.md	78	    return new std::deque<int>{11, 22, 33, 44};
+abi_comparison_preliminary_EN.md	79	}
+abi_comparison_preliminary_EN.md	80	
+abi_comparison_preliminary_EN.md	81	// Consumer, built against libc++
+abi_comparison_preliminary_EN.md	82	int main() {
+abi_comparison_preliminary_EN.md	83	    auto* payload = make_payload();
+abi_comparison_preliminary_EN.md	84	    const auto producer_view = provider_size(payload);
+abi_comparison_preliminary_EN.md	85	    const auto consumer_view = payload->size();
+abi_comparison_preliminary_EN.md	86	    destroy_payload(payload);       // deleted by the provider
+abi_comparison_preliminary_EN.md	87	    return producer_view == consumer_view ? 0 : 42;
+abi_comparison_preliminary_EN.md	88	}
+abi_comparison_preliminary_EN.md	89	```
+abi_comparison_preliminary_EN.md	90	
+abi_comparison_preliminary_EN.md	91	**It linked and loaded without a signal crash, but deliberately exited 42 to flag a wrong value.**
+abi_comparison_preliminary_EN.md	92	Provider/consumer sizeof was 80/48 and length views were 4/106884723786536; the object was released
+abi_comparison_preliminary_EN.md	93	through the provider's destroy_payload. The wrong length is one recorded output, not a fixed value on every run.
+abi_comparison_preliminary_EN.md	94	
+abi_comparison_preliminary_EN.md	95	**Why this instance links**: the ordinary non-template function make_payload's return type is not
+abi_comparison_preliminary_EN.md	96	directly encoded in the Itanium name `_Z12make_payloadv`. `_Z9make_datav` correctly encodes make_data,
+abi_comparison_preliminary_EN.md	97	but is not the original symbol. Template functions and function types have different rules; ABI tags
+abi_comparison_preliminary_EN.md	98	can change names. The earlier string variant failed to link because of an abi:cxx11 tag.
+abi_comparison_preliminary_EN.md	99	
+abi_comparison_preliminary_EN.md	100	---
+abi_comparison_preliminary_EN.md	101	
+abi_comparison_preliminary_EN.md	102	## 3. Exported symbol differences
+abi_comparison_preliminary_EN.md	103	
+abi_comparison_preliminary_EN.md	104	| Item | libstdc++ | libc++ |
+abi_comparison_preliminary_EN.md	105	|---|---:|---:|
+abi_comparison_preliminary_EN.md	106	| Input entries deduplicated by name after removing versions | 6,057 (GCC x86_64 baseline manifest) | 1,969 (cached platform libc++ defined-export record) |
+abi_comparison_preliminary_EN.md	107	| **Exact name intersection, ignoring versions** | **17** | |
+abi_comparison_preliminary_EN.md	108	
+abi_comparison_preliminary_EN.md	109	6,057 = 4,546 FUNC + 1,511 OBJECT. These are not counts of all public C++ APIs or a direct size
+abi_comparison_preliminary_EN.md	110	comparison of two live libraries measured by the same command. Constructor/destructor ABI variants
+abi_comparison_preliminary_EN.md	111	count as separate names. The 17 entries use GLIBCXX_*/CXXABI_* on GNU and LLVM_22 on LLVM; version contracts differ.
+abi_comparison_preliminary_EN.md	112	
+abi_comparison_preliminary_EN.md	113	**All 17 names have had their standard-level purposes checked individually; grouped behavioral probes
+abi_comparison_preliminary_EN.md	114	produced matching output with each runtime correctly paired.** Interchangeability under mismatched
+abi_comparison_preliminary_EN.md	115	pairing, symbol preemption/dlsym, dual-runtime TLS or cross-provider exception copying/destruction
+abi_comparison_preliminary_EN.md	116	has not been proved. Matching names and purposes do not make arbitrary mixing safe.
+abi_comparison_preliminary_EN.md	117	
+abi_comparison_preliminary_EN.md	118	**Sources of the difference**:
+abi_comparison_preliminary_EN.md	119	
+abi_comparison_preliminary_EN.md	120	1. **Inline namespaces** — libstdc++ uses `std::__cxx11`, libc++ uses
+abi_comparison_preliminary_EN.md	121	   `std::__1`, so many same-named types mangle differently;
+abi_comparison_preliminary_EN.md	122	2. **Implementation strategy** — libc++ makes extensive use of header
+abi_comparison_preliminary_EN.md	123	   inlining (`_LIBCPP_HIDE_FROM_ABI`), so the code is compiled into the
+abi_comparison_preliminary_EN.md	124	   consumer rather than exported; libstdc++ keeps more in the library.
+abi_comparison_preliminary_EN.md	125	
+abi_comparison_preliminary_EN.md	126	**The consequence of the second point**: much of libc++'s implementation is
+abi_comparison_preliminary_EN.md	127	**compiled into each consumer's binary**, and updating the library does not
+abi_comparison_preliminary_EN.md	128	change those copies.
+abi_comparison_preliminary_EN.md	129	
+abi_comparison_preliminary_EN.md	130	---
+abi_comparison_preliminary_EN.md	131	
+abi_comparison_preliminary_EN.md	132	## 4. Differences relating to thread cancellation
+abi_comparison_preliminary_EN.md	133	
+abi_comparison_preliminary_EN.md	134	This table compares fixed sources without local patches, not the current patched runtime. GNU is
+abi_comparison_preliminary_EN.md	135	GCC 14.2 source 49c50605… under include/src/libsupc++; LLVM is 5ed6c772… under libcxx/include and src.
+abi_comparison_preliminary_EN.md	136	Typed-catch syntax points include extensions, compatibility sources and unevaluated conditional branches;
+abi_comparison_preliminary_EN.md	137	they are not compiled instances, reachable cancellation points or defect counts. The LLVM scan excludes
+abi_comparison_preliminary_EN.md	138	libcxxabi's own recognition logic; the original zero-match check had a positive control.
+abi_comparison_preliminary_EN.md	139	
+abi_comparison_preliminary_EN.md	140	| Item | libstdc++ | libc++ |
+abi_comparison_preliminary_EN.md	141	|---|---|---|
+abi_comparison_preliminary_EN.md	142	| Marker type for recognising forced unwind | **Provided** (`abi::__forced_unwind`) | **Not provided** |
+abi_comparison_preliminary_EN.md	143	| Explicit typed-catch recognition syntax points in the stated directories | 65 points / 16 files | 0 in original unpatched libcxx |
+abi_comparison_preliminary_EN.md	144	| Exception specification on `condition_variable::wait` | **None** (GCC removed it to support cancellation) | **`noexcept`** |
+abi_comparison_preliminary_EN.md	145	| `wbuffer_convert` destructor | `= default`, no sync | Calls sync |
+abi_comparison_preliminary_EN.md	146	| `shared_mutex` implementation | pthread_rwlock in the inspected configuration; macros can select a CV fallback | Its own state machine |
+abi_comparison_preliminary_EN.md	147	
+abi_comparison_preliminary_EN.md	148	**Limits of the last row**: glibc 2.40 pthread read/write locks use user-space state, atomics and futex;
+abi_comparison_preliminary_EN.md	149	their acquisition path does not provide a deferred cancellation point. This is not automatic kernel
+abi_comparison_preliminary_EN.md	150	restoration after cancellation. Macros including _GLIBCXX_USE_PTHREAD_RWLOCK_T select the libstdc++
+abi_comparison_preliminary_EN.md	151	backend; architecture alone does not identify every build. Original libc++ writers reserve a writer
+abi_comparison_preliminary_EN.md	152	bit before waiting. If cancellation can unwind through that wait without rollback, state remains;
+abi_comparison_preliminary_EN.md	153	retaining the exception specification may terminate first. This patch batch adds the relevant rollback.
+abi_comparison_preliminary_EN.md	154	Neither backend establishes safety for arbitrary asynchronous cancellation.
+abi_comparison_preliminary_EN.md	155	
+abi_comparison_preliminary_EN.md	156	---
+abi_comparison_preliminary_EN.md	157	
+abi_comparison_preliminary_EN.md	158	## 5. Not covered by this version
+abi_comparison_preliminary_EN.md	159	
+abi_comparison_preliminary_EN.md	160	**The following remain unfinished; timing and assignments require separate human confirmation:**
+abi_comparison_preliminary_EN.md	161	
+abi_comparison_preliminary_EN.md	162	1. **Member-level layout comparison** — this version compared size and
+abi_comparison_preliminary_EN.md	163	"   alignment only. Explaining ""internal implementation differences"""
+abi_comparison_preliminary_EN.md	164	   requires comparing, for each type:
+abi_comparison_preliminary_EN.md	165	   - data member types, order and padding;
+abi_comparison_preliminary_EN.md	166	   - vtable structure and virtual function ordering;
+abi_comparison_preliminary_EN.md	167	   - internal helper types (nodes, control blocks, iterator representation);
+abi_comparison_preliminary_EN.md	168	   - allocation and growth strategies;
+abi_comparison_preliminary_EN.md	169	
+abi_comparison_preliminary_EN.md	170	2. **Whether the 23 same-sized types are genuinely equivalent** — equal size
+abi_comparison_preliminary_EN.md	171	   does not imply equal field meaning;
+abi_comparison_preliminary_EN.md	172	
+abi_comparison_preliminary_EN.md	173	3. **Interchangeability of the 17 same-name symbols when mixed** — purpose checks and correctly paired probes exist; the mixed combinations listed in section 3 remain unproved;
+abi_comparison_preliminary_EN.md	174	
+abi_comparison_preliminary_EN.md	175	4. **All exception/RTTI combinations** — the tested GNU plugin threw BoundaryError{77}; native x86_64
+abi_comparison_preliminary_EN.md	176	   and physical armv7l entered catch-all and exited 12. The relevant libc++abi personality's typed catch
+abi_comparison_preliminary_EN.md	177	   first requires native_exception; the foreign path does not match. This is not loss of all RTTI.
+abi_comparison_preliminary_EN.md	178	   Arbitrary types, directions and symbol bindings remain uncovered;
+abi_comparison_preliminary_EN.md	179	
+abi_comparison_preliminary_EN.md	180	5. **Architecture coverage** — the full 33-type table and deque are x86_64 only; ICU's single entry is
+abi_comparison_preliminary_EN.md	181	   physical armv7l only; controlled C ABI and the exception sample have native x86_64/physical armv7l
+abi_comparison_preliminary_EN.md	182	   records. Boost also has representative native x86_64, armv7l QEMU and aarch64 QEMU edges. The aarch64
+abi_comparison_preliminary_EN.md	183	   round added 22, with cumulative representative-group coverage of 49/90, not all edges. Complete
+abi_comparison_preliminary_EN.md	184	   aarch64 cancellation/current official-suite validation remains unfinished.
+abi_comparison_preliminary_EN.md	185	
+abi_comparison_preliminary_EN.md	186	Other gaps include arbitrary old callers, extra noexcept/no-exception frames, arbitrary templates/callbacks,
+abi_comparison_preliminary_EN.md	187	asynchronous cancellation, custom allocators, arbitrary plugin-loading combinations, full member layouts
+abi_comparison_preliminary_EN.md	188	and actual third-party interfaces. The external-component denominator is unavailable.
+abi_comparison_preliminary_EN.md	189	
+abi_comparison_preliminary_EN.md	190	### Old/new binding and header limitations
+abi_comparison_preliminary_EN.md	191	
+abi_comparison_preliminary_EN.md	192	Compilation determines cleanup code; linking determines symbol versions. Old ELF here means a binary
+abi_comparison_preliminary_EN.md	193	that already records the old wait node.
+abi_comparison_preliminary_EN.md	194	
+abi_comparison_preliminary_EN.md	195	| Compilation/linking case | Wait entry | Measured boundary |
+abi_comparison_preliminary_EN.md	196	|---|---|---|
+abi_comparison_preliminary_EN.md	197	| Already-linked old ELF | LLVM_22 | Retains the old termination contract |
+abi_comparison_preliminary_EN.md	198	| Old .o/.a relinked to the dual-version library without recompilation | LLVM_22_TIZEN_1 (new default) | Depends on call-site and cleanup-table layout; the quiet sample joined with a lock still held, so clean exit is not guaranteed |
+abi_comparison_preliminary_EN.md	199	| Recompile with new headers and link the dual-version library | LLVM_22_TIZEN_1 | Cleanup, unlock and subsequent progress passed under the tested conditions |
+abi_comparison_preliminary_EN.md	200	| New-header objects first linked to the old single-version library, then runtime upgraded | LLVM_22 | Still uses the old node recorded at link time |
+abi_comparison_preliminary_EN.md	201	
+abi_comparison_preliminary_EN.md	202	Dual versions cover only the ordinary-wait and system-clock timed-wait library entries. Steady-clock
+abi_comparison_preliminary_EN.md	203	and custom-Clock waits, wbuffer_convert destruction and timed-writer rollback have header implementations.
+abi_comparison_preliminary_EN.md	204	Updating the DSO cannot repair old compiled copies; affected translation units require recompilation.
+abi_comparison_preliminary_EN.md	205	
+abi_comparison_preliminary_EN.md	206	---
+abi_comparison_preliminary_EN.md	207	
+abi_comparison_preliminary_EN.md	208	## 6. Which differences need to be made consistent
+abi_comparison_preliminary_EN.md	209	
+abi_comparison_preliminary_EN.md	210	**This section states the project's adopted principles, not a standard requirement or a measured
+abi_comparison_preliminary_EN.md	211	claim that all behavior of the two libraries is equivalent.** It describes the specific alignment
+abi_comparison_preliminary_EN.md	212	targets and limits already decided; absence of a standard requirement does not prove technical impossibility.
+abi_comparison_preliminary_EN.md	213	
+abi_comparison_preliminary_EN.md	214	| Difference | Consistency needed | Our handling |
+abi_comparison_preliminary_EN.md	215	|---|---|---|
+abi_comparison_preliminary_EN.md	216	| Thread cancellation recognition | Decided target | First patch batch adds the marker type and covers 50 sites = 20 header + 30 library sites; 36 actual new typed handlers = 20 + 14 + 2, with two aggregate handlers covering 16 library sites |
+abi_comparison_preliminary_EN.md	217	| `condition_variable` exception specification | **Yes** | Removed, matching libstdc++ |
+abi_comparison_preliminary_EN.md	218	| `wbuffer_convert` destructor behaviour | Decided target | No automatic flush; not identical output byte counts |
+abi_comparison_preliminary_EN.md	219	| `shared_mutex` cancellation safety | Decided target | Rollback on the two writer paths; the GNU pthread backend's acquisition lacks a deferred cancellation point, which is not automatic rollback |
+abi_comparison_preliminary_EN.md	220	| **Object layout** | Interchangeability is outside this round's scope | Managed through interface boundaries; no claim of technical impossibility |
+abi_comparison_preliminary_EN.md	221	| Exported symbol set | No | Different implementation strategies; a normal difference |
+abi_comparison_preliminary_EN.md	222	| Inline namespace | No | It in fact provides partial protection (symbols do not collide) |
+abi_comparison_preliminary_EN.md	223	
+abi_comparison_preliminary_EN.md	224	Wait cancellation unwinding, ordinary errors, read/write-lock cancellation response and destructor
+abi_comparison_preliminary_EN.md	225	output must be considered separately. libc++ retains its error checks; uncaught ordinary errors can
+abi_comparison_preliminary_EN.md	226	still terminate, and cleanup is not guaranteed. wbuffer_convert aligns on no automatic destructor
+abi_comparison_preliminary_EN.md	227	flush: new/old/GNU probes output 3/9/0 bytes, with buffer algorithms unchanged. GNU and libc++ already
+abi_comparison_preliminary_EN.md	228	had different buffering strategies; old libc++'s 9-to-new-3 change results from removing the destructor
+abi_comparison_preliminary_EN.md	229	flush. Object-layout and symbol-set interchangeability are outside this round's targets.
+abi_comparison_preliminary_EN.md	230	
+abi_comparison_preliminary_EN.md	231	---
+abi_comparison_preliminary_EN.md	232	
+abi_comparison_preliminary_EN.md	233	## 7. Data sources
+abi_comparison_preliminary_EN.md	234	
+abi_comparison_preliminary_EN.md	235	- Layout comparison: 33 types, x86_64; see the accompanying
+abi_comparison_preliminary_EN.md	236	  `abi_layout_comparison.tsv`;
+abi_comparison_preliminary_EN.md	237	- Cross-library instance: constructed and executed, x86_64;
+abi_comparison_preliminary_EN.md	238	- Symbol counts: GCC x86_64 baseline manifest and cached platform libc++ defined-export text, parsed as specified in section 3;
+abi_comparison_preliminary_EN.md	239	- Cancellation: fixed unpatched-source inspection is separate from itemized patched-runtime measurements; source syntax counts are not runtime results.
+abi_comparison_preliminary_EN.md	240	
+abi_comparison_preliminary_EN.md	241	Verifiable sources: [size/alignment, deque and the 17 same-name symbols](https://github.com/lhmax2010/libc-_replacement/tree/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/R80),
+abi_comparison_preliminary_EN.md	242	[numeric and source-tree recheck index](https://github.com/lhmax2010/libc-_replacement/blob/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/P4_0909/NUMBER_AUDIT.md),
+abi_comparison_preliminary_EN.md	243	[support statement awaiting review and itemized original records](https://github.com/lhmax2010/libc-_replacement/blob/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/IMPL_0909/W3/SUPPORT_SCOPE_EN.md).
+api_compatibility_report.md	1	# libstdc++ 与 libc++ 之间的接口兼容性
+api_compatibility_report.md	2	
+api_compatibility_report.md	3	- 日期：2026-09-09
+api_compatibility_report.md	4	- 修订：P5，2026-09-11；证据以本次核对的既有记录为界，不代表当日重新进行产品验证。
+api_compatibility_report.md	5	- 本报告不是全部产品验收结论；支持范围以配套候审声明为准。
+api_compatibility_report.md	6	- 适用场景：平台迁移到 libc++ 之后，与仍使用 libstdc++ 的组件（第三方应用、
+api_compatibility_report.md	7	  预编译库）之间的接口
+api_compatibility_report.md	8	
+api_compatibility_report.md	9	---
+api_compatibility_report.md	10	
+api_compatibility_report.md	11	## 一、结论概要
+api_compatibility_report.md	12	
+api_compatibility_report.md	13	**接口传递的数据、对象生命周期、异常／取消路径及实际 ABI 配置共同决定兼容条件。**
+api_compatibility_report.md	14	
+api_compatibility_report.md	15	| 接口形态 | 能否支持 | 依据 |
+api_compatibility_report.md	16	|---|---|---|
+api_compatibility_report.md	17	| 纯 C 接口 | 固定样本通过，非无条件支持 | 已实测，不代表任意 C 接口天然安全 |
+api_compatibility_report.md	18	| C++ 接口，只传内置类型与 POD | 条件性可行 | Engine／Rect 对应跨库实测为 NOT_OBSERVED，见 2.2 |
+api_compatibility_report.md	19	| C++ 接口，传标准库对象 | 当前不承诺未统一 ABI 的直接跨界 | 有静默错值反例，不代表所有类型均以同一方式失败 |
+api_compatibility_report.md	20	| C++ 接口，跨边界抛接异常 | 当前不承诺未统一 ABI 的直接跨界 | 特定运行时组合未匹配 typed catch，见 3.2 |
+api_compatibility_report.md	21	| C++ 接口，跨边界传递所有权 | 当前不承诺未统一 ABI 的直接跨界 | 需明确分配、释放与生命周期契约 |
+api_compatibility_report.md	22	
+api_compatibility_report.md	23	下面逐项用代码说明。
+api_compatibility_report.md	24	
+api_compatibility_report.md	25	以下为接口片段，省略部分头文件和实现；提供方与消费方属于不同翻译单元。
+api_compatibility_report.md	26	省略号是伪代码，调用语句须置于函数体。各 C 接口方案是替代选项，不能作为同名 C 重载一起导出。
+api_compatibility_report.md	27	
+api_compatibility_report.md	28	---
+api_compatibility_report.md	29	
+api_compatibility_report.md	30	## 二、可以支持的接口
+api_compatibility_report.md	31	
+api_compatibility_report.md	32	### 2.1 纯 C 接口
+api_compatibility_report.md	33	
+api_compatibility_report.md	34	```c
+api_compatibility_report.md	35	// 头文件
+api_compatibility_report.md	36	#include <stddef.h>
+api_compatibility_report.md	37	#ifdef __cplusplus
+api_compatibility_report.md	38	"extern ""C"" {"
+api_compatibility_report.md	39	#endif
+api_compatibility_report.md	40	
+api_compatibility_report.md	41	typedef struct engine_s* engine_handle;
+api_compatibility_report.md	42	
+api_compatibility_report.md	43	engine_handle engine_create(void);
+api_compatibility_report.md	44	int           engine_get_width(engine_handle h);
+api_compatibility_report.md	45	void          engine_set_position(engine_handle h, int x, int y);
+api_compatibility_report.md	46	int           engine_read(engine_handle h, char* buf, size_t buflen);
+api_compatibility_report.md	47	void          engine_destroy(engine_handle h);
+api_compatibility_report.md	48	
+api_compatibility_report.md	49	#ifdef __cplusplus
+api_compatibility_report.md	50	}
+api_compatibility_report.md	51	#endif
+api_compatibility_report.md	52	```
+api_compatibility_report.md	53	
+api_compatibility_report.md	54	**条件**：这些显式参数避免了直接传递标准库对象，但仍需同一目标 C ABI、有效指针、
+api_compatibility_report.md	55	匹配的生命周期，以及异常／取消契约；仅凭 C 接口形态不能证明安全。
+api_compatibility_report.md	56	
+api_compatibility_report.md	57	**已实测**：armv7l 物理板上，libc++ 主程序通过 dlopen/dlsym 调用既有
+api_compatibility_report.md	58	`/usr/lib/libicuuc.so.78.1` 的 `u_getVersion`，输出 78.1.0.0，断言主版本为 78，
+api_compatibility_report.md	59	并记录 libc++、libc++abi、libstdc++ 与 ICU 同时加载，退出 0。
+api_compatibility_report.md	60	这证明该固定 C 入口样本可用，不是 ICU 全接口、分配释放、回调或产品功能验收；
+api_compatibility_report.md	61	x86_64 的真实 ICU 同形运行在该材料中为 NOT_OBSERVED。
+api_compatibility_report.md	62	
+api_compatibility_report.md	63	### 2.2 C++ 接口，但只传内置类型与 POD
+api_compatibility_report.md	64	
+api_compatibility_report.md	65	```cpp
+api_compatibility_report.md	66	// 条件性接口示意，以下成员调用未作对应跨库实测
+api_compatibility_report.md	67	class Engine {
+api_compatibility_report.md	68	public:
+api_compatibility_report.md	69	    int    width() const;                    // 返回 int
+api_compatibility_report.md	70	    void   setPosition(int x, int y);        // 参数是 int
+api_compatibility_report.md	71	    bool   isReady() const;                  // 返回 bool
+api_compatibility_report.md	72	    double scale() const;                    // 返回 double
+api_compatibility_report.md	73	};
+api_compatibility_report.md	74	
+api_compatibility_report.md	75	struct Rect { int x, y, w, h; };             // 两侧须核对完整定义与目标 ABI
+api_compatibility_report.md	76	Rect   getBounds();                          // 按值返回的 ABI 也须核对
+api_compatibility_report.md	77	```
+api_compatibility_report.md	78	
+api_compatibility_report.md	79	**条件性分析**：两侧目标 ABI、完整类型定义、调用约定、编译选项、对象生命周期及异常边界
+api_compatibility_report.md	80	一致时，原则上可设计兼容边界。非静态成员调用还有隐式 `this`，不能只看显式参数。
+api_compatibility_report.md	81	本文的 Engine／Rect 示例尚无相应跨库实测，不能标为“已实测支持”。已有 Boost.Thread
+api_compatibility_report.md	82	特定 once_flag 边界的精确状态通过，是有界样本，不是上述类接口或所有 POD 接口的证明。
+api_compatibility_report.md	83	
+api_compatibility_report.md	84	### 2.3 两条必须遵守的附加条件
+api_compatibility_report.md	85	
+api_compatibility_report.md	86	下面列出异常和生命周期这两方面的附加条件，不是完整安全性清单。
+api_compatibility_report.md	87	
+api_compatibility_report.md	88	**条件一：异常不能逸出边界**
+api_compatibility_report.md	89	
+api_compatibility_report.md	90	下面只示意普通 C++ 错误转错误码：前提是非空 out 指向有效可写 int，且本调用区间不会
+api_compatibility_report.md	91	发生线程取消。空指针返回 -3；其他错误返回时不写 out。允许线程取消时不得用
+api_compatibility_report.md	92	catch (...) 吞掉强制展开；需在匹配的运行时中辨识并继续传播，且另外核验完整调用链
+api_compatibility_report.md	93	的清理与不抛边界。这个简化示例不构成该取消场景的安全实现，也不是建议平台禁用取消。
+api_compatibility_report.md	94	
+api_compatibility_report.md	95	```cpp
+api_compatibility_report.md	96	// 不安全 —— 参数和返回值都是 int，但异常会穿过去
+api_compatibility_report.md	97	int engine_compute(engine_handle h) {
+api_compatibility_report.md	98	    auto result = internal_cpp_function();   // 这里可能抛
+api_compatibility_report.md	99	    return result;
+api_compatibility_report.md	100	}
+api_compatibility_report.md	101	
+api_compatibility_report.md	102	// 仅在上述前提下示意普通错误转换；与上一方案互斥
+api_compatibility_report.md	103	int engine_compute(engine_handle h, int* out) {
+api_compatibility_report.md	104	    if (out == nullptr) return -3;
+api_compatibility_report.md	105	    try {
+api_compatibility_report.md	106	        *out = internal_cpp_function();
+api_compatibility_report.md	107	        return 0;
+api_compatibility_report.md	108	    } catch (const std::exception&) {
+api_compatibility_report.md	109	        return -1;
+api_compatibility_report.md	110	    } catch (...) {
+api_compatibility_report.md	111	        return -2;
+api_compatibility_report.md	112	    }
+api_compatibility_report.md	113	}
+api_compatibility_report.md	114	```
+api_compatibility_report.md	115	
+api_compatibility_report.md	116	**实测边界**：特定跨运行时组合的普通 typed catch 未匹配，详见 3.2；不能归纳为
+api_compatibility_report.md	117	所有 RTTI 类型信息都丢失。异常实际越过不抛边界时会触发终止，不是调用链任意位置
+api_compatibility_report.md	118	存在 `noexcept` 就一定终止。
+api_compatibility_report.md	119	
+api_compatibility_report.md	120	**条件二：分配释放和对象生命周期契约必须匹配**
+api_compatibility_report.md	121	
+api_compatibility_report.md	122	```cpp
+api_compatibility_report.md	123	// 不安全 —— 分配释放 API 不配对，同一套库也不能如此使用
+api_compatibility_report.md	124	char* engine_get_name(engine_handle h);   // 内部 new[] 出来的
+api_compatibility_report.md	125	// 应用侧：free(name);  ← 不调用 operator delete，不能释放 new[] 的结果
+api_compatibility_report.md	126	
+api_compatibility_report.md	127	// 显式配对方案，仍须满足异常、取消及指针有效性等契约
+api_compatibility_report.md	128	char* engine_get_name(engine_handle h);
+api_compatibility_report.md	129	void  engine_free_string(char* s);        // 由提供方释放
+api_compatibility_report.md	130	
+api_compatibility_report.md	131	// 或者由调用方提供缓冲区
+api_compatibility_report.md	132	int   engine_get_name(engine_handle h, char* buf, size_t buflen);
+api_compatibility_report.md	133	```
+api_compatibility_report.md	134	
+api_compatibility_report.md	135	**为什么**：`new[]` 必须与相应 `delete[]` 配对，不能用 `free`。跨组件释放还需符合实际
+api_compatibility_report.md	136	分配器／替换 new-delete、对齐、析构、对象布局和模块生命周期契约，不能仅由库名判断。
+api_compatibility_report.md	137	GNU 与 LLVM 的默认实现均可落到 malloc/free；加载两套库不等于存在两套独立堆。
+api_compatibility_report.md	138	提供方给出配对释放函数，或调用方提供缓冲区，可以避免让使用方猜测内部契约，
+api_compatibility_report.md	139	但不等于无条件完成异常、取消及有效指针验证。
+api_compatibility_report.md	140	
+api_compatibility_report.md	141	---
+api_compatibility_report.md	142	
+api_compatibility_report.md	143	## 三、不能支持的接口
+api_compatibility_report.md	144	
+api_compatibility_report.md	145	### 3.1 传递标准库对象
+api_compatibility_report.md	146	
+api_compatibility_report.md	147	```cpp
+api_compatibility_report.md	148	// 不能跨边界
+api_compatibility_report.md	149	std::string  engine_get_name();                    // 返回 string
+api_compatibility_report.md	150	void         engine_set_items(std::vector<int>);   // 参数是 vector
+api_compatibility_report.md	151	std::map<int, std::string> engine_get_config();    // 返回 map
+api_compatibility_report.md	152	```
+api_compatibility_report.md	153	
+api_compatibility_report.md	154	**为什么**：不能假定两套库的标准库类型具有相同表示。在 x86_64 固定探针配置下，
+api_compatibility_report.md	155	33 个所列具体类型实例中，10 个 sizeof 或 alignof 不同，23 个这两个指标相同；
+api_compatibility_report.md	156	没有完成成员偏移、节点、控制块或操作语义等价性验证。下表列出大小（字节）：
+api_compatibility_report.md	157	
+api_compatibility_report.md	158	| 类型 | libstdc++ | libc++ |
+api_compatibility_report.md	159	|---|---:|---:|
+api_compatibility_report.md	160	| `std::string` | 32 字节 | 24 字节 |
+api_compatibility_report.md	161	| `std::deque<int>` | 80 字节 | 48 字节 |
+api_compatibility_report.md	162	| `std::map<int,int>` | 48 字节 | 24 字节 |
+api_compatibility_report.md	163	| `std::set<int>` | 48 字节 | 24 字节 |
+api_compatibility_report.md	164	| `std::unordered_map<int,int>` | 56 字节 | 40 字节 |
+api_compatibility_report.md	165	| `std::unordered_set<int>` | 56 字节 | 40 字节 |
+api_compatibility_report.md	166	| `std::function<void()>` | 32 字节 | 48 字节 |
+api_compatibility_report.md	167	| `std::any` | 16 字节 | 32 字节 |
+api_compatibility_report.md	168	| `std::future<int>` | 16 字节 | 8 字节 |
+api_compatibility_report.md	169	| `std::promise<int>` | 24 字节 | 8 字节 |
+api_compatibility_report.md	170	
+api_compatibility_report.md	171	`std::function<void()>` 的对齐也不同，GNU／LLVM 为 8／16 字节。
+api_compatibility_report.md	172	GNU 侧使用宿主 GCC 13.3.0；LLVM 侧使用 Clang 21.1.1 与缓存的平台 libc++／libc++abi。
+api_compatibility_report.md	173	该 libc++ 头版本宏为 220108，即 22.1.8，不是 Clang 编译器版本。
+api_compatibility_report.md	174	平台 GCC 14.2 源码及基线导出清单是另一证据输入，不是本次探针编译器。
+api_compatibility_report.md	175	
+api_compatibility_report.md	176	**本例链接和加载成功，但读到错值。** 原实测核心片段如下：
+api_compatibility_report.md	177	
+api_compatibility_report.md	178	```cpp
+api_compatibility_report.md	179	// 提供方（libstdc++ 构建）
+api_compatibility_report.md	180	std::deque<int>* make_payload() {
+api_compatibility_report.md	181	    return new std::deque<int>{11, 22, 33, 44};
+api_compatibility_report.md	182	}
+api_compatibility_report.md	183	
+api_compatibility_report.md	184	// 消费方（libc++ 构建）
+api_compatibility_report.md	185	int main() {
+api_compatibility_report.md	186	    auto* payload = make_payload();
+api_compatibility_report.md	187	    const auto producer_view = provider_size(payload);
+api_compatibility_report.md	188	    const auto consumer_view = payload->size();
+api_compatibility_report.md	189	    // 原程序在此打印两侧 sizeof 和长度视图
+api_compatibility_report.md	190	    destroy_payload(payload);       // 由提供方 delete
+api_compatibility_report.md	191	    return producer_view == consumer_view ? 0 : 42;
+api_compatibility_report.md	192	}
+api_compatibility_report.md	193	```
+api_compatibility_report.md	194	
+api_compatibility_report.md	195	**结果**：provider／consumer 的 sizeof 为 80／48，长度视图为 4／106884723786536。
+api_compatibility_report.md	196	没有信号崩溃；consumer 主动返回 42 标记错值，并调用 provider 的 destroy_payload 释放对象。
+api_compatibility_report.md	197	该错误长度仅是当次输出，不是任意运行都固定得到的值。片段省略打印及辅助函数定义，
+api_compatibility_report.md	198	实际源码和原始输出见末节来源。
+api_compatibility_report.md	199	
+api_compatibility_report.md	200	**为什么本例可链接**：普通非模板函数 make_payload 的返回类型未直接编码进
+api_compatibility_report.md	201	Itanium 修饰名 `_Z12make_payloadv`。`_Z9make_datav` 是 make_data 的正确编码，
+api_compatibility_report.md	202	但不是原实验符号。模板函数、函数类型规则不同，ABI tag 也可能使名字不同；
+api_compatibility_report.md	203	原实验先尝试的 std::string 版本就因 abi:cxx11 tag 链接失败。
+api_compatibility_report.md	204	
+api_compatibility_report.md	205	### 3.2 跨边界抛接异常
+api_compatibility_report.md	206	
+api_compatibility_report.md	207	```cpp
+api_compatibility_report.md	208	// 原实验共享类型；抛出与接收在不同翻译单元
+api_compatibility_report.md	209	struct BoundaryError { int code; };
+api_compatibility_report.md	210	// 提供方操作：throw BoundaryError{77};
+api_compatibility_report.md	211	// 消费方依次有 catch (const BoundaryError&) 和 catch (...)
+api_compatibility_report.md	212	```
+api_compatibility_report.md	213	
+api_compatibility_report.md	214	**已实测**：在所测 libstdc++ 插件→libc++ 接收方组合中，插件抛 BoundaryError{77}；
+api_compatibility_report.md	215	x86_64 原生和 armv7l 实板均未进入同类型 catch，而进入 catch-all 并退出 12。
+api_compatibility_report.md	216	相关 libc++abi personality（异常展开时选择处理分支的函数）将非本运行时异常视为 foreign，
+api_compatibility_report.md	217	普通 typed catch 不匹配这一路径。结果依赖实际异常运行时、personality 和符号绑定，
+api_compatibility_report.md	218	不能外推为任意动态库、方向或类型均不可按类型捕获。EngineError 派生类本身未测。
+api_compatibility_report.md	219	
+api_compatibility_report.md	220	### 3.3 传递所有权
+api_compatibility_report.md	221	
+api_compatibility_report.md	222	```cpp
+api_compatibility_report.md	223	// 不能跨边界
+api_compatibility_report.md	224	std::unique_ptr<Widget> engine_create_widget();     // 谁来释放？
+api_compatibility_report.md	225	std::shared_ptr<Config> engine_get_config();        // 控制块在哪一侧？
+api_compatibility_report.md	226	```
+api_compatibility_report.md	227	
+api_compatibility_report.md	228	**为什么**：直接跨标准库传递智能指针不在当前支持承诺内。风险包括智能指针及控制块布局、
+api_compatibility_report.md	229	引用计数协议、析构／deleter 与模块生命周期不兼容；不能由外层大小相同排除。
+api_compatibility_report.md	230	shared_ptr 不是因跨边界自动产生两份独立计数；unique_ptr 可有自定义 deleter，
+api_compatibility_report.md	231	释放路径也不能只由“哪一侧分配”决定。
+api_compatibility_report.md	232	
+api_compatibility_report.md	233	### 3.4 传递迭代器
+api_compatibility_report.md	234	
+api_compatibility_report.md	235	```cpp
+api_compatibility_report.md	236	// 不能跨边界
+api_compatibility_report.md	237	std::vector<int>::iterator engine_begin();
+api_compatibility_report.md	238	```
+api_compatibility_report.md	239	
+api_compatibility_report.md	240	**为什么**：迭代器指向容器的内部结构，而两侧对那个结构的理解不同。
+api_compatibility_report.md	241	
+api_compatibility_report.md	242	---
+api_compatibility_report.md	243	
+api_compatibility_report.md	244	## 四、为什么不做转换层
+api_compatibility_report.md	245	
+api_compatibility_report.md	246	一种设想是：在边界上把 libstdc++ 的对象转成 libc++ 的。可以设计显式协议，
+api_compatibility_report.md	247	但本轮未实现或测量通用转换层。
+api_compatibility_report.md	248	
+api_compatibility_report.md	249	**转换函数放在哪一侧？**
+api_compatibility_report.md	250	
+api_compatibility_report.md	251	通常分别以各自头文件和 ABI 编译桥接两侧，以明确的数据表示或句柄交换。
+api_compatibility_report.md	252	这不是说最终程序只能链接一套标准库；不能把两套 std 对象当成相同布局直接解释。例如：
+api_compatibility_report.md	253	
+api_compatibility_report.md	254	```
+api_compatibility_report.md	255	libstdc++ 侧:  std::string  →  { const char* data; size_t len; }
+api_compatibility_report.md	256	                                        ↓ 跨边界（纯 C）
+api_compatibility_report.md	257	libc++ 侧:     { const char* data; size_t len; }  →  std::string
+api_compatibility_report.md	258	```
+api_compatibility_report.md	259	
+api_compatibility_report.md	260	**中间那层就是 C 接口。**
+api_compatibility_report.md	261	
+api_compatibility_report.md	262	**三类行为需要显式协议，不是直接跨 ABI 解释**：
+api_compatibility_report.md	263	
+api_compatibility_report.md	264	- **普通异常** —— 可在提供方捕获后编码；线程取消不能当普通错误吞掉；
+api_compatibility_report.md	265	- **迭代器** —— 可设计句柄／批次协议，不直接解释另一套库的迭代器；
+api_compatibility_report.md	266	- **所有权** —— 可明确配对释放及模块生命周期契约。
+api_compatibility_report.md	267	
+api_compatibility_report.md	268	**结论**：这不是任意 C++ 对象的透明转换。复制、生命周期和维护成本依具体接口决定，
+api_compatibility_report.md	269	不必每次调用都复制。当前不采用通用转换层是处理选择，不是已证明技术上没有设计空间。
+api_compatibility_report.md	270	
+api_compatibility_report.md	271	**业界参照**：CEF 通过 C API 隔离运行时，并提供 C++ wrapper；ICU 对跨版本二进制兼容
+api_compatibility_report.md	272	提出稳定 C API 等条件。这是有条件的接口设计参照，不是任意 C 边界均安全的证明。
+api_compatibility_report.md	273	[CEF 项目维护者说明](https://github.com/chromiumembedded/cef/issues/3836)、
+api_compatibility_report.md	274	[ICU 官方条件](https://unicode-org.github.io/icu/userguide/icu/design.html#icu-binary-compatibility)。
+api_compatibility_report.md	275	
+api_compatibility_report.md	276	---
+api_compatibility_report.md	277	
+api_compatibility_report.md	278	## 五、判断一个接口能否支持的方法
+api_compatibility_report.md	279	
+api_compatibility_report.md	280	**筛查启发式：这个接口用纯 C 能不能表达完整？这不是充分安全判据。**
+api_compatibility_report.md	281	
+api_compatibility_report.md	282	| 可用显式协议表达 | 不可直接跨 ABI 解释，需另设计协议 |
+api_compatibility_report.md	283	|---|---|
+api_compatibility_report.md	284	| 内置类型、POD、不透明指针 | 类、模板、标准库容器 |
+api_compatibility_report.md	285	| 错误码 | 异常 |
+api_compatibility_report.md	286	| 调用方提供缓冲区 | 返回动态分配的对象 |
+api_compatibility_report.md	287	| C 函数指针回调 | `std::function` 回调 |
+api_compatibility_report.md	288	
+api_compatibility_report.md	289	"**`extern ""C""` 不是判据** —— 可以给一个返回 `std::string` 的函数加"
+api_compatibility_report.md	290	"`extern ""C""`，符号名是干净了，但对象照样错。"
+api_compatibility_report.md	291	
+api_compatibility_report.md	292	---
+api_compatibility_report.md	293	
+api_compatibility_report.md	294	## 六、需要业务部门提供的信息
+api_compatibility_report.md	295	
+api_compatibility_report.md	296	要逐项评估第三方应用的兼容性，我们需要：
+api_compatibility_report.md	297	
+api_compatibility_report.md	298	1. **第三方应用与平台之间的接口清单** —— 哪些是 C 接口、哪些传 C++ 类型；
+api_compatibility_report.md	299	2. **应用是否自带标准库**，还是依赖平台提供；
+api_compatibility_report.md	300	3. 若有传 C++ 类型的接口，**优先级排序** —— 我们据此评估改成 C 接口的
+api_compatibility_report.md	301	   工作量。
+api_compatibility_report.md	302	
+api_compatibility_report.md	303	**工作安排而非完成记录**：以下核查尚未完成，工期需另行确认。平台可得源码由平台侧核查，
+api_compatibility_report.md	304	外部实现需其提供方提交接口、构建、生命周期与异常／取消契约。上述排序与具体安排由人工确认。
+api_compatibility_report.md	305	
+api_compatibility_report.md	306	---
+api_compatibility_report.md	307	
+api_compatibility_report.md	308	## 七、本文结论的证据范围
+api_compatibility_report.md	309	
+api_compatibility_report.md	310	- 33 个类型的大小／对齐及 deque 最小实例限 x86_64；ICU 单 C 入口限 armv7l 实板。
+api_compatibility_report.md	311	- 受控 C ABI 与 BoundaryError 异常有 x86_64 原生和 armv7l 实板记录。
+api_compatibility_report.md	312	- Boost 另有 x86_64 原生、armv7l QEMU 与 aarch64 QEMU 的代表边记录；aarch64 新增 22 条，累计代表组覆盖 49/90 条，不是所有边或真实业务调用均已覆盖。
+api_compatibility_report.md	313	- aarch64 完整取消／本批官方套件仍未完成；第三方接口材料及分母不可得。
+api_compatibility_report.md	314	- 不覆盖任意旧调用方、额外 noexcept／无异常帧、任意模板／回调、异步取消、自定义分配器、任意插件加载组合及全量成员布局。
+api_compatibility_report.md	315	
+api_compatibility_report.md	316	### 旧／新绑定与头文件限制
+api_compatibility_report.md	317	
+api_compatibility_report.md	318	编译决定清理代码，链接决定符号版本。以下旧 ELF 特指已记录旧等待节点的二进制：
+api_compatibility_report.md	319	
+api_compatibility_report.md	320	| 情形 | 等待入口 | 已测含义 |
+api_compatibility_report.md	321	|---|---|---|
+api_compatibility_report.md	322	| 已链接旧 ELF | LLVM_22 | 保留旧终止契约 |
+api_compatibility_report.md	323	| 旧 .o／.a 不重编，仅重链接双版本库 | LLVM_22_TIZEN_1（新默认） | 依赖旧调用点与清理表布局；实测可在线程回收后仍锁滞留，不承诺干净退出 |
+api_compatibility_report.md	324	| 新头重编并链接双版本库 | LLVM_22_TIZEN_1 | 被测前提下清理、解锁、后续进展通过 |
+api_compatibility_report.md	325	| 新头对象先链接旧单版本库，再更新运行库 | LLVM_22 | 仍走已记录的旧节点 |
+api_compatibility_report.md	326	
+api_compatibility_report.md	327	双版本仅覆盖普通等待和 system-clock 定时等待两个库内入口。steady-clock、自定义 Clock 等待、
+api_compatibility_report.md	328	wbuffer_convert 析构已编入使用方；定时写者回滚亦在头文件内。换动态库不能修复这些旧副本，须重编相关翻译单元。
+api_compatibility_report.md	329	libc++ 仍保留普通错误检查，未捕获普通错误仍可终止。wbuffer_convert 对齐的是析构不再自动刷新，
+api_compatibility_report.md	330	不是输出完全一致：三方新／旧／GNU 为 3／9／0 字节；缓冲算法未改，新旧 9→3 是移除析构刷新的结果。
+api_compatibility_report.md	331	
+api_compatibility_report.md	332	依据：[大小／对齐与 deque 原材料](https://github.com/lhmax2010/libc-_replacement/tree/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/R80)、
+api_compatibility_report.md	333	[ICU 与异常原材料](https://github.com/lhmax2010/libc-_replacement/tree/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/R78)、
+api_compatibility_report.md	334	[Boost 代表边](https://github.com/lhmax2010/libc-_replacement/blob/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/R110/W3_REPORT.md)、
+api_compatibility_report.md	335	[配套候审支持声明及逐项记录](https://github.com/lhmax2010/libc-_replacement/blob/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/IMPL_0909/W3/SUPPORT_SCOPE_ZH.md)。
+api_compatibility_report_EN.md	1	# Interface Compatibility Between libstdc++ and libc++
+api_compatibility_report_EN.md	2	
+api_compatibility_report_EN.md	3	- Date: 2026-09-09
+api_compatibility_report_EN.md	4	- Revision: P5, 2026-09-11; evidence is limited to the existing records checked for this revision, not a new product validation on that date.
+api_compatibility_report_EN.md	5	- This is not acceptance of all products; the accompanying support statement remains subject to human review.
+api_compatibility_report_EN.md	6	- Context: interfaces between the platform (migrating to libc++) and
+api_compatibility_report_EN.md	7	  components that remain on libstdc++ — third-party applications,
+api_compatibility_report_EN.md	8	  prebuilt libraries
+api_compatibility_report_EN.md	9	
+api_compatibility_report_EN.md	10	---
+api_compatibility_report_EN.md	11	
+api_compatibility_report_EN.md	12	## 1. Summary
+api_compatibility_report_EN.md	13	
+api_compatibility_report_EN.md	14	**Compatibility depends jointly on the data crossing the interface, object lifetimes,
+api_compatibility_report_EN.md	15	exception/cancellation paths, and the actual ABI configuration.**
+api_compatibility_report_EN.md	16	
+api_compatibility_report_EN.md	17	| Interface form | Supportable | Basis |
+api_compatibility_report_EN.md	18	|---|---|---|
+api_compatibility_report_EN.md	19	| Plain C interface | Fixed samples passed; not unconditional support | Measured, but not proof that arbitrary C interfaces are safe |
+api_compatibility_report_EN.md	20	| C++ interface passing only built-in types and PODs | Conditionally feasible | Matching cross-library Engine/Rect tests are NOT_OBSERVED; see 2.2 |
+api_compatibility_report_EN.md	21	| C++ interface passing standard library objects | No current guarantee for direct use across an unaligned ABI | Silent wrong-value counterexample; not every type necessarily fails the same way |
+api_compatibility_report_EN.md	22	| C++ interface throwing across the boundary | No current guarantee for direct use across an unaligned ABI | Typed catch did not match in a particular runtime combination; see 3.2 |
+api_compatibility_report_EN.md	23	| C++ interface transferring ownership | No current guarantee for direct use across an unaligned ABI | Allocation, release and lifetime contracts must be explicit |
+api_compatibility_report_EN.md	24	
+api_compatibility_report_EN.md	25	Each case is explained with code below.
+api_compatibility_report_EN.md	26	
+api_compatibility_report_EN.md	27	These are interface fragments, omitting some headers and implementations. Providers and consumers
+api_compatibility_report_EN.md	28	are separate translation units. Ellipses denote pseudocode; executable statements belong inside functions.
+api_compatibility_report_EN.md	29	The C interface alternatives must not be exported together as same-name C overloads.
+api_compatibility_report_EN.md	30	
+api_compatibility_report_EN.md	31	---
+api_compatibility_report_EN.md	32	
+api_compatibility_report_EN.md	33	## 2. Interfaces that can be supported
+api_compatibility_report_EN.md	34	
+api_compatibility_report_EN.md	35	### 2.1 Plain C interfaces
+api_compatibility_report_EN.md	36	
+api_compatibility_report_EN.md	37	```c
+api_compatibility_report_EN.md	38	#include <stddef.h>
+api_compatibility_report_EN.md	39	#ifdef __cplusplus
+api_compatibility_report_EN.md	40	"extern ""C"" {"
+api_compatibility_report_EN.md	41	#endif
+api_compatibility_report_EN.md	42	
+api_compatibility_report_EN.md	43	typedef struct engine_s* engine_handle;
+api_compatibility_report_EN.md	44	
+api_compatibility_report_EN.md	45	engine_handle engine_create(void);
+api_compatibility_report_EN.md	46	int           engine_get_width(engine_handle h);
+api_compatibility_report_EN.md	47	void          engine_set_position(engine_handle h, int x, int y);
+api_compatibility_report_EN.md	48	int           engine_read(engine_handle h, char* buf, size_t buflen);
+api_compatibility_report_EN.md	49	void          engine_destroy(engine_handle h);
+api_compatibility_report_EN.md	50	
+api_compatibility_report_EN.md	51	#ifdef __cplusplus
+api_compatibility_report_EN.md	52	}
+api_compatibility_report_EN.md	53	#endif
+api_compatibility_report_EN.md	54	```
+api_compatibility_report_EN.md	55	
+api_compatibility_report_EN.md	56	**Conditions**: these explicit parameters avoid passing standard-library objects directly, but
+api_compatibility_report_EN.md	57	the target C ABI, pointer validity, lifetime and exception/cancellation contracts must still agree.
+api_compatibility_report_EN.md	58	A C-shaped interface alone does not establish safety.
+api_compatibility_report_EN.md	59	
+api_compatibility_report_EN.md	60	**Measured**: on physical armv7l hardware, a libc++ program used dlopen/dlsym to call
+api_compatibility_report_EN.md	61	`u_getVersion` in the installed `/usr/lib/libicuuc.so.78.1`. It printed 78.1.0.0,
+api_compatibility_report_EN.md	62	asserted major version 78, recorded libc++, libc++abi, libstdc++ and ICU loaded together, and exited 0.
+api_compatibility_report_EN.md	63	This validates that fixed C-entry sample, not all ICU APIs, allocation/release, callbacks or product
+api_compatibility_report_EN.md	64	functionality. The equivalent real-ICU run on x86_64 is NOT_OBSERVED in these records.
+api_compatibility_report_EN.md	65	
+api_compatibility_report_EN.md	66	### 2.2 C++ interfaces passing only built-in types and PODs
+api_compatibility_report_EN.md	67	
+api_compatibility_report_EN.md	68	```cpp
+api_compatibility_report_EN.md	69	// Conditional interface illustration; these member calls have no corresponding cross-library measurement
+api_compatibility_report_EN.md	70	class Engine {
+api_compatibility_report_EN.md	71	public:
+api_compatibility_report_EN.md	72	    int    width() const;                    // returns int
+api_compatibility_report_EN.md	73	    void   setPosition(int x, int y);        // takes ints
+api_compatibility_report_EN.md	74	    bool   isReady() const;                  // returns bool
+api_compatibility_report_EN.md	75	    double scale() const;                    // returns double
+api_compatibility_report_EN.md	76	};
+api_compatibility_report_EN.md	77	
+api_compatibility_report_EN.md	78	struct Rect { int x, y, w, h; };             // check complete definitions and target ABI on both sides
+api_compatibility_report_EN.md	79	Rect   getBounds();                          // check the by-value return ABI as well
+api_compatibility_report_EN.md	80	```
+api_compatibility_report_EN.md	81	
+api_compatibility_report_EN.md	82	**Conditional analysis**: compatible boundaries can in principle be designed when the target ABI,
+api_compatibility_report_EN.md	83	complete type definitions, calling convention, compiler options, object lifetimes and exception
+api_compatibility_report_EN.md	84	boundaries agree. Non-static member calls also pass an implicit `this`; explicit arguments alone
+api_compatibility_report_EN.md	85	are insufficient. Engine/Rect have no corresponding cross-library measurements here and must not
+api_compatibility_report_EN.md	86	be labelled measured support. Exact-state success for a particular Boost.Thread once_flag boundary
+api_compatibility_report_EN.md	87	is a bounded sample, not proof for these classes or all POD interfaces.
+api_compatibility_report_EN.md	88	
+api_compatibility_report_EN.md	89	### 2.3 Two additional conditions that must hold
+api_compatibility_report_EN.md	90	
+api_compatibility_report_EN.md	91	The following cover exceptions and lifetimes; they are not an exhaustive safety checklist.
+api_compatibility_report_EN.md	92	
+api_compatibility_report_EN.md	93	**Condition one: exceptions must not escape the boundary**
+api_compatibility_report_EN.md	94	
+api_compatibility_report_EN.md	95	The example only illustrates converting ordinary C++ errors into error codes. A non-null out must
+api_compatibility_report_EN.md	96	point to a valid writable int, and cancellation must not occur during this call interval. A null
+api_compatibility_report_EN.md	97	pointer returns -3; other error returns leave out unchanged. Where cancellation is allowed, catch-all
+api_compatibility_report_EN.md	98	must not swallow forced unwind: it must be recognized and propagated using the matching runtime,
+api_compatibility_report_EN.md	99	with the full call chain's cleanup and non-throwing boundaries checked separately. This simplified
+api_compatibility_report_EN.md	100	example is not a safe implementation for that cancellation case or a proposal to disable platform cancellation.
+api_compatibility_report_EN.md	101	
+api_compatibility_report_EN.md	102	```cpp
+api_compatibility_report_EN.md	103	// Not safe — parameters and return are int, but exceptions still cross
+api_compatibility_report_EN.md	104	int engine_compute(engine_handle h) {
+api_compatibility_report_EN.md	105	    auto result = internal_cpp_function();   // may throw
+api_compatibility_report_EN.md	106	    return result;
+api_compatibility_report_EN.md	107	}
+api_compatibility_report_EN.md	108	
+api_compatibility_report_EN.md	109	// Ordinary-error illustration under the stated conditions; an alternative to the preceding interface
+api_compatibility_report_EN.md	110	int engine_compute(engine_handle h, int* out) {
+api_compatibility_report_EN.md	111	    if (out == nullptr) return -3;
+api_compatibility_report_EN.md	112	    try {
+api_compatibility_report_EN.md	113	        *out = internal_cpp_function();
+api_compatibility_report_EN.md	114	        return 0;
+api_compatibility_report_EN.md	115	    } catch (const std::exception&) {
+api_compatibility_report_EN.md	116	        return -1;
+api_compatibility_report_EN.md	117	    } catch (...) {
+api_compatibility_report_EN.md	118	        return -2;
+api_compatibility_report_EN.md	119	    }
+api_compatibility_report_EN.md	120	}
+api_compatibility_report_EN.md	121	```
+api_compatibility_report_EN.md	122	
+api_compatibility_report_EN.md	123	**Measured boundary**: ordinary typed catch did not match in the particular runtime combination
+api_compatibility_report_EN.md	124	described in 3.2. This does not mean all RTTI type information was lost. Termination is triggered
+api_compatibility_report_EN.md	125	when an exception actually crosses a non-throwing boundary, not merely because some function
+api_compatibility_report_EN.md	126	elsewhere in the call chain is declared `noexcept`.
+api_compatibility_report_EN.md	127	
+api_compatibility_report_EN.md	128	**Condition two: allocation, release and lifetime contracts must match**
+api_compatibility_report_EN.md	129	
+api_compatibility_report_EN.md	130	```cpp
+api_compatibility_report_EN.md	131	// Not safe — mismatched allocation/release APIs, even within one library
+api_compatibility_report_EN.md	132	char* engine_get_name(engine_handle h);   // internally new[]
+api_compatibility_report_EN.md	133	// application side: free(name);          // does not call operator delete; invalid for a new[] result
+api_compatibility_report_EN.md	134	
+api_compatibility_report_EN.md	135	// Explicit pairing; exception, cancellation and pointer-validity contracts still apply
+api_compatibility_report_EN.md	136	char* engine_get_name(engine_handle h);
+api_compatibility_report_EN.md	137	void  engine_free_string(char* s);        // freed by the provider
+api_compatibility_report_EN.md	138	
+api_compatibility_report_EN.md	139	// Or let the caller supply the buffer
+api_compatibility_report_EN.md	140	int   engine_get_name(engine_handle h, char* buf, size_t buflen);
+api_compatibility_report_EN.md	141	```
+api_compatibility_report_EN.md	142	
+api_compatibility_report_EN.md	143	**Why**: `new[]` must pair with the corresponding `delete[]`, not `free`. Cross-component release
+api_compatibility_report_EN.md	144	also depends on the actual allocator/replacement new-delete, alignment, destructor, object layout
+api_compatibility_report_EN.md	145	and module lifetime contracts, not library names alone. GNU and LLVM defaults can both use malloc/free;
+api_compatibility_report_EN.md	146	loading both libraries does not imply two independent heaps. Provider-paired release or caller-supplied
+api_compatibility_report_EN.md	147	buffers avoid guessing internal contracts, but do not by themselves validate exceptions, cancellation or pointers.
+api_compatibility_report_EN.md	148	
+api_compatibility_report_EN.md	149	---
+api_compatibility_report_EN.md	150	
+api_compatibility_report_EN.md	151	## 3. Interfaces that cannot be supported
+api_compatibility_report_EN.md	152	
+api_compatibility_report_EN.md	153	### 3.1 Passing standard library objects
+api_compatibility_report_EN.md	154	
+api_compatibility_report_EN.md	155	```cpp
+api_compatibility_report_EN.md	156	// Cannot cross the boundary
+api_compatibility_report_EN.md	157	std::string  engine_get_name();
+api_compatibility_report_EN.md	158	void         engine_set_items(std::vector<int>);
+api_compatibility_report_EN.md	159	std::map<int, std::string> engine_get_config();
+api_compatibility_report_EN.md	160	```
+api_compatibility_report_EN.md	161	
+api_compatibility_report_EN.md	162	**Why**: standard-library types cannot be assumed to have interchangeable representations.
+api_compatibility_report_EN.md	163	Under the fixed x86_64 probe configuration, 10 of 33 listed concrete type instances differed in
+api_compatibility_report_EN.md	164	sizeof or alignof; 23 matched on both measures. Member offsets, nodes, control blocks and operational
+api_compatibility_report_EN.md	165	equivalence have not been fully verified. The table gives sizes in bytes:
+api_compatibility_report_EN.md	166	
+api_compatibility_report_EN.md	167	| Type | libstdc++ | libc++ |
+api_compatibility_report_EN.md	168	|---|---:|---:|
+api_compatibility_report_EN.md	169	| `std::string` | 32 bytes | 24 bytes |
+api_compatibility_report_EN.md	170	| `std::deque<int>` | 80 bytes | 48 bytes |
+api_compatibility_report_EN.md	171	| `std::map<int,int>` | 48 bytes | 24 bytes |
+api_compatibility_report_EN.md	172	| `std::set<int>` | 48 bytes | 24 bytes |
+api_compatibility_report_EN.md	173	| `std::unordered_map<int,int>` | 56 bytes | 40 bytes |
+api_compatibility_report_EN.md	174	| `std::unordered_set<int>` | 56 bytes | 40 bytes |
+api_compatibility_report_EN.md	175	| `std::function<void()>` | 32 bytes | 48 bytes |
+api_compatibility_report_EN.md	176	| `std::any` | 16 bytes | 32 bytes |
+api_compatibility_report_EN.md	177	| `std::future<int>` | 16 bytes | 8 bytes |
+api_compatibility_report_EN.md	178	| `std::promise<int>` | 24 bytes | 8 bytes |
+api_compatibility_report_EN.md	179	
+api_compatibility_report_EN.md	180	Alignment of `std::function<void()>` also differed: GNU/LLVM was 8/16 bytes.
+api_compatibility_report_EN.md	181	The GNU probe used host GCC 13.3.0; the LLVM probe used Clang 21.1.1 with cached platform libc++/libc++abi.
+api_compatibility_report_EN.md	182	The libc++ header version macro was 220108, meaning 22.1.8, not the Clang compiler version.
+api_compatibility_report_EN.md	183	Platform GCC 14.2 sources and the baseline export manifest are separate evidence inputs, not this probe's compiler.
+api_compatibility_report_EN.md	184	
+api_compatibility_report_EN.md	185	**This instance linked and loaded but read an incorrect value.** Core fragments of the measured case:
+api_compatibility_report_EN.md	186	
+api_compatibility_report_EN.md	187	```cpp
+api_compatibility_report_EN.md	188	// Provider, built against libstdc++
+api_compatibility_report_EN.md	189	std::deque<int>* make_payload() {
+api_compatibility_report_EN.md	190	    return new std::deque<int>{11, 22, 33, 44};
+api_compatibility_report_EN.md	191	}
+api_compatibility_report_EN.md	192	
+api_compatibility_report_EN.md	193	// Consumer, built against libc++
+api_compatibility_report_EN.md	194	int main() {
+api_compatibility_report_EN.md	195	    auto* payload = make_payload();
+api_compatibility_report_EN.md	196	    const auto producer_view = provider_size(payload);
+api_compatibility_report_EN.md	197	    const auto consumer_view = payload->size();
+api_compatibility_report_EN.md	198	    // The original program prints both sizeof values and length views here.
+api_compatibility_report_EN.md	199	    destroy_payload(payload);       // deleted by the provider
+api_compatibility_report_EN.md	200	    return producer_view == consumer_view ? 0 : 42;
+api_compatibility_report_EN.md	201	}
+api_compatibility_report_EN.md	202	```
+api_compatibility_report_EN.md	203	
+api_compatibility_report_EN.md	204	**Result**: provider/consumer sizeof was 80/48; length views were 4/106884723786536.
+api_compatibility_report_EN.md	205	There was no signal crash, but the consumer deliberately returned 42 to mark the mismatch, after
+api_compatibility_report_EN.md	206	calling the provider's destroy_payload. The incorrect length is one recorded output, not a value
+api_compatibility_report_EN.md	207	guaranteed on every run. Printing and helper definitions are omitted above; original sources and output are linked in section 7.
+api_compatibility_report_EN.md	208	
+api_compatibility_report_EN.md	209	**Why this instance links**: the ordinary non-template function make_payload's return type is not
+api_compatibility_report_EN.md	210	directly encoded in the Itanium name `_Z12make_payloadv`. `_Z9make_datav` correctly encodes make_data,
+api_compatibility_report_EN.md	211	but is not the original experiment's symbol. Template functions and function types follow different
+api_compatibility_report_EN.md	212	rules; ABI tags can also change names. The experiment's earlier std::string variant failed to link because of an abi:cxx11 tag.
+api_compatibility_report_EN.md	213	
+api_compatibility_report_EN.md	214	### 3.2 Throwing across the boundary
+api_compatibility_report_EN.md	215	
+api_compatibility_report_EN.md	216	```cpp
+api_compatibility_report_EN.md	217	// Original shared type; throwing and receiving code are in separate translation units.
+api_compatibility_report_EN.md	218	struct BoundaryError { int code; };
+api_compatibility_report_EN.md	219	// Provider operation: throw BoundaryError{77};
+api_compatibility_report_EN.md	220	// Consumer has catch (const BoundaryError&) followed by catch (...).
+api_compatibility_report_EN.md	221	```
+api_compatibility_report_EN.md	222	
+api_compatibility_report_EN.md	223	**Measured**: the tested libstdc++ plugin threw BoundaryError{77} to a libc++ consumer.
+api_compatibility_report_EN.md	224	On native x86_64 and physical armv7l, the same-type catch was not entered; catch-all was entered
+api_compatibility_report_EN.md	225	and the process exited 12. The relevant libc++abi personality (the function selecting handlers
+api_compatibility_report_EN.md	226	during unwinding) treats another runtime's exception as foreign, which bypasses ordinary typed
+api_compatibility_report_EN.md	227	matching on this path. Results depend on the actual exception runtimes, personality and symbol
+api_compatibility_report_EN.md	228	binding; they do not establish failure for every DSO, direction or type. The derived EngineError type was not tested.
+api_compatibility_report_EN.md	229	
+api_compatibility_report_EN.md	230	### 3.3 Transferring ownership
+api_compatibility_report_EN.md	231	
+api_compatibility_report_EN.md	232	```cpp
+api_compatibility_report_EN.md	233	// Cannot cross the boundary
+api_compatibility_report_EN.md	234	std::unique_ptr<Widget> engine_create_widget();     // who frees it?
+api_compatibility_report_EN.md	235	std::shared_ptr<Config> engine_get_config();        // where is the control block?
+api_compatibility_report_EN.md	236	```
+api_compatibility_report_EN.md	237	
+api_compatibility_report_EN.md	238	**Why**: direct cross-standard-library smart-pointer transfer is outside the current guarantee.
+api_compatibility_report_EN.md	239	Risks include pointer/control-block layouts, reference-count protocols, destructors/deleters and
+api_compatibility_report_EN.md	240	module lifetimes; matching outer size cannot exclude them. Crossing a boundary does not automatically
+api_compatibility_report_EN.md	241	create two independent shared_ptr counts. A unique_ptr can have a custom deleter, and the release
+api_compatibility_report_EN.md	242	path cannot be inferred solely from which side allocated the object.
+api_compatibility_report_EN.md	243	
+api_compatibility_report_EN.md	244	### 3.4 Passing iterators
+api_compatibility_report_EN.md	245	
+api_compatibility_report_EN.md	246	```cpp
+api_compatibility_report_EN.md	247	// Cannot cross the boundary
+api_compatibility_report_EN.md	248	std::vector<int>::iterator engine_begin();
+api_compatibility_report_EN.md	249	```
+api_compatibility_report_EN.md	250	
+api_compatibility_report_EN.md	251	**Why**: an iterator points into the container's internal structure, and the
+api_compatibility_report_EN.md	252	two sides understand that structure differently.
+api_compatibility_report_EN.md	253	
+api_compatibility_report_EN.md	254	---
+api_compatibility_report_EN.md	255	
+api_compatibility_report_EN.md	256	## 4. Why a conversion layer is not the answer
+api_compatibility_report_EN.md	257	
+api_compatibility_report_EN.md	258	One proposal is to convert libstdc++ objects into libc++ objects at the boundary. Explicit protocols
+api_compatibility_report_EN.md	259	can be designed, but no general conversion layer was implemented or measured in this round.
+api_compatibility_report_EN.md	260	
+api_compatibility_report_EN.md	261	**Where would the conversion function live?**
+api_compatibility_report_EN.md	262	
+api_compatibility_report_EN.md	263	Normally each side is compiled with its own headers and ABI, exchanging explicit data representations
+api_compatibility_report_EN.md	264	or handles. This does not mean the final program can link only one standard library. The two std
+api_compatibility_report_EN.md	265	representations must not simply be interpreted as the same layout. For example:
+api_compatibility_report_EN.md	266	
+api_compatibility_report_EN.md	267	```
+api_compatibility_report_EN.md	268	libstdc++ side:  std::string  →  { const char* data; size_t len; }
+api_compatibility_report_EN.md	269	                                        ↓ across the boundary (plain C)
+api_compatibility_report_EN.md	270	libc++ side:     { const char* data; size_t len; }  →  std::string
+api_compatibility_report_EN.md	271	```
+api_compatibility_report_EN.md	272	
+api_compatibility_report_EN.md	273	**That middle layer is a C interface.**
+api_compatibility_report_EN.md	274	
+api_compatibility_report_EN.md	275	**Three behaviors need explicit protocols rather than direct ABI reinterpretation**:
+api_compatibility_report_EN.md	276	
+api_compatibility_report_EN.md	277	- **Ordinary exceptions** can be caught and encoded at the provider; cancellation must not be swallowed as an ordinary error;
+api_compatibility_report_EN.md	278	- **Iteration** can use handles or batches without interpreting the other library's iterators;
+api_compatibility_report_EN.md	279	- **Ownership** can specify paired release and module lifetimes.
+api_compatibility_report_EN.md	280	
+api_compatibility_report_EN.md	281	**Conclusion**: this is not transparent conversion of arbitrary C++ objects. Copying, lifetime and
+api_compatibility_report_EN.md	282	maintenance costs depend on the interface; not every call must copy. Not adopting a general bridge
+api_compatibility_report_EN.md	283	is a project choice, not proof that no technical design space exists.
+api_compatibility_report_EN.md	284	
+api_compatibility_report_EN.md	285	**Industry reference**: CEF isolates runtimes through a C API and supplies a C++ wrapper. ICU's
+api_compatibility_report_EN.md	286	cross-version binary compatibility has conditions including stable C APIs. These are conditional
+api_compatibility_report_EN.md	287	design references, not proof that arbitrary C boundaries are safe.
+api_compatibility_report_EN.md	288	[CEF maintainer explanation](https://github.com/chromiumembedded/cef/issues/3836),
+api_compatibility_report_EN.md	289	[ICU official conditions](https://unicode-org.github.io/icu/userguide/icu/design.html#icu-binary-compatibility).
+api_compatibility_report_EN.md	290	
+api_compatibility_report_EN.md	291	---
+api_compatibility_report_EN.md	292	
+api_compatibility_report_EN.md	293	## 5. How to judge whether an interface can be supported
+api_compatibility_report_EN.md	294	
+api_compatibility_report_EN.md	295	**Screening heuristic: can this interface be expressed completely in plain C? This is not sufficient proof of safety.**
+api_compatibility_report_EN.md	296	
+api_compatibility_report_EN.md	297	| Expressible through explicit protocols | Not directly ABI-interchangeable; needs a separate protocol |
+api_compatibility_report_EN.md	298	|---|---|
+api_compatibility_report_EN.md	299	| Built-in types, PODs, opaque pointers | Classes, templates, standard containers |
+api_compatibility_report_EN.md	300	| Error codes | Exceptions |
+api_compatibility_report_EN.md	301	| Caller-supplied buffers | Returning dynamically allocated objects |
+api_compatibility_report_EN.md	302	| C function-pointer callbacks | `std::function` callbacks |
+api_compatibility_report_EN.md	303	
+api_compatibility_report_EN.md	304	"**`extern ""C""` is not the test.** A function returning `std::string` can be"
+api_compatibility_report_EN.md	305	"declared `extern ""C""` — the symbol name becomes clean, but the object is"
+api_compatibility_report_EN.md	306	still wrong.
+api_compatibility_report_EN.md	307	
+api_compatibility_report_EN.md	308	---
+api_compatibility_report_EN.md	309	
+api_compatibility_report_EN.md	310	## 6. What we need from the business divisions
+api_compatibility_report_EN.md	311	
+api_compatibility_report_EN.md	312	To assess third-party application compatibility item by item, we need:
+api_compatibility_report_EN.md	313	
+api_compatibility_report_EN.md	314	1. **The inventory of interfaces between third-party applications and the
+api_compatibility_report_EN.md	315	   platform** — which are C interfaces, which pass C++ types;
+api_compatibility_report_EN.md	316	2. **Whether applications carry their own standard library** or rely on the
+api_compatibility_report_EN.md	317	   platform's;
+api_compatibility_report_EN.md	318	3. For interfaces that do pass C++ types, **a priority ordering** — so we
+api_compatibility_report_EN.md	319	   can estimate the work of converting them to C interfaces.
+api_compatibility_report_EN.md	320	
+api_compatibility_report_EN.md	321	**Work planning, not a completion record**: these checks remain unfinished and timing requires
+api_compatibility_report_EN.md	322	separate confirmation. The platform team can inspect available platform sources; external providers
+api_compatibility_report_EN.md	323	must supply interface, build, lifetime and exception/cancellation contracts. The requested ordering
+api_compatibility_report_EN.md	324	and concrete work assignments remain for human confirmation.
+api_compatibility_report_EN.md	325	
+api_compatibility_report_EN.md	326	---
+api_compatibility_report_EN.md	327	
+api_compatibility_report_EN.md	328	## 7. Evidence scope of this document
+api_compatibility_report_EN.md	329	
+api_compatibility_report_EN.md	330	- Size/alignment of 33 types and the minimal deque case: x86_64 only. ICU's single C entry: physical armv7l only.
+api_compatibility_report_EN.md	331	- Controlled C ABI and BoundaryError: native x86_64 and physical armv7l records.
+api_compatibility_report_EN.md	332	- Boost also has representative edges on native x86_64, armv7l QEMU and aarch64 QEMU. The aarch64 round added 22 edges; cumulative representative-group coverage is 49/90, not every edge or real business call.
+api_compatibility_report_EN.md	333	- Complete aarch64 cancellation/current official-suite validation remains unfinished; third-party interface materials and the external denominator are unavailable.
+api_compatibility_report_EN.md	334	- Arbitrary old callers, extra noexcept/no-exception frames, arbitrary templates/callbacks, asynchronous cancellation, custom allocators, arbitrary plugin-loading combinations and full member layouts are not covered.
+api_compatibility_report_EN.md	335	
+api_compatibility_report_EN.md	336	### Old/new binding and header limitations
+api_compatibility_report_EN.md	337	
+api_compatibility_report_EN.md	338	Compilation determines cleanup code; linking determines symbol versions. Old ELF below means a binary
+api_compatibility_report_EN.md	339	that already records the old wait node:
+api_compatibility_report_EN.md	340	
+api_compatibility_report_EN.md	341	| Case | Wait entry | Measured meaning |
+api_compatibility_report_EN.md	342	|---|---|---|
+api_compatibility_report_EN.md	343	| Already-linked old ELF | LLVM_22 | Retains the old termination contract |
+api_compatibility_report_EN.md	344	| Old .o/.a, relinked to the dual-version library without recompilation | LLVM_22_TIZEN_1 (new default) | Depends on old call-site and cleanup-table layout; a lock remained held after thread join in a measured case, so clean exit is not promised |
+api_compatibility_report_EN.md	345	| Recompile with new headers and link the dual-version library | LLVM_22_TIZEN_1 | Cleanup, unlock and subsequent progress passed under the tested conditions |
+api_compatibility_report_EN.md	346	| New-header objects first linked to the old single-version library, then runtime upgraded | LLVM_22 | Still uses the recorded old node |
+api_compatibility_report_EN.md	347	
+api_compatibility_report_EN.md	348	Dual versions cover only the ordinary wait and system-clock timed-wait library entries. Steady-clock
+api_compatibility_report_EN.md	349	and custom-Clock waits and wbuffer_convert destruction are compiled into consumers; timed-writer
+api_compatibility_report_EN.md	350	rollback is also in a header. Replacing the DSO cannot repair these old copies; affected translation units require recompilation.
+api_compatibility_report_EN.md	351	libc++ retains ordinary-error checks, and uncaught ordinary errors can still terminate. wbuffer_convert
+api_compatibility_report_EN.md	352	aligns on no automatic destructor flush, not identical output: new/old/GNU produced 3/9/0 bytes.
+api_compatibility_report_EN.md	353	Buffer algorithms were unchanged; the old-to-new 9-to-3 change results from removing the destructor flush.
+api_compatibility_report_EN.md	354	
+api_compatibility_report_EN.md	355	Sources: [size/alignment and deque originals](https://github.com/lhmax2010/libc-_replacement/tree/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/R80),
+api_compatibility_report_EN.md	356	[ICU and exception originals](https://github.com/lhmax2010/libc-_replacement/tree/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/R78),
+api_compatibility_report_EN.md	357	[representative Boost edges](https://github.com/lhmax2010/libc-_replacement/blob/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/R110/W3_REPORT.md),
+api_compatibility_report_EN.md	358	[support statement awaiting review and detailed records](https://github.com/lhmax2010/libc-_replacement/blob/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/IMPL_0909/W3/SUPPORT_SCOPE_EN.md).
+chromium_research_en.md	1	# Chromium's libc++ configuration and the applicability of LLVM unwinding to Tizen
+chromium_research_en.md	2	
+chromium_research_en.md	3	Evidence cut-off: 7 September 2026. Prepared for technical review. This is an applicability assessment, not an implementation or adoption recommendation.
+chromium_research_en.md	4	
+chromium_research_en.md	5	## Executive findings
+chromium_research_en.md	6	
+chromium_research_en.md	7	**A Google-wide or Chromium-wide specification banning `pthread_cancel` has not been established.** Chromium's `base::Thread` uses cooperative shutdown, but the pinned main repository contains a real cancellation call in its bundled gRPC POSIX implementation. Google's public restriction on C++ exceptions does not establish a restriction on POSIX thread cancellation. Internal policy documents were unavailable. [Thread implementation](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/base/threading/thread.cc), [gRPC implementation](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/third_party/grpc/source/src/core/util/posix/thd.cc), [public style guide](https://google.github.io/styleguide/cppguide.html).
+chromium_research_en.md	8	
+chromium_research_en.md	9	**An isolated llvm-libgcc build worked for the tested native x86_64 configuration, but it has not been validated as a drop-in Tizen replacement.** Across 150 executions, changing the unwinder did not bypass retained `noexcept` boundaries, repair shared-mutex writer state, or eliminate the unpatched C++ ABI library's cancellation-rethrow termination. [Measurements](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/MEASUREMENTS.md), [cell summary](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/measurement_summary.tsv).
+chromium_research_en.md	10	
+chromium_research_en.md	11	**ChromeOS did migrate its system unwinder; that history is not proof of arbitrary prebuilt-binary compatibility.** Merged changes enabled all boards, updated the SDK and recorded system dependencies in December 2021. They establish coordinated toolchain integration, not the compatibility denominator or deployment contract needed for Tizen's external binaries. [Board enablement](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3335237), [SDK update](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3339453).
+chromium_research_en.md	12	
+chromium_research_en.md	13	There were no replacement Tizen or ChromeOS images in this experiment. ARM and aarch64 runs with the experimental unwinder are `NOT_OBSERVED`. None of the eight assessment categories can be promoted to a platform-wide acceptance result.
+chromium_research_en.md	14	
+chromium_research_en.md	15	## Evidence terminology and versions
+chromium_research_en.md	16	
+chromium_research_en.md	17	“Static inspection” means source, configuration, ELF binary-format or commit inspection. “External report” means a project author's reported result, not our reproduction. “Measured” means an executed probe with archived commands, output and exit status. “Analysis” denotes a conditional inference. `NOT_OBSERVED` means not observed; `NOT_AVAILABLE` means the required material was unavailable. Process survival is not proof of valid object state or correct resource handling.
+chromium_research_en.md	18	
+chromium_research_en.md	19	Chromium was pinned to `ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1`, with libc++ revision `97b436da4c33663581d394f4ee0a5977fc38c2f4` verified against its dependency manifest. The locally built LLVM tree was a different revision, `5ed6c77278dfa7a470667cf1a137723d3c96fe60`. Chromium's source inspection and the local runtime experiment must not be conflated. [References and retrieval index](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/REFERENCES.md).
+chromium_research_en.md	20	
+chromium_research_en.md	21	## Chromium: configuration and cancellation
+chromium_research_en.md	22	
+chromium_research_en.md	23	### What the configuration establishes
+chromium_research_en.md	24	
+chromium_research_en.md	25	Chromium enables its custom libc++ by default. Component builds can use a shared standard library; non-component builds use a static configuration. The libc++abi target also depends on executable symbol-export settings. The default condition for custom LLVM libunwind is Fuchsia or Android: **Linux does not, by default, enable the bundled unwinder through that setting.** The standard library uses ABI namespace `__Cr` and ABI version 2. Symbol isolation does not translate C++ object layouts across libraries. [C++ configuration](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/c++/c++.gni), [unwinder configuration](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/unwind.gni), [ABI configuration](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/buildtools/third_party/libc++/__config_site).
+chromium_research_en.md	26	
+chromium_research_en.md	27	`base::Thread::StopSoon()` posts shutdown work, while `Stop()` joins the underlying thread. This establishes the wrapper's cooperative protocol, not a universal constraint on third-party code. [Source](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/base/threading/thread.cc).
+chromium_research_en.md	28	
+chromium_research_en.md	29	### Repository search and its limits
+chromium_research_en.md	30	
+chromium_research_en.md	31	The archive contained 505,965 regular files. The explicitly selected source, header, build and documentation extensions and filenames yielded 195,796 scanned text files; 310,156 files had nonselected extensions and 13 contained NUL bytes. This did not include every separately fetched dependency repository, macro expansion, aliases or binaries. Every search term had a synthetic positive control, with an additional real thread-source control. [Search results](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/chromium_usage.tsv), [counts](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/054_scan_full_archive.stdout), [controls and follow-up](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/057_supplement.stdout).
+chromium_research_en.md	32	
+chromium_research_en.md	33	| Search | Observed result |
+chromium_research_en.md	34	|---|---|
+chromium_research_en.md	35	| `pthread_cancel` | Two lines in one gRPC file: one actual call at `thd.cc:204`, one diagnostic string at line 206. Non-Android POSIX `Thread::Kill()` performs cancellation. |
+chromium_research_en.md	36	| Indirect call and build entry | `work_stealing_thread_pool.cc:162` calls `Thread::Kill` from `DumpSignalHandler`; `third_party/grpc/BUILD.gn:2285` lists the POSIX implementation. Actual reachability in a particular shipped product remains unobserved. |
+chromium_research_en.md	37	| Cancellation mode controls | No matches for `pthread_setcanceltype` or `PTHREAD_CANCEL_ASYNCHRONOUS` in the selected scope. This does not establish absence in all dependencies or products. |
+chromium_research_en.md	38	| Standard shared mutex | Two `std::shared_mutex` mentions in one performance document, not current instantiation code; no `std::shared_timed_mutex` matches. Aliases and independent dependency repositories remain outside that conclusion. |
+chromium_research_en.md	39	| `wbuffer_convert` | One header-manifest entry, not a consumer. No product-wide nonuse conclusion follows. |
+chromium_research_en.md	40	| Boost includes | One `boost/locale.hpp` include in protobuf's vendored utf8_range `boost.cpp`; inclusion in a final product was not established. |
+chromium_research_en.md	41	
+chromium_research_en.md	42	Chromium's StatisticsRecorder historically tried `std::shared_mutex`. In 2023 its maintainer reported returning to `base::Lock`, after observing workload-dependent overhead and improving how the original lock was used. This was not a cancellation rollback fix, and it disproves an “it was never used” assertion. [Maintainer discussion](https://groups.google.com/a/chromium.org/g/cxx/c/bIlGr1URn8I).
+chromium_research_en.md	43	
+chromium_research_en.md	44	The public Google Style Guide had no exact cancellation-related matches in the inspected text, with its exception section serving as a positive control. Internal policy is `NOT_AVAILABLE`. A prohibition on language exceptions cannot be substituted for a documented thread-cancellation policy. [Guide snapshot](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/sources/google_style.txt), [search record](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/015_chromium_search.stdout).
+chromium_research_en.md	45	
+chromium_research_en.md	46	### lightweight-web-engine and Tizen's different assumptions
+chromium_research_en.md	47	
+chromium_research_en.md	48	The inspected source package identifies itself as **Starfish**, including its engine build and `liblightweight-web-engine` outputs. It does not establish Chromium ancestry. Its worker implementation enables asynchronous cancellation and calls `pthread_cancel` under `OS_POSIX && !STARFISH_ANDROID`, not a Tizen-only condition. The private upstream history was unavailable; the attempted public Tizen remote returned HTTP 403. Who introduced the behavior, when, and the exact ancestry are therefore `NOT_AVAILABLE`. We cannot attribute it to Chromium upstream or to a Tizen-only patch. [Package snapshots](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshot_origins.tsv), [source context](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/049_lwe_context.stdout), [remote failure](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/048_lwe_remote.stderr).
+chromium_research_en.md	49	
+chromium_research_en.md	50	Analysis: Tizen has existing cancellation users, asynchronous-cancellation exposure, cross-standard-library semantic boundaries and an unquantified external-binary population. Adopting Chromium's link configuration does not enforce a cooperative protocol on those consumers. That protocol is an application-level precondition, not a property supplied by an unwinder.
+chromium_research_en.md	51	
+chromium_research_en.md	52	## llvm-libgcc and forced unwinding
+chromium_research_en.md	53	
+chromium_research_en.md	54	llvm-libgcc combines compiler-rt builtins with LLVM libunwind and supplies libgcc-style files and symbol versions. It does not supply libc++ object-layout compatibility, standard-library rollback guards or two historical libc++ function behaviors. The project explicitly leaves distribution-level compatibility to the integrator and requires opt-in. [Project documentation](https://github.com/llvm/llvm-project/blob/main/llvm-libgcc/docs/LLVMLibgcc.md), [documentation for the built revision](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/LLVMLibgcc.rst).
+chromium_research_en.md	55	
+chromium_research_en.md	56	Forced unwinding is the cleanup protocol used by glibc cancellation; it is not an ordinary C++ exception search. LLVM's DWARF implementation implements `_Unwind_ForcedUnwind`, records a stop callback and argument, and drives cleanup with forced-unwind flags. GNU implements the corresponding protocol too. Matching exported names do not make their private contexts interchangeable. ARM EHABI, the ARM exception-handling ABI, has separate state and continuation conventions. [LLVM implementation](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/UnwindLevel1.c), [ARM implementation](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/Unwind-EHABI.cpp), [GNU implementation](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/gcc-unwind.inc).
+chromium_research_en.md	57	
+chromium_research_en.md	58	The inspected glibc 2.40 source obtains backtrace, forced-unwind, CFA, architecture-conditional IP, resume and personality interfaces from `libgcc_s.so.1`, with additional architecture hooks. The experimental DSO supplies the six entries inspected for x86_64, and the actual host glibc exercised cancellation and backtrace successfully. **This validates an interface subset, not the entire GNU libgcc ABI or every architecture.** [glibc source](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/glibc-unwind-link.c), [symbol checks](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/041_analysis.stdout).
+chromium_research_en.md	59	
+chromium_research_en.md	60	Relevant limitations include mixed-provider private contexts, historical ARM forced-unwind defects, physical file/SONAME requirements, and compiler-builtin symbol-version differences. ARM support was actively repaired in 2021: it is incorrect to claim LLVM simply never handles forced unwinding. This does not establish a complete ChromeOS cancellation acceptance matrix. [ARM fix](https://reviews.llvm.org/D109856), [mixed-provider discussion](https://reviews.llvm.org/D150897), [related distribution crash report](https://github.com/llvm/llvm-project/issues/90041).
+chromium_research_en.md	61	
+chromium_research_en.md	62	## What ChromeOS migration history actually proves
+chromium_research_en.md	63	
+chromium_research_en.md	64	The browser's libc++ migration and the operating system's unwinder migration were separate changes. The 2017 browser announcement discussed C++14 and control-flow integrity; it does not establish a simultaneous conversion of every OS C++ library. [Browser announcement](https://groups.google.com/a/chromium.org/g/chromium-os-dev/c/e8pJRHLisIg).
+chromium_research_en.md	65	
+chromium_research_en.md	66	| Period | Verified public evidence |
+chromium_research_en.md	67	|---|---|
+chromium_research_en.md	68	| 2021 proposal | D106703 describes a controlled SDK/toolchain context and discusses static libgcc interaction. That proposal and its early associated change were abandoned; their draft test fields are not release evidence. |
+chromium_research_en.md	69	| October 2021 | A merged fix made `libgcc_s.so.1` the physical file, reversing the alias direction to resolve NaCl breakage. The author reported the NaCl test passing. |
+chromium_research_en.md	70	| November 2021 | binutils needed an explicit pthread link dependency; Breakpad needed a pkg-config path correction for a 64-bit crash reporter built on arm32. |
+chromium_research_en.md	71	| December 2021 | Merged changes enabled libunwind across boards, updated the SDK and added system dependencies. Multiple board tests were reported, but their complete logs/images were not obtained. |
+chromium_research_en.md	72	| February 2022 | The successor llvm-libgcc project landed upstream through D108416. This date is not the date of ChromeOS's earlier downstream enablement. |
+chromium_research_en.md	73	| July 2023 | Earlier installation of llvm-libunwind broke glibc bootstrap builds; a build-time sysroot change addressed it. This was not a blanket deployed-system rollback to GNU unwinding. |
+chromium_research_en.md	74	
+chromium_research_en.md	75	Sources: [proposal](https://reviews.llvm.org/D106703?id=361316), [file-layout fix](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3246062), [pthread dependency](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3298526), [Breakpad](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3292637), [system dependency](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3343875), [upstream project](https://reviews.llvm.org/D108416), [glibc bootstrap fix](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/4677913). Retrieved commit status, SHA and messages are in the [change record](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/052_cros_changes.stdout).
+chromium_research_en.md	76	
+chromium_research_en.md	77	The current ebuild describes a synthesized `libgcc_s.so.1`, version scripts and frame APIs. This is configuration evidence, not an observation of a current running image. [ebuild](https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/main/sys-libs/llvm-libunwind/llvm-libunwind-9999.ebuild), [snapshot](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/sources/cros_ebuild.txt).
+chromium_research_en.md	78	
+chromium_research_en.md	79	For old binaries, compatible names/version nodes and coordinated SDK changes are evidenced. An arbitrary external-binary support contract, a complete old/new root-filesystem transition and the plugin denominator are `NOT_AVAILABLE`. Neither “everything was rebuilt”, “everything was reflashed” nor “symbol versions alone solved it” is established as the complete answer. GCC compatibility nodes are also not the same as dual libc++ symbols retaining different wait semantics.
+chromium_research_en.md	80	
+chromium_research_en.md	81	For cancellation, implementations, ARM fixes and reports of mixed-unwinder problems exist. A complete ChromeOS matrix covering cancellation mode, library combination and architecture was not obtained. Neither universal validation nor universal nonuse is justified.
+chromium_research_en.md	82	
+chromium_research_en.md	83	## Tizen applicability: the eight requested categories
+chromium_research_en.md	84	
+chromium_research_en.md	85	DSO means a dynamic shared object. “Image” below means an integrated target system, not an isolated host process.
+chromium_research_en.md	86	
+chromium_research_en.md	87	| Category | Configuration or static evidence | Measured / image evidence | Applicability and missing evidence |
+chromium_research_en.md	88	|---|---|---|---|
+chromium_research_en.md	89	| Provider layout | Local aliases resolve to `libunwind.so.1.0`, SONAME `libunwind.so.1`; ChromeOS's configured physical layout differs. | Experimental mapping verified per host run; replacement target images not observed. | Loader success does not establish sandbox, installer or dependency-scanner compatibility. |
+chromium_research_en.md	90	| Exports and versions | 198 defined name/version pairs in the Tizen x86 sysroot; 231 in the experiment; 108 platform pairs absent from the experimental set. This count includes 15 ABS version-node names in the platform table. | ELF inspection, not a running-image denominator. | The export set is not a superset. Some names exist under different/no versions; actual consumer imports are needed to identify affected binaries. It does not mean 108 missing functions or 108 failing consumers. |
+chromium_research_en.md	91	| `pthread_cancel` | glibc forced unwinding still traverses ABI-library and language/cleanup boundaries. | GNU and LLVM host cells agree; target images not observed. | Limited feasibility, not safety for every catch site, asynchronous cancellation or library algorithm. |
+chromium_research_en.md	92	| `backtrace` | glibc dynamically resolves unwinder entry points. | Main/program-plugin frame-count assertions passed five times per provider. | Signal contexts, JIT registration, optimized production stacks and crash reporters remain outside coverage. |
+chromium_research_en.md	93	| Cross-DSO behavior | Context and personality implementations must form a coherent protocol. | Plugin throws integer 42; caller catches; cleanup count 1, five times per provider. | One coherent ABI-pair sample, not cross-standard-library object-layout validation or mixed-provider ordering. |
+chromium_research_en.md	94	| `dlopen` plugins | Plugins can introduce providers and version requirements. | `RTLD_NOW|RTLD_LOCAL`, throw/cleanup and close passed with mapping checks. | No production legacy plugins, deep binding, separate link namespaces or static embedded unwinders tested. |
+chromium_research_en.md	95	| Prebuilt binaries | GNU-dependent platform artifacts exist; external-product denominator unavailable. | Only purpose-built probes ran. | Compatibility cannot be promised without BOMs, binaries, version imports, rebuild declarations and update boundaries. |
+chromium_research_en.md	96	| armv7l gnu-eabi | Documentation names armv7a gnueabihf; Tizen macros show EABI/VFP instruction capability but not `__ARM_PCS_VFP`. Script acceptance does not check that calling-convention macro. | Preprocessing and existing sysroot ELF inspected; experimental ARM runs/images not observed. | gnueabi and gnueabihf cannot be equated; actual floating-point calling convention and EHABI combinations remain unvalidated. |
+chromium_research_en.md	97	
+chromium_research_en.md	98	Evidence: [DSO identity](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/023_experimental_identity.stdout), [symbol comparison](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/symbol_comparison.tsv), [ARM macros](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/034_arm_macros.stdout), [version script](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/gcc_s.ver.in), [ARM ELF](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/053_local_arch_metadata.stdout), [test design](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/MEASUREMENTS.md).
+chromium_research_en.md	99	
+chromium_research_en.md	100	## Local measurements and their interpretation
+chromium_research_en.md	101	
+chromium_research_en.md	102	This was native x86_64 on Ubuntu glibc 2.39, using Tizen compiler wrappers and existing libc++/libc++abi artifacts—not a native Tizen image or QEMU. All experimental binaries were under the isolated directory. Every formal run checked `/proc/self/maps` and the versioned forced-unwind symbol's provider. The LLVM cells rejected other detected libgcc_s/libunwind shared mappings. [Host identity](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/051_host_environment.stdout), [design and raw evidence](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/MEASUREMENTS.md).
+chromium_research_en.md	103	
+chromium_research_en.md	104	| Case | GNU provider | LLVM provider | Behavioral result |
+chromium_research_en.md	105	|---|---|---|---|
+chromium_research_en.md	106	| Retained specification: ordinary wait and three clock variants | 5/5 per cell | 5/5 per cell | Terminate handler entered; outer cleanup count 0. |
+chromium_research_en.md	107	| Removed specification: same four variants | 5/5 per cell | 5/5 per cell | Joined as cancelled; cleanup count 1. Inline paths were recompiled with the corresponding headers. |
+chromium_research_en.md	108	| Ordinary/timed writer without rollback | 5/5 per cell | 5/5 per cell | Writer bit 2147483648 remained after the original reader left; subsequent acquisition failed. |
+chromium_research_en.md	109	| Ordinary/timed writer with rollback | 5/5 per cell | 5/5 per cell | Writer bit cleared, existing reader preserved, subsequent real reader/writer progress, final state 0. |
+chromium_research_en.md	110	| Backtrace and plugin exception | 5/5 | 5/5 | Frame-count thresholds, exact value 42, cleanup 1 and successful close. |
+chromium_research_en.md	111	| Patched ABI pair: cancellation caught and rethrown | 5/5 | 5/5 | Catch 1, cleanup 1, cancelled join. |
+chromium_research_en.md	112	| Unpatched coherent ABI pair: same rethrow | 5/5 SIGABRT | 5/5 SIGABRT | Foreign-exception diagnostic, not a clean cancelled join. |
+chromium_research_en.md	113	
+chromium_research_en.md	114	Total: 30 cells × 5 runs. Retained-specification exit 86 is an instrumented terminate-handler marker, not a signal. A damaged-state control exiting zero means the expected damage was asserted, not that the library is healthy. Smoke tests and an initial incoherent-library loading failure were excluded from the matrix and retained separately.
+chromium_research_en.md	115	
+chromium_research_en.md	116	No claim covers every library site, every ordinary error path, asynchronous cancellation, all timing schedules, arbitrary Clock/template parameters or user callbacks. [Complete measurements](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/measurements.tsv).
+chromium_research_en.md	117	
+chromium_research_en.md	118	## Comparison with the seven known problems
+chromium_research_en.md	119	
+chromium_research_en.md	120	An absent product-level observation must not be rewritten as “they never encountered it”, nor assigned an unsupported explanation.
+chromium_research_en.md	121	
+chromium_research_en.md	122	The eight GNU-only/source locations without equivalent protection are four experimental executor
+chromium_research_en.md	123	sites, two GNU vstring sites, one condition_variable_any relock guard and one TR2 dynamic_bitset site.
+chromium_research_en.md	124	They are not eight measured failures in the current LLVM runtime. The two previously unreachable
+chromium_research_en.md	125	protections refer to the non-throwing boundaries in `basic_string::shrink_to_fit` and the
+chromium_research_en.md	126	`basic_ostream<char>::sentry` destructor, not the two code defects repaired later. No new runtime results
+chromium_research_en.md	127	for these sites were added in this investigation.
+chromium_research_en.md	128	
+chromium_research_en.md	129	| Known Tizen problem | Chromium / ChromeOS evidence | Consequence of changing unwinder |
+chromium_research_en.md	130	|---|---|---|
+chromium_research_en.md	131	| Catch-all swallows cancellation | Complete product-level behavior not observed; bundled cancellation exists. | Our new probe tests rethrow, not swallowing. ABI handling remains relevant; no automatic obsolescence established. |
+chromium_research_en.md	132	| Missing internal libc++ protection | Inspected writer paths lack rollback; not every internal catch was re-audited. | Both writer residuals reproduced with LLVM. Boundary removal and state restoration are separate concerns. |
+chromium_research_en.md	133	| `noexcept` termination | Pinned libc++ still has the relevant wait specifications. | Both providers terminate in retained-specification cells. |
+chromium_research_en.md	134	| Eight GNU-only protection locations | Exact corresponding product handling unavailable. | llvm-libgcc does not add missing high-level libc++ paths; these eight were not remeasured. |
+chromium_research_en.md	135	| Two ineffective protections | Exact counterpart validation not observed. | No new evidence supersedes the existing result; individual new-provider tests remain missing. |
+chromium_research_en.md	136	| Asynchronous cancellation bypass | A universal public prohibition was not established; Starfish explicitly enables asynchronous cancellation. | Changing unwinders does not itself change cancellation timing or make resource operations atomic; no new asynchronous matrix was run. |
+chromium_research_en.md	137	| Cross-library object-layout mismatch | ABI namespace isolation and controlled builds are not object conversion; arbitrary legacy policy unavailable. | An unwinder does not alter standard-library/Boost object layouts. Integer exceptions are not layout-bearing object tests. |
+chromium_research_en.md	138	
+chromium_research_en.md	139	## Comparison with the four established Tizen decisions
+chromium_research_en.md	140	
+chromium_research_en.md	141	| Tizen decision | Chromium / Google | llvm-libgcc / ChromeOS | Is it the same treatment? |
+chromium_research_en.md	142	|---|---|---|---|
+chromium_research_en.md	143	| Remove wait specifications and roll back writer state | Inspected dependency retains specifications and unguarded writer-state waits; actual cancellation of those product paths not observed. | LLVM reproduces retained-boundary termination and unguarded residual state locally; exact ChromeOS library patches unavailable. | No evidence that unwinder replacement substitutes for either change. |
+chromium_research_en.md	144	| Dual symbols for old callers | `__Cr` and controlled builds are not dual historical semantics for one function; arbitrary old-binary contract unavailable. | GCC compatibility versions and SDK coordination exist, but not proof of dual libc++ wait behavior. | Related compatibility mechanisms, not demonstrated equivalence. Old inline caller metadata is not repaired by a new DSO. |
+chromium_research_en.md	145	| Stop destructor synchronization in `wbuffer_convert` | Inspected destructor still calls `__close()`, which synchronizes. Header-list-only search results do not establish all-product nonuse. | Unwinder choice does not change this algorithm; a precise ChromeOS local change was not obtained. | Inspected Chromium source differs from the Tizen decision; the reason cannot be filled in with an unproved nonuse premise. |
+chromium_research_en.md	146	| Migrate Boost itself to remove cross-standard-library edges | Custom-library third-party builds can share an ABI; historical objections to broad Boost adoption coexist with a vendored include example. | System unwinder migration is not proof every third-party C++ library migrated to libc++. | A layout boundary disappears only when its actual endpoints become ABI-compatible, not merely when an unwinder is unified. |
+chromium_research_en.md	147	
+chromium_research_en.md	148	Sources: [condition-variable source](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/src/condition_variable.cpp), [wait header](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/include/__condition_variable/condition_variable.h), [writer source](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/src/shared_mutex.cpp), [timed writer header](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/include/shared_mutex), [conversion buffer](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/include/__locale_dir/wbuffer_convert.h), [historical Boost discussion](https://codereview.chromium.org/2242483003/).
+chromium_research_en.md	149	
+chromium_research_en.md	150	## Other migration problems and reusable diagnostics
+chromium_research_en.md	151	
+chromium_research_en.md	152	The independent [reference issue catalogue](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/REFERENCE_ISSUES.md) documents discovery, reported correction, residual uncertainty, Tizen conditions, diagnostic blind spots and whether a historical solution can be adapted. It contains the following evidenced cases, not an exhaustive history:
+chromium_research_en.md	153	
+chromium_research_en.md	154	| Issue | Finding and Tizen diagnostic boundary |
+chromium_research_en.md	155	|---|---|
+chromium_research_en.md	156	| Stale build artifacts | Mixed standard-library objects caused link trouble; clean/incremental build identity checks are relevant. Successfully linked microprobes do not inspect application caches. |
+chromium_research_en.md	157	| GPU/ANGLE integration | The libc++ default switch was reverted after GPU-builder failures and relanded following an ANGLE roll. The exact faulty subchange was not reconstructed; actual Tizen graphics builds/tests are needed to establish equivalence. |
+chromium_research_en.md	158	| Static-initializer accounting | Initialization moved from a shared library into executables, changing counted budgets. This was not evidence of increased total startup work; compare like-for-like accounting and actual performance. |
+chromium_research_en.md	159	| NaCl provider file layout | A real-file versus alias-direction change fixed a loader failure. Tizen's relevant sandbox/component inventory is missing; ordinary dlopen success cannot settle it. |
+chromium_research_en.md	160	| Implicit pthread linkage | binutils needed an explicit dependency. These probes already use `-pthread`, so they cannot expose that application-link blind spot. |
+chromium_research_en.md	161	| Breakpad multilib paths | Hard-coded pkg-config paths impeded an arm32/64 build. Inspect actual bitness, sysroot paths and the production crash-reporting path. |
+chromium_research_en.md	162	| Mixed unwind providers | External crash reports expose private-context mixing. Mapping checks detect some dynamic cases, not hidden static implementations; provider identity and plugin order matter. |
+chromium_research_en.md	163	| ARM EHABI | Historical fixes establish architecture-specific work. Native x86 success is not ARM validation; test actual ABI, stop callbacks, cleanup and continuation paths. |
+chromium_research_en.md	164	| glibc bootstrap order | Earlier unwinder installation broke toolchain construction. Building a probe in a complete sysroot cannot inspect the bootstrap dependency graph. |
+chromium_research_en.md	165	| Shared-lock workload behavior | Chromium returned to its original lock after workload-specific evaluation. Correctness probes do not measure contention, starvation or tail latency; its product lock choice is not transferable without workload evidence. |
+chromium_research_en.md	166	| Version-script/export differences | This is a **new local integration finding**, not an attributed Chromium historical incident. lld enabled our build but did not resolve 108 absent platform name/version pairs; compare actual consumer imports. |
+chromium_research_en.md	167	
+chromium_research_en.md	168	Each entry links its primary record in the catalogue. Unknown residual status means no completeness claim. Historical configuration changes generally need platform adaptation; they do not authorize blanket cache deletion, library replacement, link-flag changes or higher performance thresholds. Conditional diagnostic suggestions are not a deployment recommendation or priority order.
+chromium_research_en.md	169	
+chromium_research_en.md	170	## Why Tizen does not adopt Chromium's approach
+chromium_research_en.md	171	
+chromium_research_en.md	172	Here, “does not adopt” means **not treating Chromium's cooperative shutdown protocol as a replacement for platform-wide cancellation support in Tizen**. It does not reject Chromium's toolchain or ABI-isolation techniques. The table distinguishes demonstrated practices from broader assumptions that the evidence does not establish.
+chromium_research_en.md	173	
+chromium_research_en.md	174	| Chromium prerequisite or practice | Evidence (URL) | Tizen circumstances and why direct reuse is insufficient | Evidence (URL) |
+chromium_research_en.md	175	|---|---|---|---|
+chromium_research_en.md	176	| Threads using `base::Thread` shut down through a cooperative request, posted exit work and join. | [Pinned thread.cc](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/base/threading/thread.cc) | Inspected platform sources contain real cancellation calls. Conditional paths in lightweight-web-engine and OpenMP enable asynchronous mode; they cannot all be assumed to terminate through this wrapper. Conditional reachability is not proof of execution in every product. | [Two-component source analysis and asynchronous-cancellation measurements](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R108/W3_REPORT.md) |
+chromium_research_en.md	177	| Cooperative shutdown depends on callers adopting and following its protocol; the wrapper does not establish a repository-wide enforced rule. The selected main-repository text contains only one direct `pthread_cancel` call, but that call exists. | [Actual gRPC call](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/third_party/grpc/source/src/core/util/posix/thd.cc), [scoped search results](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R116/chromium_usage.tsv) | External applications, supplier components and plugins are not fully covered. Current evidence cannot guarantee universal compliance, and a library update alone cannot rewrite unavailable caller source to use this protocol. This is not a claim that product-level constraints could never be established. | [External-component gaps, required material and responsible parties](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R110/W1_REPORT.md) |
+chromium_research_en.md	178	| Common build settings and pinned dependencies can keep managed targets consistent. **They do not prove that a monorepo always rebuilds everything or disregards all old binaries.** | [Standard-library build settings](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/c++/c++.gni), [pinned dependencies](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/DEPS) | Five prebuilt DSOs were confirmed as copied rather than rebuilt during migration. External third-party artifacts and rebuild policies still lack a denominator. Rebuilding both sides of every boundary therefore cannot be assumed, nor can counts or policies be invented for unavailable external products. | [Non-rebuilt-component inventory](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R108/W2_REPORT.md), [external support-scope gaps](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R110/W1_REPORT.md) |
+chromium_research_en.md	179	| ABI namespace `__Cr` separates standard-library symbols; it does not convert objects between implementations. | [Pinned __config_site](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/buildtools/third_party/libc++/__config_site) | A libstdc++ provider and libc++ consumer linked and loaded successfully, yet disagreed on the same deque's size and element count. Namespace separation does not repair internal layout differences absent from the interface name. This was a minimal x86_64 probe, not proof that every production edge fails. | [Cross-library object-layout example and raw-evidence index](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R80/REPORT.md) |
+chromium_research_en.md	180	| Ordinary Linux defaults to the system unwinder rather than the bundled libunwind; where the system supplies GNU libgcc, GNU remains the provider. This is not a claim about every Linux product, including ChromeOS. | [Pinned unwind.gni](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/unwind.gni) | **With GNU on both sides of the comparison, the unwinder is not the differentiator.** The 30 local GNU/LLVM cells additionally show that changing providers does not remove specification-triggered termination or writer residual state. These are host measurements, not target-image validation. | [30-cell design and environment identity](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R116/MEASUREMENTS.md), [cell results](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R116/measurement_summary.tsv) |
+chromium_research_en.md	181	
+chromium_research_en.md	182	The following summary concerns the inspected cooperative paths and Tizen's stated support objective. It does not assert that all Chromium products avoid cancellation, or that library fixes make arbitrary call chains, asynchronous cancellation and user callbacks safe. All architecture, call-chain and unresolved-path limitations elsewhere in this report still apply.
+chromium_research_en.md	183	
+chromium_research_en.md	184	**In short, this Chromium approach is “conventions plus avoiding cancellation on compliant paths”, whereas Tizen's approach is “library fixes plus cancellation support within defined boundaries”: the former depends on callers following the cooperative protocol, while the latter does not require every caller to abandon cancellation; the difference is in prerequisites, not superiority.**
+chromium_research_en.md	185	
+chromium_research_en.md	186	## Applicability conclusions and impact on existing work
+chromium_research_en.md	187	
+chromium_research_en.md	188	**Chromium: selected techniques are reusable; its configuration is not a complete Tizen cancellation-safety solution.** Cooperative shutdown and symbol isolation depend on consumer protocols and ABI boundaries. Tizen's cancellation users and external-binary gaps remain. A specification-level universal exemption from cancellation was not substantiated.
+chromium_research_en.md	189	
+chromium_research_en.md	190	**llvm-libgcc: limited local build/runtime feasibility is established; platform replacement compatibility is not.** Export differences, provider-layout differences, missing target-image and ARM measurements, and unavailable external binaries prevent an acceptance conclusion.
+chromium_research_en.md	191	
+chromium_research_en.md	192	**Revalidation is not the same as rewriting.** If the provider changes, the four existing patches, five language boundaries, asynchronous-cancellation consumers, old-symbol callers, destructor behavior and Boost layouts all need their evidence scoped to the new combination. Only part of that x86 matrix was added here. Nothing establishes that all four patches must be rewritten or can be removed. The two writer instances still needed rollback for the measured state restoration; arbitrary templates and callbacks were not proven. Object layouts and old inline exception metadata are not repaired by an unwinder swap.
+chromium_research_en.md	193	
+chromium_research_en.md	194	Reusable evidence methods include pinned identities, actual-provider checks, versioned-export comparison, controlled rebuilds and cross-DSO/plugin value assertions. Unsupported shortcuts include a universal cancellation ban, assuming arbitrary third-party binaries share a controlled SDK, equating ARM with x86, or assuming matching entry-point names imply compatible private contexts.
+chromium_research_en.md	195	
+chromium_research_en.md	196	Outstanding material comprises internal Google policy, Starfish history, ChromeOS legacy/plugin/cancellation acceptance evidence, Tizen external BOMs and version imports, and ARM/aarch64 experimental-provider and actual-image results. These are explicit limits for headquarters review, not a basis for selecting a deployment strategy here.
+chromium_research_zh.md	1	# Chromium 的 libc++ 使用方式与 LLVM 展开器对 Tizen 的适用性
+chromium_research_zh.md	2	
+chromium_research_zh.md	3	证据截至 2026-09-07。用途：总部技术评审；不构成实施或选型建议。
+chromium_research_zh.md	4	
+chromium_research_zh.md	5	## 摘要
+chromium_research_zh.md	6	
+chromium_research_zh.md	7	1. **“Chromium／Google 在规范层面统一禁止 `pthread_cancel`”未得到证实。** Chromium 的 `base::Thread` 确实采用请求退出并等待线程结束的协作方式；但本次固定版本主仓扫描，在随仓 gRPC 的 POSIX 实现中发现了真实取消调用。公开 Google C++ Style Guide 的“不使用 C++ 异常”不等于禁止 POSIX 线程取消；内部规范不可得。[线程实现](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/base/threading/thread.cc)、[gRPC 实现](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/third_party/grpc/source/src/core/util/posix/thd.cc)、[公开风格指南](https://google.github.io/styleguide/cppguide.html)。
+chromium_research_zh.md	8	2. **llvm-libgcc 可以在隔离目录构建，并支持本次 x86_64 强制展开探针；它不是已经验证的 Tizen 即插即用替代库。** 150 次运行区分了 GNU／LLVM 提供方、异常规格保留／解除、写者回滚有／无及 ABI 库修补有／无。换成 LLVM 展开器没有消除 `noexcept` 终止、写者状态残留或未修补 ABI 库的重抛终止。[实测记录](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/MEASUREMENTS.md)、[逐格结果](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/measurement_summary.tsv)。
+chromium_research_zh.md	9	3. **ChromeOS 的迁移是真实的，但不能当作任意旧二进制兼容的证明。** 正式提交记录显示 2021 年 12 月启用所有板型、更新 SDK 和系统依赖；原始参考提案本身已废弃，不能把它的草案测试栏当成发布验证。公开材料描述受控 SDK 构建前提，不提供 Tizen 外部二进制分母、更新时序或兼容承诺。[全板启用](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3335237)、[SDK 更新](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3339453)、[原提案](https://reviews.llvm.org/D106703?id=361316)。
+chromium_research_zh.md	10	4. 本次无 Tizen／ChromeOS 替换后实际镜像；ARM 与 aarch64 的实验展开器运行均为 `NOT_OBSERVED`。八项适用性中，已有的是部分源码、构建和本机探针证据，**没有一项可以外推为整个平台迁移验收通过**。
+chromium_research_zh.md	11	
+chromium_research_zh.md	12	## 证据口径
+chromium_research_zh.md	13	
+chromium_research_zh.md	14	“静态核查”指读取源码、构建配置、ELF（可执行文件与共享库格式）或提交；“外部报告”指项目作者报告的结果，不等于本组重现；“实测”只指本次执行并保存原始输出的探针；“分析”明确表示条件性推论。`NOT_OBSERVED` 为未观测，`NOT_AVAILABLE` 为材料不可得。本文不把“没有崩溃”当成对象状态、资源释放或 ABI 正确的证明。
+chromium_research_zh.md	15	
+chromium_research_zh.md	16	主仓固定在 `ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1`，其 libc++ 依赖固定在 `97b436da4c33663581d394f4ee0a5977fc38c2f4`。本次构建的 LLVM 源树版本另为 `5ed6c77278dfa7a470667cf1a137723d3c96fe60`，**没有把 Chromium 的依赖版本当作本地实验版本**。完整来源与获取失败记录见[引用索引](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/REFERENCES.md)。
+chromium_research_zh.md	17	
+chromium_research_zh.md	18	## Chromium 如何使用 libc++
+chromium_research_zh.md	19	
+chromium_research_zh.md	20	### 构建和退出机制：静态核查
+chromium_research_zh.md	21	
+chromium_research_zh.md	22	默认启用自带 libc++；组件构建时可共享链接，非组件构建采用静态形式，不能概括成“一律静态”。libc++abi 是对应的 C++ ABI 支持库；具体目标类型还随是否由可执行文件导出符号而变化。自带 LLVM libunwind 的默认条件是 Fuchsia 或 Android；**Linux 默认并不是一并使用自带 libunwind**。libc++ ABI 命名空间设置为 `__Cr`、ABI 版本为 2，以隔离标准库符号；这不转换跨边界对象布局。[标准库配置](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/c++/c++.gni)、[展开器配置](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/unwind.gni)、[ABI 配置](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/buildtools/third_party/libc++/__config_site)。
+chromium_research_zh.md	23	
+chromium_research_zh.md	24	`base::Thread::StopSoon()` 投递退出工作；`Stop()` 等待底层线程结束。这证明这一封装的协作退出策略，不证明所有第三方代码都受同一机制约束。[源码](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/base/threading/thread.cc)。
+chromium_research_zh.md	25	
+chromium_research_zh.md	26	### 使用检索：静态核查，不是产品运行覆盖
+chromium_research_zh.md	27	
+chromium_research_zh.md	28	归档有 505,965 个普通文件；选择源码、头文件、构建及文档等后缀和指定文件名后扫描 195,796 个文本文件，排除 310,156 个非选定后缀及 13 个含 NUL 文件。不包括另行获取的全部 DEPS 仓库，也不检查宏展开、别名调用或二进制。每个检索词都有独立合成正向对照，另有真实线程源码正向对照。[命中明细](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/chromium_usage.tsv)、[扫描原始输出](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/054_scan_full_archive.stdout)、[正向对照和补查](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/057_supplement.stdout)。
+chromium_research_zh.md	29	
+chromium_research_zh.md	30	| 检索项 | 结果与解释 |
+chromium_research_zh.md	31	|---|---|
+chromium_research_zh.md	32	| `pthread_cancel` | 1 个文件、2 行：gRPC `thd.cc:204` 为调用，206 为日志文字；不是两个调用点。非 Android 的 POSIX `Thread::Kill()` 实现会取消线程。 |
+chromium_research_zh.md	33	| 间接调用 | `work_stealing_thread_pool.cc:162` 的 `DumpSignalHandler` 调用 `Thread::Kill`；`third_party/grpc/BUILD.gn:2285` 列入 POSIX 源文件。是否被某一最终产品启用／执行仍为 `NOT_OBSERVED`。 |
+chromium_research_zh.md	34	| `pthread_setcanceltype`、`PTHREAD_CANCEL_ASYNCHRONOUS` | 选定文本范围内均零命中；有正向对照；不等于全依赖、全产品无异步取消。 |
+chromium_research_zh.md	35	| `std::shared_mutex` | 仅一份性能说明文档的两行文字命中，不是当前实例化代码；`std::shared_timed_mutex` 零命中。不能覆盖别名和独立依赖仓。 |
+chromium_research_zh.md	36	| `wbuffer_convert` | 一处头文件清单命中，不是使用者；不能据此宣称所有产品无使用者。 |
+chromium_research_zh.md	37	| `#include <boost/...>` | `third_party/protobuf/third_party/utf8_range/boost.cpp:1` 命中 `boost/locale.hpp`；没有证明该文件进入 Chrome 产品，也不能写“仓内完全没有 Boost”。 |
+chromium_research_zh.md	38	
+chromium_research_zh.md	39	历史上，Chromium 的 StatisticsRecorder **确实尝试过** `std::shared_mutex`，讨论记录在 2023 年说明已回到 `base::Lock`。理由包括该工作负载的读写锁开销及对原锁使用方式的改进；这不是取消回滚修复，也不是标准库从未使用过的证据。[维护者讨论](https://groups.google.com/a/chromium.org/g/cxx/c/bIlGr1URn8I)。
+chromium_research_zh.md	40	
+chromium_research_zh.md	41	公开 Google Style Guide 本次文本中，取消相关精确词检索零命中，异常章节提供正向对照；没有找到可引用的全 Google 取消禁令。内部规范为 `NOT_AVAILABLE`，不能从公开异常规则推断其内容。[指南快照](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/sources/google_style.txt)、[原始检索](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/015_chromium_search.stdout)。
+chromium_research_zh.md	42	
+chromium_research_zh.md	43	### lightweight-web-engine 与 Tizen 的前提
+chromium_research_zh.md	44	
+chromium_research_zh.md	45	本地源码包 README 将项目标识为 **Starfish**，列出自己的引擎构建及 `liblightweight-web-engine` 产物；它不是一份能证明 Chromium 衍生关系的材料。`WorkerThread.cpp` 在 `OS_POSIX && !STARFISH_ANDROID` 下启用异步取消并调用 `pthread_cancel`，并非仅凭代码条件就能认定为 Tizen 特有追加。私有上游历史不可得，Tizen 公共远端本次返回 HTTP 403；因此“谁、何时引入”和确切派生关系为 `NOT_AVAILABLE`，不能补写为 Chromium 上游行为。[包内 README 与代码快照](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshot_origins.tsv)、[代码上下文](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/049_lwe_context.stdout)、[远端获取结果](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/048_lwe_remote.stderr)。
+chromium_research_zh.md	46	
+chromium_research_zh.md	47	分析：Tizen 已有取消调用、异步取消组件、跨标准库语义边和未覆盖的外部二进制。它不能仅通过改用 Chromium 的链接方式获得相同使用约束；协作退出只在调用方实际遵守该协议时消除对应取消路径。这是应用语义前提，不是展开器选择带来的效果。
+chromium_research_zh.md	48	
+chromium_research_zh.md	49	## llvm-libgcc：接口、强制展开及边界
+chromium_research_zh.md	50	
+chromium_research_zh.md	51	llvm-libgcc 将 compiler-rt 的编译器内建运算支持与 LLVM libunwind 的栈展开实现组合，提供 libgcc 风格文件及符号版本；它不提供 libc++ 容器布局、取消回滚守卫或旧版 libc++ 函数语义。文档明确把完整发行版兼容责任留给集成者，要求显式启用。[项目说明](https://github.com/llvm/llvm-project/blob/main/llvm-libgcc/docs/LLVMLibgcc.md)、[本次构建版本快照](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/LLVMLibgcc.rst)。
+chromium_research_zh.md	52	
+chromium_research_zh.md	53	强制展开是 glibc 取消线程时驱动栈清理的协议，不等于普通 C++ 异常搜索。LLVM 的 DWARF 实现有 `_Unwind_ForcedUnwind`，保存停止回调及其参数并执行带强制展开标志的清理阶段；GNU 也实现该协议。相同入口名不保证两家私有上下文能交叉使用。ARM 的 EHABI（ARM 异常处理 ABI）又有独立的数据结构与继续展开约定，不能用 x86 DWARF 实测代替。[LLVM DWARF 快照](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/UnwindLevel1.c)、[LLVM EHABI 快照](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/Unwind-EHABI.cpp)、[GNU 快照](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/gcc-unwind.inc)。
+chromium_research_zh.md	54	
+chromium_research_zh.md	55	本地 glibc 2.40 源码通过 `libgcc_s.so.1` 查找 `_Unwind_Backtrace`、`_Unwind_ForcedUnwind`、`_Unwind_GetCFA`、按架构配置的 `_Unwind_GetIP`、`_Unwind_Resume` 和 `__gcc_personality_v0`；另有架构条件扩展，不能将六个入口当成所有架构全集。本次实验 DSO 导出 x86_64 核查所需六项，实际宿主 glibc 的取消和 backtrace 探针通过。**这只确认对应接口子集，不确认整个 GNU libgcc ABI。**[glibc 接口快照](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/glibc-unwind-link.c)、[符号核对](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/041_analysis.stdout)。
+chromium_research_zh.md	56	
+chromium_research_zh.md	57	已知限制包括：混合 GNU／LLVM 展开器的私有上下文交叉使用、ARM 强制展开的历史缺陷、文件别名与 SONAME（共享库内部登记名称）不一致引起的加载问题，以及不同版本的内建运算导出差异。LLVM ARM 修复于 2021 年落地；这反证“他们根本不处理强制展开”的绝对说法，但不是 ChromeOS 全产品取消测试证明。[ARM 修复](https://reviews.llvm.org/D109856)、[混合提供方讨论](https://reviews.llvm.org/D150897)、[发行版取消崩溃报告](https://github.com/llvm/llvm-project/issues/90041)。
+chromium_research_zh.md	58	
+chromium_research_zh.md	59	## ChromeOS 迁移：已确认的历史及不能补全的部分
+chromium_research_zh.md	60	
+chromium_research_zh.md	61	Chrome 浏览器改用 libc++ 与 ChromeOS 系统展开器切换是两件事。2017 年的浏览器公告将 C++14 与 CFI（控制流完整性）作为迁移动机之一；不能据此声称整个操作系统的第三方 C++ 库同时换成 libc++。[公告](https://groups.google.com/a/chromium.org/g/chromium-os-dev/c/e8pJRHLisIg)。
+chromium_research_zh.md	62	
+chromium_research_zh.md	63	| 时间／证据性质 | 可确认事实 |
+chromium_research_zh.md	64	|---|---|
+chromium_research_zh.md	65	| 2021 年提案，外部讨论 | D106703 描述受控工具链：ChromeOS SDK 产生相关构建产物，而非任意外部工具链二进制；还讨论了静态 libgcc 与混合展开器问题。提案及关联早期变更已废弃，不能作为最终落地提交。 |
+chromium_research_zh.md	66	| 2021-10-27，已合入提交 | NaCl 加载故障推动改成真实文件 `libgcc_s.so.1`、`libunwind` 指向它，作者报告 NaCl 测试通过。 |
+chromium_research_zh.md	67	| 2021-11，已合入提交 | binutils 补显式 pthread 链接；Breakpad 删除阻碍 arm32 上构建 64 位崩溃报告器的硬编码库路径。 |
+chromium_research_zh.md	68	| 2021-12，已合入提交 | 所有板型默认启用 libunwind，SDK 更新，并加入隐式系统依赖。提交报告多个板型测试；未取得当时完整测试日志或运行镜像。 |
+chromium_research_zh.md	69	| 2022-02，LLVM 上游 | 后续 llvm-libgcc 项目经 D108416 落地；不能以其上游落地日期替代 ChromeOS 下游启用日期。 |
+chromium_research_zh.md	70	| 2023-07，已合入提交 | glibc 引导构建因 llvm-libunwind 提前安装而发生问题，调整构建时 sysroot 应用；这不是运行系统全面退回 GNU 展开器。 |
+chromium_research_zh.md	71	
+chromium_research_zh.md	72	依据：[原提案](https://reviews.llvm.org/D106703?id=361316)、[真实文件修正](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3246062)、[pthread 依赖](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3298526)、[Breakpad](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3292637)、[系统依赖](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3343875)、[上游项目](https://reviews.llvm.org/D108416)、[glibc 构建修正](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/4677913)。各变更原文、状态和 SHA 见[合入记录](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/052_cros_changes.stdout)。
+chromium_research_zh.md	73	
+chromium_research_zh.md	74	当前 ChromeOS ebuild 仍描述将 builtins 与 libunwind 合成 `libgcc_s.so.1`、配置版本脚本及 frame APIs。它是构建配置证据，**不是本组对当前镜像的观察**。[ebuild](https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/main/sys-libs/llvm-libunwind/llvm-libunwind-9999.ebuild)、[抓取快照](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/sources/cros_ebuild.txt)。
+chromium_research_zh.md	75	
+chromium_research_zh.md	76	关于旧二进制：兼容文件名及 GCC 符号版本、SDK 与镜像构建协调均有证据；任意外部二进制支持策略、旧／新根文件系统切换全过程、所有插件验证分母则为 `NOT_AVAILABLE`。没有依据选择“全量重刷”“全部重编”或“完全靠符号版本”作为唯一答案。GCC 接口的版本节点也不等同于为 libc++ 同一函数保留两套行为。
+chromium_research_zh.md	77	
+chromium_research_zh.md	78	关于取消：有展开器强制展开实现与 ARM 修复，ChromeOS 作者也报告过混合展开器的真实问题；没有获得 ChromeOS 迁移时按取消方式、库版本、架构划分的完整验收矩阵。不能写“全部验证过”，也不能写“因为完全不用取消所以没有验证”。
+chromium_research_zh.md	79	
+chromium_research_zh.md	80	## 总部八项适用性核对
+chromium_research_zh.md	81	
+chromium_research_zh.md	82	DSO 指动态共享对象；下表“镜像”特指集成后的实际系统，不包括本机隔离进程。
+chromium_research_zh.md	83	
+chromium_research_zh.md	84	| 项 | 配置／静态事实 | 本次实测或实际镜像观察 | Tizen 适用性分析与缺口 |
+chromium_research_zh.md	85	|---|---|---|---|
+chromium_research_zh.md	86	| 提供方布局 | 本次 llvm-libgcc 别名最终指向 `libunwind.so.1.0`，SONAME 为 `libunwind.so.1`；ChromeOS 当前构建方式不同。 | 本机每次确认实验路径；Tizen／ChromeOS 替换镜像 `NOT_OBSERVED`。 | 能加载不等于符合安装器、沙箱、加载命名规则；不能直接照搬本次安装布局。 |
+chromium_research_zh.md	87	| 导出与版本 | Tizen x86 sysroot 198 个已定义符号／版本组合，实验库 231 个；前者有 108 个组合不在后者集合。此口径包含平台表的 15 个 ABS 版本节点名。 | ELF 实查；不是运行镜像符号分母。 | 整体兼容未成立。缺少组合不一定缺同名函数，可能版本不同；须有实际消费者导入集合才能判定受影响产物。不是 108 个缺失函数或 108 个失败消费者。 |
+chromium_research_zh.md	88	| `pthread_cancel` | glibc 使用强制展开；上层 ABI、异常规格、回滚仍参与。 | 本机两提供方结果一致，见下节；目标镜像 `NOT_OBSERVED`。 | 有限配置可行，不证明吞取消、异步取消、所有标准库内部路径安全。 |
+chromium_research_zh.md	89	| `backtrace` | glibc 动态取得展开入口。 | 本机主程序及插件栈帧数量断言通过，各提供方 5 次；镜像 `NOT_OBSERVED`。 | 未覆盖信号上下文、优化尾调用、JIT／动态登记帧和生产崩溃报告器。 |
+chromium_research_zh.md	90	| 跨 DSO | 上下文及 personality 必须形成一致协议。 | 插件抛出整数 42，主程序捕获且清理计数 1，各提供方 5 次；镜像 `NOT_OBSERVED`。 | 同一 ABI 对的异常样本通过；不同标准库对象布局、深绑定、多提供方顺序不在本次覆盖。 |
+chromium_research_zh.md	91	| `dlopen` 插件 | 动态加载可能引入其他提供方及新版本需求。 | `RTLD_NOW|RTLD_LOCAL` 加载／异常／关闭通过，逐次 maps 核实；镜像 `NOT_OBSERVED`。 | 不包括 `dlmopen`、`RTLD_DEEPBIND`、带静态展开器的插件或旧产品插件。 |
+chromium_research_zh.md	92	| 预编译产物 | 平台有 GNU 依赖产物；外部产品分母仍不可得。 | 本次只测自建探针，外部预编译集合 `NOT_AVAILABLE`。 | 当前证据不支持承诺兼容；缺 BOM、产物、导入版本、重建声明与更新边界。 |
+chromium_research_zh.md	93	| armv7l gnu-eabi | 文档列 armv7a gnueabihf；Tizen 宏检查有 ARM EABI/VFP 指令能力，但无 `__ARM_PCS_VFP`。版本脚本判定未检查该调用约定宏。 | 脚本预处理通过、现有 ARM sysroot ELF 已读取；实验库 ARM 运行和替换镜像均 `NOT_OBSERVED`。 | 预处理接受不证明浮点调用约定或 EHABI 兼容；不能把 gnueabi 与 gnueabihf 无条件等同。 |
+chromium_research_zh.md	94	
+chromium_research_zh.md	95	证据：[实验库身份](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/023_experimental_identity.stdout)、[符号差异](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/symbol_comparison.tsv)、[ARM 宏](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/034_arm_macros.stdout)、[版本脚本](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/snapshots/gcc_s.ver.in)、[ARM ELF 与源码版本](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/053_local_arch_metadata.stdout)、[实测设计](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/MEASUREMENTS.md)。
+chromium_research_zh.md	96	
+chromium_research_zh.md	97	## 本地展开器对照结果：实测
+chromium_research_zh.md	98	
+chromium_research_zh.md	99	环境为 x86_64 原生 Ubuntu glibc 2.39，使用 Tizen 编译包装器及既有 libc++／libc++abi 产物；不是 Tizen 原生镜像或 QEMU。实验构建、复制的运行库和探针只在隔离目录；每次正式运行检查 `/proc/self/maps` 和符号实际归属，排除实验组混入系统 GNU 展开器。保留异常规格组的终止处理器输出诊断并以 86 退出；不是把 86 误称成默认 SIGABRT。[宿主身份](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/raw/051_host_environment.stdout)、[测量方法](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/MEASUREMENTS.md)。
+chromium_research_zh.md	100	
+chromium_research_zh.md	101	| 用例 | GNU 提供方 | LLVM 提供方 | 行为断言 |
+chromium_research_zh.md	102	|---|---|---|---|
+chromium_research_zh.md	103	| 保留规格：普通等待及三个时钟变体 | 每格 5/5 终止 | 每格 5/5 终止 | 进入终止处理器，外层清理计数 0。 |
+chromium_research_zh.md	104	| 解除规格：相同四种等待 | 每格 5/5 取消退出 | 每格 5/5 取消退出 | join 返回取消标记，清理计数 1。内联头文件已随探针重编。 |
+chromium_research_zh.md	105	| 无回滚：普通／定时写者 | 每格 5/5 残留 | 每格 5/5 残留 | 原读者释放后仍有写者位 2147483648，新读／写获取失败。进程退出 0 表示“预期损坏被准确断言”，不是正常状态。 |
+chromium_research_zh.md	106	| 有回滚：普通／定时写者 | 每格 5/5 通过 | 每格 5/5 通过 | 清除写者位、保留已有读者，后续读／写真实进展，最终状态 0。 |
+chromium_research_zh.md	107	| backtrace＋插件跨 DSO 异常 | 5/5 通过 | 5/5 通过 | 栈帧阈值、整数 42、清理 1、关闭成功。 |
+chromium_research_zh.md	108	| 修补 ABI 对，捕获后重抛取消 | 5/5 通过 | 5/5 通过 | 捕获 1、清理 1、线程取消退出。 |
+chromium_research_zh.md	109	| 未修补 ABI 对，同一重抛形态 | 5/5 SIGABRT | 5/5 SIGABRT | foreign exception 诊断；未得到干净取消退出。 |
+chromium_research_zh.md	110	
+chromium_research_zh.md	111	共 30 格 × 5 次。这里没有重新跑全部标准库站点、普通错误未捕获矩阵、所有时序或异步取消；两处写者及模板实例的通过不等于所有模板参数、用户回调都已静态证明或实测覆盖。
+chromium_research_zh.md	112	
+chromium_research_zh.md	113	## 七类已知问题与四项既定决策
+chromium_research_zh.md	114	
+chromium_research_zh.md	115	### 已知问题
+chromium_research_zh.md	116	
+chromium_research_zh.md	117	“对方未观测”不是“对方没有”，更不能补写其未发生原因。公开材料中的接近问题与本次本地复现实验分开列出。
+chromium_research_zh.md	118	
+chromium_research_zh.md	119	表中 GNU 独有／无同形保护的八个源站点指：实验 executor 四处、GNU vstring 两处、
+chromium_research_zh.md	120	condition_variable_any 重锁守卫一处、TR2 dynamic_bitset 一处；不是当前 LLVM 下实测的八个故障。
+chromium_research_zh.md	121	两处既有不可达保护指 `basic_string::shrink_to_fit` 和 `basic_ostream<char>::sentry` 析构的不抛边界，
+chromium_research_zh.md	122	不能混同于后续已修复的两项代码缺陷。本次未为这些站点新增运行结果。
+chromium_research_zh.md	123	
+chromium_research_zh.md	124	| 已知问题 | Chromium／ChromeOS 的证据 | 与 Tizen 工作的关系 |
+chromium_research_zh.md	125	|---|---|---|
+chromium_research_zh.md	126	| `catch (...)` 吞取消 | 对其完整产品行为 `NOT_OBSERVED`；当前主仓存在取消入口，不能凭协作封装解释所有第三方。 | 本次只测捕获再重抛，不冒充吞取消测试；ABI 修补组仍有价值，换展开器未使其自动多余。 |
+chromium_research_zh.md	127	| libc++ 内部缺少防护 | 固定 libc++ 源码的写者等待无回滚；其他所有内部 catch 未逐一重审。 | 两写者残留已在 LLVM 提供方复现；需要区分终止边界修正与状态一致性修正。 |
+chromium_research_zh.md	128	| `noexcept` 边界 | 固定依赖的条件变量等待仍带相关规格。 | GNU／LLVM 均在保留规格时终止；展开器不绕过语言边界。 |
+chromium_research_zh.md	129	| GNU 独有的八处防护 | 对方逐点处理记录 `NOT_AVAILABLE`，未取得一一对应产品验证。 | 不由 llvm-libgcc 补出 libc++ 缺少的高层路径；八处在新组合下未重测。 |
+chromium_research_zh.md	130	| 两处防护不生效 | 对方精确同形验证 `NOT_OBSERVED`。 | 没有新实测足以撤销原结论；换展开器后的逐点结果仍缺。 |
+chromium_research_zh.md	131	| 异步取消绕过防护 | 公开规范禁用前提未成立；Tizen Starfish 实有异步设置。 | 调用时刻与资源原子性问题不是换展开器就消失；本次未新增异步矩阵。 |
+chromium_research_zh.md	132	| 跨标准库对象布局差异 | Chromium 的 ABI 命名空间隔离及统一构建不是对象转换；旧外部二进制完整策略不可得。 | 换展开器不改变 `std`／Boost 对象布局。本次跨 DSO 整数异常通过不是跨布局通过。 |
+chromium_research_zh.md	133	
+chromium_research_zh.md	134	### 四项已定处理的对照
+chromium_research_zh.md	135	
+chromium_research_zh.md	136	| Tizen 已定处理 | Chromium／Google 是否有同一决策点、如何处理 | llvm-libgcc／ChromeOS | 一致性与原因 |
+chromium_research_zh.md	137	|---|---|---|---|
+chromium_research_zh.md	138	| 解除等待规格并回滚写者状态 | 所检查依赖仍保留等待规格，写者先置位后等待且无相应回滚；产品是否取消该等待未观测。 | LLVM 展开器本机复现保留规格终止与解除后残留；ChromeOS 精确库补丁证据不可得。 | 不存在“换展开器代替回滚”的实测依据；未发现与 Tizen 同一套已实施改动的证据。 |
+chromium_research_zh.md	139	| 旧调用方双版本符号 | `__Cr` 命名空间与受控构建不是同一函数的旧／新行为双版本；对任意旧第三方二进制承诺不可得。 | GCC 兼容符号版本和提供方命名有证据，SDK 切换有提交；不是 libc++ 等待函数双语义版本。 | 机制可比较，但不能认为已采用相同方案或解决所有旧内联调用点。 |
+chromium_research_zh.md	140	| `wbuffer_convert` 析构不再同步 | 所检查头文件析构仍调用 `__close()`，后者调用同步；主仓仅命中头文件清单，不足证明所有产品不用。 | 展开器不改变析构算法；ChromeOS 对该类精确改动记录不可得。 | 当前所查 Chromium 源码与该决策不同；不能以零使用假设解释差异。 |
+chromium_research_zh.md	141	| Boost 自身迁移以消除跨库语义边 | 自带标准库的第三方构建可保持统一；历史讨论反对整体引入 Boost，但仓中存在 Boost 头引用样本。 | 系统展开器迁移不等于所有第三方改用 libc++；完整库清单不可得。 | 只有同一对象边界两端确实使用兼容 ABI 时才消除布局差异；不能从展开器统一推导 Boost 两端已统一。 |
+chromium_research_zh.md	142	
+chromium_research_zh.md	143	源码依据：[条件变量实现](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/src/condition_variable.cpp)、[等待头文件](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/include/__condition_variable/condition_variable.h)、[写者实现](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/src/shared_mutex.cpp)、[定时写者头文件](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/include/shared_mutex)、[转换缓冲析构](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/include/__locale_dir/wbuffer_convert.h)、[Boost 历史评审](https://codereview.chromium.org/2242483003/)。
+chromium_research_zh.md	144	
+chromium_research_zh.md	145	## 其他实际问题、可参考方法及盲区
+chromium_research_zh.md	146	
+chromium_research_zh.md	147	[独立参考问题库](https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/docs/progress/R116/REFERENCE_ISSUES.md)列出 11 项：旧构建产物混用、GPU／ANGLE 集成、静态初始化统计边界、NaCl 文件布局、隐式 pthread 依赖、Breakpad 多架构路径、混合展开器、ARM EHABI、glibc 引导构建顺序、读写锁性能／调度，以及本次发现的版本脚本／符号覆盖差异。每项分别列发现方式、处理证据、已知遗留、Tizen 触发条件、现有测试盲区及可选探测方法。
+chromium_research_zh.md	148	
+chromium_research_zh.md	149	该清单是有出处的问题库，**不是“历史所有问题已穷尽”**：私有 bug、内部变更、实际旧镜像和完整产品测试不可得；公开检索受范围限制。Tizen 的微型取消及布局探针能够检出部分运行状态问题，但不能检出全量构建依赖、沙箱文件解析、真实 GPU 集成、生产崩溃栈完整性或锁性能退化。
+chromium_research_zh.md	150	
+chromium_research_zh.md	151	可参考的是固定工具链身份、实际提供方核验、版本化导出比较、干净构建和跨 DSO／插件断言；它们需按 Tizen 架构与产物改造。不可当作现成证明的是“全 Google 禁取消”、任意外部二进制均受受控 SDK 管理、ARM 与 x86 相同、符号名字相同就能混用上下文。这些前提或未成立，或缺证据。
+chromium_research_zh.md	152	
+chromium_research_zh.md	153	## 为什么 Tizen 不采用 Chromium 的方案
+chromium_research_zh.md	154	
+chromium_research_zh.md	155	这里的“不采用”是指：**不把 Chromium 的协作退出协议直接当作 Tizen 全平台的取消支持方案**，并非否定其工具链或 ABI 隔离方法。下表区分已证实的前提与尚不能证实的概括；Chromium 一侧的局部做法不能自动成为 Tizen 所有调用方的约束。
+chromium_research_zh.md	156	
+chromium_research_zh.md	157	| Chromium 的前提／做法 | 证据（URL） | Tizen 的情况及不能直接沿用的原因 | 证据（URL） |
+chromium_research_zh.md	158	|---|---|---|---|
+chromium_research_zh.md	159	| 使用 `base::Thread` 的线程，退出走请求停止、处理退出工作、join 的协作协议。 | [固定版本 thread.cc](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/base/threading/thread.cc) | 已检查源码有真实取消调用；lightweight-web-engine 与 OpenMP 的条件路径启用异步模式。不能假定这些线程全部经该封装退出；这里证明的是条件可达，不是每个产品都实际触发。 | [两个组件的源码路径及异步取消实测](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R108/W3_REPORT.md) |
+chromium_research_zh.md	160	| 协作退出的有效性依赖调用方采用并遵守协议，不能从代码封装推成全仓强制规则。本次主仓选定文本仅发现一处直接 `pthread_cancel` 调用，但它确实存在。 | [gRPC 的实际调用](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/third_party/grpc/source/src/core/util/posix/thd.cc)、[固定范围检索结果](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R116/chromium_usage.tsv) | Tizen 的仓外应用、供应商组件及插件不在完整覆盖范围内。现有材料无法保证它们全部遵守统一退出协议；库更新本身也不能要求不可得的源码一律改用该协议。这不是“永远不能制定产品约束”的断言。 | [外部组件缺口、材料与责任方](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R110/W1_REPORT.md) |
+chromium_research_zh.md	161	| 统一构建配置及固定依赖使受该构建管理的目标可保持一致；**配置不能证明“monorepo 每次全量重编、完全不考虑旧二进制”**。 | [标准库构建配置](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/c++/c++.gni)、[固定依赖清单](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/DEPS) | 已确认 5 个只复制安装、不随迁移重建的预编译 DSO；仓外第三方产物和重建策略的分母仍不可得。因此不能把“所有边界两侧都会重编”作为平台前提；也不能给未知外部集合补写数量或确定策略。 | [不随迁移重建组件清单](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R108/W2_REPORT.md)、[外部支持范围缺口](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R110/W1_REPORT.md) |
+chromium_research_zh.md	162	| ABI 命名空间 `__Cr` 隔离标准库符号；该机制不是跨标准库对象转换。 | [固定版本 __config_site](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/buildtools/third_party/libc++/__config_site) | 布局实例中，libstdc++ 提供方与 libc++ 消费方成功链接／加载，却把同一 `deque` 解释成不同大小和元素数。命名空间不能修复未在接口名中暴露的内部布局；该实例是 x86_64 最小探针，不是断言所有生产边都失败。 | [跨库对象布局实例与原始证据索引](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R80/REPORT.md) |
+chromium_research_zh.md	163	| 普通 Linux 默认不启用自带 libunwind，而使用系统提供方；系统为 GNU libgcc 时仍走 GNU 展开器。不能把该配置泛化为所有 Linux 产品（包括 ChromeOS）都用 GNU。 | [固定版本 unwind.gni](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/unwind.gni) | **在同用 GNU 提供方的比较下，展开器不是差异点。** 本地 30 格 GNU／LLVM 对照又表明，换展开器不消除规格终止或写者残留。该实测来自宿主，不冒充 Tizen 镜像验证。 | [30 格对照及环境身份](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R116/MEASUREMENTS.md)、[逐格结果](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R116/measurement_summary.tsv) |
+chromium_research_zh.md	164	
+chromium_research_zh.md	165	下述概括只针对已核查的协作退出路径及 Tizen 已确定的支持目标：它不声称 Chromium 全产品不用取消，也不声称修库后任意调用链、所有异步取消或所有用户回调都安全；本文已有的架构、调用链与未修复路径限制继续成立。
+chromium_research_zh.md	166	
+chromium_research_zh.md	167	**概括而言，Chromium 的这类方案是“约定 + 在遵守协议的路径上不用取消”，Tizen 的方案是“修库 + 在明确边界内支持取消”；前者依赖调用方遵守协作协议，后者不以所有调用方都放弃取消为前提，两者不是优劣之分，而是前提不同。**
+chromium_research_zh.md	168	
+chromium_research_zh.md	169	## 适用性结论与既有工作影响
+chromium_research_zh.md	170	
+chromium_research_zh.md	171	**Chromium：部分做法可参考，不能整体照搬为 Tizen 的取消安全方案。** 已有的协作退出与 ABI 隔离适用范围取决于调用方协议及边界统一；Tizen 的既有取消和外部二进制缺口不随链接配置消失。规范级“免疫前提”未被证实。
+chromium_research_zh.md	172	
+chromium_research_zh.md	173	**llvm-libgcc：本机有限组合构建及运行可行，平台替换适用性未完成证明。** 直接导出差异、实际提供方布局差异、目标镜像与 ARM 验证缺失、外部预编译分母缺口都仍存在；本次不能给出兼容性验收结论。
+chromium_research_zh.md	174	
+chromium_research_zh.md	175	如果换展开器，**“需要重验”与“需要重写”不是同一件事**：四个补丁与新提供方组合、五处边界、两个异步取消组件、旧符号调用、析构及 Boost 布局证据都要重新限定覆盖条件；本次只补其中部分 x86 组合。没有证据要求四补丁全重写，也没有证据允许全部撤销。写者回滚的两个实例在 LLVM 下仍必要于本次已观测状态恢复；其他任意模板／回调未证明。对象布局和头文件旧调用元数据不会由替换展开器修正，外部产物材料也仍需由其提供方补齐。
+chromium_research_zh.md	176	
+chromium_research_zh.md	177	未决材料明确为：Google 内部取消规范；Starfish 历史；ChromeOS 旧二进制／插件与取消完整矩阵；Tizen 外部 BOM 和版本导入；ARM／aarch64 实验提供方及真实目标镜像。本文不据此代替人工决定是否采用、如何部署或先做哪一项。

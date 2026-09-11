@@ -1,0 +1,335 @@
+# libstdc++ 与 libc++ 之间的接口兼容性
+
+- 日期：2026-09-09
+- 修订：P5，2026-09-11；证据以本次核对的既有记录为界，不代表当日重新进行产品验证。
+- 本报告不是全部产品验收结论；支持范围以配套候审声明为准。
+- 适用场景：平台迁移到 libc++ 之后，与仍使用 libstdc++ 的组件（第三方应用、
+  预编译库）之间的接口
+
+---
+
+## 一、结论概要
+
+**接口传递的数据、对象生命周期、异常／取消路径及实际 ABI 配置共同决定兼容条件。**
+
+| 接口形态 | 能否支持 | 依据 |
+|---|---|---|
+| 纯 C 接口 | 固定样本通过，非无条件支持 | 已实测，不代表任意 C 接口天然安全 |
+| C++ 接口，只传内置类型与 POD | 条件性可行 | Engine／Rect 对应跨库实测为 NOT_OBSERVED，见 2.2 |
+| C++ 接口，传标准库对象 | 当前不承诺未统一 ABI 的直接跨界 | 有静默错值反例，不代表所有类型均以同一方式失败 |
+| C++ 接口，跨边界抛接异常 | 当前不承诺未统一 ABI 的直接跨界 | 特定运行时组合未匹配 typed catch，见 3.2 |
+| C++ 接口，跨边界传递所有权 | 当前不承诺未统一 ABI 的直接跨界 | 需明确分配、释放与生命周期契约 |
+
+下面逐项用代码说明。
+
+以下为接口片段，省略部分头文件和实现；提供方与消费方属于不同翻译单元。
+省略号是伪代码，调用语句须置于函数体。各 C 接口方案是替代选项，不能作为同名 C 重载一起导出。
+
+---
+
+## 二、可以支持的接口
+
+### 2.1 纯 C 接口
+
+```c
+// 头文件
+#include <stddef.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct engine_s* engine_handle;
+
+engine_handle engine_create(void);
+int           engine_get_width(engine_handle h);
+void          engine_set_position(engine_handle h, int x, int y);
+int           engine_read(engine_handle h, char* buf, size_t buflen);
+void          engine_destroy(engine_handle h);
+
+#ifdef __cplusplus
+}
+#endif
+```
+
+**条件**：这些显式参数避免了直接传递标准库对象，但仍需同一目标 C ABI、有效指针、
+匹配的生命周期，以及异常／取消契约；仅凭 C 接口形态不能证明安全。
+
+**已实测**：armv7l 物理板上，libc++ 主程序通过 dlopen/dlsym 调用既有
+`/usr/lib/libicuuc.so.78.1` 的 `u_getVersion`，输出 78.1.0.0，断言主版本为 78，
+并记录 libc++、libc++abi、libstdc++ 与 ICU 同时加载，退出 0。
+这证明该固定 C 入口样本可用，不是 ICU 全接口、分配释放、回调或产品功能验收；
+x86_64 的真实 ICU 同形运行在该材料中为 NOT_OBSERVED。
+
+### 2.2 C++ 接口，但只传内置类型与 POD
+
+```cpp
+// 条件性接口示意，以下成员调用未作对应跨库实测
+class Engine {
+public:
+    int    width() const;                    // 返回 int
+    void   setPosition(int x, int y);        // 参数是 int
+    bool   isReady() const;                  // 返回 bool
+    double scale() const;                    // 返回 double
+};
+
+struct Rect { int x, y, w, h; };             // 两侧须核对完整定义与目标 ABI
+Rect   getBounds();                          // 按值返回的 ABI 也须核对
+```
+
+**条件性分析**：两侧目标 ABI、完整类型定义、调用约定、编译选项、对象生命周期及异常边界
+一致时，原则上可设计兼容边界。非静态成员调用还有隐式 `this`，不能只看显式参数。
+本文的 Engine／Rect 示例尚无相应跨库实测，不能标为“已实测支持”。已有 Boost.Thread
+特定 once_flag 边界的精确状态通过，是有界样本，不是上述类接口或所有 POD 接口的证明。
+
+### 2.3 两条必须遵守的附加条件
+
+下面列出异常和生命周期这两方面的附加条件，不是完整安全性清单。
+
+**条件一：异常不能逸出边界**
+
+下面只示意普通 C++ 错误转错误码：前提是非空 out 指向有效可写 int，且本调用区间不会
+发生线程取消。空指针返回 -3；其他错误返回时不写 out。允许线程取消时不得用
+catch (...) 吞掉强制展开；需在匹配的运行时中辨识并继续传播，且另外核验完整调用链
+的清理与不抛边界。这个简化示例不构成该取消场景的安全实现，也不是建议平台禁用取消。
+
+```cpp
+// 不安全 —— 参数和返回值都是 int，但异常会穿过去
+int engine_compute(engine_handle h) {
+    auto result = internal_cpp_function();   // 这里可能抛
+    return result;
+}
+
+// 仅在上述前提下示意普通错误转换；与上一方案互斥
+int engine_compute(engine_handle h, int* out) {
+    if (out == nullptr) return -3;
+    try {
+        *out = internal_cpp_function();
+        return 0;
+    } catch (const std::exception&) {
+        return -1;
+    } catch (...) {
+        return -2;
+    }
+}
+```
+
+**实测边界**：特定跨运行时组合的普通 typed catch 未匹配，详见 3.2；不能归纳为
+所有 RTTI 类型信息都丢失。异常实际越过不抛边界时会触发终止，不是调用链任意位置
+存在 `noexcept` 就一定终止。
+
+**条件二：分配释放和对象生命周期契约必须匹配**
+
+```cpp
+// 不安全 —— 分配释放 API 不配对，同一套库也不能如此使用
+char* engine_get_name(engine_handle h);   // 内部 new[] 出来的
+// 应用侧：free(name);  ← 不调用 operator delete，不能释放 new[] 的结果
+
+// 显式配对方案，仍须满足异常、取消及指针有效性等契约
+char* engine_get_name(engine_handle h);
+void  engine_free_string(char* s);        // 由提供方释放
+
+// 或者由调用方提供缓冲区
+int   engine_get_name(engine_handle h, char* buf, size_t buflen);
+```
+
+**为什么**：`new[]` 必须与相应 `delete[]` 配对，不能用 `free`。跨组件释放还需符合实际
+分配器／替换 new-delete、对齐、析构、对象布局和模块生命周期契约，不能仅由库名判断。
+GNU 与 LLVM 的默认实现均可落到 malloc/free；加载两套库不等于存在两套独立堆。
+提供方给出配对释放函数，或调用方提供缓冲区，可以避免让使用方猜测内部契约，
+但不等于无条件完成异常、取消及有效指针验证。
+
+---
+
+## 三、不能支持的接口
+
+### 3.1 传递标准库对象
+
+```cpp
+// 不能跨边界
+std::string  engine_get_name();                    // 返回 string
+void         engine_set_items(std::vector<int>);   // 参数是 vector
+std::map<int, std::string> engine_get_config();    // 返回 map
+```
+
+**为什么**：不能假定两套库的标准库类型具有相同表示。在 x86_64 固定探针配置下，
+33 个所列具体类型实例中，10 个 sizeof 或 alignof 不同，23 个这两个指标相同；
+没有完成成员偏移、节点、控制块或操作语义等价性验证。下表列出大小（字节）：
+
+| 类型 | libstdc++ | libc++ |
+|---|---:|---:|
+| `std::string` | 32 字节 | 24 字节 |
+| `std::deque<int>` | 80 字节 | 48 字节 |
+| `std::map<int,int>` | 48 字节 | 24 字节 |
+| `std::set<int>` | 48 字节 | 24 字节 |
+| `std::unordered_map<int,int>` | 56 字节 | 40 字节 |
+| `std::unordered_set<int>` | 56 字节 | 40 字节 |
+| `std::function<void()>` | 32 字节 | 48 字节 |
+| `std::any` | 16 字节 | 32 字节 |
+| `std::future<int>` | 16 字节 | 8 字节 |
+| `std::promise<int>` | 24 字节 | 8 字节 |
+
+`std::function<void()>` 的对齐也不同，GNU／LLVM 为 8／16 字节。
+GNU 侧使用宿主 GCC 13.3.0；LLVM 侧使用 Clang 21.1.1 与缓存的平台 libc++／libc++abi。
+该 libc++ 头版本宏为 220108，即 22.1.8，不是 Clang 编译器版本。
+平台 GCC 14.2 源码及基线导出清单是另一证据输入，不是本次探针编译器。
+
+**本例链接和加载成功，但读到错值。** 原实测核心片段如下：
+
+```cpp
+// 提供方（libstdc++ 构建）
+std::deque<int>* make_payload() {
+    return new std::deque<int>{11, 22, 33, 44};
+}
+
+// 消费方（libc++ 构建）
+int main() {
+    auto* payload = make_payload();
+    const auto producer_view = provider_size(payload);
+    const auto consumer_view = payload->size();
+    // 原程序在此打印两侧 sizeof 和长度视图
+    destroy_payload(payload);       // 由提供方 delete
+    return producer_view == consumer_view ? 0 : 42;
+}
+```
+
+**结果**：provider／consumer 的 sizeof 为 80／48，长度视图为 4／106884723786536。
+没有信号崩溃；consumer 主动返回 42 标记错值，并调用 provider 的 destroy_payload 释放对象。
+该错误长度仅是当次输出，不是任意运行都固定得到的值。片段省略打印及辅助函数定义，
+实际源码和原始输出见末节来源。
+
+**为什么本例可链接**：普通非模板函数 make_payload 的返回类型未直接编码进
+Itanium 修饰名 `_Z12make_payloadv`。`_Z9make_datav` 是 make_data 的正确编码，
+但不是原实验符号。模板函数、函数类型规则不同，ABI tag 也可能使名字不同；
+原实验先尝试的 std::string 版本就因 abi:cxx11 tag 链接失败。
+
+### 3.2 跨边界抛接异常
+
+```cpp
+// 原实验共享类型；抛出与接收在不同翻译单元
+struct BoundaryError { int code; };
+// 提供方操作：throw BoundaryError{77};
+// 消费方依次有 catch (const BoundaryError&) 和 catch (...)
+```
+
+**已实测**：在所测 libstdc++ 插件→libc++ 接收方组合中，插件抛 BoundaryError{77}；
+x86_64 原生和 armv7l 实板均未进入同类型 catch，而进入 catch-all 并退出 12。
+相关 libc++abi personality（异常展开时选择处理分支的函数）将非本运行时异常视为 foreign，
+普通 typed catch 不匹配这一路径。结果依赖实际异常运行时、personality 和符号绑定，
+不能外推为任意动态库、方向或类型均不可按类型捕获。EngineError 派生类本身未测。
+
+### 3.3 传递所有权
+
+```cpp
+// 不能跨边界
+std::unique_ptr<Widget> engine_create_widget();     // 谁来释放？
+std::shared_ptr<Config> engine_get_config();        // 控制块在哪一侧？
+```
+
+**为什么**：直接跨标准库传递智能指针不在当前支持承诺内。风险包括智能指针及控制块布局、
+引用计数协议、析构／deleter 与模块生命周期不兼容；不能由外层大小相同排除。
+shared_ptr 不是因跨边界自动产生两份独立计数；unique_ptr 可有自定义 deleter，
+释放路径也不能只由“哪一侧分配”决定。
+
+### 3.4 传递迭代器
+
+```cpp
+// 不能跨边界
+std::vector<int>::iterator engine_begin();
+```
+
+**为什么**：迭代器指向容器的内部结构，而两侧对那个结构的理解不同。
+
+---
+
+## 四、为什么不做转换层
+
+一种设想是：在边界上把 libstdc++ 的对象转成 libc++ 的。可以设计显式协议，
+但本轮未实现或测量通用转换层。
+
+**转换函数放在哪一侧？**
+
+通常分别以各自头文件和 ABI 编译桥接两侧，以明确的数据表示或句柄交换。
+这不是说最终程序只能链接一套标准库；不能把两套 std 对象当成相同布局直接解释。例如：
+
+```
+libstdc++ 侧:  std::string  →  { const char* data; size_t len; }
+                                        ↓ 跨边界（纯 C）
+libc++ 侧:     { const char* data; size_t len; }  →  std::string
+```
+
+**中间那层就是 C 接口。**
+
+**三类行为需要显式协议，不是直接跨 ABI 解释**：
+
+- **普通异常** —— 可在提供方捕获后编码；线程取消不能当普通错误吞掉；
+- **迭代器** —— 可设计句柄／批次协议，不直接解释另一套库的迭代器；
+- **所有权** —— 可明确配对释放及模块生命周期契约。
+
+**结论**：这不是任意 C++ 对象的透明转换。复制、生命周期和维护成本依具体接口决定，
+不必每次调用都复制。当前不采用通用转换层是处理选择，不是已证明技术上没有设计空间。
+
+**业界参照**：CEF 通过 C API 隔离运行时，并提供 C++ wrapper；ICU 对跨版本二进制兼容
+提出稳定 C API 等条件。这是有条件的接口设计参照，不是任意 C 边界均安全的证明。
+[CEF 项目维护者说明](https://github.com/chromiumembedded/cef/issues/3836)、
+[ICU 官方条件](https://unicode-org.github.io/icu/userguide/icu/design.html#icu-binary-compatibility)。
+
+---
+
+## 五、判断一个接口能否支持的方法
+
+**筛查启发式：这个接口用纯 C 能不能表达完整？这不是充分安全判据。**
+
+| 可用显式协议表达 | 不可直接跨 ABI 解释，需另设计协议 |
+|---|---|
+| 内置类型、POD、不透明指针 | 类、模板、标准库容器 |
+| 错误码 | 异常 |
+| 调用方提供缓冲区 | 返回动态分配的对象 |
+| C 函数指针回调 | `std::function` 回调 |
+
+**`extern "C"` 不是判据** —— 可以给一个返回 `std::string` 的函数加
+`extern "C"`，符号名是干净了，但对象照样错。
+
+---
+
+## 六、需要业务部门提供的信息
+
+要逐项评估第三方应用的兼容性，我们需要：
+
+1. **第三方应用与平台之间的接口清单** —— 哪些是 C 接口、哪些传 C++ 类型；
+2. **应用是否自带标准库**，还是依赖平台提供；
+3. 若有传 C++ 类型的接口，**优先级排序** —— 我们据此评估改成 C 接口的
+   工作量。
+
+**工作安排而非完成记录**：以下核查尚未完成，工期需另行确认。平台可得源码由平台侧核查，
+外部实现需其提供方提交接口、构建、生命周期与异常／取消契约。上述排序与具体安排由人工确认。
+
+---
+
+## 七、本文结论的证据范围
+
+- 33 个类型的大小／对齐及 deque 最小实例限 x86_64；ICU 单 C 入口限 armv7l 实板。
+- 受控 C ABI 与 BoundaryError 异常有 x86_64 原生和 armv7l 实板记录。
+- Boost 另有 x86_64 原生、armv7l QEMU 与 aarch64 QEMU 的代表边记录；aarch64 新增 22 条，累计代表组覆盖 49/90 条，不是所有边或真实业务调用均已覆盖。
+- aarch64 完整取消／本批官方套件仍未完成；第三方接口材料及分母不可得。
+- 不覆盖任意旧调用方、额外 noexcept／无异常帧、任意模板／回调、异步取消、自定义分配器、任意插件加载组合及全量成员布局。
+
+### 旧／新绑定与头文件限制
+
+编译决定清理代码，链接决定符号版本。以下旧 ELF 特指已记录旧等待节点的二进制：
+
+| 情形 | 等待入口 | 已测含义 |
+|---|---|---|
+| 已链接旧 ELF | LLVM_22 | 保留旧终止契约 |
+| 旧 .o／.a 不重编，仅重链接双版本库 | LLVM_22_TIZEN_1（新默认） | 依赖旧调用点与清理表布局；实测可在线程回收后仍锁滞留，不承诺干净退出 |
+| 新头重编并链接双版本库 | LLVM_22_TIZEN_1 | 被测前提下清理、解锁、后续进展通过 |
+| 新头对象先链接旧单版本库，再更新运行库 | LLVM_22 | 仍走已记录的旧节点 |
+
+双版本仅覆盖普通等待和 system-clock 定时等待两个库内入口。steady-clock、自定义 Clock 等待、
+wbuffer_convert 析构已编入使用方；定时写者回滚亦在头文件内。换动态库不能修复这些旧副本，须重编相关翻译单元。
+libc++ 仍保留普通错误检查，未捕获普通错误仍可终止。wbuffer_convert 对齐的是析构不再自动刷新，
+不是输出完全一致：三方新／旧／GNU 为 3／9／0 字节；缓冲算法未改，新旧 9→3 是移除析构刷新的结果。
+
+依据：[大小／对齐与 deque 原材料](https://github.com/lhmax2010/libc-_replacement/tree/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/R80)、
+[ICU 与异常原材料](https://github.com/lhmax2010/libc-_replacement/tree/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/R78)、
+[Boost 代表边](https://github.com/lhmax2010/libc-_replacement/blob/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/R110/W3_REPORT.md)、
+[配套候审支持声明及逐项记录](https://github.com/lhmax2010/libc-_replacement/blob/de371a6b6e80662ff349f6cf3f313ee916ccb85a/docs/progress/IMPL_0909/W3/SUPPORT_SCOPE_ZH.md)。
