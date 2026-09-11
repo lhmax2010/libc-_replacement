@@ -1,0 +1,105 @@
+    35	namespace Dali
+    36	{
+    37	namespace Internal
+    38	{
+    39	namespace Adaptor
+    40	{
+    41	
+    42	IntrusivePtr<OffscreenApplication> OffscreenApplication::New(Dali::OffscreenApplication::FrameworkBackend framework, Dali::OffscreenApplication::RenderMode renderMode)
+    43	{
+    44	  IntrusivePtr<OffscreenApplication> offscreenApplication = new OffscreenApplication(framework, renderMode);
+    45	  return offscreenApplication;
+    46	}
+    47	
+    48	OffscreenApplication::OffscreenApplication(Dali::OffscreenApplication::FrameworkBackend framework, Dali::OffscreenApplication::RenderMode renderMode)
+    49	: mDefaultWindow(),
+    50	  mRenderMode(renderMode)
+    51	{
+    52	  // Disable partial update
+    53	  EnvironmentVariable::SetEnvironmentVariable(DALI_ENV_DISABLE_PARTIAL_UPDATE, "1");
+    54	
+    55	  // Disable ATSPI
+    56	  Dali::Accessibility::Bridge::DisableAutoInit();
+    57	
+    58	  mEnvironmentOptions = std::unique_ptr<EnvironmentOptions>(new EnvironmentOptions());
+    59	
+    60	  mFrameworkFactory = std::unique_ptr<FrameworkFactory>(Dali::Internal::Adaptor::CreateFrameworkFactory());
+    61	
+    62	  // We don't need Framework, just set backend type
+    63	  mFrameworkFactory->SetFrameworkBackend(framework == Dali::OffscreenApplication::FrameworkBackend::ECORE ? FrameworkBackend::DEFAULT : FrameworkBackend::GLIB);
+    64	
+    65	  CreateWindow();
+    66	  CreateAdaptor();
+    67	}
+    68	
+    69	OffscreenApplication::~OffscreenApplication()
+    70	{
+    71	  SingletonService service = SingletonService::Get();
+    72	  if(service)
+    73	  {
+    74	    service.UnregisterAll();
+    75	  }
+    76	
+    77	  if(mDefaultWindow)
+    78	  {
+    79	    mDefaultWindow.Reset();
+    80	  }
+    81	}
+    82	
+    83	void OffscreenApplication::Start()
+    84	{
+    85	  if(!mIsAdaptorStarted)
+    86	  {
+    87	    mAdaptor->Start();
+    88	    mIsAdaptorStarted = true;
+    89	
+    90	    mAdaptor->NotifySceneCreated();
+    91	  }
+    92	}
+    93	
+    94	void OffscreenApplication::Terminate()
+    95	{
+    96	  if(!mIsAdaptorStoped)
+    97	  {
+    98	    mAdaptor->Stop();
+    99	    mIsAdaptorStoped = true;
+   100	  }
+   101	}
+   102	
+   103	Dali::OffscreenWindow OffscreenApplication::GetWindow()
+   104	{
+   105	  return mDefaultWindow;
+   106	}
+   107	
+   108	void OffscreenApplication::RenderOnce()
+   109	{
+   110	  OffscreenWindow& window = GetImplementation(mDefaultWindow);
+   111	  window.SetForceRendering(1u);
+   112	}
+   113	
+   114	void OffscreenApplication::CreateWindow()
+   115	{
+   116	  IntrusivePtr<OffscreenWindow> window = OffscreenWindow::New();
+   117	
+   118	  mDefaultWindow = Dali::OffscreenWindow(window.Get());
+   119	}
+   120	
+   121	void OffscreenApplication::CreateAdaptor()
+   122	{
+   123	  auto& adaptorBuilder  = AdaptorBuilder::Get(*mEnvironmentOptions);
+   124	  auto& graphicsFactory = adaptorBuilder.GetGraphicsFactory();
+   125	
+   126	  OffscreenWindow& window     = GetImplementation(mDefaultWindow);
+   127	  ThreadMode       threadMode = mRenderMode == Dali::OffscreenApplication::RenderMode::AUTO ? ThreadMode::NORMAL : ThreadMode::RUN_IF_REQUESTED;
+   128	
+   129	  mAdaptor = std::unique_ptr<Dali::Adaptor>(Adaptor::New(graphicsFactory, Integration::SceneHolder(&window), window.GetSurface(), mEnvironmentOptions.get(), threadMode));
+   130	
+   131	  // adaptorBuilder invalidate after now.
+   132	  AdaptorBuilder::Finalize();
+   133	}
+   134	
+   135	} // namespace Adaptor
+   136	
+   137	} // namespace Internal
+   138	
+   139	} // namespace Dali

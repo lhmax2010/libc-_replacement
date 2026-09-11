@@ -1,0 +1,489 @@
+     1	/**
+     2	 * @file  ewk_cookie_parser
+     3	 * @brief EWK Cookie Parser
+     4	 *
+     5	 * This class exposes the Chromium cookie parser. It allows
+     6	 * for ewk components to handle cookie-alike structures without
+     7	 * re-inventing the wheel.
+     8	 *
+     9	 * Copyright 2020 by Samsung Electronics, Inc.,
+    10	 *
+    11	 * This software is the confidential and proprietary information
+    12	 * of Samsung Electronics, Inc. ("Confidential Information").  You
+    13	 * shall not disclose such Confidential Information and shall use
+    14	 * it only in accordance with the terms of the license agreement
+    15	 * you entered into with Samsung.
+    16	 */
+    17	
+    18	#include "ewk_cookie_parser.h"
+    19	
+    20	#include <ctime>
+    21	#include <string>
+    22	#include "net/cookies/cookie_util.h"
+    23	#include "net/cookies/parsed_cookie.h"
+    24	#include "private/ewk_private.h"
+    25	
+    26	#ifdef __cplusplus
+    27	extern "C" {
+    28	#endif
+    29	
+    30	EXPORT_API Eina_Bool ewk_parse_cookie(const std::string& cookie_str,
+    31	                                      EWKCookieContents& cookie) {
+    32	  net::ParsedCookie new_cookie(cookie_str);
+    33	  if (!new_cookie.IsValid() || new_cookie.IsHttpOnly() || new_cookie.IsSecure())
+    34	    return EINA_FALSE;
+    35	
+    36	  cookie.name = new_cookie.Name();
+    37	  cookie.value = new_cookie.Value();
+    38	
+    39	  // Handle optional domain value
+    40	  auto domain = new_cookie.Domain();
+    41	  if (domain.has_value()) {
+    42	    cookie.domain = domain.value();
+    43	  }
+    44	
+    45	  // Handle optional path value
+    46	  auto path = new_cookie.Path();
+    47	  if (path.has_value()) {
+    48	    cookie.path = path.value();
+    49	  }
+    50	
+    51	  // Take "max-age" over "Expires" as expires is depreciated, so only supported
+    52	  // for backwards compatibility. With the assumption that if you are using both
+    53	  // then "Expires" is there to support old browsers. (see HTTP - spec).
+    54	  auto max_age = new_cookie.MaxAge();
+    55	  if (max_age.has_value()) {
+    56	    // Convert string to integer without using exceptions
+    57	    std::string max_age_str(max_age.value());
+    58	    char* end_ptr;
+    59	    long max_age_val = std::strtol(max_age_str.c_str(), &end_ptr, 10);
+    60	
+    61	    // Check if conversion was successful (entire string was consumed)
+    62	    if (end_ptr != max_age_str.c_str() && *end_ptr == '\0' &&
+    63	        max_age_val >= 0) {
+    64	      cookie.expiry_date_utc = time(nullptr) + static_cast<time_t>(max_age_val);
+    65	    } else {
+    66	      // If conversion fails, treat as session cookie
+    67	      cookie.expiry_date_utc = 0;
+    68	    }
+    69	  } else {
+    70	    auto expires = new_cookie.Expires();
+    71	    if (expires.has_value()) {
+    72	      base::Time expiration_time =
+    73	          net::cookie_util::ParseCookieExpirationTime(expires.value());
+    74	      cookie.expiry_date_utc = expiration_time.ToTimeT();
+    75	    } else {
+    76	      // This is a session cookie. Set expiry time to 0
+    77	      cookie.expiry_date_utc = 0;
+    78	    }
+    79	  }
+    80	  return EINA_TRUE;
+    81	}
+    82	
+    83	#ifdef __cplusplus
+    84	}
+    85	#endif
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/net/cookies/parsed_cookie.cc
+// Copyright 2012 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Portions of this code based on Mozilla:
+//   (netwerk/cookie/src/nsCookieService.cpp)
+/* ***** BEGIN LICENSE BLOCK *****
+ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+ *
+ * The contents of this file are subject to the Mozilla Public License Version
+ * 1.1 (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ * http://www.mozilla.org/MPL/
+ *
+ * Software distributed under the License is distributed on an "AS IS" basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
+ * License.
+ *
+ * The Original Code is mozilla.org code.
+ *
+ * The Initial Developer of the Original Code is
+ * Netscape Communications Corporation.
+ * Portions created by the Initial Developer are Copyright (C) 2003
+ * the Initial Developer. All Rights Reserved.
+ *
+ * Contributor(s):
+ *   Daniel Witte (dwitte@stanford.edu)
+ *   Michiel van Leeuwen (mvl@exedo.nl)
+ *
+ * Alternatively, the contents of this file may be used under the terms of
+ * either the GNU General Public License Version 2 or later (the "GPL"), or
+ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+ * in which case the provisions of the GPL or the LGPL are applicable instead
+ * of those above. If you wish to allow use of your version of this file only
+ * under the terms of either the GPL or the LGPL, and not to allow others to
+ * use your version of this file under the terms of the MPL, indicate your
+ * decision by deleting the provisions above and replace them with the notice
+ * and other provisions required by the GPL or the LGPL. If you do not delete
+ * the provisions above, a recipient may use your version of this file under
+ * the terms of any one of the MPL, the GPL or the LGPL.
+ *
+ * ***** END LICENSE BLOCK ***** */
+
+#include "net/cookies/parsed_cookie.h"
+
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include "base/metrics/histogram_macros.h"
+#include "base/numerics/checked_math.h"
+#include "base/strings/string_util.h"
+#include "net/base/features.h"
+#include "net/cookies/cookie_constants.h"
+#include "net/cookies/cookie_inclusion_status.h"
+#include "net/http/http_util.h"
+
+namespace {
+
+constexpr std::string_view kPathTokenName = "path";
+constexpr std::string_view kDomainTokenName = "domain";
+constexpr std::string_view kExpiresTokenName = "expires";
+constexpr std::string_view kMaxAgeTokenName = "max-age";
+constexpr std::string_view kSecureTokenName = "secure";
+constexpr std::string_view kHttpOnlyTokenName = "httponly";
+constexpr std::string_view kSameSiteTokenName = "samesite";
+constexpr std::string_view kPriorityTokenName = "priority";
+constexpr std::string_view kPartitionedTokenName = "partitioned";
+
+constexpr char kTerminatorRawString[] = "\n\r\0";
+constexpr std::string_view kTerminator(kTerminatorRawString,
+                                       sizeof(kTerminatorRawString) - 1);
+constexpr std::string_view kWhitespace = " \t";
+constexpr char kValueSeparator = ';';
+constexpr std::string_view kTokenSeparator = ";=";
+
+// Returns true if |c| occurs in |chars|
+// TODO(erikwright): maybe make this take an iterator, could check for end also?
+inline bool CharIsA(const char c, std::string_view chars) {
+  return chars.find(c) != std::string_view::npos;
+}
+
+// Seek the iterator to the first occurrence of |character|.
+// Returns true if it hits the end, false otherwise.
+inline bool SeekToCharacter(std::string_view::iterator* it,
+                            const std::string_view::iterator& end,
+                            const char character) {
+  for (; *it != end && **it != character; ++(*it)) {
+  }
+  return *it == end;
+}
+
+// Seek the iterator to the first occurrence of a character in |chars|.
+// Returns true if it hit the end, false otherwise.
+inline bool SeekTo(std::string_view::iterator* it,
+                   const std::string_view::iterator& end,
+                   std::string_view chars) {
+  for (; *it != end && !CharIsA(**it, chars); ++(*it)) {
+  }
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/net/cookies/parsed_cookie.h
+// Copyright 2012 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef NET_COOKIES_PARSED_COOKIE_H_
+#define NET_COOKIES_PARSED_COOKIE_H_
+
+#include <stddef.h>
+
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "base/compiler_specific.h"
+#include "base/functional/function_ref.h"
+#include "net/base/net_export.h"
+#include "net/cookies/cookie_constants.h"
+
+namespace net {
+
+class CookieInclusionStatus;
+
+class NET_EXPORT ParsedCookie {
+ public:
+  // The maximum length allowed for a cookie string's name/value pair.
+  static const size_t kMaxCookieNamePlusValueSize = 4096;
+
+  // The maximum length allowed for each attribute value in a cookie string.
+  static const size_t kMaxCookieAttributeValueSize = 1024;
+
+  // Construct from a cookie string like "BLAH=1; path=/; domain=.google.com"
+  // Format is according to RFC6265bis. Cookies with both name and value empty
+  // will be considered invalid.
+  // `status_out` is a nullable output param which will be populated with
+  // informative exclusion reasons if the resulting ParsedCookie is invalid.
+  // The CookieInclusionStatus will not be altered if the resulting ParsedCookie
+  // is valid.
+  explicit ParsedCookie(std::string_view cookie_line,
+                        CookieInclusionStatus* status_out = nullptr);
+
+  ParsedCookie(const ParsedCookie&) = delete;
+  ParsedCookie& operator=(const ParsedCookie&) = delete;
+
+  ~ParsedCookie();
+
+  // You should not call any other methods except for SetName/SetValue on the
+  // class if !IsValid.
+  bool IsValid() const;
+
+  const std::string& Name() const LIFETIME_BOUND { return pairs_[0].first; }
+  const std::string& Token() const LIFETIME_BOUND { return Name(); }
+  const std::string& Value() const LIFETIME_BOUND { return pairs_[0].second; }
+
+  std::optional<std::string_view> Path() const LIFETIME_BOUND {
+    if (path_index_ == 0) {
+      return std::nullopt;
+    }
+    return pairs_[path_index_].second;
+  }
+  // Note that Domain() may return the empty string; in the case of cookie_line
+  // "domain=", Domain().has_value() will return true (as the empty string is an
+  // acceptable domain value), and Domain().value() will be an empty string.
+  std::optional<std::string_view> Domain() const LIFETIME_BOUND {
+    if (domain_index_ == 0) {
+      return std::nullopt;
+    }
+    return pairs_[domain_index_].second;
+  }
+  std::optional<std::string_view> Expires() const LIFETIME_BOUND {
+    if (expires_index_ == 0) {
+      return std::nullopt;
+    }
+    return pairs_[expires_index_].second;
+  }
+  std::optional<std::string_view> MaxAge() const LIFETIME_BOUND {
+    if (maxage_index_ == 0) {
+      return std::nullopt;
+    }
+    return pairs_[maxage_index_].second;
+  }
+  bool IsSecure() const { return secure_index_ != 0; }
+  bool IsHttpOnly() const { return httponly_index_ != 0; }
+  // Also spits out an enum value representing the string given as the SameSite
+  // attribute value.
+  std::pair<CookieSameSite, CookieSameSiteString> SameSite() const;
+  CookiePriority Priority() const;
+  bool IsPartitioned() const { return partitioned_index_ != 0; }
+  bool HasInternalHtab() const { return internal_htab_; }
+  // Returns the number of attributes, for example, returning 2 for:
+  //   "BLAH=hah; path=/; domain=.google.com"
+  size_t NumberOfAttributes() const { return pairs_.size() - 1; }
+
+  // These functions set the respective properties of the cookie. If the
+  // parameters are empty, the respective properties are cleared.
+  // The functions return false in case an error occurred.
+  // The cookie needs to be assigned a name/value before setting the other
+  // attributes.
+  //
+  // These functions should only be used if you need to modify a response's
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/net/cookies/cookie_util.cc
+// Copyright 2012 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "net/cookies/cookie_util.h"
+
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include "base/check.h"
+#include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "base/containers/contains.h"
+#include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/logging.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_tokenizer.h"
+#include "base/strings/string_util.h"
+#include "base/types/optional_ref.h"
+#include "base/types/optional_util.h"
+#include "build/build_config.h"
+#include "net/base/features.h"
+#include "net/base/isolation_info.h"
+#include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+#include "net/base/schemeful_site.h"
+#include "net/base/url_util.h"
+#include "net/cookies/canonical_cookie.h"
+#include "net/cookies/cookie_access_delegate.h"
+#include "net/cookies/cookie_access_result.h"
+#include "net/cookies/cookie_constants.h"
+#include "net/cookies/cookie_inclusion_status.h"
+#include "net/cookies/cookie_monster.h"
+#include "net/cookies/cookie_options.h"
+#include "net/cookies/cookie_setting_override.h"
+#include "net/cookies/parsed_cookie.h"
+#include "net/first_party_sets/first_party_set_metadata.h"
+#include "net/first_party_sets/first_party_sets_cache_filter.h"
+#include "net/http/http_util.h"
+#include "net/storage_access_api/status.h"
+#include "url/gurl.h"
+#include "url/url_constants.h"
+
+namespace net::cookie_util {
+
+namespace {
+
+using ContextType = CookieOptions::SameSiteCookieContext::ContextType;
+using ContextMetadata = CookieOptions::SameSiteCookieContext::ContextMetadata;
+
+base::Time MinNonNullTime() {
+  return base::Time::FromInternalValue(1);
+}
+
+// Tries to assemble a base::Time given a base::Time::Exploded representing a
+// UTC calendar date.
+//
+// If the date falls outside of the range supported internally by
+// FromUTCExploded() on the current platform, then the result is:
+//
+// * Time(1) if it's below the range FromUTCExploded() supports.
+// * Time::Max() if it's above the range FromUTCExploded() supports.
+// * std::nullopt if the input does not have valid values.
+std::optional<base::Time> SaturatedTimeFromUTCExploded(
+    const base::Time::Exploded& exploded) {
+  // Try to calculate the base::Time in the normal fashion.
+  base::Time out;
+  if (base::Time::FromUTCExploded(exploded, &out)) {
+    // Don't return Time(0) on success.
+    return out.is_null() ? MinNonNullTime() : out;
+  }
+
+  // base::Time::FromUTCExploded() has platform-specific limits:
+  //
+  // * Windows: Years 1601 - 30827
+  // * 32-bit POSIX: Years 1970 - 2038
+  //
+  // Work around this by returning min/max valid times for times outside those
+  // ranges when imploding the time is doomed to fail.
+  //
+  // Note that the following implementation is NOT perfect. It will accept
+  // some invalid calendar dates in the out-of-range case.
+  if (!exploded.HasValidValues()) {
+    return std::nullopt;
+  }
+
+  if (exploded.year > base::Time::kExplodedMaxYear) {
+    return base::Time::Max();
+  }
+  if (exploded.year < base::Time::kExplodedMinYear) {
+    return MinNonNullTime();
+  }
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/net/cookies/cookie_util.h
+// Copyright 2012 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef NET_COOKIES_COOKIE_UTIL_H_
+#define NET_COOKIES_COOKIE_UTIL_H_
+
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "base/functional/callback_forward.h"
+#include "base/time/time.h"
+#include "base/types/optional_ref.h"
+#include "net/base/net_export.h"
+#include "net/cookies/cookie_constants.h"
+#include "net/cookies/cookie_options.h"
+#include "net/cookies/cookie_setting_override.h"
+#include "net/cookies/site_for_cookies.h"
+#include "net/first_party_sets/first_party_set_metadata.h"
+#include "net/first_party_sets/first_party_sets_cache_filter.h"
+#include "net/storage_access_api/status.h"
+#include "url/origin.h"
+
+class GURL;
+
+namespace net {
+
+class CanonicalCookie;
+class CookieAccessDelegate;
+class CookieInclusionStatus;
+class IsolationInfo;
+class ParsedCookie;
+class SchemefulSite;
+
+struct CookieAccessResult;
+struct CookieWithAccessResult;
+
+using CookieList = std::vector<CanonicalCookie>;
+using CookieAccessResultList = std::vector<CookieWithAccessResult>;
+
+namespace cookie_util {
+
+// Constants for use in VLOG
+const int kVlogPerCookieMonster = 1;
+const int kVlogSetCookies = 7;
+const int kVlogGarbageCollection = 5;
+
+// This enum must match the numbering for StorageAccessResult in
+// histograms/metadata/storage/enums.xml. Do not reorder or remove items, only
+// add new items at the end.
+enum class StorageAccessResult {
+  ACCESS_BLOCKED = 0,
+  ACCESS_ALLOWED = 1,
+  ACCESS_ALLOWED_STORAGE_ACCESS_GRANT = 2,
+  // OBSOLETE_ACCESS_ALLOWED_FORCED = 3 /*(DEPRECATED)*/,
+  ACCESS_ALLOWED_TOP_LEVEL_STORAGE_ACCESS_GRANT = 4,
+  ACCESS_ALLOWED_3PCD_TRIAL = 5,
+  ACCESS_ALLOWED_3PCD_METADATA_GRANT = 6,
+  ACCESS_ALLOWED_3PCD_HEURISTICS_GRANT = 7,
+  // ACCESS_ALLOWED_CORS_EXCEPTION = 8,  // Deprecated
+  ACCESS_ALLOWED_TOP_LEVEL_3PCD_TRIAL = 9,
+  ACCESS_ALLOWED_SCHEME = 10,
+  ACCESS_ALLOWED_SANDBOX_VALUE = 11,
+  kMaxValue = ACCESS_ALLOWED_SANDBOX_VALUE,
+};
+
+// This enum's values correspond to the values of the HTTP request header
+// `Sec-Fetch-Storage-Access`, which is applied to cross-site requests.
+enum class StorageAccessStatus {
+  // Applies to context that does not have unpartitioned cookie access, and does
+  // not have the `storage-access` permission.
+  kNone = 0,
+  // Applies to context that has `storage-access` permission, but has not opted
+  // into using it; the context also does not have unpartitioned cookie access
+  // through some other means.
+  kInactive = 1,
+  // Applies to context that has unpartitioned cookie access.
+  kActive = 2
+};
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// The values of this enum correspond to possible reasons a request's
+// StorageAccessStatus may be absent (nullopt), as well as the possible values
+// when it is non-nullopt.
+//
+// LINT.IfChange(StorageAccessStatusOutcome)
+enum class StorageAccessStatusOutcome {
+  // The feature is disabled.
+  // kOmittedFeatureDisabled = 0, // Deprecated (feature is always enabled).
+  // The request is same-site.
+  kOmittedSameSite = 1,
+  // The storage access status is `none`.
+  kValueNone = 2,
+  // The storage access status is `inactive`.
+  kValueInactive = 3,
+  // The storage access status is `active`.
+  kValueActive = 4,

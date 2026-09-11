@@ -1,0 +1,288 @@
+   575	%else
+   576	%define OUTPUT_BASE_FOLDER out.tz_v%{tizen_version_major}.%{tizen_version_minor}.%{repo_name}.%{ARCHITECTURE}%{?_release_suffix}
+   577	%endif
+   578	
+   579	export GN_GENERATOR_OUTPUT=$PWD/%{OUTPUT_BASE_FOLDER}
+   580	
+   581	export BUILD_ARCH=%{ARCHITECTURE}
+   582	
+   583	#set build mode
+   584	%global OUTPUT_FOLDER %{OUTPUT_BASE_FOLDER}
+   585	
+   586	# architecture related configuration + neon temporary workaround
+   587	%if %{?_skip_ninja:0}%{!?_skip_ninja:1}
+   588	
+   589	%ifarch %{arm} aarch64
+   590	  export ADDITION_OPTION=" -finline-limit=64 -foptimize-sibling-calls -fno-unwind-tables -fno-exceptions -Os "
+   591	
+   592	  export CFLAGS="$CFLAGS $ADDITION_OPTION"
+   593	  export CXXFLAGS="$CXXFLAGS $ADDITION_OPTION"
+   594	  export FFLAGS="$FFLAGS $ADDITION_OPTION"
+   595	
+   596	  export CFLAGS="$(echo $CFLAGS | sed 's/-mfpu=[a-zA-Z0-9-]*/-mfpu=neon/g')"
+   597	  export CXXFLAGS="$(echo $CXXFLAGS | sed 's/-mfpu=[a-zA-Z0-9-]*/-mfpu=neon/g')"
+   598	  export FFLAGS="$(echo $FFLAGS | sed 's/-mfpu=[a-zA-Z0-9-]*/-mfpu=neon/g')"
+   599	%else
+   600	  export CFLAGS="$(echo $CFLAGS | sed 's/-Wl,--as-needed//g')"
+   601	  export CXXFLAGS="$(echo $CXXFLAGS | sed 's/-Wl,--as-needed//g')"
+   602	%endif
+   603	
+   604	%if 0%{?_nodebug}
+   605	  CFLAGS="$(echo $CFLAGS | sed -E 's/-g[0-9] /-g0 /g')"
+   606	  CXXFLAGS="$(echo $CXXFLAGS | sed -E 's/-g[0-9] /-g0 /g')"
+   607	%endif
+   608	
+   609	%if 0%{?__enable_platform_api_wrapper}
+   610	# Build platform api wrapper separately with gcc and cmake.
+   611	./tizen_src/platform_api_wrapper/build.sh %{?tizen_profile_name}
+   612	%endif
+   613	
+   614	%if %{__use_clang} == 0
+   615	  ulimit -n 16384
+   616	%else
+   617	  ulimit -n 4096
+   618	%endif
+   619	
+   620	%if 0%{?__enable_wrt_js}
+   621	  CFLAGS="$(echo $CFLAGS | sed -E 's/-O2/-Os/g')"
+   622	  CXXFLAGS="$(echo $CXXFLAGS | sed -E 's/-O2/-Os/g')"
+   623	%if "%{?_arch}" == "x86_64"
+   624	  PATH="$PATH:$(cd third_party/node/linux/node-linux-x64/bin; pwd)"
+   625	%else
+   660	  "remove_webcore_debug_symbols=true" \
+   661	%endif
+   662	"exclude_unwind_tables=%{macro_to_bool __tizen_release_build}" \
+   663	"enable_mlgo=%{macro_to_bool _enable_mlgo}" \
+   664	%if "%{?_with_wayland}" == "1"
+   665	  "use_wayland=true" \
+   666	%endif
+   667	%if "%{?_repository}" == "emulator" || "%{?_repository}" == "emulator32-x11"
+   668	  "tizen_emulator_support=true"  \
+   669	%endif
+   670	%if "%{?tizen_profile_name}" == "tv"
+   671	  "tizen_product_tv=true" \
+   672	%if 0%{?__create_next_browser_tpk}
+   673	  "is_samsung_next_browser=true" \
+   674	  "enable_lens_desktop=false" \
+   675	  "enable_background_mode=false" \
+   676	  "enable_background_contents=false" \
+   677	  "google_api_key=\"%{__google_api_key}\""\
+   678	  "version_next_browser=\"%{__next_browser_version}\""\
+   679	  "version_uwe=\"%{__uwe_version}\""\
+   680	  "app_samsung_next_browser_root_dir=\"%{TZ_SYS_RW_APP}/%{__browser_tpk_id}\"" \
+   681	%endif
+   682	%endif
+   683	%if 0%{?__tizen_product_da}
+   684	  "tizen_product_da=true" \
+   685	%endif
+   686	%if "%{?tizen_profile_name}" == "tv" && "%{_vd_cfg_product_type}" != "AUDIO" &&  "%{_vd_cfg_product_type}" != "AV"
+   687	  "tizen_vd_accessory=true" \
+   688	  "tizen_vd_webhid=true" \
+   689	%endif
+   690	%if 0%{?component_build}
+   691	 "component=\"shared_library\"" \
+   692	%endif
+   693	%if %{__use_clang} == 1
+   694	  "is_clang=true" \
+   695	%else
+   696	  "is_clang=false" \
+   697	%endif
+   698	%if "%{?__use_system_icu}" == "1"
+   699	  "use_system_icu=true" \
+   700	%else
+   701	  "use_system_icu=false" \
+   702	%endif
+   703	  "tizen_release_build=%{macro_to_bool __tizen_release_build}" \
+   704	%if 0%{?__build_chrome} || %{__create_next_browser_tpk} == 1
+   705	  "build_chrome=true" \
+   706	%else
+   707	  "build_chrome=false" \
+   708	%endif
+   709	  "enable_rust=%{macro_to_bool __enable_rust}" \
+   710	%if "%{?tizen_profile_name}" == "tv"
+   711	  "lib_dir_path=\"%{_libdir}\"" \
+   712	%endif
+   713	%if "%{?_ttrace}" == "1"
+   714	  "use_ttrace=true" \
+   715	%endif
+   716	%if 0%{?__enable_ewk_interface}
+   717	 "enable_ewk_interface=true" \
+   718	%endif
+   719	  "ozone_auto_platforms=false" \
+   720	  "enable_wrt_js=%{macro_to_bool __enable_wrt_js}" \
+   721	  "enable_process_group=%{macro_to_bool __enable_process_group}" \
+   722	  "tizen_atmos_decoder_enable=%{macro_to_bool _tizen_atmos_decoder_enable}" \
+   723	%if 0%{?__enable_wrt_js}
+   724	  "xwalk_extension_path=\"%{__xwalk_extension_path}\"" \
+   725	  "xwalk_extension_service_path=\"%{__xwalk_extension_service_path}\"" \
+   726	%endif
+   727	%if %{__enable_network_camera}
+   728	  "enable_network_camera=true" \
+   729	%endif
+   730	%if %{__enable_gamepad_latency_test}
+   731	  "enable_gamepad_latency_test=true" \
+   732	%endif
+   733	%if %{__drm_mapi_aarch_64} && "%{?tizen_profile_name}" == "tv" && %{tizen_version} >= 80
+   734	  "drm_mapi_aarch_64=true" \
+   735	%endif
+   736	%if "%{_vd_cfg_licensing}" == "y"
+   737	  "tizen_license_tv=true" \
+   738	%endif
+   739	  "enable_platform_api_wrapper=%{macro_to_bool __enable_platform_api_wrapper}" \
+   740	  "disable_node_v8_component=%{macro_to_bool __disable_node_v8_component}" \
+   741	  "enable_toolkit_views=%{macro_to_bool _enable_toolkit_views}" \
+   742	  $ccache_gn_arg
+   743	%endif  # _skip_gn
+   744	
+   745	ninja %{?_ninja_debug:-v -d stats -d explain} %{_smp_mflags} -C "%{OUTPUT_FOLDER}" \
+   746	%if 0%{?build_ewk_unittests}
+   747	  ewk_unittests \
+   748	%endif
+   749	%if 0%{?build_tizen_ppapi_extension_unittests}
+   750	  efl_integration_unittests \
+   751	  ppapi_unittests \
+   752	%endif
+   753	%if 0%{?build_tizen_blink_unittests}
+   754	  tizen_blink_unittests \
+   755	%endif
+   756	%if 0%{?__enable_wrt_js}
+   757	  wrt wrt-service wrt-service-launcher \
+   758	%endif
+   759	%if ! 0%{?__disable_node_v8_component} &&  0%{?__enable_wrt_js}
+   760	  node-runtime \
+14-  #
+15-  # WARNING: Bringing your own C++ standard library is deprecated and will not
+16-  # be supported in the future. This flag will be removed.
+17:  use_custom_libcxx = !is_tizen
+18-
+19-  # Use libc++ instead of stdlibc++ when using the host_cpu toolchain, even if
+20:  # use_custom_libcxx is false. This is useful for cross-compiles where a custom
+21-  # toolchain for the target_cpu has been set as the default toolchain, but
+22:  # use_custom_libcxx should still be true when building for the host.  The
+23:  # expected usage is to set use_custom_libcxx=false and
+24:  # use_custom_libcxx_for_host=true in the passed in buildargs.
+25-  #
+26-  # WARNING: Bringing your own C++ standard library is deprecated and will not
+27-  # be supported in the future. This flag will be removed.
+28:  use_custom_libcxx_for_host = !is_tizen
+29-
+30-  # Builds libcxx Natvis into the symbols for type visualization.
+31-  # Set to false to workaround http://crbug.com/966676 and
+--
+51-  use_llvm_libatomic = !is_apple
+52-}
+53-
+54:use_custom_libcxx =
+55:    use_custom_libcxx || (use_custom_libcxx_for_host && !is_a_target_toolchain)
+56-
+57-declare_args() {
+58-  # WARNING: Setting this to a non-default value is highly discouraged.
+--
+61-  # unsupported and can be broken by libc++ rolls. Note that if this is set to
+62-  # true, you must also set libcxx_abi_unstable=false, which is bad for
+63-  # performance and memory use.
+64:  libcxx_is_shared = use_custom_libcxx && is_component_build
+65-
+66-  # In case the C++ standard library implementation used is libstdc++, then
+67-  # enable its own hardening checks. As we cannot determine in GN if libstdc++
+--
+69-  #
+70-  # WARNING: Bringing your own C++ standard library is deprecated and will not
+71-  # be supported in the future. This flag will be removed.
+72:  use_safe_libstdcxx = is_linux && !use_custom_libcxx
+73-}
+74-
+75-# The saigo libc++ is distinct from the custom hermetic libc++. However, since
+76-# the Chrome team controls the saigo toolchain, it is safe to unconditionally
+77-# enable libc++ hardening there as well.
+78:use_safe_libcxx = use_custom_libcxx && enable_safe_libcxx
+79-
+80-# libc++abi needs to be exported from executables to be picked up by shared
+81-# libraries on certain instrumented builds.
+82-export_libcxxabi_from_executables =
+83:    use_custom_libcxx && !is_apple && !is_win && !is_component_build &&
+84-    (is_asan || is_ubsan_vptr)
+85-
+86-# On Android, many shared libraries get loaded from the context of a JRE.  In
+--
+172-
+173-# Chromium will require using its libc++ library implementation. Warn if the
+174-# current configuration is not using it.
+175:if ((!use_custom_libcxx || !use_custom_libcxx_for_host) &&
+176-    # Standalone use of //build outside of Chromium can disable libc++.
+177-    build_with_chromium &&
+178-    # Try to avoid spamming the console lots. It's not actually
+2-# Use of this source code is governed by a BSD-style license that can be
+3-# found in the LICENSE file.
+4-
+5:import("//base/allocator/allocator.gni")
+6-import("//mojo/public/tools/bindings/mojom.gni")
+7-import("//printing/buildflags/buildflags.gni")
+8-import("//testing/test.gni")
+--
+69-    "//content/browser/resources/media:resources",
+70-    "//content/browser/webrtc/resources",
+71-    "//mojo/public/js:resources",
+72:    "//net:net_resources",
+73-    "//third_party/blink/public:devtools_inspector_resources",
+74-    "//third_party/blink/public:resources",
+75-    "//third_party/blink/public:scaled_resources_100_percent",
+--
+98-component("chromium_ewk_component") {
+99-  include_dirs = [ "." ]
+100-
+101:  deps = [ "//base:base_static" ]
+102-}
+103-
+104:shared_library("chromium-ewk") {
+105-  if (enable_ewk_interface) {
+106-    output_name = "chromium-impl"
+107-  }
+--
+142-  }
+143-  deps = [
+144-    ":efl_pak",
+145:    "//base/:base_static",
+146-    "//components/autofill/content/browser",
+147-    "//components/autofill/content/renderer",
+148-    "//components/error_page/common",
+--
+216-  ]
+217-
+218-  if (is_tizen) {
+219:    exclude_source_set = [
+220-      "browser/sound_effect.cc",
+221-      "browser/sound_effect.h",
+222-    ]
+--
+233-    if (use_gio) {
+234-      configs += [ "//build/linux:gio_config" ]
+235-    }
+236:    exclude_source_set = [
+237-      "browser/sound_effect_tizen.cc",
+238-      "browser/geolocation/location_provider_efl.cc",
+239-      "browser/geolocation/location_provider_efl.h",
+--
+836-  }
+837-
+838-  sources += chrome_browser_net_efl_sources
+839:  sources -= exclude_source_set
+840-
+841-  # FIXME: Followings are guarded just for bringup.
+842-  if (ewk_bringup) {
+--
+866-
+867-test("efl_integration_unittests") {
+868-  deps = [
+869:    "//base/test:test_support",
+870-    "//ipc",
+871-    "//ipc:run_all_unittests",
+872-  ]
+--
+900-      "common/trusted_pepper_plugin_info_cache_unittest.cc",
+901-    ]
+902-    deps += [
+903:      "//net:net",
+904-      "//url:url",
+905-    ]
+906-  }

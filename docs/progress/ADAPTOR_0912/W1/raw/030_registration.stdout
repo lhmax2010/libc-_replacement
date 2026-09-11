@@ -1,0 +1,258 @@
+    25	
+    26	// this variable is valid only during Extension::XW_Initialize() call
+    27	// do not use !!!
+    28	// it's here, so we don't have to modify the interface of CreateExtension(), Extension(), etc.
+    29	XW_Extension g_xw_extension_ = 0;
+    30	
+    31	const XW_CoreInterface* g_core = NULL;
+    32	const XW_MessagingInterface* g_messaging = NULL;
+    33	const XW_Internal_SyncMessagingInterface* g_sync_messaging = NULL;
+    34	const XW_Internal_EntryPointsInterface* g_entry_points = NULL;
+    35	const XW_Internal_RuntimeInterface* g_runtime = NULL;
+    36	const XW_Internal_PermissionsInterface* g_permission = NULL;
+    37	
+    38	bool InitializeInterfaces(XW_GetInterface get_interface) {
+    39	  ScopeLogger();
+    40	  static bool initialized = false;
+    41	
+    42	  if (!initialized) {
+    43	    g_core = reinterpret_cast<const XW_CoreInterface*>(get_interface(XW_CORE_INTERFACE));
+    44	    if (!g_core) {
+    45	      LoggerE("Can't initialize extension: error getting Core interface.");
+    46	      return false;
+    47	    }
+    48	
+    49	    g_messaging =
+    50	        reinterpret_cast<const XW_MessagingInterface*>(get_interface(XW_MESSAGING_INTERFACE));
+    51	    if (!g_messaging) {
+    52	      LoggerE("Can't initialize extension: error getting Messaging interface.");
+    53	      return false;
+    54	    }
+    55	
+    56	    g_sync_messaging = reinterpret_cast<const XW_Internal_SyncMessagingInterface*>(
+    57	        get_interface(XW_INTERNAL_SYNC_MESSAGING_INTERFACE));
+    58	    if (!g_sync_messaging) {
+    59	      LoggerE("Can't initialize extension: error getting SyncMessaging interface.");
+    60	      return false;
+    61	    }
+    62	
+    63	    g_entry_points = reinterpret_cast<const XW_Internal_EntryPointsInterface*>(
+    64	        get_interface(XW_INTERNAL_ENTRY_POINTS_INTERFACE));
+    65	    if (!g_entry_points) {
+    66	      LoggerE(
+    67	          "NOTE: Entry points interface not available in this version "
+    68	          "of runtime, ignoring entry point data for extensions.");
+    69	    }
+    70	
+    71	    g_runtime = reinterpret_cast<const XW_Internal_RuntimeInterface*>(
+    72	        get_interface(XW_INTERNAL_RUNTIME_INTERFACE));
+    73	    if (!g_runtime) {
+    74	      LoggerE(
+    75	          "NOTE: runtime interface not available in this version "
+    76	          "of runtime, ignoring runtime variables for extensions.");
+    77	    }
+    78	
+    79	    g_permission = reinterpret_cast<const XW_Internal_PermissionsInterface*>(
+    80	        get_interface(XW_INTERNAL_PERMISSIONS_INTERFACE));
+    81	    if (!g_permission) {
+    82	      LoggerE(
+    83	          "NOTE: permission interface not available in this version "
+    84	          "of runtime, ignoring permission for extensions.");
+    85	    }
+    86	
+    87	    initialized = true;
+    88	  }
+    89	
+    90	  return true;
+    91	}
+    92	
+    93	}  // namespace
+    94	
+    95	namespace common {
+    96	
+    97	Extension::Extension() : xw_extension_(g_xw_extension_) {
+    98	  ScopeLogger();
+    99	}
+   100	
+   101	Extension::~Extension() {
+   102	  ScopeLogger();
+   103	}
+   104	
+   105	void Extension::SetExtensionName(const char* name) {
+   210	  Instance* instance = reinterpret_cast<Instance*>(g_core->GetInstanceData(xw_instance));
+   211	  if (!instance) return;
+   212	  instance->HandleSyncMessage(msg);
+   213	}
+   214	
+   215	// static
+   216	int32_t Extension::XW_Initialize(XW_Extension extension, XW_GetInterface get_interface,
+   217	                                 XW_Initialize_Func initialize,
+   218	                                 XW_CreatedInstanceCallback created_instance,
+   219	                                 XW_ShutdownCallback shutdown) {
+   220	  ScopeLogger();
+   221	  Assert(extension);
+   222	
+   223	  if (!InitializeInterfaces(get_interface)) {
+   224	    return XW_ERROR;
+   225	  }
+   226	
+   227	  g_xw_extension_ = extension;
+   228	
+   229	  if (XW_ERROR == initialize(extension, get_interface)) {
+   230	    return XW_ERROR;
+   231	  }
+   232	
+   233	  g_xw_extension_ = 0;
+   234	
+   235	  using common::Extension;
+   236	  g_core->RegisterShutdownCallback(extension, shutdown);
+   237	  g_core->RegisterInstanceCallbacks(extension, created_instance, Extension::OnInstanceDestroyed);
+   238	  g_messaging->Register(extension, Extension::HandleMessage);
+   239	  g_sync_messaging->Register(extension, Extension::HandleSyncMessage);
+   240	
+   241	  g_messaging->RegisterBinaryMesssageCallback(extension, Extension::HandleBinaryMessage);
+   242	  return XW_OK;
+   243	}
+   244	
+   245	std::mutex Instance::instances_mutex_;
+   246	std::unordered_set<Instance*> Instance::all_instances_;
+   247	
+   248	Instance::Instance() : xw_instance_(0) {
+   249	  ScopeLogger();
+   250	  {
+   251	    std::lock_guard<std::mutex> lock{instances_mutex_};
+   252	    all_instances_.insert(this);
+   253	  }
+   254	}
+   255	
+   256	Instance::~Instance() {
+   257	  ScopeLogger();
+   258	  {
+   259	    std::lock_guard<std::mutex> lock{instances_mutex_};
+   260	    all_instances_.erase(this);
+   305	}
+   306	
+   307	void Instance::PostMessage(const char* msg) {
+   308	  ScopeLogger();
+   309	  if (!xw_instance_) {
+   310	    LoggerE(
+   311	        "Ignoring PostMessage() in the constructor or after the "
+   312	        "instance was destroyed.");
+   313	    return;
+   314	  }
+   315	  g_messaging->PostMessage(xw_instance_, msg);
+   316	}
+   317	
+   318	void Instance::PostMessage(const char* msg, size_t size) {
+   319	  ScopeLogger();
+   320	  if (!xw_instance_) {
+   321	    LoggerE(
+   322	        "Ignoring PostMessage() in the constructor or after the "
+   323	        "instance was destroyed.");
+   324	    return;
+   325	  }
+   326	  g_messaging->PostBinaryMessage(xw_instance_, msg, size);
+   327	}
+   328	
+   329	void Instance::SendSyncReply(const char* reply) {
+   330	  ScopeLogger();
+   331	  if (!xw_instance_) {
+   332	    LoggerE(
+   333	        "Ignoring SendSyncReply() in the constructor or after the "
+   334	        "instance was destroyed.");
+   335	    return;
+   336	  }
+   337	  g_sync_messaging->SetSyncReply(xw_instance_, reply);
+   338	}
+   339	
+   340	void Instance::SendSyncBinaryReply(const std::vector<uint8_t>& reply) {
+   341	  ScopeLogger();
+   342	  if (!xw_instance_) {
+   343	    LoggerE(
+   344	        "Ignoring SendSyncBinaryReply() in the constructor or after the "
+   345	        "instance was destroyed.");
+   346	    return;
+   347	  }
+   348	  g_sync_messaging->SetSyncBinaryReply(xw_instance_, reply);
+   349	}
+   350	
+   351	ParsedInstance::ParsedInstance() {
+   352	  ScopeLogger();
+   353	}
+   354	
+   355	ParsedInstance::~ParsedInstance() {
+149:BuildRequires: libjpeg-turbo-devel, ninja, perl, python3, python3-xml, which
+386:%define __xwalk_extension_path %{_libdir}/tizen-extensions-crosswalk
+517:# Tizen VD exec signer (kUEP) doesn't sign binaries in /opt directory,
+587:%if %{?_skip_ninja:0}%{!?_skip_ninja:1}
+611:./tizen_src/platform_api_wrapper/build.sh %{?tizen_profile_name}
+639:#gn generate
+694:  "is_clang=true" \
+696:  "is_clang=false" \
+724:  "xwalk_extension_path=\"%{__xwalk_extension_path}\"" \
+745:ninja %{?_ninja_debug:-v -d stats -d explain} %{_smp_mflags} -C "%{OUTPUT_FOLDER}" \
+780:ninja %{_smp_mflags} -C"%{OUTPUT_FOLDER}" angle_unittests env_chromium_unittests cacheinvalidation_unittests \
+791:%endif  # _skip_ninja
+996:  %define tizen_sign 1
+999:  %define tizen_author_sign 1
+1000:  %define tizen_dist_sign 1
+1014:  %define tizen_sign 1
+1017:  %define tizen_author_sign 1
+1018:  %define tizen_dist_sign 1
+1127:  install -d %{buildroot}%{__xwalk_extension_path}
+1142:  install -m 0644 %{OUTPUT_FOLDER}/libsplash_screen_plugin.so     %{buildroot}%{__xwalk_extension_path}
+1143:  install -m 0644 %{OUTPUT_FOLDER}/libwidget_plugin.so            %{buildroot}%{__xwalk_extension_path}
+1144:  install -m 0644 %{OUTPUT_FOLDER}/libwrt-service-override.so     %{buildroot}%{__xwalk_extension_path}
+1146:                                                                  %{buildroot}%{__xwalk_extension_path}
+1148:                                                                  %{buildroot}%{__xwalk_extension_path}
+1171:  install -m 0755 %{OUTPUT_FOLDER}/libnode-runtime.so             %{buildroot}%{__xwalk_extension_path}
+1172:  install -m 0755 wrt/src/service/node/node-runtime.js            %{buildroot}%{__xwalk_extension_path}
+1425:  %{__xwalk_extension_path}/libsplash_screen_plugin.so
+1426:  %{__xwalk_extension_path}/libwidget_plugin.so
+1427:  %{__xwalk_extension_path}/libwrt-service-override.so
+1428:  %{__xwalk_extension_path}/splash_screen.json
+1429:  %{__xwalk_extension_path}/widget.json
+1445:  %{__xwalk_extension_path}/libnode-runtime.so
+1446:  %{__xwalk_extension_path}/node-runtime.js
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/webapi-plugins-2.92-0.src.rpm/unpacked/webapi-plugins-2.92.tar.gz/webapi-plugins-2.92/doc/src/assets/webapi-plugins-devel-test/src/test/test.gyp:7:      'target_name': 'webapis_test',
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/webapi-plugins-2.92-0.src.rpm/unpacked/webapi-plugins-2.92.tar.gz/webapi-plugins-2.92/doc/src/assets/webapi-plugins-devel-test/src/test/test.gyp:10:        'test_api.js',
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/webapi-plugins-2.92-0.src.rpm/unpacked/webapi-plugins-2.92.tar.gz/webapi-plugins-2.92/doc/src/assets/webapi-plugins-devel-test/src/test/test.gyp:11:        'test_extension.cc',
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/webapi-plugins-2.92-0.src.rpm/unpacked/webapi-plugins-2.92.tar.gz/webapi-plugins-2.92/doc/src/assets/webapi-plugins-devel-test/src/test/test.gyp:12:        'test_extension.h',
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/webapi-plugins-2.92-0.src.rpm/unpacked/webapi-plugins-2.92.tar.gz/webapi-plugins-2.92/doc/src/assets/webapi-plugins-devel-test/src/test/test.gyp:13:        'test_instance.cc',
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/webapi-plugins-2.92-0.src.rpm/unpacked/webapi-plugins-2.92.tar.gz/webapi-plugins-2.92/doc/src/assets/webapi-plugins-devel-test/src/test/test.gyp:14:        'test_instance.h',
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.h:43:    std::vector<uint8_t> SendSyncMessageWithBinaryReply(
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.h:64:    std::vector<uint8_t> sync_binary_reply_;
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.h:74:  Instance* CreateInstance();
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.cc:18:#ifndef XWALK_EXTENSION_PATH
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.cc:19:#error XWALK_EXTENSION_PATH is not set.
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.cc:66:  static void CoreRegisterInstanceCallbacks(
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.cc:216:  extension_manager->RegisterInstance(this);
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.cc:258:std::vector<uint8_t> XWalkExtension::Instance::SendSyncMessageWithBinaryReply(
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.cc:269:  return std::move(sync_binary_reply_);
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.cc:306:  return std::move(sync_binary_reply_);
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.cc:340:  sync_binary_reply_ = reply;
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.cc:372:      Interface::CoreRegisterInstanceCallbacks,
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.cc:454:  if (library_path.find(XWALK_EXTENSION_PATH) != std::string::npos) {
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.cc:493:XWalkExtension::Instance* XWalkExtension::CreateInstance() {
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.h:55:  void RegisterInstance(XWalkExtension::Instance* instance);
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.h:93:  void CreateInstance(const std::string& name,
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.h:94:                      CreateInstanceCallback callback) override;
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.h:104:  void SendSyncMessageWithBinaryReply(
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.h:106:      SendSyncMessageWithBinaryReplyCallback callback) override;
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:20:#ifndef XWALK_EXTENSION_PATH
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:21:  #error XWALK_EXTENSION_PATH is not set.
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:35:const char kExtensionPrefix[] = "lib";
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:36:const char kExtensionSuffix[] = ".so";
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:117:  std::ignore = LoadExtensions(XWALK_EXTENSION_PATH);
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:142:  // Gets all extension files in the XWALK_EXTENSION_PATH
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:145:  ext_pattern.append(kExtensionPrefix);
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:147:  ext_pattern.append(kExtensionSuffix);
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:157:  // Gets all metadata files in the XWALK_EXTENSION_PATH
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:198:  app_ext_pattern.append(kExtensionSuffix);
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:261:void XWalkExtensionManager::RegisterInstance(
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:394:void XWalkExtensionManager::CreateInstance(
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:395:    const std::string& name, CreateInstanceCallback callback) {
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:403:  auto* instance = it->second->CreateInstance();
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:457:void XWalkExtensionManager::SendSyncMessageWithBinaryReply(
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:459:    SendSyncMessageWithBinaryReplyCallback callback) {
+tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.cc:462:    std::move(callback).Run(it->second->SendSyncMessageWithBinaryReply(message));

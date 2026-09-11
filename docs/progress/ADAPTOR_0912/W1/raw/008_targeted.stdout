@@ -1,0 +1,288 @@
+total 8.0K
+drwxrwxr-x 2 toolchain toolchain 4.0K Jul 31 19:56 .
+drwxrwxr-x 4 toolchain toolchain 4.0K Jul 31 19:56 ..
+total 3.4M
+drwxrwxr-x 2 toolchain toolchain 4.0K Jul 31 19:57 .
+drwxrwxr-x 4 toolchain toolchain 4.0K Jul 31 19:57 ..
+-rw-r--r-- 1 toolchain toolchain  19K Jul 28 11:50 dali-adaptor.spec
+-rw-r--r-- 1 toolchain toolchain 3.4M Jun 18 08:04 dali2-adaptor-2.5.26.tar.gz
+     1	/**
+     2	 * @file  ewk_cookie_parser
+     3	 * @brief EWK Cookie Parser
+     4	 *
+     5	 * This class exposes the Chromium cookie parser. It allows
+     6	 * for ewk components to handle cookie-alike structures without
+     7	 * re-inventing the wheel.
+     8	 *
+     9	 * Copyright 2020 by Samsung Electronics, Inc.,
+    10	 *
+    11	 * This software is the confidential and proprietary information
+    12	 * of Samsung Electronics, Inc. ("Confidential Information").  You
+    13	 * shall not disclose such Confidential Information and shall use
+    14	 * it only in accordance with the terms of the license agreement
+    15	 * you entered into with Samsung.
+    16	 */
+    17	
+    18	#include "ewk_cookie_parser.h"
+    19	
+    20	#include <ctime>
+    21	#include <string>
+    22	#include "net/cookies/cookie_util.h"
+    23	#include "net/cookies/parsed_cookie.h"
+    24	#include "private/ewk_private.h"
+    25	
+    26	#ifdef __cplusplus
+    27	extern "C" {
+    28	#endif
+    29	
+    30	EXPORT_API Eina_Bool ewk_parse_cookie(const std::string& cookie_str,
+    31	                                      EWKCookieContents& cookie) {
+    32	  net::ParsedCookie new_cookie(cookie_str);
+    33	  if (!new_cookie.IsValid() || new_cookie.IsHttpOnly() || new_cookie.IsSecure())
+    34	    return EINA_FALSE;
+    35	
+    36	  cookie.name = new_cookie.Name();
+    37	  cookie.value = new_cookie.Value();
+    38	
+    39	  // Handle optional domain value
+    40	  auto domain = new_cookie.Domain();
+    41	  if (domain.has_value()) {
+    42	    cookie.domain = domain.value();
+    43	  }
+    44	
+    45	  // Handle optional path value
+    46	  auto path = new_cookie.Path();
+    47	  if (path.has_value()) {
+    48	    cookie.path = path.value();
+    49	  }
+    50	
+    51	  // Take "max-age" over "Expires" as expires is depreciated, so only supported
+    52	  // for backwards compatibility. With the assumption that if you are using both
+    53	  // then "Expires" is there to support old browsers. (see HTTP - spec).
+    54	  auto max_age = new_cookie.MaxAge();
+    55	  if (max_age.has_value()) {
+    56	    // Convert string to integer without using exceptions
+    57	    std::string max_age_str(max_age.value());
+    58	    char* end_ptr;
+    59	    long max_age_val = std::strtol(max_age_str.c_str(), &end_ptr, 10);
+    60	
+    61	    // Check if conversion was successful (entire string was consumed)
+    62	    if (end_ptr != max_age_str.c_str() && *end_ptr == '\0' &&
+    63	        max_age_val >= 0) {
+    64	      cookie.expiry_date_utc = time(nullptr) + static_cast<time_t>(max_age_val);
+    65	    } else {
+    66	      // If conversion fails, treat as session cookie
+    67	      cookie.expiry_date_utc = 0;
+    68	    }
+    69	  } else {
+    70	    auto expires = new_cookie.Expires();
+    71	    if (expires.has_value()) {
+    72	      base::Time expiration_time =
+    73	          net::cookie_util::ParseCookieExpirationTime(expires.value());
+    74	      cookie.expiry_date_utc = expiration_time.ToTimeT();
+    75	    } else {
+    76	      // This is a session cookie. Set expiry time to 0
+    77	      cookie.expiry_date_utc = 0;
+    78	    }
+    79	  }
+    80	  return EINA_TRUE;
+    81	}
+    82	
+    83	#ifdef __cplusplus
+    84	}
+    85	#endif
+// Copyright 2012 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef NET_COOKIES_PARSED_COOKIE_H_
+#define NET_COOKIES_PARSED_COOKIE_H_
+
+#include <stddef.h>
+
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "base/compiler_specific.h"
+#include "base/functional/function_ref.h"
+#include "net/base/net_export.h"
+#include "net/cookies/cookie_constants.h"
+
+namespace net {
+
+class CookieInclusionStatus;
+
+class NET_EXPORT ParsedCookie {
+ public:
+  // The maximum length allowed for a cookie string's name/value pair.
+  static const size_t kMaxCookieNamePlusValueSize = 4096;
+
+  // The maximum length allowed for each attribute value in a cookie string.
+  static const size_t kMaxCookieAttributeValueSize = 1024;
+
+  // Construct from a cookie string like "BLAH=1; path=/; domain=.google.com"
+  // Format is according to RFC6265bis. Cookies with both name and value empty
+  // will be considered invalid.
+  // `status_out` is a nullable output param which will be populated with
+  // informative exclusion reasons if the resulting ParsedCookie is invalid.
+  // The CookieInclusionStatus will not be altered if the resulting ParsedCookie
+  // is valid.
+  explicit ParsedCookie(std::string_view cookie_line,
+                        CookieInclusionStatus* status_out = nullptr);
+
+  ParsedCookie(const ParsedCookie&) = delete;
+  ParsedCookie& operator=(const ParsedCookie&) = delete;
+
+  ~ParsedCookie();
+
+  // You should not call any other methods except for SetName/SetValue on the
+  // class if !IsValid.
+  bool IsValid() const;
+
+  const std::string& Name() const LIFETIME_BOUND { return pairs_[0].first; }
+  const std::string& Token() const LIFETIME_BOUND { return Name(); }
+  const std::string& Value() const LIFETIME_BOUND { return pairs_[0].second; }
+
+  std::optional<std::string_view> Path() const LIFETIME_BOUND {
+    if (path_index_ == 0) {
+      return std::nullopt;
+    }
+    return pairs_[path_index_].second;
+  }
+  // Note that Domain() may return the empty string; in the case of cookie_line
+  // "domain=", Domain().has_value() will return true (as the empty string is an
+  // acceptable domain value), and Domain().value() will be an empty string.
+  std::optional<std::string_view> Domain() const LIFETIME_BOUND {
+    if (domain_index_ == 0) {
+      return std::nullopt;
+    }
+    return pairs_[domain_index_].second;
+  }
+  std::optional<std::string_view> Expires() const LIFETIME_BOUND {
+    if (expires_index_ == 0) {
+      return std::nullopt;
+    }
+    return pairs_[expires_index_].second;
+  }
+  std::optional<std::string_view> MaxAge() const LIFETIME_BOUND {
+    if (maxage_index_ == 0) {
+      return std::nullopt;
+    }
+    return pairs_[maxage_index_].second;
+  }
+  bool IsSecure() const { return secure_index_ != 0; }
+  bool IsHttpOnly() const { return httponly_index_ != 0; }
+  // Also spits out an enum value representing the string given as the SameSite
+  // attribute value.
+  std::pair<CookieSameSite, CookieSameSiteString> SameSite() const;
+  CookiePriority Priority() const;
+  bool IsPartitioned() const { return partitioned_index_ != 0; }
+  bool HasInternalHtab() const { return internal_htab_; }
+  // Returns the number of attributes, for example, returning 2 for:
+  //   "BLAH=hah; path=/; domain=.google.com"
+  size_t NumberOfAttributes() const { return pairs_.size() - 1; }
+
+  // These functions set the respective properties of the cookie. If the
+  // parameters are empty, the respective properties are cleared.
+  // The functions return false in case an error occurred.
+  // The cookie needs to be assigned a name/value before setting the other
+  // attributes.
+  //
+  // These functions should only be used if you need to modify a response's
+  // Set-Cookie string. The resulting ParsedCookie and its Set-Cookie string
+  // should still go through the regular cookie parsing process before entering
+  // the cookie jar.
+  bool SetName(std::string_view name);
+  bool SetValue(std::string_view value);
+  bool SetPath(std::string_view path);
+  bool SetDomain(std::string_view domain);
+  bool SetExpires(std::string_view expires);
+  bool SetMaxAge(std::string_view maxage);
+  bool SetIsSecure(bool is_secure);
+// Copyright 2012 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Portions of this code based on Mozilla:
+//   (netwerk/cookie/src/nsCookieService.cpp)
+/* ***** BEGIN LICENSE BLOCK *****
+ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+ *
+ * The contents of this file are subject to the Mozilla Public License Version
+ * 1.1 (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ * http://www.mozilla.org/MPL/
+ *
+ * Software distributed under the License is distributed on an "AS IS" basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
+ * License.
+ *
+ * The Original Code is mozilla.org code.
+ *
+ * The Initial Developer of the Original Code is
+ * Netscape Communications Corporation.
+ * Portions created by the Initial Developer are Copyright (C) 2003
+ * the Initial Developer. All Rights Reserved.
+ *
+ * Contributor(s):
+ *   Daniel Witte (dwitte@stanford.edu)
+ *   Michiel van Leeuwen (mvl@exedo.nl)
+ *
+ * Alternatively, the contents of this file may be used under the terms of
+ * either the GNU General Public License Version 2 or later (the "GPL"), or
+ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+ * in which case the provisions of the GPL or the LGPL are applicable instead
+ * of those above. If you wish to allow use of your version of this file only
+ * under the terms of either the GPL or the LGPL, and not to allow others to
+ * use your version of this file under the terms of the MPL, indicate your
+ * decision by deleting the provisions above and replace them with the notice
+ * and other provisions required by the GPL or the LGPL. If you do not delete
+ * the provisions above, a recipient may use your version of this file under
+ * the terms of any one of the MPL, the GPL or the LGPL.
+ *
+ * ***** END LICENSE BLOCK ***** */
+
+#include "net/cookies/parsed_cookie.h"
+
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include "base/metrics/histogram_macros.h"
+#include "base/numerics/checked_math.h"
+#include "base/strings/string_util.h"
+#include "net/base/features.h"
+#include "net/cookies/cookie_constants.h"
+#include "net/cookies/cookie_inclusion_status.h"
+#include "net/http/http_util.h"
+
+namespace {
+
+constexpr std::string_view kPathTokenName = "path";
+constexpr std::string_view kDomainTokenName = "domain";
+constexpr std::string_view kExpiresTokenName = "expires";
+constexpr std::string_view kMaxAgeTokenName = "max-age";
+constexpr std::string_view kSecureTokenName = "secure";
+constexpr std::string_view kHttpOnlyTokenName = "httponly";
+constexpr std::string_view kSameSiteTokenName = "samesite";
+constexpr std::string_view kPriorityTokenName = "priority";
+constexpr std::string_view kPartitionedTokenName = "partitioned";
+
+constexpr char kTerminatorRawString[] = "\n\r\0";
+constexpr std::string_view kTerminator(kTerminatorRawString,
+                                       sizeof(kTerminatorRawString) - 1);
+constexpr std::string_view kWhitespace = " \t";
+constexpr char kValueSeparator = ';';
+constexpr std::string_view kTokenSeparator = ";=";
+
+// Returns true if |c| occurs in |chars|
+// TODO(erikwright): maybe make this take an iterator, could check for end also?
+inline bool CharIsA(const char c, std::string_view chars) {
+  return chars.find(c) != std::string_view::npos;
+}
+
+// Seek the iterator to the first occurrence of |character|.
+// Returns true if it hits the end, false otherwise.

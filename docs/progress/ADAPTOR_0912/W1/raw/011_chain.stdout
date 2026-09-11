@@ -1,0 +1,517 @@
+    15	#include "tizen_src/chromium_impl/components/xwalk_extensions/public/XW_Extension_Permissions.h"
+    16	#include "tizen_src/chromium_impl/components/xwalk_extensions/public/XW_Extension_Runtime.h"
+    17	
+    18	#ifndef XWALK_EXTENSION_PATH
+    19	#error XWALK_EXTENSION_PATH is not set.
+    20	#endif
+    21	
+    22	namespace wrt {
+    23	
+    24	namespace {
+    25	
+    26	XW_Extension last_xw_extension_id_ = 0;
+    27	base::Lock instance_lock;
+    28	base::Lock callback_lock;
+    29	
+    30	}  // namespace
+    31	
+    32	class XWalkExtension::Interface {
+    33	 public:
+    34	  static XWalkExtension* GetExtension(XW_Extension xw_extension) {
+    35	    const auto& map = XWalkExtensionManager::GetInstance()->GetExtensions();
+    36	    for (const auto& iter : map) {
+    37	      if (iter.second->xw_extension_ == xw_extension)
+    38	        return iter.second.get();
+    39	    }
+    40	    LOG(WARNING) << "Ignoring call. Invalid extension = " << xw_extension;
+    41	    return nullptr;
+    42	  }
+    43	
+    44	  static Instance* GetExtensionInstance(XW_Instance xw_instance) {
+    45	    auto* extension_manager = XWalkExtensionManager::GetInstance();
+    46	    auto* instance = extension_manager->GetExtensionInstance(xw_instance);
+    47	    if (!instance)
+    48	      LOG(WARNING) << "Ignoring call. Invalid instance = " << xw_instance;
+    49	    return instance;
+    50	  }
+    51	
+    52	  static void CoreSetExtensionName(
+    53	      XW_Extension xw_extension, const char* name) {
+    54	    XWalkExtension* extension = GetExtension(xw_extension);
+    55	    if (extension)
+    56	      extension->name_ = name;
+    57	  }
+    58	
+    59	  static void CoreSetJavaScriptAPI(
+    60	      XW_Extension xw_extension, const char* javascript_api) {
+    61	    XWalkExtension* extension = GetExtension(xw_extension);
+    62	    if (extension)
+    63	      extension->javascript_api_ = javascript_api;
+    64	  }
+    65	
+    66	  static void CoreRegisterInstanceCallbacks(
+    67	      XW_Extension xw_extension, XW_CreatedInstanceCallback created,
+    68	      XW_DestroyedInstanceCallback destroyed) {
+    69	    XWalkExtension* extension = GetExtension(xw_extension);
+    70	    if (!extension)
+    71	      return;
+    72	    extension->created_instance_callback_ = created;
+    73	    extension->destroyed_instance_callback_ = destroyed;
+    74	  }
+    75	
+    76	  static void CoreRegisterShutdownCallback(
+    77	      XW_Extension xw_extension, XW_ShutdownCallback shutdown) {
+    78	    XWalkExtension* extension = GetExtension(xw_extension);
+    79	    if (extension)
+    80	      extension->shutdown_callback_ = shutdown;
+    81	  }
+    82	
+    83	  static void CoreSetInstanceData(XW_Instance xw_instance, void* data) {
+    84	    auto* instance = GetExtensionInstance(xw_instance);
+    85	    if (instance)
+    86	      instance->SetInstanceData(data);
+    87	  }
+    88	
+    89	  static void* CoreGetInstanceData(XW_Instance xw_instance) {
+    90	    auto* instance = GetExtensionInstance(xw_instance);
+    91	    return instance ? instance->GetInstanceData() : nullptr;
+    92	  }
+    93	
+    94	  static void MessagingRegister(
+    95	      XW_Extension xw_extension, XW_HandleMessageCallback handle_message) {
+    96	    XWalkExtension* extension = GetExtension(xw_extension);
+    97	    if (extension)
+    98	      extension->handle_msg_callback_ = handle_message;
+    99	  }
+   100	
+   101	  static void MessagingPostMessage(
+   102	      XW_Instance xw_instance, const char* message) {
+   103	    auto* instance = GetExtensionInstance(xw_instance);
+   104	    if (instance && message)
+   105	      instance->PostMessageToJS(message);
+   106	  }
+   107	
+   108	  static void SyncMessagingRegister(
+   109	      XW_Extension xw_extension,
+   110	      XW_HandleSyncMessageCallback handle_sync_message) {
+   111	    XWalkExtension* extension = GetExtension(xw_extension);
+   112	    if (extension)
+   113	      extension->handle_sync_msg_callback_ = handle_sync_message;
+   114	  }
+   115	
+   116	  static void SyncMessagingSetSyncReply(
+   117	      XW_Instance xw_instance, const char* reply) {
+   118	    auto* instance = GetExtensionInstance(xw_instance);
+   119	    if (instance)
+   120	      instance->SyncReplyToJS(reply);
+   121	  }
+   122	
+   123	  static void SyncMessagingSetSyncBinaryReply(
+   124	      XW_Instance xw_instance, const std::vector<uint8_t>& reply) {
+   125	    auto* instance = GetExtensionInstance(xw_instance);
+   126	    if (instance)
+   127	      instance->SyncBinaryReplyToJS(reply);
+   128	  }
+   129	
+   130	  static void EntryPointsSetExtraJSEntryPoints(
+   131	      XW_Extension xw_extension, const char** entry_points) {
+   132	    XWalkExtension* extension = GetExtension(xw_extension);
+   133	    if (!extension)
+   134	      return;
+   135	    for (int i = 0; entry_points[i]; ++i)
+   136	      extension->entry_points_.push_back(entry_points[i]);
+   137	  }
+   138	
+   139	  static void RuntimeGetStringVariable(
+   140	      XW_Extension xw_extension, const char* key, char* value,
+   141	      unsigned int value_len) {
+   142	    auto* extension_manager = XWalkExtensionManager::GetInstance();
+   143	    extension_manager->GetRuntimeVariable(key, value, value_len);
+   144	  }
+   145	
+   146	  static void* RuntimeGetWindowObject() {
+   147	    auto* extension_manager = XWalkExtensionManager::GetInstance();
+   148	    return extension_manager->GetWindowObject();
+   149	  }
+   150	
+   151	  static void RuntimeAddWindowEventListener(XW_Instance instance,
+   152	                                            WindowEvent event) {
+   153	    auto* extension_manager = XWalkExtensionManager::GetInstance();
+   154	    extension_manager->AddWindowEventListener(instance, event);
+   155	  }
+   156	
+   157	  static void RuntimeRemoveWindowEventListener(XW_Instance instance) {
+   158	    auto* extension_manager = XWalkExtensionManager::GetInstance();
+   159	    extension_manager->RemoveWindowEventListener(instance);
+   160	  }
+   161	
+   162	  static void RuntimeSendKeyEvent(const char* event, const char* key_code) {
+   163	    auto* extension_manager = XWalkExtensionManager::GetInstance();
+   164	    extension_manager->SendKeyEvent(event, key_code);
+   165	  }
+   166	
+   167	  static void RuntimeSendMouseEvent(const char* event, int btn, int x, int y) {
+   168	    auto* extension_manager = XWalkExtensionManager::GetInstance();
+   169	    extension_manager->SendMouseEvent(event, btn, x, y);
+   170	  }
+   171	
+   172	  static void RuntimeGetMetadataValue(const char* key,
+   173	                                      char* value,
+   174	                                      unsigned int len) {
+   175	    auto* extension_manager = XWalkExtensionManager::GetInstance();
+   225	void XWalkExtension::Instance::Destroy() {
+   226	  base::AutoLock lock(instance_lock);
+   227	  auto callback = extension_->destroyed_instance_callback_;
+   228	  if (callback)
+   229	    callback(xw_instance_);
+   230	
+   231	  auto* extension_manager = XWalkExtensionManager::GetInstance();
+   232	  extension_manager->UnregisterInstance(this);
+   233	}
+   234	
+   235	// postMessage(message: string): void
+   236	void XWalkExtension::Instance::PostMessage(const std::string& message) {
+   237	  XW_HandleMessageCallback callback = extension_->handle_msg_callback_;
+   238	  if (callback)
+   239	    callback(xw_instance_, message.c_str());
+   240	}
+   241	
+   242	// sendSyncMessage(message: string): string
+   243	std::string XWalkExtension::Instance::SendSyncMessageWithStringReply(
+   244	    const std::string& message) {
+   245	#if BUILDFLAG(IS_TIZEN_TV)
+   246	  LOG(INFO) << "[WebAPI] message:" << message;
+   247	#endif
+   248	  XW_HandleSyncMessageCallback callback =
+   249	      extension_->handle_sync_msg_callback_;
+   250	  if (!callback)
+   251	    return std::string();
+   252	
+   253	  callback(xw_instance_, message.c_str());
+   254	  return std::move(sync_reply_);
+   255	}
+   256	
+   257	// sendSyncMessage(message: string): Uint8Array
+   258	std::vector<uint8_t> XWalkExtension::Instance::SendSyncMessageWithBinaryReply(
+   259	    const std::string& message) {
+   260	#if BUILDFLAG(IS_TIZEN_TV)
+   261	  LOG(INFO) << "[WebAPI] message:" << message;
+   262	#endif
+   263	  XW_HandleSyncMessageCallback callback =
+   264	      extension_->handle_sync_msg_callback_;
+   265	  if (!callback)
+   266	    return std::vector<uint8_t>{};
+   267	
+   268	  callback(xw_instance_, message.c_str());
+   269	  return std::move(sync_binary_reply_);
+   270	}
+   271	
+   272	// postMessage(message: Uint8Array): void
+   273	void XWalkExtension::Instance::PostBinaryMessage(
+   274	    const std::vector<uint8_t>& message) {
+   275	  XW_HandleBinaryMessageCallback callback =
+   276	      extension_->handle_binary_msg_callback_;
+   277	  if (callback)
+   278	    callback(xw_instance_, reinterpret_cast<const char*>(message.data()),
+   279	             message.size());
+   280	}
+   281	
+   282	// sendSyncMessage(message: Uint8Array): string
+   283	std::string XWalkExtension::Instance::SendSyncBinaryMessageWithStringReply(
+   284	    const std::vector<uint8_t>& message) {
+   285	  XW_HandleBinaryMessageCallback callback =
+   286	      extension_->handle_binary_msg_callback_;
+   287	  if (!callback)
+   288	    return std::string();
+   289	
+   290	  callback(xw_instance_, reinterpret_cast<const char*>(message.data()),
+   291	           message.size());
+   292	  return std::move(sync_reply_);
+   293	}
+   294	
+   295	// sendSyncMessage(message: Uint8Array): Uint8Array
+   296	std::vector<uint8_t>
+   297	XWalkExtension::Instance::SendSyncBinaryMessageWithBinaryReply(
+   298	    const std::vector<uint8_t>& message) {
+   299	  XW_HandleBinaryMessageCallback callback =
+   300	      extension_->handle_binary_msg_callback_;
+   301	  if (!callback)
+   302	    return std::vector<uint8_t>{};
+   303	
+   304	  callback(xw_instance_, reinterpret_cast<const char*>(message.data()),
+   305	           message.size());
+   306	  return std::move(sync_binary_reply_);
+   307	}
+   308	
+   309	void XWalkExtension::Instance::SetPostMessageCallback(
+   310	    MessageCallback callback) {
+   311	  base::AutoLock lock(callback_lock);
+   312	  post_message_callback_ = callback;
+   313	}
+   314	
+   315	void XWalkExtension::Instance::SetPostBinaryMessageCallback(
+   316	    BinaryMessageCallback callback) {
+   317	  base::AutoLock lock(callback_lock);
+   318	  post_binary_message_callback_ = callback;
+   319	}
+   320	
+   321	void XWalkExtension::Instance::PostMessageToJS(const std::string& message) {
+   322	  base::AutoLock lock(callback_lock);
+   323	  if (post_message_callback_)
+   324	    post_message_callback_(message);
+   325	}
+   326	
+   327	void XWalkExtension::Instance::PostBinaryMessageToJS(
+   328	    const char* message, int size) {
+   329	  base::AutoLock lock(callback_lock);
+   330	  if (post_binary_message_callback_)
+   331	    post_binary_message_callback_(message, size);
+   332	}
+   333	
+   334	void XWalkExtension::Instance::SyncReplyToJS(const std::string& reply) {
+   335	  sync_reply_ = reply;
+   336	}
+   337	
+   338	void XWalkExtension::Instance::SyncBinaryReplyToJS(
+   339	    const std::vector<uint8_t>& reply) {
+   340	  sync_binary_reply_ = reply;
+   341	}
+   342	
+   343	XWalkExtension::XWalkExtension(const std::string& path)
+   344	    : lazy_loading_(false), library_path_(path) {}
+   345	
+   346	XWalkExtension::XWalkExtension(const std::string& path,
+   347	                               const std::string& name,
+   348	                               const std::vector<std::string>& entry_points)
+   349	    : lazy_loading_(true),
+   350	      library_path_(path),
+   351	      name_(name),
+   352	      entry_points_(entry_points) {}
+   353	
+   354	XWalkExtension::~XWalkExtension() {
+   355	  if (!initialized_)
+   356	    return;
+   357	  if (shutdown_callback_)
+   358	    shutdown_callback_(xw_extension_);
+   359	#if !BUILDFLAG(IS_TIZEN_TV)
+   360	  dlclose(handle_);
+   361	  XWalkExtensionManager::GetInstance()->ClearPreloadHandle(library_path_);
+   362	#endif
+   363	}
+   364	
+   365	// static
+   366	const void* XWalkExtension::GetInterface(const char* name) {
+   367	  std::string interface_name(name);
+   368	  if (interface_name == XW_CORE_INTERFACE_1) {
+   369	    static const XW_CoreInterface_1 coreInterface1 = {
+   370	      Interface::CoreSetExtensionName,
+   371	      Interface::CoreSetJavaScriptAPI,
+   372	      Interface::CoreRegisterInstanceCallbacks,
+   373	      Interface::CoreRegisterShutdownCallback,
+   374	      Interface::CoreSetInstanceData,
+   375	      Interface::CoreGetInstanceData
+   376	    };
+   377	    return &coreInterface1;
+   378	  }
+   379	
+   380	  if (interface_name == XW_MESSAGING_INTERFACE_1) {
+   381	    static const XW_MessagingInterface_1 messagingInterface1 = {
+   382	      Interface::MessagingRegister,
+   383	      Interface::MessagingPostMessage
+   384	    };
+   385	    return &messagingInterface1;
+   386	  }
+   387	
+   388	  if (interface_name == XW_MESSAGING_INTERFACE_2) {
+   389	    static const XW_MessagingInterface_2 messagingInterface2 = {
+   390	      Interface::MessagingRegister,
+   391	      Interface::MessagingPostMessage,
+   392	      Interface::MessagingRegisterBinaryMessageCallback,
+   393	      Interface::MessagingPostBinaryMessage
+   394	    };
+   395	    return &messagingInterface2;
+   396	  }
+   397	
+   398	  if (interface_name == XW_INTERNAL_SYNC_MESSAGING_INTERFACE_1) {
+   399	    static const XW_Internal_SyncMessagingInterface_1
+   400	        syncMessagingInterface1 = {
+   401	      Interface::SyncMessagingRegister,
+   402	      Interface::SyncMessagingSetSyncReply,
+   403	      Interface::SyncMessagingSetSyncBinaryReply
+   404	    };
+   405	    return &syncMessagingInterface1;
+   406	  }
+   407	
+   408	  if (interface_name == XW_INTERNAL_ENTRY_POINTS_INTERFACE_1) {
+   409	    static const XW_Internal_EntryPointsInterface_1 entryPointsInterface1 = {
+   410	      Interface::EntryPointsSetExtraJSEntryPoints
+   411	    };
+   412	    return &entryPointsInterface1;
+   413	  }
+   414	
+   415	  if (interface_name == XW_INTERNAL_RUNTIME_INTERFACE_1) {
+   416	    static const XW_Internal_RuntimeInterface_1 runtimeInterface1 = {
+   417	      Interface::RuntimeGetStringVariable
+   418	    };
+   419	    return &runtimeInterface1;
+   420	  }
+// Copyright (c) 2015 Samsung Electronics Co., Ltd. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.h"
+
+#include <dlfcn.h>
+#include <glob.h>
+#include <json/json.h>
+#include <sys/utsname.h>
+#include <fstream>
+
+#include "base/logging.h"
+#include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/browser/navigation_entry.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "tizen_src/chromium_impl/build/tizen_version.h"
+#include "tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.h"
+
+#ifndef XWALK_EXTENSION_PATH
+  #error XWALK_EXTENSION_PATH is not set.
+#endif
+
+#ifndef XWALK_EXTENSION_SERVICE_PATH
+  #error XWALK_EXTENSION_SERVICE_PATH is not set.
+#endif
+
+namespace wrt {
+
+static_assert(std::is_same<mojo::ReceiverId, uint64_t>::value,
+    "mojo::ReceiverId must be the same type as uint64_t");
+
+namespace {
+
+const char kExtensionPrefix[] = "lib";
+const char kExtensionSuffix[] = ".so";
+const char kExtensionMetadataSuffix[] = ".json";
+
+const char kUserPluginsDirectory[] = "plugin/";
+const char kArchArmv7l[] = "armv7l";
+const char kArchI586[] = "i586";
+const char kArchDefault[] = "default";
+const char kWrtServiceJson[] = "wrtservice.json";
+
+const std::set<std::string> kWorkerSupported = {
+    "tizen.ml", "xwalk"
+};
+
+base::Lock xmanager_instance_lock;
+base::Lock preload_handle_lock;
+
+}  // namespace
+
+// static
+XWalkExtensionManager* XWalkExtensionManager::GetInstance() {
+  static XWalkExtensionManager self;
+  return &self;
+}
+
+// static
+void XWalkExtensionManager::Bind(
+    mojo::PendingReceiver<mojom::XWalkExtensionBrowser> receiver) {
+  auto* manager = GetInstance();
+  manager->receivers_.Add(manager, std::move(receiver));
+}
+
+XWalkExtensionManager::XWalkExtensionManager() {
+  auto major_version = TIZEN_VERSION / 10000;
+  auto minor_version = (TIZEN_VERSION % 1000) / 100;
+  build_tizen_version_ =
+      std::to_string(major_version) + "." + std::to_string(minor_version);
+}
+
+XWalkExtension::Instance* XWalkExtensionManager::GetExtensionInstance(
+    XW_Instance xw_instance) {
+  base::AutoLock lock(xmanager_instance_lock);
+  auto it = instances_.find(xw_instance);
+  return (it != instances_.end()) ? it->second.get() : nullptr;
+}
+
+void XWalkExtensionManager::PreloadExtensions() {
+  if (delegate_)
+    delegate_->PreloadExtensions();
+}
+
+void XWalkExtensionManager::ClearPreloadHandle(const std::string& lib_path) {
+  base::AutoLock lock(preload_handle_lock);
+  preload_handle_.erase(lib_path);
+}
+
+void* XWalkExtensionManager::GetPreloadHandle(const std::string& lib_path) {
+  base::AutoLock lock(preload_handle_lock);
+  if (preload_handle_.find(lib_path) != preload_handle_.end())
+    return preload_handle_[lib_path];
+  else
+    return nullptr;
+}
+
+void XWalkExtensionManager::SetPreloadHandle(
+    const std::string& lib_path, void* handle) {
+  base::AutoLock lock(preload_handle_lock);
+  preload_handle_[lib_path] = handle;
+}
+
+void XWalkExtensionManager::LoadExtensionsByPath(const std::string& path) {
+  if (is_loaded_by_path_)
+    return;
+
+  std::ignore = LoadExtensions(path);
+  is_loaded_by_path_ = true;
+}
+
+void XWalkExtensionManager::LoadUIAppExtensions() {
+  if (is_loaded_for_web_app_)
+    return;
+
+  std::ignore = LoadExtensions(XWALK_EXTENSION_PATH);
+  if (delegate_)
+    delegate_->LoadUIAppExtensions();
+
+ is_loaded_for_web_app_ = true;
+}
+
+void XWalkExtensionManager::LoadServiceAppExtensions() {
+  auto is_ui_service = is_loaded_for_web_app_;
+  if (is_ui_service || is_loaded_for_service_app_)
+    return;
+
+  auto files = LoadExtensions(XWALK_EXTENSION_SERVICE_PATH);
+  for (auto it = files.begin(); it != files.end(); ++it) {
+    LOG(INFO) << "*it : " << *it;
+    RegisterExtension(new XWalkExtension(*it));
+  }
+
+  is_loaded_for_service_app_ = true;
+}
+
+std::set<std::string> XWalkExtensionManager::LoadExtensions(
+    const std::string& extension_path) {
+  LOG(INFO) << "extension_path : " << extension_path;
+
+  // Gets all extension files in the XWALK_EXTENSION_PATH
+  std::string ext_pattern(extension_path);
+  ext_pattern.append("/");
+  ext_pattern.append(kExtensionPrefix);
+  ext_pattern.append("*");
+  ext_pattern.append(kExtensionSuffix);
+
+  std::set<std::string> files;
+  {
+    glob_t glob_result;
+    glob(ext_pattern.c_str(), GLOB_TILDE, nullptr, &glob_result);
+    for (unsigned int i = 0; i < glob_result.gl_pathc; ++i)
+      files.insert(glob_result.gl_pathv[i]);
+  }
+
+  // Gets all metadata files in the XWALK_EXTENSION_PATH
+  // Loads information from the metadata files and remove the loaded file from
+  // the set 'files'
+  std::string meta_pattern(extension_path);
