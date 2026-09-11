@@ -1,0 +1,139 @@
+   484	    __deque_block_size<_ValueType, _DiffType>::value;
+   485	
+   486	template <class _Tp, class _Allocator /*= allocator<_Tp>*/>
+   487	class deque {
+   488	  template <class _Up, class _Alloc>
+   489	  using __split_buffer _LIBCPP_NODEBUG = std::__split_buffer<_Up, _Alloc, __split_buffer_pointer_layout>;
+   490	
+   491	public:
+   492	  // types:
+   493	
+   845	  // The __endian_factor is required because the field we use to store the size
+   846	  // has one fewer bit than it would if it were not a bitfield.
+   847	  //
+   848	  // If the LSB is used to store the short-flag in the short string representation,
+   849	  // we have to multiply the size by two when it is stored and divide it by two when
+   850	  // it is loaded to make sure that we always store an even number. In the long string
+   851	  // representation, we can ignore this because we can assume that we always allocate
+   852	  // an even amount of value_types.
+   853	  //
+   854	  // If the MSB is used for the short-flag, the max_size() is numeric_limits<size_type>::max() / 2.
+   855	  // This does not impact the short string representation, since we never need the MSB
+   856	  // for representing the size of a short string anyway.
+   857	
+   420		      _M_complete_async();
+   421	
+   422		      return future_status::ready;
+   423		    }
+   424		  return future_status::timeout;
+   425		}
+   426	
+   427	      // Provide a result to the shared state and make it ready.
+   428	      // Calls at most once: _M_result = __res();
+   429	      void
+   430	      _M_set_result(function<_Ptr_type()> __res, bool __ignore_failure = false)
+   431	      {
+   432		bool __did_set = false;
+   433	        // all calls to this function are serialized,
+   434	        // side-effects of invoking __res only happen once
+   435		call_once(_M_once, &_State_baseV2::_M_do_set, this,
+   436			  std::__addressof(__res), std::__addressof(__did_set));
+   437		if (__did_set)
+   438		  // Use release MO to synchronize with observers of the ready state.
+   439		  _M_status._M_store_notify_all(_Status::__ready,
+   440						memory_order_release);
+   479		    _M_status._M_store_notify_all(_Status::__ready,
+   480						  memory_order_release);
+   481		  }
+   482	      }
+   483	
+   484	      // Called when this object is first passed to a future.
+   485	      void
+   486	      _M_set_retrieved_flag()
+   487	      {
+   488		if (_M_retrieved.test_and_set())
+   489		  __throw_future_error(int(future_errc::future_already_retrieved));
+   490	      }
+   491	
+   492	      template<typename _Res, typename _Arg>
+   493	        struct _Setter;
+   494	
+   495	      // set lvalues
+   500	          // or promise<R&>::set_value(R&)
+   501	          static_assert(is_same<_Res, _Arg&>::value  // promise<R&>
+   502	              || is_same<const _Res, _Arg>::value,   // promise<R>
+   503	              "Invalid specialisation");
+   504	
+   505		  // Used by std::promise to copy construct the result.
+   506	          typename promise<_Res>::_Ptr_type operator()() const
+   507	          {
+   508	            _M_promise->_M_storage->_M_set(*_M_arg);
+   509	            return std::move(_M_promise->_M_storage);
+   510	          }
+   511	          promise<_Res>*    _M_promise;
+   512	          _Arg*             _M_arg;
+   513	        };
+   514	
+   515	      // set rvalues
+   516	      template<typename _Res>
+   517	        struct _Setter<_Res, _Res&&>
+   518	        {
+   569	        __setter(exception_ptr& __ex, promise<_Res>* __prom) noexcept
+   570	        {
+   571	          __glibcxx_assert(__ex != nullptr); // LWG 2276
+   572	          return _Setter<_Res, __exception_ptr_tag>{ __prom, &__ex };
+   573	        }
+   574	
+   575	      template<typename _Res>
+   576		__attribute__((__always_inline__))
+   577		static _Setter<_Res, void>
+   578		__setter(promise<_Res>* __prom) noexcept
+   579		{
+   580		  return _Setter<_Res, void>{ __prom };
+   581		}
+   582	
+   583	      template<typename _Tp>
+   584	        static void
+   585	        _S_check(const shared_ptr<_Tp>& __p)
+   586	        {
+   587	          if (!static_cast<bool>(__p))
+   588	            __throw_future_error((int)future_errc::no_state);
+   611	
+   612	template <class _Rp>
+   613	template <class _Arg>
+   614	void __assoc_state<_Rp>::set_value(_Arg&& __arg) {
+   615	  unique_lock<mutex> __lk(this->__mut_);
+   616	  if (this->__has_value())
+   617	    std::__throw_future_error(future_errc::promise_already_satisfied);
+   618	  ::new ((void*)std::addressof(__value_)) _Rp(std::forward<_Arg>(__arg));
+   619	  this->__state_ |= base::__constructed | base::ready;
+   620	  __cv_.notify_all();
+   621	}
+   622	
+   623	template <class _Rp>
+   624	template <class _Arg>
+   625	void __assoc_state<_Rp>::set_value_at_thread_exit(_Arg&& __arg) {
+   626	  unique_lock<mutex> __lk(this->__mut_);
+   627	  if (this->__has_value())
+   628	    std::__throw_future_error(future_errc::promise_already_satisfied);
+   629	  ::new ((void*)std::addressof(__value_)) _Rp(std::forward<_Arg>(__arg));
+   630	  this->__state_ |= base::__constructed;
+   631	  __thread_local_data()->__make_ready_at_thread_exit(this);
+   632	}
+   633	
+   634	template <class _Rp>
+   635	_Rp __assoc_state<_Rp>::move() {
+   636	  unique_lock<mutex> __lk(this->__mut_);
+   637	  this->__sub_wait(__lk);
+   638	  if (this->__exception_ != nullptr)
+   639	    std::rethrow_exception(this->__exception_);
+   640	  return std::move(*reinterpret_cast<_Rp*>(std::addressof(__value_)));
+   641	}
+  1152	};
+  1153	
+  1154	template <class _Rp>
+  1155	promise<_Rp>::promise() : __state_(new __assoc_state<_Rp>) {}
+  1156	
+  1157	template <class _Rp>
+  1158	template <class _Alloc>
+640:class __map_value_compare {

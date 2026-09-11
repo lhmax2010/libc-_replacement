@@ -1,0 +1,83 @@
+from pathlib import Path
+import csv, hashlib, json, re, urllib.parse
+
+R=Path('/home/toolchain/development/libcxx_runtime_validation/docs/progress/P9_0911')
+checks=[]
+def check(name, condition, detail=''):
+    checks.append(dict(check=name,status='PASS' if condition else 'FAIL',detail=detail))
+
+baseline=(R/'baseline/abi_layout_comparison.tsv').read_bytes()
+check('original_table_hash',hashlib.sha256(baseline).hexdigest()=='08a99bb4ac7d314ba20c05befd92f40301dc4bcd3572fb126c8cf68c249509a7')
+for p in ['HQ_files/abi_layout_comparison.tsv','docs/progress/R80/tables/d11_layout_comparison.tsv']:
+    check('original_unchanged:'+p,Path(p).read_bytes()==baseline)
+rows=list(csv.DictReader(baseline.decode().splitlines(),delimiter='\t'))
+diffs={x['type']:x for x in rows if x.get('same_layout_metrics')=='NO'}
+account=json.loads((R/'LAYOUT_ACCOUNTING.json').read_text())
+check('exact_ten_type_scope',len(account)==10 and {a['name'] for a in account}==set(diffs))
+for a in account:
+    b=diffs[a['name']]
+    check('baseline_values:'+a['name'],[a[x] for x in ['gsize','lsize','galign','lalign']]==[int(b[x]) for x in ['libstdcxx_size','libcxx_size','libstdcxx_align','libcxx_align']])
+
+formulas={
+ 'any':([8,8],[8,24]),
+ 'function<void()>':([16,8,8],[32,8,8]),
+ 'deque<int>':([8,8,32,32],[32,8,8]),
+ 'map<int,int>':([1,7,4,4,8,8,8,8],[8,8,8]),
+ 'set<int>':([1,7,4,4,8,8,8,8],[8,8,8]),
+ 'unordered_map<int,int>':([8,8,8,8,4,4,8,8],[16,8,8,4,4]),
+ 'unordered_set<int>':([8,8,8,8,4,4,8,8],[16,8,8,4,4]),
+ 'string':([8,8,16],[24]),
+ 'future<int>':([8,8],[8]),
+ 'promise<int>':([8,8,8],[8])}
+for a in account:
+    f=formulas[a['name']]
+    check('static_byte_sum:'+a['name'],sum(f[0])==a['gsize'] and sum(f[1])==a['lsize'],str(f))
+
+for x in csv.DictReader((R/'SOURCE_MANIFEST.tsv').open(),delimiter='\t'):
+    p=R/x['snapshot']
+    check('snapshot_hash:'+x['snapshot'],hashlib.sha256(p.read_bytes()).hexdigest()==x['sha256'])
+    check('source_unchanged:'+x['original_path'],Path(x['original_path']).read_bytes()==p.read_bytes())
+
+language_codes=[]
+for lang in ['ZH','EN']:
+    content=(R/f'MEMBER_LAYOUT_{lang}.md').read_text()
+    sections=re.findall(r'^### `std::(.+)`$',content,re.M)
+    check('sections:'+lang,sections==[x['name'] for x in account])
+    check('resolved_source_tokens:'+lang,re.search(r'@[a-z]+@',content) is None)
+    check('fence_pairs:'+lang,content.count('```')%2==0)
+    check('no_task_ids_in_prose:'+lang,not re.search(r'\b(?:P9|R80|P4_0909|P5_0909)\b',re.sub(r'\]\([^)]*\)','',content)))
+    excerpts=re.findall(r'\[[^\n]+\]\((sources/[^)]+\.txt)#L(\d+)\)\n\n```cpp\n(.*?)\n```',content,re.S)
+    # The regex is anchored to a single link label, so it cannot skip prose.
+    codes=[]
+    for i,(p,start,code) in enumerate(excerpts):
+        source=(R/p).read_text().splitlines()
+        a=int(start)-1
+        wanted=source[a:a+len(code.splitlines())]
+        check(f'verbatim:{lang}:{i}',code.splitlines()==wanted,f'{p}:{start}')
+        codes.append(code)
+    allcodes=re.findall(r'```cpp\n(.*?)\n```',content,re.S)
+    check('all_cpp_blocks_have_source_links:'+lang,len(excerpts)==len(allcodes),f'{len(excerpts)}/{len(allcodes)}')
+    language_codes.append(codes)
+    for link in re.findall(r'\]\(([^)]+)\)',content):
+        if link.startswith('http'):continue
+        local=urllib.parse.unquote(link.split('#')[0])
+        check(f'local_link:{lang}:{link}',(R/local).is_file())
+    for a in account:
+        title='### `std::'+a['name']+'`\n'
+        part=content.split(title,1)[1].split('\n### ',1)[0]
+        values=re.findall(r'^\| (?:大小（既有实测，字节）|Size \(existing measurement, bytes\)|对齐（既有实测，字节）|Alignment \(existing measurement, bytes\)) \| (\d+) \| (\d+) \|$',part,re.M)
+        check('rendered_values:'+lang+':'+a['name'],values[:2]==[(str(a['gsize']),str(a['lsize'])),(str(a['galign']),str(a['lalign']))])
+        labels=['**差异的实质**','**设计原因**','**能否改成一致**'] if lang=='ZH' else ['**What causes the difference**','**Design rationale**','**Can the layouts be made identical?**']
+        check('required_subsections:'+lang+':'+a['name'],all(x in part for x in labels))
+check('bilingual_identical_code',language_codes[0]==language_codes[1])
+
+for x in json.loads((R/'GNU_REVISION_CROSSCHECK.json').read_text()):
+    if x['status']!='SAME_EXCERPT':continue
+    g=(R/'sources/gnu14'/(x['platform_file']+'.txt')).read_text().splitlines(keepends=True)[x['platform_start']-1:x['platform_end']]
+    h=(R/'sources/gnu13'/(x['host_file']+'.txt')).read_text().splitlines(keepends=True)[x['host_start']-1:x['host_end']]
+    check('gnu_exact:'+x['id']+':'+str(x['platform_start']),g==h)
+
+result={'status':'PASS' if all(c['status']=='PASS' for c in checks) else 'FAIL','checks':len(checks),'failures':[c for c in checks if c['status']=='FAIL'],'details':checks,'note':'Documentation consistency and source identity checks only; no C++ compilation or runtime validation.'}
+(R/'VALIDATION.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n')
+print(json.dumps({k:v for k,v in result.items() if k!='details'},ensure_ascii=False,indent=2))
+raise SystemExit(result['status']!='PASS')

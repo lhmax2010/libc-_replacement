@@ -1,0 +1,466 @@
+    75	_GLIBCXX_BEGIN_NAMESPACE_CONTAINER
+    76	
+    77	  /**
+    78	   *  @brief This function controls the size of memory nodes.
+    79	   *  @param  __size  The size of an element.
+    80	   *  @return   The number (not byte size) of elements per node.
+    81	   *
+    82	   *  This function started off as a compiler kludge from SGI, but
+    83	   *  seems to be a useful wrapper around a repeated constant
+    84	   *  expression.  The @b 512 is tunable (and no other code needs to
+    85	   *  change), but no investigation has been done since inheriting the
+    86	   *  SGI code.  Touch _GLIBCXX_DEQUE_BUF_SIZE only if you know what
+    87	   *  you are doing, however: changing it breaks the binary
+    88	   *  compatibility!!
+    89	  */
+    90	
+    91	#ifndef _GLIBCXX_DEQUE_BUF_SIZE
+    92	#define _GLIBCXX_DEQUE_BUF_SIZE 512
+    93	#endif
+    94	
+    95	  _GLIBCXX_CONSTEXPR inline size_t
+    96	  __deque_buf_size(size_t __size)
+    97	  { return (__size < _GLIBCXX_DEQUE_BUF_SIZE
+    98		    ? size_t(_GLIBCXX_DEQUE_BUF_SIZE / __size) : size_t(1)); }
+    99	
+   100	
+   135	      typedef _Tp				value_type;
+   136	      typedef _Ptr				pointer;
+   137	      typedef _Ref				reference;
+   138	      typedef size_t				size_type;
+   139	      typedef ptrdiff_t				difference_type;
+   140	      typedef _Deque_iterator			_Self;
+   141	
+   142	      _Elt_pointer _M_cur;
+   143	      _Elt_pointer _M_first;
+   144	      _Elt_pointer _M_last;
+   145	      _Map_pointer _M_node;
+   146	
+   505	      ~_Deque_base() _GLIBCXX_NOEXCEPT;
+   506	
+   507	      typedef typename iterator::_Map_pointer _Map_pointer;
+   508	
+   509	      struct _Deque_impl_data
+   510	      {
+   511		_Map_pointer _M_map;
+   512		size_t _M_map_size;
+   513		iterator _M_start;
+   514		iterator _M_finish;
+   515	
+   516		_Deque_impl_data() _GLIBCXX_NOEXCEPT
+   517		: _M_map(), _M_map_size(), _M_start(), _M_finish()
+   518		{ }
+   519	
+   520	#if __cplusplus >= 201103L
+   521		_Deque_impl_data(const _Deque_impl_data&) = default;
+   522		_Deque_impl_data&
+   523		operator=(const _Deque_impl_data&) = default;
+   524	
+   525		_Deque_impl_data(_Deque_impl_data&& __x) noexcept
+   526		: _Deque_impl_data(__x)
+   527		{ __x = _Deque_impl_data(); }
+   528	#endif
+   529	
+   530		void
+   531		_M_swap_data(_Deque_impl_data& __x) _GLIBCXX_NOEXCEPT
+   532		{
+   533		  // Do not use std::swap(_M_start, __x._M_start), etc as it loses
+   534		  // information used by TBAA.
+   535		  std::swap(*this, __x);
+   536		}
+   537	      };
+   538	
+   539	      // This struct encapsulates the implementation of the std::deque
+   540	      // standard container and at the same time makes use of the EBO
+   541	      // for empty allocators.
+   542	      struct _Deque_impl
+   543	      : public _Tp_alloc_type, public _Deque_impl_data
+   544	      {
+   545		_Deque_impl() _GLIBCXX_NOEXCEPT_IF(
+   546		  is_nothrow_default_constructible<_Tp_alloc_type>::value)
+   547		: _Tp_alloc_type()
+   548		{ }
+   549	
+   550		_Deque_impl(const _Tp_alloc_type& __a) _GLIBCXX_NOEXCEPT
+   551		: _Tp_alloc_type(__a)
+   552		{ }
+   553	
+   554	#if __cplusplus >= 201103L
+   555		_Deque_impl(_Deque_impl&&) = default;
+   705	   *  constant-time manipulation of elements at either end.
+   706	   *
+   707	   *  @ingroup sequences
+   708	   *
+   709	   *  @tparam _Tp  Type of element.
+   710	   *  @tparam _Alloc  Allocator type, defaults to allocator<_Tp>.
+   711	   *
+   712	   *  Meets the requirements of a <a href="tables.html#65">container</a>, a
+   713	   *  <a href="tables.html#66">reversible container</a>, and a
+   714	   *  <a href="tables.html#67">sequence</a>, including the
+   715	   *  <a href="tables.html#68">optional sequence requirements</a>.
+   716	   *
+   717	   *  In previous HP/SGI versions of deque, there was an extra template
+   718	   *  parameter so users could control the node size.  This extension turned
+   719	   *  out to violate the C++ standard (it can be detected using template
+   720	   *  template parameters), and it was removed.
+   721	   *
+   722	   *  Here's how a deque<Tp> manages memory.  Each deque has 4 members:
+   723	   *
+   724	   *  - Tp**        _M_map
+   725	   *  - size_t      _M_map_size
+   726	   *  - iterator    _M_start, _M_finish
+   727	   *
+   728	   *  map_size is at least 8.  %map is an array of map_size
+   729	   *  pointers-to-@a nodes.  (The name %map has nothing to do with the
+   730	   *  std::map class, and @b nodes should not be confused with
+   731	   *  std::list's usage of @a node.)
+   732	   *
+   733	   *  A @a node has no specific type name as such, but it is referred
+   734	   *  to as @a node in this file.  It is a simple array-of-Tp.  If Tp
+   735	   *  is very large, there will be one Tp element per node (i.e., an
+   736	   *  @a array of one).  For non-huge Tp's, node size is inversely
+   737	   *  related to Tp size: the larger the Tp, the fewer Tp's will fit
+   738	   *  in a node.  The goal here is to keep the total size of a node
+   739	   *  relatively small and constant over different Tp's, to improve
+   740	   *  allocator efficiency.
+   741	   *
+   742	   *  Not every pointer in the %map array will point to a node.  If
+   743	   *  the initial number of elements in the deque is small, the
+   744	   *  /middle/ %map pointers will be valid, and the ones at the edges
+   745	   *  will be unused.  This same situation will arise as the %map
+   746	   *  grows: available %map pointers, if any, will be on the ends.  As
+   747	   *  new nodes are created, only a subset of the %map's pointers need
+   748	   *  to be copied @a outward.
+   749	   *
+   750	   *  Class invariants:
+   751	   * - For any nonsingular iterator i:
+   752	   *    - i.node points to a member of the %map array.  (Yes, you read that
+   753	   *      correctly:  i.node does not actually point to a node.)  The member of
+   754	   *      the %map array is what actually points to the node.
+   755	   *    - i.first == *(i.node)    (This points to the node (first Tp element).)
+   756	   *    - i.last  == i.first + node_size
+   757	   *    - i.cur is a pointer in the range [i.first, i.last).  NOTE:
+   758	   *      the implication of this is that i.cur is always a dereferenceable
+   759	   *      pointer, even if i is a past-the-end iterator.
+   760	   * - Start and Finish are always nonsingular iterators.  NOTE: this
+   761	   * means that an empty deque must have one node, a deque with <N
+   762	   * elements (where N is the node buffer size) must have one node, a
+   763	   * deque with N through (2N-1) elements must have two nodes, etc.
+   764	   * - For every node other than start.node and finish.node, every
+   765	   * element in the node is an initialized object.  If start.node ==
+   766	   * finish.node, then [start.cur, finish.cur) are initialized
+   767	   * objects, and the elements outside that range are uninitialized
+   768	   * storage.  Otherwise, [start.cur, start.last) and [finish.first,
+   769	   * finish.cur) are initialized objects, and [start.first, start.cur)
+   770	   * and [finish.cur, finish.last) are uninitialized storage.
+   771	   * - [%map, %map + map_size) is a valid, non-empty range.
+   260	
+   261	_LIBCPP_PUSH_MACROS
+   262	#  include <__undef_macros>
+   263	
+   264	_LIBCPP_BEGIN_NAMESPACE_STD
+   265	
+   266	template <class _ValueType, class _DiffType>
+   267	struct __deque_block_size {
+   268	  static const _DiffType value = sizeof(_ValueType) < 256 ? 4096 / sizeof(_ValueType) : 16;
+   269	};
+   270	
+   271	template <class _ValueType,
+   272	          class _Pointer,
+   273	          class _Reference,
+   274	          class _MapPointer,
+   275	          class _DiffType,
+   276	          _DiffType _BS =
+   277	#  ifdef _LIBCPP_ABI_INCOMPLETE_TYPES_IN_DEQUE
+   278	              // Keep template parameter to avoid changing all template declarations thoughout
+   279	              // this file.
+   280	          0
+   281	#  else
+   282	              __deque_block_size<_ValueType, _DiffType>::value
+   283	#  endif
+   284	          >
+   285	class __deque_iterator {
+   286	  typedef _MapPointer __map_iterator;
+   287	
+   288	public:
+   289	  typedef _Pointer pointer;
+   290	  typedef _DiffType difference_type;
+   291	
+   292	private:
+   293	  __map_iterator __m_iter_;
+   294	  pointer __ptr_;
+   295	
+   296	  static const difference_type __block_size;
+   297	
+   298	public:
+   299	  typedef _ValueType value_type;
+   500	                "Allocator::value_type must be same type as value_type");
+   501	
+   502	  using size_type       = typename __alloc_traits::size_type;
+   503	  using difference_type = typename __alloc_traits::difference_type;
+   504	
+   505	  using pointer       = typename __alloc_traits::pointer;
+   506	  using const_pointer = typename __alloc_traits::const_pointer;
+   507	
+   508	  using __pointer_allocator _LIBCPP_NODEBUG       = __rebind_alloc<__alloc_traits, pointer>;
+   509	  using __const_pointer_allocator _LIBCPP_NODEBUG = __rebind_alloc<__alloc_traits, const_pointer>;
+   510	  using __map _LIBCPP_NODEBUG                     = __split_buffer<pointer, __pointer_allocator>;
+   511	  using __map_alloc_traits _LIBCPP_NODEBUG        = allocator_traits<__pointer_allocator>;
+   512	  using __map_pointer _LIBCPP_NODEBUG             = typename __map_alloc_traits::pointer;
+   513	  using __map_const_pointer _LIBCPP_NODEBUG       = typename allocator_traits<__const_pointer_allocator>::const_pointer;
+   514	  using __map_const_iterator _LIBCPP_NODEBUG      = typename __map::const_iterator;
+   515	
+   516	  using reference       = value_type&;
+   543	  struct __deque_block_range {
+   544	    explicit _LIBCPP_HIDE_FROM_ABI __deque_block_range(pointer __b, pointer __e) _NOEXCEPT
+   545	        : __begin_(__b),
+   546	          __end_(__e) {}
+   547	    const pointer __begin_;
+   548	    const pointer __end_;
+   549	  };
+   550	
+   551	  struct __deque_range {
+   552	    iterator __pos_;
+   553	    const iterator __end_;
+   554	
+   555	    _LIBCPP_HIDE_FROM_ABI __deque_range(iterator __pos, iterator __e) _NOEXCEPT : __pos_(__pos), __end_(__e) {}
+    50	
+    51	template <class _SplitBuffer, class _Tp, class _Allocator>
+    52	class __split_buffer_pointer_layout {
+    53	protected:
+    54	  using value_type                      = _Tp;
+    55	  using allocator_type                  = _Allocator;
+    56	  using __alloc_traits _LIBCPP_NODEBUG  = allocator_traits<allocator_type>;
+    57	  using reference                       = value_type&;
+    58	  using const_reference                 = const value_type&;
+    59	  using size_type                       = typename __alloc_traits::size_type;
+    60	  using difference_type                 = typename __alloc_traits::difference_type;
+    61	  using pointer                         = typename __alloc_traits::pointer;
+    62	  using const_pointer                   = typename __alloc_traits::const_pointer;
+    63	  using iterator                        = pointer;
+    64	  using const_iterator                  = const_pointer;
+    65	  using __sentinel_type _LIBCPP_NODEBUG = pointer;
+    66	
+    67	public:
+    68	  // Can't be defaulted due to _LIBCPP_COMPRESSED_PAIR not being an aggregate in C++03 and C++11.
+    69	  _LIBCPP_CONSTEXPR_SINCE_CXX20 _LIBCPP_HIDE_FROM_ABI __split_buffer_pointer_layout() : __back_cap_(nullptr) {}
+    70	
+    71	  _LIBCPP_CONSTEXPR_SINCE_CXX20
+    72	  _LIBCPP_HIDE_FROM_ABI explicit __split_buffer_pointer_layout(const allocator_type& __alloc)
+    73	      : __back_cap_(nullptr), __alloc_(__alloc) {}
+   188	    __begin_     = __other.__begin_;
+   189	    __end_       = __other.__end_;
+   190	    __back_cap_  = __other.__back_cap_;
+   191	  }
+   192	
+   193	private:
+   194	  pointer __front_cap_ = nullptr;
+   195	  pointer __begin_     = nullptr;
+   196	  pointer __end_       = nullptr;
+   197	  _LIBCPP_COMPRESSED_PAIR(pointer, __back_cap_, allocator_type, __alloc_);
+   198	
+   199	  template <class, class, class>
+   200	  friend class __split_buffer_pointer_layout;
+   201	};
+   202	
+   354	  _LIBCPP_NO_UNIQUE_ADDRESS allocator_type __alloc_;
+   355	
+   356	  template <class, class, class>
+   357	  friend class __split_buffer_size_layout;
+   358	};
+   359	
+   360	// `__split_buffer` is a contiguous array data structure. It may hold spare capacity at both ends of
+   361	// the sequence. This allows for a `__split_buffer` to grow from both the front and the back without
+   362	// relocating its contents until it runs out of room. This characteristic sets it apart from
+   363	// `std::vector`, which only holds spare capacity at its end. As such, `__split_buffer` is useful
+   364	// for implementing both `std::vector` and `std::deque`.
+   365	//
+   366	// The sequence is stored as a contiguous chunk of memory delimited by the following "pointers" (`o` denotes
+   367	// uninitialized memory and `x` denotes a valid object):
+   368	//
+   369	//     |oooooooooooooooooooxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxoooooooooooooooooooooooo|
+   370	//      ^                  ^                                    ^                       ^
+   371	//  __front_cap_        __begin_                              __end_               __back_cap_
+   372	//
+   373	// The range [__front_cap_, __begin_) contains uninitialized memory. It is referred to as the "front spare capacity".
+   374	// The range [__begin_, __end_) contains valid objects. It is referred to as the "valid range".
+   375	// The range [__end_, __back_cap_) contains uninitialized memory. It is referred to as the "back spare capacity".
+   376	//
+   377	// The layout of `__split_buffer` is determined by the `_Layout` template template parameter. This
+   378	// `_Layout` allows the above pointers to be stored as different representations, such as integer
+   379	// offsets. A layout class template must provide the following interface:
+   380	//
+   381	//    template<class _Tp, class _Allocator, class _Layout>
+   382	//    class __layout {
+   383	//    protected:
+   384	//      using value_type                     = _Tp;
+   385	//      using allocator_type                 = _Allocator;
+   386	//      using __alloc_traits                 = allocator_traits<allocator_type>;
+   387	//      using reference                      = value_type&;
+   388	//      using const_reference                = const value_type&;
+   389	//      using size_type                      = typename __alloc_traits::size_type;
+   390	//      using difference_type                = typename __alloc_traits::difference_type;
+   391	//      using pointer                        = typename __alloc_traits::pointer;
+   392	//      using const_pointer                  = typename __alloc_traits::const_pointer;
+   393	//      using iterator                       = pointer;
+   394	//      using const_iterator                 = const_pointer;
+   395	//      using __sentinel_type                = /* type that represents the layout's sentinel */;
+   396	//
+   397	//    public:
+   398	//      __layout() = default;
+   399	//      explicit __layout(const allocator_type&);
+   400	//
+   401	//      pointer __front_cap();
+   402	//      const_pointer __front_cap() const;
+   403	//
+   404	//      pointer begin();
+   405	//      const_pointer begin() const;
+   406	//
+   407	//      pointer end();
+   408	//      pointer end() const;
+   409	//
+   410	//      size_type size() const;
+   411	//      bool empty() const;
+   412	//      size_type capacity() const;
+    77	_GLIBCXX_BEGIN_NAMESPACE_VERSION
+    78	
+    79	  // Red-black tree class, designed for use in implementing STL
+    80	  // associative containers (set, multiset, map, and multimap). The
+    81	  // insertion and deletion algorithms are based on those in Cormen,
+    82	  // Leiserson, and Rivest, Introduction to Algorithms (MIT Press,
+    83	  // 1990), except that
+    84	  //
+    85	  // (1) the header cell is maintained with links not only to the root
+    86	  // but also to the leftmost node of the tree, to enable constant
+    87	  // time begin(), and to the rightmost node of the tree, to enable
+    88	  // linear time performance when used with the generic set algorithms
+    89	  // (set_union, etc.)
+    90	  //
+    91	  // (2) when a node being deleted has two children its successor node
+    92	  // is relinked into its place, rather than copied, so that the only
+    93	  // iterators invalidated are those referring to the deleted node.
+    94	
+    95	  enum _Rb_tree_color { _S_red = false, _S_black = true };
+    96	
+    97	  struct _Rb_tree_node_base
+    98	  {
+    99	    typedef _Rb_tree_node_base* _Base_ptr;
+   100	    typedef const _Rb_tree_node_base* _Const_Base_ptr;
+   101	
+   102	    _Rb_tree_color	_M_color;
+   103	    _Base_ptr		_M_parent;
+   104	    _Base_ptr		_M_left;
+   105	    _Base_ptr		_M_right;
+   106	
+   107	    static _Base_ptr
+   108	    _S_minimum(_Base_ptr __x) _GLIBCXX_NOEXCEPT
+   109	    {
+   110	      while (__x->_M_left != 0) __x = __x->_M_left;
+   140	      _Key_compare		_M_key_compare;
+   141	
+   142	      _Rb_tree_key_compare()
+   143	      _GLIBCXX_NOEXCEPT_IF(
+   144		is_nothrow_default_constructible<_Key_compare>::value)
+   145	      : _M_key_compare()
+   146	      { }
+   147	
+   148	      _Rb_tree_key_compare(const _Key_compare& __comp)
+   149	      : _M_key_compare(__comp)
+   150	      { }
+   151	
+   152	#if __cplusplus >= 201103L
+   153	      // Copy constructor added for consistency with C++98 mode.
+   154	      _Rb_tree_key_compare(const _Rb_tree_key_compare&) = default;
+   155	
+   156	      _Rb_tree_key_compare(_Rb_tree_key_compare&& __x)
+   157		noexcept(is_nothrow_copy_constructible<_Key_compare>::value)
+   158	      : _M_key_compare(__x._M_key_compare)
+   159	      { }
+   160	#endif
+   161	    };
+   162	
+   163	  // Helper type to manage default initialization of node count and header.
+   164	  struct _Rb_tree_header
+   165	  {
+   166	    _Rb_tree_node_base	_M_header;
+   167	    size_t		_M_node_count; // Keeps track of size of tree.
+   168	
+   169	    _Rb_tree_header() _GLIBCXX_NOEXCEPT
+   210	
+   211	  template<typename _Val>
+   212	    struct _Rb_tree_node : public _Rb_tree_node_base
+   213	    {
+   214	      typedef _Rb_tree_node<_Val>* _Link_type;
+   215	
+   216	#if __cplusplus < 201103L
+   217	      _Val _M_value_field;
+   218	
+   219	      _Val*
+   220	      _M_valptr()
+   221	      { return std::__addressof(_M_value_field); }
+   222	
+   223	      const _Val*
+   224	      _M_valptr() const
+   225	      { return std::__addressof(_M_value_field); }
+   226	#else
+   227	      __gnu_cxx::__aligned_membuf<_Val> _M_storage;
+   228	
+   229	      _Val*
+   230	      _M_valptr()
+   231	      { return _M_storage._M_ptr(); }
+   232	
+   233	      const _Val*
+   234	      _M_valptr() const
+   650	    protected:
+   651	#if _GLIBCXX_INLINE_VERSION
+   652	      template<typename _Key_compare>
+   653	#else
+   654	      // Unused _Is_pod_comparator is kept as it is part of mangled name.
+   655	      template<typename _Key_compare,
+   656		       bool /* _Is_pod_comparator */ = __is_pod(_Key_compare)>
+   657	#endif
+   658		struct _Rb_tree_impl
+   659		: public _Node_allocator
+   660		, public _Rb_tree_key_compare<_Key_compare>
+   661		, public _Rb_tree_header
+   662		{
+   663		  typedef _Rb_tree_key_compare<_Key_compare> _Base_key_compare;
+   664	
+   665		  _Rb_tree_impl()
+   666		    _GLIBCXX_NOEXCEPT_IF(
+   700		  { }
+   701	#endif
+   702		};
+   703	
+   704	      _Rb_tree_impl<_Compare> _M_impl;
+   705	
+   706	    protected:
+83:class __tree_end_node;
+85:class __tree_node_base;
+87:class __tree_node;
+543:struct __tree_node_types;
+546:struct __tree_node_types<_NodePtr, __tree_node<_Tp, _VoidPtr> > {
+548:  using __end_node_pointer _LIBCPP_NODEBUG  = __rebind_pointer_t<_VoidPtr, __tree_end_node<__node_base_pointer> >;
+558:class __tree_end_node {
+563:  _LIBCPP_HIDE_FROM_ABI __tree_end_node() _NOEXCEPT : __left_() {}
+567:class __tree_node_base : public __tree_end_node<__rebind_pointer_t<_VoidPtr, __tree_node_base<_VoidPtr> > > {
+570:  using __end_node_pointer _LIBCPP_NODEBUG = __rebind_pointer_t<_VoidPtr, __tree_end_node<pointer> >;
+586:class __tree_node : public __tree_node_base<_VoidPtr> {
+621:class __tree_node_destructor {
+634:  _LIBCPP_HIDE_FROM_ABI __tree_node_destructor(const __tree_node_destructor&) = default;
+635:  __tree_node_destructor& operator=(const __tree_node_destructor&)            = delete;
+656:struct __generic_container_node_destructor<__tree_node<_Tp, _VoidPtr>, _Alloc> : __tree_node_destructor<_Alloc> {
+657:  using __tree_node_destructor<_Alloc>::__tree_node_destructor;
+907:  using __end_node_t _LIBCPP_NODEBUG       = __tree_end_node<__node_base_pointer>;
+925:  __end_node_pointer __begin_node_;
+926:  _LIBCPP_COMPRESSED_PAIR(__end_node_t, __end_node_, __node_allocator, __node_alloc_);
+927:  _LIBCPP_COMPRESSED_PAIR(size_type, __size_, value_compare, __value_comp_);
+944:  _LIBCPP_HIDE_FROM_ABI size_type size() const _NOEXCEPT { return __size_; }
+1665:    __begin_node_                    = __t.__begin_node_;
+1668:    __size_                          = __t.__size_;
+1685:  __begin_node_ = __t.__begin_node_;
+1686:  __end_node_   = __t.__end_node_;
+1688:  __size_       = __t.__size_;
+1941:  ++__size_;
+1984:  --__size_;
+2344:  --__size_;

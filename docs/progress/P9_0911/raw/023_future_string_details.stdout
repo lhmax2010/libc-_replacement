@@ -1,0 +1,422 @@
+   216	#if defined(_GLIBCXX_HAS_GTHREADS)
+   217	
+   218	  /// @cond undocumented
+   219	
+   220	  /// Base class and enclosing scope.
+   221	  struct __future_base
+   222	  {
+   223	    /// Base class for results.
+   224	    struct _Result_base
+   225	    {
+   226	      exception_ptr		_M_error;
+   227	
+   228	      _Result_base(const _Result_base&) = delete;
+   229	      _Result_base& operator=(const _Result_base&) = delete;
+   230	
+   231	      // _M_destroy() allows derived classes to control deallocation
+   232	      virtual void _M_destroy() = 0;
+   233	
+   234	      struct _Deleter
+   235	      {
+   236		void operator()(_Result_base* __fr) const { __fr->_M_destroy(); }
+   237	      };
+   238	
+   239	    protected:
+   240	      _Result_base();
+   241	      virtual ~_Result_base();
+   242	    };
+   243	
+   244	    /// A unique_ptr for result objects.
+   245	    template<typename _Res>
+   246	      using _Ptr = unique_ptr<_Res, _Result_base::_Deleter>;
+   247	
+   248	    /// A result object that has storage for an object of type _Res.
+   249	    template<typename _Res>
+   250	      struct _Result : _Result_base
+   251	      {
+   252	      private:
+   253		__gnu_cxx::__aligned_buffer<_Res>	_M_storage;
+   254		bool 					_M_initialized;
+   255	
+   256	      public:
+   257		typedef _Res result_type;
+   258	
+   259		_Result() noexcept : _M_initialized() { }
+   327	      }
+   328	
+   329	    // Base class for various types of shared state created by an
+   330	    // asynchronous provider (such as a std::promise) and shared with one
+   331	    // or more associated futures.
+   332	    class _State_baseV2
+   333	    {
+   334	      typedef _Ptr<_Result_base> _Ptr_type;
+   335	
+   336	      enum _Status : unsigned {
+   337		__not_ready,
+   338		__ready
+   339	      };
+   340	
+   341	      _Ptr_type			_M_result;
+   342	      __atomic_futex_unsigned<>	_M_status;
+   343	      atomic_flag         	_M_retrieved = ATOMIC_FLAG_INIT;
+   344	      once_flag			_M_once;
+   345	
+   346	    public:
+   347	      _State_baseV2() noexcept : _M_result(), _M_status(_Status::__not_ready)
+   348		{ }
+   349	      _State_baseV2(const _State_baseV2&) = delete;
+   350	      _State_baseV2& operator=(const _State_baseV2&) = delete;
+   351	      virtual ~_State_baseV2() = default;
+   352	
+   353	      _Result_base&
+   354	      wait()
+   697	    : true_type { };
+   698	  /// @endcond
+   699	
+   700	  /// Common implementation for future and shared_future.
+   701	  template<typename _Res>
+   702	    class __basic_future : public __future_base
+   703	    {
+   704	    protected:
+   705	      typedef shared_ptr<_State_base>		__state_type;
+   706	      typedef __future_base::_Result<_Res>&	__result_type;
+   707	
+   708	    private:
+   709	      __state_type 		_M_state;
+   710	
+   711	    public:
+   712	      // Disable copying.
+  1084	  { return shared_future<void>(std::move(*this)); }
+  1085	
+  1086	  /// Primary template for promise
+  1087	  template<typename _Res>
+  1088	    class promise
+  1089	    {
+  1090	      // _GLIBCXX_RESOLVE_LIB_DEFECTS
+  1091	      // 3466: Specify the requirements for promise/future/[...] consistently
+  1092	      static_assert(!is_array<_Res>{}, "result type must not be an array");
+  1093	      static_assert(!is_function<_Res>{}, "result type must not be a function");
+  1094	      static_assert(is_destructible<_Res>{},
+  1095			    "result type must be destructible");
+  1096	
+  1097	      typedef __future_base::_State_base 	_State;
+  1098	      typedef __future_base::_Result<_Res>	_Res_type;
+  1099	      typedef __future_base::_Ptr<_Res_type>	_Ptr_type;
+  1100	      template<typename, typename> friend struct _State::_Setter;
+  1101	      friend _State;
+  1102	
+  1103	      shared_ptr<_State>                        _M_future;
+  1104	      _Ptr_type                                 _M_storage;
+  1105	
+  1106	    public:
+  1107	      promise()
+  1108	      : _M_future(std::make_shared<_State>()),
+  1109		_M_storage(new _Res_type())
+  1110	      { }
+  1111	
+  1112	      promise(promise&& __rhs) noexcept
+  1113	      : _M_future(std::move(__rhs._M_future)),
+  1114		_M_storage(std::move(__rhs._M_storage))
+  1115	      { }
+  1116	
+  1117	      template<typename _Allocator>
+  1118	        promise(allocator_arg_t, const _Allocator& __a)
+  1119	        : _M_future(std::allocate_shared<_State>(__a)),
+  1120		  _M_storage(__future_base::_S_allocate_result<_Res>(__a))
+  1121	        { }
+  1122	
+  1130	
+  1131	      ~promise()
+  1132	      {
+  1133	        if (static_cast<bool>(_M_future) && !_M_future.unique())
+  1134	          _M_future->_M_break_promise(std::move(_M_storage));
+  1135	      }
+  1136	
+  1137	      // Assignment
+  1138	      promise&
+  1139	      operator=(promise&& __rhs) noexcept
+  1140	      {
+  1141	        promise(std::move(__rhs)).swap(*this);
+  1142	        return *this;
+  1143	      }
+  1144	
+  1145	      promise& operator=(const promise&) = delete;
+  1146	
+   521	}
+   522	
+   523	class _LIBCPP_EXPORTED_FROM_ABI __assoc_sub_state : public __shared_count {
+   524	protected:
+   525	  exception_ptr __exception_;
+   526	  mutable mutex __mut_;
+   527	  mutable condition_variable __cv_;
+   528	  unsigned __state_;
+   529	
+   530	  void __on_zero_shared() _NOEXCEPT override;
+   531	  void __sub_wait(unique_lock<mutex>& __lk);
+   532	
+   533	public:
+   534	  enum { __constructed = 1, __future_attached = 2, ready = 4, deferred = 8 };
+   535	
+   536	  _LIBCPP_HIDE_FROM_ABI __assoc_sub_state() : __state_(0) {}
+   537	
+   538	  _LIBCPP_HIDE_FROM_ABI bool __has_value() const { return (__state_ & __constructed) || (__exception_ != nullptr); }
+   539	
+   540	  _LIBCPP_HIDE_FROM_ABI void __attach_future() {
+   541	    lock_guard<mutex> __lk(__mut_);
+   542	    bool __has_future_attached = (__state_ & __future_attached) != 0;
+   543	    if (__has_future_attached)
+   544	      std::__throw_future_error(future_errc::future_already_retrieved);
+   545	    this->__add_shared();
+   546	    __state_ |= __future_attached;
+   547	  }
+   548	
+   549	  _LIBCPP_HIDE_FROM_ABI void __set_deferred() { __state_ |= deferred; }
+   550	
+   551	  void __make_ready();
+   552	  _LIBCPP_HIDE_FROM_ABI bool __is_ready() const { return (__state_ & ready) != 0; }
+   553	
+   554	  void set_value();
+   555	  void set_value_at_thread_exit();
+   585	template <class _Rp>
+   586	class _LIBCPP_HIDDEN __assoc_state : public __assoc_sub_state {
+   587	  typedef __assoc_sub_state base;
+   588	
+   589	protected:
+   590	  _ALIGNAS_TYPE(_Rp) char __value_[sizeof(_Rp)];
+   591	
+   592	  _LIBCPP_HIDE_FROM_ABI_VIRTUAL void __on_zero_shared() _NOEXCEPT override;
+   593	
+   594	public:
+   595	  template <class _Arg>
+   596	  _LIBCPP_HIDE_FROM_ABI void set_value(_Arg&& __arg);
+   597	
+   598	  template <class _Arg>
+   599	  _LIBCPP_HIDE_FROM_ABI void set_value_at_thread_exit(_Arg&& __arg);
+   600	
+   601	  _LIBCPP_HIDE_FROM_ABI _Rp move();
+   602	  _LIBCPP_HIDE_FROM_ABI _Rp& copy();
+   603	};
+   604	
+   605	template <class _Rp>
+   606	void __assoc_state<_Rp>::__on_zero_shared() _NOEXCEPT {
+   607	  if (this->__state_ & base::__constructed)
+   608	    reinterpret_cast<_Rp*>(std::addressof(__value_))->~_Rp();
+   609	  delete this;
+   913	_LIBCPP_HIDE_FROM_ABI future<_Rp> __make_deferred_assoc_state(_Fp&& __f);
+   914	
+   915	template <class _Rp, class _Fp>
+   916	_LIBCPP_HIDE_FROM_ABI future<_Rp> __make_async_assoc_state(_Fp&& __f);
+   917	
+   918	template <class _Rp>
+   919	class future {
+   920	  __assoc_state<_Rp>* __state_;
+   921	
+   922	  explicit _LIBCPP_HIDE_FROM_ABI future(__assoc_state<_Rp>* __state);
+   923	
+   924	  template <class>
+   925	  friend class promise;
+   926	  template <class>
+   927	  friend class shared_future;
+   928	
+   929	  template <class _R1, class _Fp>
+   930	  friend future<_R1> __make_deferred_assoc_state(_Fp&& __f);
+   931	  template <class _R1, class _Fp>
+   932	  friend future<_R1> __make_async_assoc_state(_Fp&& __f);
+  1114	template <class _Rp>
+  1115	class promise {
+  1116	  __assoc_state<_Rp>* __state_;
+  1117	
+  1118	  _LIBCPP_HIDE_FROM_ABI explicit promise(nullptr_t) _NOEXCEPT : __state_(nullptr) {}
+  1119	
+  1120	  template <class>
+  1121	  friend class packaged_task;
+  1122	
+  1123	public:
+  1124	  _LIBCPP_HIDE_FROM_ABI promise();
+  1125	  template <class _Alloc>
+  1126	  _LIBCPP_HIDE_FROM_ABI promise(allocator_arg_t, const _Alloc& __a);
+  1127	  _LIBCPP_HIDE_FROM_ABI promise(promise&& __rhs) _NOEXCEPT : __state_(__rhs.__state_) { __rhs.__state_ = nullptr; }
+  1128	  promise(const promise& __rhs) = delete;
+  1160	  typedef __assoc_state_alloc<_Rp, _Alloc> _State;
+  1161	  typedef typename __allocator_traits_rebind<_Alloc, _State>::type _A2;
+  1162	  typedef __allocator_destructor<_A2> _D2;
+  1163	  _A2 __a(__a0);
+  1164	  unique_ptr<_State, _D2> __hold(__a.allocate(1), _D2(__a, 1));
+  1165	  ::new ((void*)std::addressof(*__hold.get())) _State(__a0);
+  1166	  __state_ = std::addressof(*__hold.release());
+  1167	}
+  1168	
+  1169	template <class _Rp>
+  1170	promise<_Rp>::~promise() {
+  1171	  if (__state_) {
+  1172	    if (!__state_->__has_value() && __state_->use_count() > 1)
+  1173	      __state_->set_exception(make_exception_ptr(future_error(make_error_code(future_errc::broken_promise))));
+  1174	    __state_->__release_shared();
+  1175	  }
+  1176	}
+  1177	
+  1178	template <class _Rp>
+  1179	future<_Rp> promise<_Rp>::get_future() {
+  1180	  if (__state_ == nullptr)
+  1181	    std::__throw_future_error(future_errc::no_state);
+  1182	  return future<_Rp>(__state_);
+  1183	}
+  1184	
+  1185	template <class _Rp>
+  1186	void promise<_Rp>::set_value(const _Rp& __r) {
+  1187	  if (__state_ == nullptr)
+  1188	    std::__throw_future_error(future_errc::no_state);
+    39	#else
+    40	  return __t -= 1;
+    41	#endif
+    42	}
+    43	
+    44	class _LIBCPP_EXPORTED_FROM_ABI __shared_count {
+    45	  __shared_count(const __shared_count&);
+    46	  __shared_count& operator=(const __shared_count&);
+    47	
+    48	protected:
+    49	  long __shared_owners_;
+    50	  virtual ~__shared_count();
+    51	
+    52	private:
+    53	  virtual void __on_zero_shared() _NOEXCEPT = 0;
+    54	
+    55	public:
+    56	  _LIBCPP_HIDE_FROM_ABI explicit __shared_count(long __refs = 0) _NOEXCEPT : __shared_owners_(__refs) {}
+    57	
+    58	#if defined(_LIBCPP_SHARED_PTR_DEFINE_LEGACY_INLINE_FUNCTIONS)
+    59	  void __add_shared() noexcept;
+    60	  bool __release_shared() noexcept;
+    61	#else
+    62	  _LIBCPP_HIDE_FROM_ABI void __add_shared() _NOEXCEPT { __libcpp_atomic_refcount_increment(__shared_owners_); }
+    63	  _LIBCPP_HIDE_FROM_ABI bool __release_shared() _NOEXCEPT {
+    64	    if (__libcpp_atomic_refcount_decrement(__shared_owners_) == -1) {
+    65	      __on_zero_shared();
+    66	      return true;
+    67	    }
+    68	    return false;
+    69	  }
+    70	#endif
+   180	      explicit
+   181	      basic_string(__sv_wrapper __svw, const _Alloc& __a)
+   182	      : basic_string(__svw._M_sv.data(), __svw._M_sv.size(), __a) { }
+   183	#endif
+   184	
+   185	      // Use empty-base optimization: http://www.cantrip.org/emptyopt.html
+   186	      struct _Alloc_hider : allocator_type // TODO check __is_final
+   187	      {
+   188	#if __cplusplus < 201103L
+   189		_Alloc_hider(pointer __dat, const _Alloc& __a = _Alloc())
+   190		: allocator_type(__a), _M_p(__dat) { }
+   191	#else
+   192		_GLIBCXX20_CONSTEXPR
+   193		_Alloc_hider(pointer __dat, const _Alloc& __a)
+   194		: allocator_type(__a), _M_p(__dat) { }
+   195	
+   196		_GLIBCXX20_CONSTEXPR
+   197		_Alloc_hider(pointer __dat, _Alloc&& __a = _Alloc())
+   198		: allocator_type(std::move(__a)), _M_p(__dat) { }
+   199	#endif
+   200	
+   201		pointer _M_p; // The actual data.
+   202	      };
+   203	
+   204	      _Alloc_hider	_M_dataplus;
+   205	      size_type		_M_string_length;
+   206	
+   207	      enum { _S_local_capacity = 15 / sizeof(_CharT) };
+   208	
+   209	      union
+   210	      {
+   211		_CharT           _M_local_buf[_S_local_capacity + 1];
+   212		size_type        _M_allocated_capacity;
+   213	      };
+   214	
+   215	      _GLIBCXX20_CONSTEXPR
+   262		traits_type::assign(_M_data()[__n], _CharT());
+   263	      }
+   264	
+   265	      _GLIBCXX20_CONSTEXPR
+   266	      bool
+   267	      _M_is_local() const
+   268	      {
+   269		if (_M_data() == _M_local_data())
+   270		  {
+   271		    if (_M_string_length > _S_local_capacity)
+   272		      __builtin_unreachable();
+   273		    return true;
+   274		  }
+   275		return false;
+   276	      }
+   856	  // for representing the size of a short string anyway.
+   857	
+   858	#    ifdef _LIBCPP_BIG_ENDIAN
+   859	  static const size_type __endian_factor = 2;
+   860	#    else
+   861	  static const size_type __endian_factor = 1;
+   862	#    endif
+   863	
+   864	#  else // _LIBCPP_ABI_ALTERNATE_STRING_LAYOUT
+   865	
+   866	#    ifdef _LIBCPP_BIG_ENDIAN
+   867	  static const size_type __endian_factor = 1;
+   868	#    else
+   869	  static const size_type __endian_factor = 2;
+   870	#    endif
+   871	
+   872	  // Attribute 'packed' is used to keep the layout compatible with the
+   873	  // previous definition that did not use bit fields. This is because on
+   874	  // some platforms bit fields have a default size rather than the actual
+   875	  // size used, e.g., it is 4 bytes on AIX. See D128285 for details.
+   876	  struct __long {
+   877	    __long() = default;
+   878	
+   879	    _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 __long(__alloc_result __alloc, size_type __size)
+   880	        : __is_long_(true), __cap_(__alloc.count / __endian_factor), __size_(__size), __data_(__alloc.ptr) {
+   881	      _LIBCPP_ASSERT_INTERNAL(!__fits_in_sso(__alloc.count), "Long capacity should always be larger than the SSO");
+   882	    }
+   883	
+   884	    struct _LIBCPP_PACKED {
+   885	      size_type __is_long_ : 1;
+   886	      size_type __cap_ : sizeof(size_type) * CHAR_BIT - 1;
+   887	    };
+   888	    size_type __size_;
+   889	    pointer __data_;
+   890	  };
+   891	
+   892	  enum { __min_cap = (sizeof(__long) - 1) / sizeof(value_type) > 2 ? (sizeof(__long) - 1) / sizeof(value_type) : 2 };
+   893	
+   894	  struct __short {
+   895	    struct _LIBCPP_PACKED {
+   896	      unsigned char __is_long_ : 1;
+   897	      unsigned char __size_    : 7;
+   898	    };
+   899	    _LIBCPP_NO_UNIQUE_ADDRESS __padding<sizeof(value_type) - 1> __padding_;
+   900	    value_type __data_[__min_cap];
+   901	  };
+   902	
+   903	#  endif // _LIBCPP_ABI_ALTERNATE_STRING_LAYOUT
+   904	
+   905	  static_assert(sizeof(__short) == (sizeof(value_type) * (__min_cap + 1)), "__short has an unexpected size.");
+   906	
+   907	  union __rep {
+   908	    __short __s;
+   909	    __long __l;
+   910	
+   911	    __rep() = default;
+   912	    _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 __rep(__short __r) : __s(__r) {}
+   913	    _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 __rep(__long __r) : __l(__r) {}
+   914	    _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 __rep(__uninitialized_tag) {}
+   915	  };
+   916	
+   917	  _LIBCPP_COMPRESSED_PAIR(__rep, __rep_, allocator_type, __alloc_);
+   918	
+   919	  // annotate the string with its size() at scope exit. The string has to be in a valid state at that point.
+   920	  struct __annotate_new_size {
+   921	    basic_string& __str_;
+   922	
+   923	    _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 __annotate_new_size(basic_string& __str) : __str_(__str) {}
+   924	
+   925	    _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 void operator()() { __str_.__annotate_new(__str_.size()); }
+   926	  };

@@ -1,0 +1,474 @@
+    75	   *
+    76	   *  An `any` object's state is either empty or it stores a contained object
+    77	   *  of CopyConstructible type.
+    78	   *
+    79	   *  @since C++17
+    80	   */
+    81	  class any
+    82	  {
+    83	    // Holds either pointer to a heap object or the contained object itself.
+    84	    union _Storage
+    85	    {
+    86	      constexpr _Storage() : _M_ptr{nullptr} {}
+    87	
+    88	      // Prevent trivial copies of this type, buffer might hold a non-POD.
+    89	      _Storage(const _Storage&) = delete;
+    90	      _Storage& operator=(const _Storage&) = delete;
+    91	
+    92	      void* _M_ptr;
+    93	      aligned_storage<sizeof(_M_ptr), alignof(void*)>::type _M_buffer;
+    94	    };
+    95	
+    96	    template<typename _Tp, typename _Safe = is_nothrow_move_constructible<_Tp>,
+    97		     bool _Fits = (sizeof(_Tp) <= sizeof(_Storage))
+    98				  && (alignof(_Tp) <= alignof(_Storage))>
+    99	      using _Internal = std::integral_constant<bool, _Safe::value && _Fits>;
+   100	
+   101	    template<typename _Tp>
+   102	      struct _Manager_internal; // uses small-object optimization
+   103	
+   104	    template<typename _Tp>
+   105	      struct _Manager_external; // creates contained object on the heap
+   106	
+   107	    template<typename _Tp>
+   108	      using _Manager = __conditional_t<_Internal<_Tp>::value,
+   109					       _Manager_internal<_Tp>,
+   110					       _Manager_external<_Tp>>;
+   111	
+   112	    template<typename _Tp, typename _VTp = decay_t<_Tp>>
+   352	    };
+   353	
+   354	    union _Arg
+   355	    {
+   356		void* _M_obj;
+   357		const std::type_info* _M_typeinfo;
+   358		any* _M_any;
+   359	    };
+   360	
+   361	    void (*_M_manager)(_Op, const any*, _Arg*);
+   362	    _Storage _M_storage;
+   363	
+   364	    /// @cond undocumented
+   365	    template<typename _Tp>
+   366	      friend void* __any_caster(const any* __any);
+   367	    /// @endcond
+   368	
+   369	    // Manage in-place contained object.
+   370	    template<typename _Tp>
+   371	      struct _Manager_internal
+   372	      {
+   373		static void
+   374		_S_manage(_Op __which, const any* __anyp, _Arg* __arg);
+   375	
+   376		template<typename _Up>
+   377		  static void
+   378		  _S_create(_Storage& __storage, _Up&& __value)
+   379		  {
+   380		    void* __addr = &__storage._M_buffer;
+   381		    ::new (__addr) _Tp(std::forward<_Up>(__value));
+   382		  }
+   383	
+   384		template<typename... _Args>
+   385		  static void
+   386		  _S_create(_Storage& __storage, _Args&&... __args)
+   387		  {
+   388		    void* __addr = &__storage._M_buffer;
+   389		    ::new (__addr) _Tp(std::forward<_Args>(__args)...);
+   390		  }
+   391	
+   392		static _Tp*
+   393		_S_access(const _Storage& __storage)
+   394		{
+   395		  // The contained object is in __storage._M_buffer
+   396		  const void* __addr = &__storage._M_buffer;
+   397		  return static_cast<_Tp*>(const_cast<void*>(__addr));
+   398		}
+   399	      };
+   400	
+   401	    // Manage external contained object.
+   402	    template<typename _Tp>
+   403	      struct _Manager_external
+   404	      {
+   405		static void
+   406		_S_manage(_Op __which, const any* __anyp, _Arg* __arg);
+   407	
+   408		template<typename _Up>
+   409		  static void
+   410		  _S_create(_Storage& __storage, _Up&& __value)
+   411		  {
+   412		    __storage._M_ptr = new _Tp(std::forward<_Up>(__value));
+   413		  }
+   414		template<typename... _Args>
+   415		  static void
+   416		  _S_create(_Storage& __storage, _Args&&... __args)
+   417		  {
+   418		    __storage._M_ptr = new _Tp(std::forward<_Args>(__args)...);
+   419		  }
+   420		static _Tp*
+   421		_S_access(const _Storage& __storage)
+   422		{
+   423		  // The contained object is in *__storage._M_ptr
+   424		  return static_cast<_Tp*>(__storage._M_ptr);
+   425		}
+   426	      };
+   145	_LIBCPP_HIDE_FROM_ABI add_pointer_t<add_const_t<_ValueType>> any_cast(any const*) noexcept;
+   146	
+   147	template <class _ValueType>
+   148	_LIBCPP_HIDE_FROM_ABI add_pointer_t<_ValueType> any_cast(any*) noexcept;
+   149	
+   150	namespace __any_imp {
+   151	inline constexpr size_t __small_buffer_size      = 3 * sizeof(void*);
+   152	inline constexpr size_t __small_buffer_alignment = alignof(void*);
+   153	
+   154	template <class _Tp>
+   155	using _IsSmallObject _LIBCPP_NODEBUG =
+   156	    integral_constant<bool,
+   157	                      sizeof(_Tp) <= __small_buffer_size && alignof(_Tp) <= __small_buffer_alignment &&
+   158	                          is_nothrow_move_constructible_v<_Tp>>;
+   159	
+   160	enum class _Action { _Destroy, _Copy, _Move, _Get, _TypeInfo };
+   161	
+   162	template <class _Tp>
+   163	struct _SmallHandler;
+   307	
+   308	private:
+   309	  using _Action _LIBCPP_NODEBUG = __any_imp::_Action;
+   310	  using _HandleFuncPtr
+   311	      _LIBCPP_NODEBUG = void* (*)(_Action, any const*, any*, const type_info*, const void* __fallback_info);
+   312	
+   313	  union _Storage {
+   314	    _LIBCPP_HIDE_FROM_ABI constexpr _Storage() : __ptr(nullptr) {}
+   315	    void* __ptr;
+   316	    alignas(__any_imp::__small_buffer_alignment) char __buf[__any_imp::__small_buffer_size];
+   317	  };
+   318	
+   319	  _LIBCPP_HIDE_FROM_ABI void*
+   320	  __call(_Action __a, any* __other = nullptr, type_info const* __info = nullptr, const void* __fallback_info = nullptr)
+   321	      const {
+   322	    return __h_(__a, this, __other, __info, __fallback_info);
+   323	  }
+   324	
+   325	  _LIBCPP_HIDE_FROM_ABI void* __call(
+   326	      _Action __a, any* __other = nullptr, type_info const* __info = nullptr, const void* __fallback_info = nullptr) {
+   327	    return __h_(__a, this, __other, __info, __fallback_info);
+   328	  }
+   329	
+   330	  template <class>
+   331	  friend struct __any_imp::_SmallHandler;
+   332	  template <class>
+   333	  friend struct __any_imp::_LargeHandler;
+   334	
+   335	  template <class _ValueType>
+   336	  friend add_pointer_t<add_const_t<_ValueType>> any_cast(any const*) noexcept;
+   337	
+   338	  template <class _ValueType>
+   339	  friend add_pointer_t<_ValueType> any_cast(any*) noexcept;
+   340	
+   341	  _HandleFuncPtr __h_ = nullptr;
+   342	  _Storage __s_;
+   343	};
+   344	
+   363	      return __type_info();
+   364	    }
+   365	    __libcpp_unreachable();
+   366	  }
+   367	
+   368	  template <class... _Args>
+   369	  _LIBCPP_HIDE_FROM_ABI static _Tp& __create(any& __dest, _Args&&... __args) {
+   370	    auto __ret  = std::__construct_at(reinterpret_cast<_Tp*>(&__dest.__s_.__buf), std::forward<_Args>(__args)...);
+   371	    __dest.__h_ = &_SmallHandler::__handle;
+   372	    return *__ret;
+   373	  }
+   374	
+   375	private:
+   376	  _LIBCPP_HIDE_FROM_ABI static void __destroy(any& __this) {
+   377	    std::__destroy_at(reinterpret_cast<_Tp*>(&__this.__s_.__buf));
+   378	    __this.__h_ = nullptr;
+   379	  }
+   380	
+   381	  _LIBCPP_HIDE_FROM_ABI static void __copy(any const& __this, any& __dest) {
+   382	    _SmallHandler::__create(__dest, *static_cast<_Tp const*>(static_cast<void const*>(&__this.__s_.__buf)));
+   383	  }
+   384	
+   385	  _LIBCPP_HIDE_FROM_ABI static void __move(any& __this, any& __dest) {
+   386	    _SmallHandler::__create(__dest, std::move(*static_cast<_Tp*>(static_cast<void*>(&__this.__s_.__buf))));
+   387	    __destroy(__this);
+   388	  }
+   423	    }
+   424	    __libcpp_unreachable();
+   425	  }
+   426	
+   427	  template <class... _Args>
+   428	  _LIBCPP_HIDE_FROM_ABI static _Tp& __create(any& __dest, _Args&&... __args) {
+   429	    _Tp* __ptr = static_cast<_Tp*>(std::__libcpp_allocate<_Tp>(__element_count(1)));
+   430	    std::__exception_guard __guard([&] { std::__libcpp_deallocate<_Tp>(__ptr, __element_count(1)); });
+   431	    std::__construct_at(__ptr, std::forward<_Args>(__args)...);
+   432	    __guard.__complete();
+   433	    __dest.__s_.__ptr = __ptr;
+   434	    __dest.__h_       = &_LargeHandler::__handle;
+   435	    return *__ptr;
+   436	  }
+   437	
+   438	private:
+   439	  _LIBCPP_HIDE_FROM_ABI static void __destroy(any& __this) {
+   440	    _Tp* __p = static_cast<_Tp*>(__this.__s_.__ptr);
+   441	    std::__destroy_at(__p);
+   442	    std::__libcpp_deallocate<_Tp>(__p, __element_count(1));
+   443	    __this.__h_ = nullptr;
+   444	  }
+   445	
+   446	  _LIBCPP_HIDE_FROM_ABI static void __copy(any const& __this, any& __dest) {
+   447	    _LargeHandler::__create(__dest, *static_cast<_Tp const*>(__this.__s_.__ptr));
+   448	  }
+   449	
+   450	  _LIBCPP_HIDE_FROM_ABI static void __move(any& __this, any& __dest) {
+   451	    __dest.__s_.__ptr = __this.__s_.__ptr;
+   452	    __dest.__h_       = &_LargeHandler::__handle;
+   453	    __this.__h_       = nullptr;
+   454	  }
+   455	
+    62	  /**
+    63	   *  Trait identifying "location-invariant" types, meaning that the
+    64	   *  address of the object (or any of its members) will not escape.
+    65	   *  Trivially copyable types are location-invariant and users can
+    66	   *  specialize this trait for other types.
+    67	   */
+    68	  template<typename _Tp>
+    69	    struct __is_location_invariant
+    70	    : is_trivially_copyable<_Tp>::type
+    71	    { };
+    72	
+    73	  class _Undefined_class;
+    74	
+    75	  union _Nocopy_types
+    76	  {
+    77	    void*       _M_object;
+    78	    const void* _M_const_object;
+    79	    void (*_M_function_pointer)();
+    80	    void (_Undefined_class::*_M_member_pointer)();
+    81	  };
+    82	
+    83	  union [[gnu::may_alias]] _Any_data
+    84	  {
+    85	    void*       _M_access()       noexcept { return &_M_pod_data[0]; }
+    86	    const void* _M_access() const noexcept { return &_M_pod_data[0]; }
+    87	
+    88	    template<typename _Tp>
+    89	      _Tp&
+    90	      _M_access() noexcept
+    91	      { return *static_cast<_Tp*>(_M_access()); }
+    92	
+    93	    template<typename _Tp>
+    94	      const _Tp&
+    95	      _M_access() const noexcept
+    96	      { return *static_cast<const _Tp*>(_M_access()); }
+    97	
+    98	    _Nocopy_types _M_unused;
+    99	    char _M_pod_data[sizeof(_Nocopy_types)];
+   100	  };
+   101	
+   102	  enum _Manager_operation
+   103	  {
+   104	    __get_type_info,
+   105	    __get_functor_ptr,
+   106	    __clone_functor,
+   107	    __destroy_functor
+   108	  };
+   109	
+   110	  template<typename _Signature>
+   111	    class function;
+   112	
+   113	  /// Base class of all polymorphic function object wrappers.
+   114	  class _Function_base
+   115	  {
+   116	  public:
+   117	    static const size_t _M_max_size = sizeof(_Nocopy_types);
+   118	    static const size_t _M_max_align = __alignof__(_Nocopy_types);
+   119	
+   120	    template<typename _Functor>
+   121	      class _Base_manager
+   122	      {
+   123	      protected:
+   124		static const bool __stored_locally =
+   125		(__is_location_invariant<_Functor>::value
+   126		 && sizeof(_Functor) <= _M_max_size
+   127		 && __alignof__(_Functor) <= _M_max_align
+   128		 && (_M_max_align % __alignof__(_Functor) == 0));
+   129	
+   130		using _Local_storage = integral_constant<bool, __stored_locally>;
+   131	
+   132		// Retrieve a pointer to the function object
+   133		static _Functor*
+   134		_M_get_pointer(const _Any_data& __source) noexcept
+   135		{
+   136		  if _GLIBCXX17_CONSTEXPR (__stored_locally)
+   137		    {
+   138		      const _Functor& __f = __source._M_access<_Functor>();
+   139		      return const_cast<_Functor*>(std::__addressof(__f));
+   140		    }
+   141		  else // have stored a pointer
+   142		    return __source._M_access<_Functor*>();
+   143		}
+   144	
+   238	
+   239	    _Function_base() = default;
+   240	
+   241	    ~_Function_base()
+   242	    {
+   243	      if (_M_manager)
+   244		_M_manager(_M_functor, _M_functor, __destroy_functor);
+   245	    }
+   246	
+   247	    bool _M_empty() const { return !_M_manager; }
+   248	
+   249	    using _Manager_type
+   250	      = bool (*)(_Any_data&, const _Any_data&, _Manager_operation);
+   251	
+   252	    _Any_data     _M_functor{};
+   253	    _Manager_type _M_manager{};
+   254	  };
+   255	
+   326	    { };
+   327	
+   328	  /**
+   329	   *  @brief Polymorphic function wrapper.
+   330	   *  @ingroup functors
+   331	   *  @since C++11
+   332	   */
+   333	  template<typename _Res, typename... _ArgTypes>
+   334	    class function<_Res(_ArgTypes...)>
+   335	    : public _Maybe_unary_or_binary_function<_Res, _ArgTypes...>,
+   336	      private _Function_base
+   337	    {
+   338	      // Equivalent to std::decay_t except that it produces an invalid type
+   662		  return nullptr;
+   663		}
+   664	      /// @}
+   665	
+   666	    private:
+   667	      using _Invoker_type = _Res (*)(const _Any_data&, _ArgTypes&&...);
+   668	      _Invoker_type _M_invoker = nullptr;
+   669	    };
+   670	
+   671	#if __cpp_deduction_guides >= 201606
+   225	  }
+   226	
+   227	  _LIBCPP_HIDE_FROM_ABI __value_func(__value_func&& __f) _NOEXCEPT {
+   228	    if (__f.__f_ == nullptr)
+   229	      __f_ = nullptr;
+   230	    else if ((void*)__f.__f_ == &__f.__buf_) {
+   231	      __f_ = __as_base(&__buf_);
+   232	      __f.__f_->__clone(__f_);
+   233	    } else {
+   234	      __f_     = __f.__f_;
+   235	      __f.__f_ = nullptr;
+   236	    }
+   237	  }
+   238	
+   239	  _LIBCPP_HIDE_FROM_ABI ~__value_func() {
+   240	    if ((void*)__f_ == &__buf_)
+   241	      __f_->destroy();
+   242	    else if (__f_)
+   243	      __f_->destroy_deallocate();
+   244	  }
+   245	
+   246	  _LIBCPP_HIDE_FROM_ABI __value_func& operator=(__value_func&& __f) {
+   247	    *this = nullptr;
+   248	    if (__f.__f_ == nullptr)
+   249	      __f_ = nullptr;
+   276	  _LIBCPP_HIDE_FROM_ABI void swap(__value_func& __f) _NOEXCEPT {
+   277	    if (std::addressof(__f) == this)
+   278	      return;
+   279	    if ((void*)__f_ == &__buf_ && (void*)__f.__f_ == &__f.__buf_) {
+   280	      _LIBCPP_SUPPRESS_DEPRECATED_PUSH
+   281	      typename aligned_storage<sizeof(__buf_)>::type __tempbuf;
+   282	      _LIBCPP_SUPPRESS_DEPRECATED_POP
+   283	      __func* __t = __as_base(&__tempbuf);
+   284	      __f_->__clone(__t);
+   285	      __f_->destroy();
+   286	      __f_ = nullptr;
+   287	      __f.__f_->__clone(__as_base(&__buf_));
+   288	      __f.__f_->destroy();
+   289	      __f.__f_ = nullptr;
+   290	      __f_     = __as_base(&__buf_);
+   291	      __t->__clone(__as_base(&__f.__buf_));
+   292	      __t->destroy();
+   293	      __f.__f_ = __as_base(&__f.__buf_);
+   294	    } else if ((void*)__f_ == &__buf_) {
+   295	      __f_->__clone(__as_base(&__f.__buf_));
+   296	      __f_->destroy();
+   297	      __f_     = __f.__f_;
+   298	      __f.__f_ = __as_base(&__f.__buf_);
+   299	    } else if ((void*)__f.__f_ == &__f.__buf_) {
+   300	      __f.__f_->__clone(__as_base(&__buf_));
+   301	      __f.__f_->destroy();
+   302	      __f.__f_ = __f_;
+   303	      __f_     = __as_base(&__buf_);
+   304	    } else
+   305	      std::swap(__f_, __f.__f_);
+   306	  }
+   307	
+   338	          sizeof(_Fun) <= sizeof(__policy_storage)&& _LIBCPP_ALIGNOF(_Fun) <= _LIBCPP_ALIGNOF(__policy_storage) &&
+   339	              is_trivially_copy_constructible<_Fun>::value && is_trivially_destructible<_Fun>::value> {};
+   340	
+   341	// Policy contains information about how to copy, destroy, and move the
+   342	// underlying functor. You can think of it as a vtable of sorts.
+   343	struct __policy {
+   344	  // Used to copy or destroy __large values. null for trivial objects.
+   345	  void* (*const __clone)(const void*);
+   346	  void (*const __destroy)(void*);
+   347	
+   348	  // True if this is the null policy (no value).
+   349	  const bool __is_null;
+   350	
+   351	  // The target type. May be null if RTTI is disabled.
+   352	  const std::type_info* const __type_info;
+   353	
+   354	  // Returns a pointer to a static policy object suitable for the functor
+   355	  // type.
+   356	  template <typename _Fun>
+   357	  _LIBCPP_HIDE_FROM_ABI static const __policy* __create() {
+   358	    if constexpr (__use_small_storage<_Fun>::value) {
+   359	      static constexpr __policy __policy = {
+   360	          nullptr,
+   361	          nullptr,
+   362	          false,
+   363	#  if _LIBCPP_HAS_RTTI
+   364	          &typeid(_Fun)
+   365	#  else
+   366	          nullptr
+   367	#  endif
+   368	      };
+   369	      return &__policy;
+   370	    } else {
+   371	      static constexpr __policy __policy = {
+   372	          std::addressof(__large_clone<_Fun>),
+   373	          std::addressof(__large_destroy<_Fun>),
+   374	          false,
+   375	#  if _LIBCPP_HAS_RTTI
+   376	          &typeid(_Fun)
+   377	#  else
+   378	          nullptr
+   379	#  endif
+   380	      };
+   381	      return &__policy;
+   382	    }
+   383	  }
+   384	
+   385	  _LIBCPP_HIDE_FROM_ABI static const __policy* __create_empty() {
+   386	    static constexpr __policy __policy = {
+   387	        nullptr,
+   388	        nullptr,
+   389	        true,
+   390	#  if _LIBCPP_HAS_RTTI
+   391	        &typeid(void)
+   392	#  else
+   393	        nullptr
+34:inline const size_t __aligned_storage_max_align =
+38:inline const size_t __aligned_storage_alignment =
+39:    _Len > __aligned_storage_max_align
+40:        ? __aligned_storage_max_align
+43:template <size_t _Len, size_t _Align = __aligned_storage_alignment<_Len> >
+44:struct _LIBCPP_DEPRECATED_IN_CXX23 _LIBCPP_NO_SPECIALIZATIONS aligned_storage {
+53:template <size_t _Len, size_t _Align = __aligned_storage_alignment<_Len> >
+54:using aligned_storage_t _LIBCPP_DEPRECATED_IN_CXX23 = typename aligned_storage<_Len, _Align>::type;

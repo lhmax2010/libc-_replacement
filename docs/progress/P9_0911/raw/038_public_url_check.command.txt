@@ -1,0 +1,26 @@
+set -e
+python3 - <<'PY'
+from pathlib import Path
+import re,concurrent.futures,urllib.request,urllib.error,hashlib,json,datetime
+r=Path('docs/progress/P9_0911')
+urls=set()
+for name in ['MEMBER_LAYOUT_ZH.md','MEMBER_LAYOUT_EN.md']:
+ urls.update(re.findall(r'\]\((https?://[^)]+)\)',(r/name).read_text()))
+urls.update(['https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-14.2.0/libstdc++-v3/include/bits/stl_tree.h','https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-14.2.0/libstdc++-v3/include/bits/stl_deque.h','https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-14.2.0/libstdc++-v3/include/bits/hashtable.h'])
+def fetch(url):
+ try:
+  req=urllib.request.Request(url.split('#')[0],headers={'User-Agent':'ABI-layout-documentation-review/1.0'})
+  with urllib.request.urlopen(req,timeout=30) as f:
+   body=f.read();code=f.status;final=f.url
+  if 'raw.githubusercontent' in url:
+   p=r/'sources/gnu14/bits'/(url.rsplit('/',1)[1]+'.txt')
+   needles={'stl_tree.h':['the header cell is maintained with links','only','iterators invalidated'], 'stl_deque.h':['allocator efficiency','constant over different'], 'hashtable.h':['which is not allocated','numerous checks']}[url.rsplit('/',1)[1]]
+   evidence={s:s.encode() in body and s in p.read_text() for s in needles}
+  else:evidence={}
+  return {'url':url,'status':code,'final_url':final,'bytes':len(body),'sha256':hashlib.sha256(body).hexdigest(),'checked':datetime.datetime.now(datetime.timezone.utc).isoformat(),'source_comment_matches':evidence}
+ except Exception as e:return {'url':url,'status':'NOT_AVAILABLE','error':str(e)}
+with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex: rows=list(ex.map(fetch,sorted(urls)))
+(r/'PUBLIC_URL_CHECKS.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2)+'\n')
+for row in rows:print(row['status'],row['url'],row.get('source_comment_matches',{}))
+print('failed',sum(x['status']!=200 for x in rows))
+PY

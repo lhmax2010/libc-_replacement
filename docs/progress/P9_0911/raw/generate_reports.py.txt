@@ -1,0 +1,340 @@
+from pathlib import Path
+import re, csv, json, hashlib, difflib
+
+ROOT = Path('/home/toolchain/development/libcxx_runtime_validation/docs/progress/P9_0911')
+S = {}
+def reg(key, family, path, *ranges):
+    S[key] = (family, path, ranges)
+
+reg('gany','gnu14','std/any',(83,99),(361,362),(401,424))
+reg('lany','llvm','any',(150,158),(308,317),(341,342),(427,443))
+reg('gfun','gnu14','bits/std_function.h',(62,100),(117,128),(249,254),(333,336),(666,668))
+reg('lfun','llvm','__functional/function.h',(131,148),(155,157),(189,196),(203,217),(227,243),(600,610))
+reg('lalign','llvm','__type_traits/aligned_storage.h',(34,47))
+reg('gdeq','gnu14','bits/stl_deque.h',(83,98),(142,145),(509,515),(539,544))
+reg('gdeqwhy','gnu14','bits/stl_deque.h',(722,740),(750,763))
+reg('ldeq','llvm','deque',(266,269),(285,296),(486,489),(508,510),(602,612))
+reg('lsplit','llvm','__split_buffer',(193,201),(360,375),(443,445))
+reg('gmap','gnu14','bits/stl_map.h',(149,158))
+reg('gset','gnu14','bits/stl_set.h',(129,135),(145,150))
+reg('gtree','gnu14','bits/stl_tree.h',(95,105),(136,140),(164,167),(658,661),(704,704))
+reg('gtreewhy','gnu14','bits/stl_tree.h',(79,93))
+reg('gnode','gnu14','bits/stl_tree.h',(211,214),(226,227))
+reg('lmap','llvm','map',(639,648),(951,960))
+reg('lset','llvm','set',(590,596))
+reg('ltree','llvm','__tree',(557,574),(585,598),(924,927))
+reg('ltreewhy','llvm','__tree',(96,109))
+reg('gumap','gnu14','bits/unordered_map.h',(43,58),(105,112))
+reg('guset','gnu14','bits/unordered_set.h',(43,56),(100,107))
+reg('ghash','gnu14','bits/hashtable.h',(47,52),(391,404))
+reg('ghashwhy','gnu14','bits/hashtable.h',(128,146))
+reg('gpolicy','gnu14','bits/hashtable_policy.h',(315,318),(329,334),(360,384),(544,551),(588,592))
+reg('gcache','gnu14','bits/functional_hash.h',(114,122),(153,154),(286,299))
+reg('lumap','llvm','unordered_map',(899,905))
+reg('luset','llvm','unordered_set',(608,611))
+reg('lhash','llvm','__hash_table',(79,86),(129,143),(507,519),(663,675))
+reg('lhashalg','llvm','__hash_table',(167,170))
+reg('lup','llvm','__memory/unique_ptr.h',(340,362),(419,425))
+reg('gstr','gnu14','bits/basic_string.h',(185,186),(201,213),(265,276))
+reg('lstr','llvm','string',(719,725),(864,875),(884,909),(917,917))
+reg('lstrwhy','llvm','string',(845,856))
+reg('gfuture','gnu14','std/future',(700,709),(790,808))
+reg('gshared','gnu14','bits/shared_ptr_base.h',(1135,1136),(1789,1790),(232,238))
+reg('gstate','gnu14','std/future',(224,246),(248,254),(329,351))
+reg('gfutex','gnu14','bits/atomic_futex.h',(50,52),(70,76))
+reg('gstatealg','gnu14','std/future',(427,440),(484,490),(505,510))
+reg('lfuture','llvm','future',(918,920),(965,969),(975,988))
+reg('lstate','llvm','future',(523,547),(585,603),(605,609))
+reg('lcount','llvm','__memory/shared_count.h',(44,56),(62,76))
+reg('lstatealg','llvm','future',(612,620),(634,640))
+reg('gpromise','gnu14','std/future',(1097,1110),(1131,1135))
+reg('gup','gnu14','bits/unique_ptr.h',(224,227),(272,277))
+reg('lpromise','llvm','future',(1114,1127),(1154,1155),(1169,1175))
+reg('lcompress','llvm','__memory/compressed_pair.h',(25,29),(68,88),(108,114))
+reg('gless','gnu14','bits/stl_function.h',(130,141),(398,406))
+reg('lconfig','cache','__config_site',(10,15))
+reg('labi','llvm','__configuration/abi.h',(52,86),(125,141))
+
+ORIG = {r['snapshot']:r['original_path'] for r in csv.DictReader((ROOT/'SOURCE_MANIFEST.tsv').open(),delimiter='\t')}
+def link(key):
+    f,p,r=S[key]
+    return f'[{p}:{r[0][0]}](sources/{f}/{p}.txt#L{r[0][0]})'
+def resolve(text):
+    return re.sub(r'@([a-z]+)@',lambda m:link(m[1]),text)
+EXCERPTS=[]
+def blocks(keys, lang):
+    result=[]
+    for key in keys:
+        family,path,ranges=S[key]
+        snap=f'sources/{family}/{path}.txt'
+        lines=(ROOT/snap).read_text().splitlines(keepends=True)
+        original=ORIG[snap]
+        for a,b in ranges:
+            assert 0<a<=b<=len(lines),(key,a,b,len(lines))
+            body=''.join(lines[a-1:b])
+            result.append(f'[{original}:{a}–{b}]({snap}#L{a})\n\n```cpp\n{body.rstrip(chr(10))}\n```\n')
+            EXCERPTS.append(dict(id=key,family=family,path=path,start=a,end=b,sha256=hashlib.sha256(body.encode()).hexdigest()))
+    return '\n'.join(result)
+
+DATA=[]
+def item(name,gsize,lsize,galign,lalign,gzh,lzh,gen,len_,keys,esszh,essen,whyzh,whyen,changezh,changeen):
+    DATA.append(dict(name=name,gsize=gsize,lsize=lsize,galign=galign,lalign=lalign,gzh=gzh,lzh=lzh,gen=gen,len=len_,keys=keys,esszh=esszh,essen=essen,whyzh=whyzh,whyen=whyen,changezh=changezh,changeen=changeen))
+
+item('any',16,32,8,8,
+'依次：管理函数指针 `_M_manager` 8；联合体 `_M_storage` 8（`void*` 8 与内联缓冲 8 共用空间）。@gany@',
+'依次：处理函数指针 `__h_` 8；联合体 `__s_` 24（`void*` 8 与 `char[24]` 共用空间，对齐 8）。@lany@',
+'In order: manager function pointer `_M_manager` 8; storage union `_M_storage` 8 (an 8-byte pointer or an 8-byte inline buffer). @gany@',
+'In order: handler function pointer `__h_` 8; storage union `__s_` 24 (an 8-byte pointer or `char[24]`, aligned to 8). @lany@',
+['gany','lany'],
+'两侧都保存一个管理函数指针；多出的 16 字节全部来自 libc++ 较大的内联缓冲区。内联是把小对象直接放在 `any` 自身里面，避免为它另分配内存；存不下时，两侧都改存指向外部对象的指针。',
+'Both keep one management-function pointer. The entire 16-byte difference comes from the larger libc++ inline buffer. Inline storage places a small value inside the wrapper; larger values live in separately allocated memory.',
+'[C++20 草案 N4861，any.class 第 3 段](https://timsong-cpp.github.io/cppwp/n4861/any.class#3)建议小值避免动态分配，并限制这种优化只能用于移动构造不抛异常的类型。两侧源码条件与此对应。为什么具体选择 1 个指针宽度与 3 个指针宽度，未找到公开依据（`NOT_AVAILABLE`）；不把更大缓冲区的效果写成作者动机。',
+'[C++20 draft N4861, any.class paragraph 3](https://timsong-cpp.github.io/cppwp/n4861/any.class#3) recommends avoiding dynamic allocation for small values and limits this optimization to nothrow-move-constructible types. Both predicates reflect that rule. No public rationale was found for choosing exactly one versus three pointer widths (`NOT_AVAILABLE`).',
+'**能改但不值得（工程判断）**：改变联合体容量并重写相关路径，技术上可以另造一种布局；缩小会改变哪些类型需要分配，扩大也会改变对象步长、嵌入它的类及旧程序的成员地址，破坏被修改库自身的 ABI。单改容量仍不能互用：GNU 回调返回 `void`、参数为操作码／源对象／结果联合体；LLVM 返回 `void*`，另带类型及后备类型信息，协议不同。小对象阈值改变还会改变分配失败的机会；不能因此声称标准要求的 `any_cast` 行为不同。动态异常、跨库类型识别和复制析构的全部组合为 `NOT_OBSERVED`。',
+'**Technically possible, but not worthwhile (engineering judgment).** A new layout can be implemented by changing the union capacity and its operations. This breaks the modified library’s object stride and embedded-object ABI; shrinking also changes which values allocate. Matching capacity leaves incompatible handler protocols: GNU returns `void` and uses an operation/source/result union, while LLVM returns `void*` and accepts type and fallback-type information. Allocation failure exposure can change. This does not establish different standard `any_cast` semantics; exhaustive exception, type-identification and lifecycle interoperability is `NOT_OBSERVED`.')
+
+item('function<void()>',32,48,8,16,
+'空接口基类不另占空间；`_Function_base` 内依次 `_Any_data _M_functor` 16、管理函数指针 `_M_manager` 8；派生类再有调用函数指针 `_M_invoker` 8。@gfun@',
+'空接口基类不另占空间；唯一成员 `__f_` 为 `__value_func`：对齐存储 `__buf_` 实占 32（请求 24，对齐 16 后取整），再有 `__base<void()>* __f_` 8，尾部填充 8；合计 48。@lfun@ @lalign@',
+'Empty interface bases add no storage. `_Function_base` contains `_Any_data _M_functor` 16 then manager pointer 8; the derived wrapper adds invoker pointer 8. @gfun@',
+'One `__value_func` member: aligned buffer 32 (requested length 24 rounded to alignment 16), then `__base<void()>*` 8 and trailing padding 8, totaling 48. Empty interface bases add no storage. @lfun@ @lalign@',
+['gfun','lfun','lalign'],
+'GNU 用缓冲区加两个普通函数指针；LLVM 用更大、对齐更严格的缓冲区加一个指向可调用包装对象的指针。LLVM 的包装对象通过虚函数分派操作；缓冲区对齐取整和对象尾部填充一起解释了 48 字节，不能误写成简单的 24＋8。GNU `_Nocopy_types` 中成员函数指针按 Itanium ABI §2.3.2 由两个机器字组成（16 字节），所以不能把它当成普通 8 字节函数指针。',
+'GNU uses a buffer and two ordinary function pointers. LLVM uses a larger, more strictly aligned buffer and a pointer to a wrapper with virtual operations. Buffer rounding and trailing padding explain 48 bytes; 24 + 8 would be incorrect. GNU’s union includes a member-function pointer, represented by two machine words (16 bytes) under Itanium ABI §2.3.2; it is not an ordinary 8-byte function pointer.',
+'[Jonathan Wakely，2016-07-30 上游邮件](https://gcc.gnu.org/pipermail/libstdc++/2016-July/044437.html)明确因破坏库 ABI 拒绝把 GNU 缓冲区从 16 扩大为 24 字节。这说明维持现状的原因，不证明最初为什么选 16。LLVM [ABI 文档](https://libcxx.llvm.org/ABIGuarantees.html)说明优化版 `function` 会重构表示且尚非稳定 ABI；当前平台未启用该宏。LLVM 最初选择本缓冲大小和虚函数方案的公开动机未找到（`NOT_AVAILABLE`）。',
+'[Jonathan Wakely’s upstream reply, 2016-07-30](https://gcc.gnu.org/pipermail/libstdc++/2016-July/044437.html) rejects increasing GNU’s buffer from 16 to 24 bytes because it breaks library ABI. This explains retaining the size, not the original choice. LLVM’s [ABI documentation](https://libcxx.llvm.org/ABIGuarantees.html) describes an unstable optimized representation; this platform does not enable it. The original LLVM size/dispatch rationale was not found (`NOT_AVAILABLE`).',
+'**能改但不值得（工程判断）**：连同缓冲区、对齐、分派及复制析构一起重写可实现另一种表示；只修改数字不行，且破坏既有 8／16 字节对齐契约与含该类型的二进制布局。内部虚表（按对象实际类型选择操作的函数表）与 GNU 管理／调用函数协议仍不同。GNU 的就地条件要求 location-invariant（地址改变不影响所存值；默认用可平凡复制判定），LLVM 检查整个包装对象大小及目标的无异常复制条件；分配与移动路径因此不同。源码中 LLVM 移动内联目标会克隆，源包装仍持有值；这是允许的移动后状态，不是标准违约。完整异常和调用行为等价性 `NOT_OBSERVED`。上游对扩大 GNU 缓冲区已有明确拒绝记录；不能假定接受跨库布局改造。',
+'**Technically possible, but not worthwhile (engineering judgment).** Replacing storage, alignment, dispatch and lifecycle together can create another representation, while breaking the existing library ABI. Changing sizes alone leaves LLVM’s virtual dispatch incompatible with GNU’s manager/invoker protocol. GNU’s local-storage predicate requires location invariance (defaulting to trivial copyability); LLVM checks wrapper size and nothrow copy construction of the target. Their allocation and move paths differ: LLVM clones an inline target during move and can leave the source populated, an allowed moved-from state. Complete exception/call equivalence is `NOT_OBSERVED`. GNU already has an explicit upstream rejection of buffer enlargement.')
+
+item('deque<int>',80,48,8,8,
+'空分配器基类；依次 `int** _M_map` 8、`size_t _M_map_size` 8、起点迭代器 `_M_start` 32、终点 `_M_finish` 32。每个迭代器依次为 `int* _M_cur/_M_first/_M_last` 与 `int** _M_node`，各 8。@gdeq@',
+'依次 `__map_` 32（`int** __front_cap_/__begin_/__end_/__back_cap_` 各 8，后跟空指针分配器）、`size_type __start_` 8、`size_type __size_` 8，后跟压缩的空元素分配器。对外迭代器另为目录指针＋元素指针，各 8，并未嵌入对象。@ldeq@ @lsplit@',
+'Empty allocator base, then `int** _M_map` 8, `size_t _M_map_size` 8, start iterator 32, finish iterator 32. Each iterator stores three `int*` fields (`_M_cur/_M_first/_M_last`) and one `int** _M_node`, 8 each. @gdeq@',
+'`__map_` 32: four `int**` fields (`__front_cap_/__begin_/__end_/__back_cap_`) plus compressed empty pointer allocator; then start index 8 and element count 8, with compressed empty element allocator. Public iterators separately contain a directory pointer and an element pointer; they are not embedded in the deque. @ldeq@ @lsplit@',
+['gdeq','gdeqwhy','ldeq','lsplit'],
+'GNU 把两份较大的完整迭代器放在容器里；LLVM 把起点和元素数记成整数，并用四个指针管理块目录。这里的目录是“指向各段元素数组的指针数组”，与 `std::map` 无关。',
+'GNU embeds two full, larger iterators. LLVM records a start index and an element count, and uses four pointers for its block directory. That directory is an array of pointers to element blocks, unrelated to `std::map`.',
+'GNU 源码设计说明指出：使块大小较小且相对固定以改善分配器效率，迭代器必须维护块首／块尾等不变式（操作前后必须成立的内部关系）；同文件还警告更改块大小会破坏二进制兼容。LLVM `__split_buffer` 注释说明两端保留空余空间可在空间用尽前向两侧增长而不搬移已有目录内容。它们是源码自带的设计说明，实际原文见上方；为什么分别选 512 和 4096 字节、为什么最初选择这套对象成员数量，未找到更完整公开依据（`NOT_AVAILABLE`）。',
+'GNU’s source rationale says relatively small, consistent blocks improve allocator efficiency, and documents iterator invariants (internal relationships operations must preserve). It also warns that changing block size breaks binary compatibility. LLVM’s `__split_buffer` comments explain spare capacity at both ends permits growth without relocating existing directory entries until space runs out. These are source-authored explanations, reproduced above. The exact 512/4096-byte constants and original member-count choices lack a fuller public rationale (`NOT_AVAILABLE`).',
+'**能改但不值得（工程判断）**：更换目录及起止表示可行，但既有内联操作、迭代器和容器对象都会失配。即使外壳统一，`int` 的块容量源码仍为 GNU 512/4＝128、LLVM 4096/4＝1024，跨块递增／寻址规则不能混用；GNU 明确保持空 deque 也有一个块，LLVM 不能套用这个不变式。标准的双端操作复杂度与迭代器失效要求仍须满足，不能把上述实现不同写成标准失效规则不同；见 [N4861 deque.modifiers](https://timsong-cpp.github.io/cppwp/n4861/deque.modifiers)。本轮未做运行时失效／异常穷举（`NOT_OBSERVED`）。',
+'**Technically possible, but not worthwhile (engineering judgment).** Replacing the directory and endpoint representation breaks existing inline operations, iterator representation and object ABI. Even matching the wrapper leaves different block capacities for `int`: GNU 512/4 = 128; LLVM 4096/4 = 1024. Cross-block arithmetic is incompatible. GNU explicitly requires a block even for an empty deque; that invariant cannot be imposed on LLVM objects. Both must satisfy the standard complexity and invalidation contract in [N4861 deque.modifiers](https://timsong-cpp.github.io/cppwp/n4861/deque.modifiers); representation differences do not establish different standard rules. Exhaustive runtime invalidation/exception checks are `NOT_OBSERVED`.')
+
+tree_gzh='唯一树成员 `_M_t`：空节点分配器基类；比较器包装（`less<int>` 普通成员 1＋对齐填充 7）；树头内依次颜色枚举 4＋填充 4、父／左／右指针各 8；元素计数 8。合计 8＋32＋8＝48。@gtree@'
+tree_lzh='唯一树成员 `__tree_`：起始节点指针 `__begin_node_` 8；结束哨兵 `__end_node_` 8（仅一个根指针 `__left_`）及空节点分配器；元素计数 `__size_` 8 及压缩的空比较器。合计 24。@ltree@'
+tree_gen='One tree member `_M_t`: empty node-allocator base; comparator wrapper (ordinary `less<int>` member 1 plus alignment padding 7); header with color enum 4, padding 4 and parent/left/right pointers 8 each; node count 8. Total 8 + 32 + 8 = 48. @gtree@'
+tree_len='One tree member `__tree_`: begin-node pointer 8; end sentinel 8 (only the root pointer `__left_`) with compressed empty node allocator; size 8 with compressed empty comparator. Total 24. @ltree@'
+for name,gwrap,lwrap,payload,epayload in [('map<int,int>','gmap','lmap','`pair<const int,int>`（两个 int，共 8 字节）','`pair<const int,int>` (two ints, 8 bytes)'),('set<int>','gset','lset','`int`（4 字节）','`int` (4 bytes)')]:
+    item(name,48,24,8,8,tree_gzh+' @'+gwrap+'@',tree_lzh+' @'+lwrap+'@',tree_gen+' @'+gwrap+'@',tree_len+' @'+lwrap+'@',
+    [gwrap,'gtree','gnode','gtreewhy',lwrap,'ltree','ltreewhy'],
+    'GNU 容器中放了一份完整的树头，还为普通成员形式的空比较器付出一个对齐单元；LLVM 用只有根指针的结束哨兵和压缩比较器。哨兵是不存业务值、用于表示边界的辅助对象；业务元素节点都在对象外，本实例的节点值为'+payload+'。',
+    'GNU embeds a full tree header and spends an alignment unit on a wrapper containing an ordinary empty comparator member. LLVM uses a root-pointer-only end sentinel and a compressed comparator. A sentinel represents a boundary and holds no business value. Element nodes are outside the container object; this instantiation stores '+epayload+'.',
+    'GNU 树头注释明确解释：缓存最左节点使 `begin()` 为常数时间，缓存最右节点服务通用集合算法；删除双子节点时重连后继而不复制，避免使其他节点迭代器失效。LLVM 树算法说明根的父节点只需提供指回根的 `__left_`，其他字段不访问，这是最小结束哨兵所满足的算法契约。以上是上游源码说明；为什么最初选这两种树头而非同一种，未找到额外公开依据（`NOT_AVAILABLE`）。',
+    'GNU’s header comments explain cached leftmost/rightmost links and relinking the successor during two-child deletion so that other node iterators remain valid. LLVM’s algorithm contract says the root’s parent needs only a `__left_` link back to the root; no other field is accessed there. This explains what its minimal sentinel supports. These are upstream source explanations; a further historical rationale for choosing different headers was not found (`NOT_AVAILABLE`).',
+    '**能改但不值得（工程判断）**：可以重做树头／比较器存储并改写平衡、插入和删除算法，但会破坏该库已发布容器、内联成员及迭代器代码的 ABI。节点也不同：GNU 是颜色枚举在前三个链接之前；LLVM 为继承的左链接、右链接、父链接、`bool` 颜色，再是值。指针各 8，GNU 颜色 4、LLVM 颜色 1；完整节点大小及尾部填充复用未实测（`NOT_OBSERVED`），不能从容器 48／24 推成节点同样比例。统一外壳无法修复这些节点协议。两侧都须遵守 [N4861 associative.reqmts](https://timsong-cpp.github.io/cppwp/n4861/associative.reqmts) 的有序访问、复杂度和迭代器保证；本核查未证明普通异常或标准失效规则有不同，完整运行验证 `NOT_OBSERVED`。'+(' `set` 的迭代器不允许修改键，改布局必须继续保留这一语义（GNU typedef 原文见上方）。' if name.startswith('set') else ' `map` 的键为 const、映射值可修改；改布局必须继续保留这一语义。'),
+    '**Technically possible, but not worthwhile (engineering judgment).** Reworking the header/comparator and balancing, insertion and deletion algorithms breaks published object and inline-operation ABI. Node protocols also differ: GNU puts a color enum before its three links; LLVM uses inherited left link, right link, parent link, a boolean color, then the value. Pointers are 8 bytes; GNU color is 4, LLVM color is 1. Complete node sizes and tail-padding reuse are `NOT_OBSERVED`; the container size ratio is not a node-size ratio. A matching wrapper cannot fix this. Both must preserve ordering, complexity and iterator requirements in [N4861 associative.reqmts](https://timsong-cpp.github.io/cppwp/n4861/associative.reqmts). Different ordinary-exception or standard invalidation rules have not been established; exhaustive runtime validation is `NOT_OBSERVED`.'+(' Set iterators must continue to prevent key modification (see the GNU typedef above).' if name.startswith('set') else ' Map keys remain const while mapped values remain mutable.'))
+
+hgzh='唯一 `_M_h`：按序桶数组指针 8、桶数 8、前置哨兵（单个 next 指针）8、元素数 8、`_Prime_rehash_policy` 16（最大装载因子 float 4＋填充 4＋下次扩容阈值 size_t 8）、内置单桶指针 8。默认哈希器／相等比较器／分配器为空基类，不额外计存储。@ghash@ @gpolicy@'
+hlzh='唯一 `__table_`：桶数组所有者 `__bucket_list_` 16（数组指针 8；删除器内桶数 8＋压缩空分配器；无状态边界检查器不另占空间）；前置哨兵 next 指针 8＋空节点分配器；元素数 8＋空哈希器；最大装载因子 float 4＋空相等比较器；尾填充 4。合计 40。@lhash@ @lup@'
+hgen='One `_M_h`: bucket-array pointer 8, bucket count 8, before-begin sentinel/next pointer 8, element count 8, prime-rehash policy 16 (float load factor 4 + padding 4 + size_t next-resize threshold 8), embedded single-bucket pointer 8. Default hash/equality/allocator bases add no storage. @ghash@ @gpolicy@'
+hlen='One `__table_`: bucket-array owner 16 (array pointer 8, deleter’s bucket count 8 with compressed empty allocator; stateless bounds checker adds no storage); sentinel/next pointer 8 with empty node allocator; size 8 with empty hasher; float load factor 4 with empty equality object; trailing padding 4. Total 40. @lhash@ @lup@'
+for name,gwrap,lwrap,payload,epayload in [('unordered_map<int,int>','gumap','lumap','`pair<const int,int>`，8','`pair<const int,int>`, 8'),('unordered_set<int>','guset','luset','`int`，4','`int`, 4')]:
+    item(name,56,40,8,8,hgzh+' @'+gwrap+'@',hlzh+' @'+lwrap+'@',hgen+' @'+gwrap+'@',hlen+' @'+lwrap+'@',
+    [gwrap,'ghash','gpolicy','gcache','ghashwhy',lwrap,'lhash','lup','lhashalg'],
+    'GNU 多保存一个“下次扩容阈值”和一个可在对象内部使用的单桶指针，各 8 字节；其余管理状态虽包装和顺序不同，字节账目一致。这 16 字节解释外壳差值；哈希桶是将键按哈希值分组后查找的目录，不等于业务元素本身。',
+    'GNU additionally stores a next-resize threshold and an embedded single-bucket pointer, 8 bytes each. Other management state is packaged differently but has the same byte contribution. These 16 bytes explain the wrapper difference; buckets index groups of hashed keys and are not the element values.',
+    'GNU `_M_single_bucket` 注释给出明确原因：移动后留下一个无需分配的桶，使移动操作可不抛异常；若零桶会要求大量防止模零检查。`_Prime_rehash_policy` 源码说明按装载因子选择通常为素数的桶数；节点缓存注释把缓存哈希值称为时间／空间取舍。LLVM 桶数在删除器中供 `deallocate` 使用，属于源码事实；为什么选择这套字段组织及总是缓存本实例节点哈希值，未找到公开设计动机（`NOT_AVAILABLE`）。',
+    'GNU explicitly explains the embedded bucket: it leaves a non-allocating one-bucket moved-from state, supporting nonthrowing moves without pervasive modulus-by-zero checks. Its policy comments describe usually-prime bucket counts and the time/space tradeoff of cached hashes. LLVM’s deleter stores the bucket count for deallocation, a source-visible use; no public rationale was found for this field organization or always caching node hashes in these instantiations (`NOT_AVAILABLE`).',
+    '**能改但不值得（工程判断）**：取消单桶／阈值或重排字段须同步改写重哈希、移动、释放和空表逻辑，破坏自身已发布 ABI。布局相同也仍有节点协议差异：GNU 默认 `hash<int>` 快且不抛异常，故 `__cache_default` 为 false，节点仅 next 指针 8＋值（'+payload+' 字节）；LLVM 节点按序 next 8＋`size_t __hash_` 8＋值。完整节点 `sizeof` 为 `NOT_OBSERVED`。桶索引算法 GNU `%`，LLVM 对二次幂桶数可用位掩码，见源码；不能按对方规则继续查找或删除。标准只要求相应复杂度、重哈希及失效保证，见 [N4861 unord.req](https://timsong-cpp.github.io/cppwp/n4861/unord.req)；这里没有证明两侧标准保证不同，也没有运行时枚举所有异常／失效路径（`NOT_OBSERVED`）。',
+    '**Technically possible, but not worthwhile (engineering judgment).** Removing/reordering state requires coordinated changes to rehash, move, empty-table and deallocation logic, breaking published ABI. Node protocols still differ: GNU’s fast, nonthrowing default `hash<int>` disables cached hashes, giving next pointer 8 plus value ('+epayload+' bytes); LLVM stores next pointer 8, hash 8, then value. Complete node `sizeof` is `NOT_OBSERVED`. GNU range hashing uses modulus; LLVM can mask a power-of-two bucket count. Matching the wrapper cannot make lookup/erase use the other node protocol. Both remain subject to complexity, rehash and invalidation requirements in [N4861 unord.req](https://timsong-cpp.github.io/cppwp/n4861/unord.req); different standard guarantees are not established. Exhaustive exception/invalidation execution is `NOT_OBSERVED`.')
+
+item('string',32,24,8,8,
+'依次 `_M_dataplus` 8（空 allocator 基类＋`char* _M_p`）、长度 `size_type _M_string_length` 8、联合体 16（`char _M_local_buf[16]` 与 `size_type _M_allocated_capacity` 8 重叠）。@gstr@',
+'`__rep_` 联合体 24，后跟压缩的空 allocator。长态按序为同一 size_type 单元的长态标记 1 bit＋容量 63 bits（合计 8 字节）、长度 8、`char*` 8；短态为标记 1 bit＋长度 7 bits（合计 1 字节），再有 `char[23]`（含终止零）。`char` 的 `__padding<0>` 不另占存储。@lstr@',
+'Pointer/allocator wrapper `_M_dataplus` 8 (empty allocator base plus `char*`), length 8, then union 16 (`char[16]` overlapping an 8-byte allocated capacity). @gstr@',
+'Representation union 24 plus compressed empty allocator. Long mode: one size_type unit with 1-bit long flag and 63-bit encoded capacity (8 bytes total), length 8, `char*` 8. Short mode: 1-bit flag plus 7-bit length (1 byte total), then `char[23]` including terminator. `__padding<0>` adds no storage for char. @lstr@',
+['gstr','lstr','lstrwhy'],
+'GNU 始终保留指针和长度，另留 16 字节可兼作短字符串内容；LLVM 把整个 24 字节表示复用为长态或短态，用一个位区分。故 LLVM 对象小 8 字节，却能就地保存至多 22 个字符；GNU 至多 15 个，均不计结尾的零字符。',
+'GNU always keeps a pointer and length, plus 16 bytes usable for short text. LLVM overlays the entire 24-byte representation between long and short modes, distinguished by one bit. Its object is 8 bytes smaller yet holds up to 22 short characters versus GNU’s 15, excluding the terminator.',
+'[GNU Dual ABI 文档](https://gcc.gnu.org/onlinedocs/libstdc++/manual/using_dual_abi.html)说明新字符串实现为符合 C++11、不再使用写时复制（共享内容直至写入再复制），并用双 ABI 保留旧二进制兼容；这不是 32／24 的直接历史原因。LLVM 源码说明位标记与容量编码关系；[D128285](https://reviews.llvm.org/D128285)说明 `packed` 是为修复 AIX 上改用位域后的 ABI 变化。为什么最初选 15／22 的短字符串容量及完整布局，未找到公开依据（`NOT_AVAILABLE`）。不能借 AIX 修复解释 x86_64 最初选择。',
+'[GNU’s Dual ABI documentation](https://gcc.gnu.org/onlinedocs/libstdc++/manual/using_dual_abi.html) explains replacing copy-on-write strings for C++11 conformance while retaining old binary support; this does not explain the exact 32/24-byte choice. LLVM’s comments explain the flag/capacity encoding. [D128285](https://reviews.llvm.org/D128285) explains packing as an AIX ABI repair after adopting bit-fields, not the original x86_64 layout. No public rationale was found for the original 15/22-character capacities and complete representations (`NOT_AVAILABLE`).',
+'**能改但不值得（工程判断）**：可以重写长短态表示，但这会改变短态容量、指针解释、长度／容量编码、析构分支及包含字符串的所有既有二进制布局。GNU 用数据指针是否指向自身缓冲区判短态，LLVM 读位标记；即使塞填充做成同样大小也不能相互读写。GNU 的 `std::__cxx11` 与 LLVM 的 `std::__1` 符号身份还不同，双 ABI 开关并非跨库转换器。分配时点和容量变化会影响实现层行为；本轮未测完整增长策略、异常路径或指针／迭代器失效组合（`NOT_OBSERVED`），不声称标准字符串语义不同。',
+'**Technically possible, but not worthwhile (engineering judgment).** Rewriting both representations changes short capacity, pointer interpretation, encoded capacity, destruction and every published embedding layout. GNU identifies short mode by a self-buffer pointer; LLVM uses a flag. Padding to equal size cannot make either read the other’s object. GNU `std::__cxx11` and LLVM `std::__1` also have different symbol identities; GNU’s dual-ABI switch is not a cross-library converter. Allocation timing/capacity can differ. Full growth, exception and invalidation behavior is `NOT_OBSERVED`; different standard string semantics are not asserted.')
+
+state_zh='对象外还要追到共享状态：GNU `shared_ptr` 内的第一个指针指向 `_State_baseV2`，第二个指向引用计数控制块（管理存活期的辅助对象）；状态本身另有结果所有者、就绪状态、已取 future 标记和一次性设置标记，结果对象持异常指针、4 字节 int 存储和 1 字节初始化标记。LLVM 将 `long __shared_owners_`（8 字节）、虚函数分派、异常指针（原表 8）、mutex（原表 40）、condition_variable（原表 48）、unsigned 状态（4）及 int 存储（4）组织在同一继承链。虚表指针按本机 ABI 为 8；两侧完整控制块／状态大小、GNU 同步辅助类型大小与偏移本轮均为 `NOT_OBSERVED`，不虚填堆内存总量。'
+state_en='Follow the external state as well: GNU shared_ptr contains a state pointer and a separate ownership-control pointer. Its state has a result owner, readiness state, future-retrieved flag and once flag; its result has an exception pointer, 4-byte int storage and 1-byte initialization flag. LLVM combines an 8-byte long ownership count, virtual dispatch, exception pointer (baseline 8), mutex (baseline 40), condition_variable (baseline 48), unsigned flags (4) and int storage (4) in one inheritance chain. A virtual-table pointer is 8 under this ABI. Complete control-block/state sizes, offsets and GNU synchronization-helper sizes are `NOT_OBSERVED`; no total heap footprint is invented.'
+
+item('future<int>',16,8,8,8,
+'`future` 的基类 `__basic_future` 唯一成员 `_M_state` 为 `shared_ptr<_State_base>` 16：按序状态指针 `_M_ptr` 8、引用计数句柄 `_M_refcount` 8；后者展开为控制块指针 `_M_pi`。@gfuture@ @gshared@',
+'唯一数据成员 `__assoc_state<int>* __state_` 8；引用计数在指向的状态对象中，通过继承的 `__shared_count` 管理，并非没有引用计数。@lfuture@ @lcount@',
+'The base `__basic_future` contains only `_M_state`, a 16-byte shared_ptr: state pointer `_M_ptr` 8 then ownership handle `_M_refcount` 8, which contains control pointer `_M_pi`. @gfuture@ @gshared@',
+'Only `__assoc_state<int>* __state_`, 8 bytes. The pointee carries reference counting through `__shared_count`; a smaller handle does not mean no ownership accounting. @lfuture@ @lcount@',
+['gfuture','gshared','gstate','gfutex','lfuture','lcount','lstate','lstatealg','gstatealg'],
+'GNU 的 future 随身带“状态地址”和“引用计数控制块地址”两个指针；LLVM 只带状态地址，把引用计数放进状态中。减少的是句柄大小，不等于整个异步操作总共节省 8 字节。\n\n'+state_zh,
+'GNU’s future carries both a state address and an ownership-control address. LLVM carries only the state address and puts ownership accounting in that state. This reduces handle size; it does not prove an 8-byte reduction in the whole asynchronous operation.\n\n'+state_en,
+'[N4861 futures.state](https://timsong-cpp.github.io/cppwp/n4861/futures.state)规定共享状态承载结果和同步，并管理释放时机；不规定用几根指针。GNU 源码说明状态在提供者与 future 间共享；LLVM 的引用计数增减可直接核查。为什么 GNU 使用通用 shared_ptr 而 LLVM 使用嵌入式计数，未找到公开依据（`NOT_AVAILABLE`），不推测性能动机。',
+'[N4861 futures.state](https://timsong-cpp.github.io/cppwp/n4861/futures.state) specifies result storage, synchronization and lifetime, without prescribing pointer counts. GNU documents provider/future sharing; LLVM’s reference-count updates are visible in source. No public rationale was found for GNU’s generic shared_ptr versus LLVM’s embedded ownership count (`NOT_AVAILABLE`); no performance motive is inferred.',
+'**能改但不值得（工程判断）**：可以重新设计句柄和共享状态，但改变句柄大小本身已破坏旧调用方、返回／传参及嵌入布局。只改句柄不改变“引用计数在哪里、到零时如何释放、结果如何取得”就不能互通。源码中 GNU 用 futex 辅助类型（Linux 的按地址等待／唤醒机制，宏可选其他后端）和 `call_once`；LLVM 状态用互斥锁与条件变量。就绪／设置不变式、等待、析构、`exception_ptr` 再抛及错误类别仍须整体匹配；本核查没有证明标准规定的 get/wait 语义不一致，取消／异常组合运行结果 `NOT_OBSERVED`。',
+'**Technically possible, but not worthwhile (engineering judgment).** Redesigning the handle and shared state breaks published handle, parameter/return and embedding ABI. A matching handle cannot relocate ownership counts, release logic or result extraction. GNU’s source uses a futex helper (Linux address-based wait/wake, with a configurable fallback) and call_once; LLVM uses a mutex and condition variable. Readiness, setting, waiting, destruction, exception_ptr rethrow and error categories require a coherent protocol. Different standard get/wait semantics have not been established; runtime cancellation/exception combinations are `NOT_OBSERVED`.')
+
+item('promise<int>',24,8,8,8,
+'依次 `shared_ptr<_State> _M_future` 16（状态指针 8＋控制块指针 8）、`unique_ptr<_Result<int>, _Deleter> _M_storage` 8（结果指针 8；空删除器不另占空间）。@gpromise@ @gshared@ @gup@',
+'唯一成员 `__assoc_state<int>* __state_` 8；计数、结果存储及同步状态均在外部状态继承链内。@lpromise@ @lstate@',
+'`shared_ptr<_State> _M_future` 16 (state/control pointers 8 each), then `unique_ptr<_Result<int>, _Deleter> _M_storage` 8 (result pointer; empty deleter adds no storage). @gpromise@ @gshared@ @gup@',
+'Only `__assoc_state<int>* __state_`, 8 bytes. Ownership count, result storage and synchronization live in the external state hierarchy. @lpromise@ @lstate@',
+['gpromise','gshared','gup','gstate','gstatealg','lpromise','lcount','lstate','lstatealg'],
+'GNU 除了共享状态的两个指针，还单独持有尚未交付的结果对象指针；LLVM 直接指向同时承载结果的状态对象。GNU 的设置路径把结果所有权移入共享状态，LLVM 在状态内构造结果；因此分别为三根与一根指针。\n\n'+state_zh,
+'GNU holds two shared-state pointers plus a separately owned result pointer. LLVM points to a state that also contains the result. GNU transfers result ownership into the shared state when setting it; LLVM constructs the result within the state, yielding three pointers versus one.\n\n'+state_en,
+'标准对提供者放弃未完成共享状态、报告 `broken_promise`（结果未交付即失去提供者）有要求，见 [N4861 futures.state](https://timsong-cpp.github.io/cppwp/n4861/futures.state)。GNU 构造器可见独立 `make_shared` 和 `new _Res_type`，LLVM 为 `new __assoc_state`，设置路径也在上方；这是事实，不证明哪种更快。为什么最初分拆或合并结果与状态，未找到公开设计依据（`NOT_AVAILABLE`）。',
+'The standard requires handling abandonment of unfinished shared state, including broken_promise, in [N4861 futures.state](https://timsong-cpp.github.io/cppwp/n4861/futures.state). GNU’s constructor separately calls make_shared and new for its result; LLVM constructs one associated-state object. Setting paths are reproduced above. This is an implementation fact, not a performance result. No public rationale for the original split/combined representation was found (`NOT_AVAILABLE`).',
+'**能改但不值得（工程判断）**：可把所有权及结果存储合并或拆分，但需同时改 promise、future、状态基类、分配器构造、设置和释放路径，破坏被改库自身 ABI。只改外壳不能兼容结果交付协议；析构还要正确通知失去提供者的 future。普通错误与共享状态同步义务并不会因为对象同样大而自动满足；分配次数、异常状态承载、等待后端和到零析构均有源码层差异。标准规定的错误语义不应宣称不同；完整运行行为及自定义分配器验证 `NOT_OBSERVED`。',
+'**Technically possible, but not worthwhile (engineering judgment).** Combining or splitting ownership/result storage requires coordinated changes to promise, future, state bases, allocator construction, setting and release, breaking the modified library’s ABI. A matching wrapper cannot reconcile result delivery or broken-promise notification. Allocation structure, exception storage, wait backends and final destruction still differ in source. Equal object size does not discharge error/synchronization obligations. Different required standard error semantics are not asserted; complete runtime and custom-allocator validation is `NOT_OBSERVED`.')
+
+INTRO_ZH='''# 标准库对象大小与对齐差异的成员级说明
+
+这份配套说明只分析原表中大小或对齐不同的 10 个类型。差异都有可见的成员表示原因，但**把大小改成相同并不能让两套标准库对象安全互换**。下文逐项列出实际成员、源码原文、设计依据与改动后果；结论中的“能改但不值得”是有条件的工程判断，不是技术不可能性或上游裁决。
+
+## 基线、范围与证据读法
+
+- **既有实测**：x86_64，GNU 探针 GCC 13.3.0；LLVM 探针 Clang 21.1.1，使用平台 libc++/libc++abi；libc++ 头宏 220108（22.1.8），不是编译器版本。大小／对齐来自[原表原样副本](baseline/abi_layout_comparison.tsv)，两侧[GNU 原始输出](baseline/layout_libstdcxx.tsv)、[LLVM 原始输出](baseline/layout_libcxx.tsv)和[探针源码](baseline/layout_probe.cpp)一并保留。本次没有构建、运行新探针或使用开发板。
+- **名称差异**：本地能找到的总部附表名为 `abi_layout_comparison.tsv`，与已归档的 `d11_layout_comparison.tsv` 逐字一致；任务所称 `abi_size_align_comparison.tsv` 未定位到同名文件（`NOT_AVAILABLE`）。没有改名覆盖原件。两份已定位原表 SHA256 都是 `08a99bb4ac7d314ba20c05befd92f40301dc4bcd3572fb126c8cf68c249509a7`。
+- **源码核查**：平台 GCC 14.2.0 revision `49c5060508ce8a6ed6beca375233688a6bdd9140`；平台 LLVM revision `5ed6c77278dfa7a470667cf1a137723d3c96fe60`，与原报告列出的 revision 相同。所摘平台文件逐个与其 Git blob 核对一致。LLVM 已比较的布局头与原探针缓存头逐字相同。GNU 同时保存现存宿主 `libstdc++-13-dev 13.3.0-6ubuntu2~24.04.1` 头；平台 14.2 不是该次 GNU 测量版本。对应声明逐段核对见 [GNU 版本对照](GNU_REVISION_CROSSCHECK.md)。历史探针时的宿主头文件哈希未存档，历史逐字同一性为 `NOT_AVAILABLE`，不能以包版本相同冒充哈希证明。
+- **成员字节账目**：类型、声明顺序、联合体重叠、继承和分支来自源码；成员字节数／对齐填充是按本基线 ABI 规则对源码作的静态核算，不是新增 `sizeof`、`offsetof` 或记录布局转储实测。采用 LP64（指针／long 为 8，int 为 4）：普通数据／函数指针 8，size_t 8，float 4，bool 1；来源为 [AMD64 ABI 0.99.6 §3.1.2](https://refspecs.linuxfoundation.org/elf/x86_64-abi-0.99.pdf) 与 [Itanium C++ ABI §2](https://itanium-cxx-abi.github.io/cxx-abi/abi.html#data-layout)。没有把不明的节点／控制块尺寸补成猜测值。
+- **术语**：ABI 是已编译模块之间约定的对象表示、符号和调用等二进制契约；`sizeof` 是对象占用字节数，`alignof` 是对象地址必须满足的对齐。填充是为对齐插入的空隙；`bit` 表示二进制位，8 位为 1 字节；联合体成员重叠，大小不能相加。空基类优化／`no_unique_address` 允许无状态的分配器、比较器等不额外占空间，**不是说这些空类型作为独立完整对象的大小为 0**。分配器负责申请／释放存储；哈希器和比较器负责键的分组和比较。以下均限默认分配器及默认比较／哈希器。LLVM 按缓存的 ABI version 1、Linux x86_64 分支分析；其宏原文在文末。历史成功构建日志仅保存命令摘要，完整命令行和全部宏转储 `NOT_AVAILABLE`，所以不把这里的静态分支核查冒充历史成员偏移实测。
+- **标记**：实测仅指既有输出；源码核查包括上述静态字节核算；设计说明只归因于所引上游文字。`NOT_OBSERVED` 表示本轮或既有可用证据没有观测，`NOT_AVAILABLE` 表示所需资料不可得／未找到。没有无依据的设计动机推断。
+
+## 各类型说明
+'''
+INTRO_EN='''# Member-level explanation of standard-library size and alignment differences
+
+This companion covers only the ten differing types in the original table. Their size differences have source-visible representation causes, but **equal sizes would not make the two libraries’ objects interchangeable**. Each section includes actual members, source excerpts, available rationale and the consequences of matching layouts. “Technically possible, but not worthwhile” is a conditional engineering judgment, not a claim of impossibility or an upstream ruling.
+
+## Baseline, scope and evidence
+
+- **Existing measurements:** x86_64; GNU probe GCC 13.3.0; LLVM probe Clang 21.1.1 with platform libc++/libc++abi. Header macro 220108 means libc++ 22.1.8, not the compiler version. Sizes/alignments come from the [unchanged table copy](baseline/abi_layout_comparison.tsv), with [GNU output](baseline/layout_libstdcxx.tsv), [LLVM output](baseline/layout_libcxx.tsv) and [probe source](baseline/layout_probe.cpp). No build, new probe execution or development board was used.
+- **Filename discrepancy:** the located headquarters table is `abi_layout_comparison.tsv`, byte-identical to archived `d11_layout_comparison.tsv`. The requested filename `abi_size_align_comparison.tsv` was not located (`NOT_AVAILABLE`); neither original was renamed or overwritten. Both located originals have SHA256 `08a99bb4ac7d314ba20c05befd92f40301dc4bcd3572fb126c8cf68c249509a7`.
+- **Source audit:** platform GCC 14.2.0 revision `49c5060508ce8a6ed6beca375233688a6bdd9140`; platform LLVM revision `5ed6c77278dfa7a470667cf1a137723d3c96fe60`, matching revisions cited by the original report. Extracted platform files match their Git blobs. Compared LLVM layout headers match the original probe’s cached headers byte for byte. Current host headers from `libstdc++-13-dev 13.3.0-6ubuntu2~24.04.1` are also archived; platform GCC 14.2 is not the GNU measurement version. See the [GNU declaration crosscheck](GNU_REVISION_CROSSCHECK.md). Historical host-header hashes were not preserved, so historical byte identity is `NOT_AVAILABLE`; matching package versions do not prove it.
+- **Member byte accounting:** types, declaration order, unions, inheritance and branches come from source. Member sizes and padding are static accounting under the baseline ABI, not new sizeof/offsetof measurements or compiler record-layout dumps. LP64 has 8-byte pointers/long and 4-byte int. Ordinary data/function pointers and size_t are 8, float 4, bool 1; see [AMD64 ABI 0.99.6 §3.1.2](https://refspecs.linuxfoundation.org/elf/x86_64-abi-0.99.pdf) and [Itanium C++ ABI §2](https://itanium-cxx-abi.github.io/cxx-abi/abi.html#data-layout). Unknown complete node/control-block sizes are not invented.
+- **Terminology:** ABI is the binary contract for representation, symbols and calls between compiled modules. sizeof is object size; alignof is the required address alignment. Padding fills alignment gaps. A bit is a binary digit; eight bits make one byte. Union members overlap and must not be added together. Empty-base optimization/no_unique_address may make a stateless allocator/comparator add no storage; this does **not** mean an independent complete empty object has size zero. Allocators manage storage; hashers and comparators group or compare keys. All instances use default allocator/comparison/hash types. LLVM analysis follows cached ABI version 1 and Linux x86_64 branches; the macros are reproduced below. Historical successful build logs contain command summaries rather than complete command lines; full flags/macro dumps are `NOT_AVAILABLE`. This static branch audit is not a historical member-offset measurement.
+- **Labels:** measurements mean existing probe output; source audit includes the stated static accounting. Rationale is attributed only to cited upstream text. `NOT_OBSERVED` means no available observation; `NOT_AVAILABLE` means needed information was not found or obtainable. No unsupported design motive is supplied.
+
+## Individual types
+'''
+
+END_ZH='''## 共同模式、标准约束与实施选择
+
+| 共同模式（源码归纳） | 类型 | 实际变化 |
+|---|---|---|
+| 对象内部保存小值的方式 | any、function、string | 内联缓冲区容量、长短态复用及分派表示不同；function 还涉及更强对齐 |
+| 容器管理元数据 | deque、map、set、unordered_map、unordered_set | 完整迭代器或整数索引、完整树头或最小哨兵、扩容阈值和单桶状态；业务元素本身不计入容器 sizeof |
+| 所有权和共享状态 | future、promise | 两指针通用共享所有者、独立结果所有者，或一指针指向含计数／结果的状态 |
+
+这是对前述声明的分类，不是“全部为了性能”或“全部为了节省内存”的动机判断。`any`／`function` 在 LLVM 更大，其他列举对象更小；完整节点、堆分配与业务负载不同，不能据此评出某库整体内存或性能更优。
+
+**标准为何允许不同表示。** 固定引用 C++20 公开工作草案 N4861，避免把后续草案段号混入测量基线：
+
+- §16.4.2.4 [objects.within.classes] 第 1、3 段明确类表示不由这些库条款指定，可定义实现语义所需的成员，并允许产生等价可观察行为的实现技术。原文短引：**“do not specify the representation of classes”**。这直接支持本表私有表示不必一致；见 [条文](https://timsong-cpp.github.io/cppwp/n4861/objects.within.classes)。
+- §16.5.5.12 [derivation] 第 1 段允许从实现保留名称的类派生；§16.5.5.5 [member.functions] 第 1、2 段对内联及保持调用行为的成员声明形式留有余地。见 [继承条文](https://timsong-cpp.github.io/cppwp/n4861/derivation)、[成员函数条文](https://timsong-cpp.github.io/cppwp/n4861/member.functions)。
+- “标准只规定接口”应准确理解为也规定效果、异常、安全前提、同步和复杂度；不是任意行为都被允许。§16.4.1.4 [structure.specifications] 第 1、3、7 段列出这些约束及复杂度上界，见 [条文](https://timsong-cpp.github.io/cppwp/n4861/structure.specifications)。不能据标准不统一这些私有布局，推广为标准对任何库类型都绝无表示约束。
+
+**两套库为什么不承诺互相布局一致。** 上述标准没有施加本表类型的共同私有布局；两套实现各有已发布的 ABI。GNU 的 [ABI 政策](https://gcc.gnu.org/onlinedocs/libstdc++/manual/abi.html)和 LLVM 的 [ABI 稳定性说明](https://libcxx.llvm.org/DesignDocs/ABIVersioning.html)描述各自的兼容承诺；LLVM 还通过 ABI 版本支持有意的破坏性改进。由此作出的工程判断是：让一侧追随另一侧会引入本库旧用户的迁移问题，不是修改十个 sizeof 数字即可完成。除 `function` 缓冲区历史邮件外，本次未找到上游对“匹配另一套库全部布局”方案的逐型接受／拒绝裁决，接受度为 `NOT_AVAILABLE`，不能替上游承诺。
+
+**我们能怎么做。** 对上游代码维护下游布局分叉在技术上可做，但须承担新的 ABI 版本、所有相关使用方重编、头文件内联代码／运行库同步发布和后续合并验证；不能作为保留全部旧二进制的原位修复。这是基于上述源码依赖及 ABI 政策的工程判断，并非本次做过改造或测过成本。要同时保持已经不同的旧对象布局并让它们原地互换，单改一侧布局做不到；建立另一套兼容实现／转换边界属于更大范围的独立工程。
+
+有两类可评审路径：可重编的互相传递 C++ 对象的模块，统一到同一运行库、同一受支持 ABI 配置后共同重编；必须保留旧二进制的模块，通过值复制／序列化或受控 C 接口、不可解引用的句柄衔接，并让创建方负责销毁，异常在所属边界转换为约定错误结果。对于有状态的 future/promise 不能简单复制内存，须转接“提交结果／等待／取消”等服务协议。**这些是建议，不是已验证任意混用安全的结论**；边界方案仍需针对实际接口验证所有权、同步、错误和复杂度。具体 16／32 等数值不是标准必然值；固定两套已发布实现之间的这些不一致则是已观测事实。
+
+## 资料缺口、自行判断与待审问题
+
+- 本次未找到的具体设计动机已逐型标为 `NOT_AVAILABLE`；查找范围为上游源码说明、GNU 官方文档与邮件列表、LLVM 官方文档与评审归档、标准草案。记录见 [公开来源与检索范围](PUBLIC_REFERENCES.md)。未找到不等于不存在。
+- 成员偏移、整节点／整控制块大小、虚表实际槽位转储、完整分配次数与性能数据，以及全部操作／异常／失效／取消等价性均为 `NOT_OBSERVED`。代码中虚函数声明顺序已展示，但没有声称虚表已经完成二进制核验。GNU 同步辅助成员只展开到足以区分协议；未获尺寸不补填。
+- 自行判断：只针对默认实例；以源码＋既定 ABI 静态解释原测量，不构建复测；将源码注释视为作者对局部结构用途的说明，不扩大成未记录的历史动机；将改布局的成本／收益结论和第三条路明确列为工程判断。使用同名原表的原样副本便于审阅，没有改动 33 行机器数据。源码摘录保留原行号；本次所选 GNU 13/14 片段逐段完全相同，未据此声称全头完全相同。
+- 待人工评审：是否需要下一步对指定实际接口做偏移和节点控制块探针；哪些旧二进制必须保留；哪类边界能转为值／句柄协议；是否愿意承担新 ABI 分叉及全量重编。尚未获取这些产品决策，不能在本说明中替评审方决定。
+
+## 公共辅助源码
+
+以下宏解释表中空成员压缩与当前 ABI 分支；它们没有新增业务成员。“人工填充”是上游为保持旧 compressed_pair 布局而保留的机制，不能任意删除。
+'''
+END_EN='''## Common patterns, standard requirements and implementation choices
+
+| Source-based pattern | Types | Representation change |
+|---|---|---|
+| Small values stored inside the object | any, function, string | Inline capacity, short/long overlap and dispatch; function also has stronger alignment |
+| Container metadata | deque, map, set, unordered_map, unordered_set | Full iterators versus indices; full header versus minimal sentinel; resize threshold and single-bucket state. Element allocations are outside container sizeof |
+| Ownership and shared state | future, promise | Two-pointer generic shared ownership and separate result ownership versus a one-pointer handle to counted result state |
+
+This classifies the declarations; it does not attribute every choice to speed or memory savings. LLVM any/function are larger, while the other listed objects are smaller. Complete nodes, heap allocations and workloads differ; the table cannot rank total memory use or performance.
+
+**Why the standard permits different representations.** References use the fixed public C++20 working draft N4861:
+
+- §16.4.2.4 [objects.within.classes], paragraphs 1 and 3, leaves these class representations unspecified and permits members/techniques implementing the required observable semantics. Short quotation: **“do not specify the representation of classes”**. This directly supports different private representations here; see the [wording](https://timsong-cpp.github.io/cppwp/n4861/objects.within.classes).
+- §16.5.5.12 [derivation] paragraph 1 permits implementation-reserved base classes; §16.5.5.5 [member.functions] paragraphs 1–2 allows implementation latitude for inline members and declarations preserving call behavior. See [derivation](https://timsong-cpp.github.io/cppwp/n4861/derivation) and [member functions](https://timsong-cpp.github.io/cppwp/n4861/member.functions).
+- “The standard specifies interfaces” also includes effects, exceptions, preconditions, synchronization and complexity. §16.4.1.4 [structure.specifications] paragraphs 1, 3 and 7 describes those constraints and complexity upper bounds. See the [wording](https://timsong-cpp.github.io/cppwp/n4861/structure.specifications). It would be incorrect to generalize this to no representation constraints on any library type.
+
+**Why the libraries do not promise matching layouts.** The standard does not impose a common private layout for these types, while each implementation has an installed ABI. GNU’s [ABI policy](https://gcc.gnu.org/onlinedocs/libstdc++/manual/abi.html) and LLVM’s [ABI stability design](https://libcxx.llvm.org/DesignDocs/ABIVersioning.html) describe their own compatibility commitments, including LLVM ABI versions for intentional breaking changes. The resulting engineering judgment is that making one follow the other creates migration obligations for its existing users. Except for the historical function-buffer reply, a per-type upstream ruling on matching the other library’s whole representation was not found; acceptance is `NOT_AVAILABLE` and cannot be promised.
+
+**What we can do.** Maintaining a downstream layout fork is technically possible, but requires a new ABI identity, rebuilding affected consumers, coordinated inline-header/runtime delivery and continuing merge/validation work. It is not an in-place repair retaining every old binary. This is an engineering judgment from the documented dependencies/policies; no redesign or cost benchmark was performed. Retaining two already-different old representations and making them directly interchangeable cannot be achieved by changing only one layout. A compatibility implementation or conversion boundary would be a separate, larger undertaking.
+
+Reviewable paths include rebuilding mutually dependent C++ object interfaces against one runtime and supported ABI configuration; or preserving required old binaries behind copied/serialized values, controlled C interfaces or opaque handles, with creator-side destruction and boundary conversion of exceptions to agreed errors. Stateful futures/promises require a result/wait/cancellation service protocol, not byte copying. **These are proposals, not evidence that arbitrary mixing is safe.** Actual boundaries still need ownership, synchronization, error and complexity validation. The exact size numbers are not mandated by the standard; their mismatch in the fixed released implementations is an observed fact.
+
+## Evidence gaps, independent judgments and review questions
+
+- Missing specific design rationales are marked `NOT_AVAILABLE` per type. Searches covered upstream source explanations, GNU official documentation/mailing lists, LLVM official documentation/review archives and standard wording. See [public references and search scope](PUBLIC_REFERENCES.md). Not found does not mean nonexistent.
+- Member offsets, complete node/control-block sizes, binary vtable slots, complete allocation/performance data and exhaustive operation/exception/invalidation/cancellation equivalence are `NOT_OBSERVED`. Virtual declarations are reproduced without claiming a binary vtable audit. GNU synchronization helpers are expanded only far enough to distinguish protocols; missing sizes are not filled in.
+- Independent judgments: restrict analysis to default instances; explain prior measurements statically using source and the stated ABI; treat source comments as local explanations without inventing historical motives; classify layout-change cost/benefit and boundary proposals as engineering judgments. An unchanged copy of the located table aids review; all 33 machine-readable data rows remain unchanged. Excerpts preserve original line numbers. All selected GNU 13/14 fragments match exactly; this does not imply whole-header equality.
+- Questions for human review: whether specified real interfaces need a later offset/node/control-block probe; which old binaries must remain; which boundaries can use values/handles; and whether a new ABI fork and coordinated rebuild are acceptable. Those product decisions have not been supplied and are not decided by this document.
+
+## Common supporting source
+
+These macros explain empty-member compression and the current ABI branches. Artificial padding is an upstream mechanism preserving legacy compressed_pair layout, not disposable unused space.
+'''
+
+for lang in ['ZH','EN']:
+    text=INTRO_ZH if lang=='ZH' else INTRO_EN
+    for d in DATA:
+        zh=lang=='ZH'
+        text+=f"\n### `std::{d['name']}`\n\n"
+        text+=('| 项 | libstdc++ | libc++ |\n|---|---|---|\n' if zh else '| Item | libstdc++ | libc++ |\n|---|---|---|\n')
+        text+=f"| {'大小（既有实测，字节）' if zh else 'Size (existing measurement, bytes)'} | {d['gsize']} | {d['lsize']} |\n"
+        text+=f"| {'对齐（既有实测，字节）' if zh else 'Alignment (existing measurement, bytes)'} | {d['galign']} | {d['lalign']} |\n"
+        text+=f"| {'成员构成（声明顺序；字节为静态核算）' if zh else 'Members (declaration order; static byte accounting)'} | {resolve(d['gzh' if zh else 'gen'])} | {resolve(d['lzh' if zh else 'len'])} |\n\n"
+        text+=('**源码（实际摘录）**：\n\n' if zh else '**Source (verbatim excerpts):**\n\n')+blocks(d['keys'],lang)
+        for title,field in [('差异的实质' if zh else 'What causes the difference','esszh' if zh else 'essen'),('设计原因' if zh else 'Design rationale','whyzh' if zh else 'whyen'),('能否改成一致' if zh else 'Can the layouts be made identical?','changezh' if zh else 'changeen')]:
+            text+=f'\n**{title}**'+('：' if zh else ':')+f'\n\n{resolve(d[field])}\n'
+        text+=('\n上述改造涉及上游代码；我们可维护下游分叉，但不再能沿用该库现有二进制兼容承诺。除本节明确列出的上游记录，针对这项改造的接受度为 `NOT_AVAILABLE`。共同政策和替代路径见总结。\n' if zh else '\nThis is upstream code: a downstream fork is possible, but its existing binary compatibility promise cannot simply be retained. Except for specific records cited above, upstream acceptance of this redesign is `NOT_AVAILABLE`. Common policies and alternatives are discussed below.\n')
+    text+=END_ZH if lang=='ZH' else END_EN
+    text+=blocks(['gless','lcompress','lconfig','labi'],lang)
+    (ROOT/f'MEMBER_LAYOUT_{lang}.md').write_text(text)
+
+# Map every GNU platform excerpt back to the available GCC 13 host header.
+# Identical sequences are exact; differing sequences are shown by difflib's line mapping, never called identical.
+out=['# GNU 13.3 与平台 14.2 声明对照 / Declaration crosscheck\n',
+     '主文源码以固定平台 14.2 行号为准。这里逐段比对现存宿主 13.3 头；SAME_EXCERPT 表示字节完全一致，CHANGED_EXCERPT 表示版本片段不同并同时展示实际片段。全头不宣称相同。历史探针头的哈希 NOT_AVAILABLE。\n',
+     'Main excerpts use platform GCC 14.2 line numbers. SAME_EXCERPT means exact equality with an excerpt in the currently available host 13.3 header. CHANGED_EXCERPT shows both actual fragments. Whole-file or historical byte identity is not claimed.\n']
+matches=[]
+for key,(fam,path,ranges) in S.items():
+    if fam!='gnu14':continue
+    hostpath=path
+    if path=='std/mutex':hostpath='mutex'
+    if path=='std/tuple':hostpath='tuple'
+    gp=ROOT/'sources/gnu14'/(path+'.txt');hp=ROOT/'sources/gnu13'/(hostpath+'.txt')
+    if not hp.exists():continue
+    gl=gp.read_text().splitlines(keepends=True);hl=hp.read_text().splitlines(keepends=True)
+    sm=difflib.SequenceMatcher(None,gl,hl,autojunk=False)
+    for a,b in ranges:
+        seq=gl[a-1:b]; hits=[i for i in range(len(hl)-len(seq)+1) if hl[i:i+len(seq)]==seq]
+        status='SAME_EXCERPT' if hits else 'CHANGED_EXCERPT'
+        if hits: c=hits[0];e=c+len(seq)
+        else:
+            overlapping=[op for op in sm.get_opcodes() if op[1]<b and op[2]>a-1]
+            c=min(op[3]+max(0,a-1-op[1]) if op[0]=='equal' else op[3] for op in overlapping)
+            e=max(op[4]-max(0,op[2]-b) if op[0]=='equal' else op[4] for op in overlapping)
+        matches.append(dict(id=key,platform_file=path,platform_start=a,platform_end=b,host_file=hostpath,host_start=c+1,host_end=e,status=status))
+        out.append(f'## {key}: {path}:{a}–{b} — {status}\n\n[GCC 14.2](sources/gnu14/{path}.txt#L{a}) ↔ [GCC 13.3](sources/gnu13/{hostpath}.txt#L{c+1}) ({c+1}–{e})\n')
+        if not hits:out.append('GCC 14.2:\n\n```cpp\n'+''.join(seq).rstrip()+'\n```\n')
+        out.append('GCC 13.3:\n\n```cpp\n'+''.join(hl[c:e]).rstrip()+'\n```\n')
+(ROOT/'GNU_REVISION_CROSSCHECK.md').write_text('\n'.join(out))
+(ROOT/'GNU_REVISION_CROSSCHECK.json').write_text(json.dumps(matches,indent=2)+'\n')
+unique={json.dumps(e,sort_keys=True):e for e in EXCERPTS}
+(ROOT/'SOURCE_EXCERPTS.json').write_text(json.dumps(list(unique.values()),indent=2)+'\n')
+(ROOT/'LAYOUT_ACCOUNTING.json').write_text(json.dumps([{k:d[k] for k in ['name','gsize','lsize','galign','lalign']} for d in DATA],indent=2)+'\n')
+print('types',len(DATA),'unique excerpts',len(unique),'GNU changed excerpts',sum(x['status']=='CHANGED_EXCERPT' for x in matches))
+for lang in ['ZH','EN']:print(lang,(ROOT/f'MEMBER_LAYOUT_{lang}.md').stat().st_size)

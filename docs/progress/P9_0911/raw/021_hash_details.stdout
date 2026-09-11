@@ -1,0 +1,303 @@
+   110	   *  Each _Hashtable data structure has:
+   111	   *
+   112	   *  - _Bucket[]       _M_buckets
+   113	   *  - _Hash_node_base _M_before_begin
+   114	   *  - size_type       _M_bucket_count
+   115	   *  - size_type       _M_element_count
+   116	   *
+   117	   *  with _Bucket being _Hash_node_base* and _Hash_node containing:
+   118	   *
+   119	   *  - _Hash_node*   _M_next
+   120	   *  - Tp            _M_value
+   121	   *  - size_t        _M_hash_code if cache_hash_code is true
+   122	   *
+   123	   *  In terms of Standard containers the hashtable is like the aggregation of:
+   124	   *
+   125	   *  - std::forward_list<_Node> containing the elements
+   126	   *  - std::vector<std::forward_list<_Node>::iterator> representing the buckets
+   127	   *
+   128	   *  The non-empty buckets contain the node before the first node in the
+   129	   *  bucket. This design makes it possible to implement something like a
+   130	   *  std::forward_list::insert_after on container insertion and
+   131	   *  std::forward_list::erase_after on container erase
+   132	   *  calls. _M_before_begin is equivalent to
+   133	   *  std::forward_list::before_begin. Empty buckets contain
+   134	   *  nullptr.  Note that one of the non-empty buckets contains
+   135	   *  &_M_before_begin which is not a dereferenceable node so the
+   136	   *  node pointer in a bucket shall never be dereferenced, only its
+   137	   *  next node can be.
+   138	   *
+   139	   *  Walking through a bucket's nodes requires a check on the hash code to
+   140	   *  see if each node is still in the bucket. Such a design assumes a
+   141	   *  quite efficient hash functor and is one of the reasons it is
+   142	   *  highly advisable to set __cache_hash_code to true.
+   143	   *
+   144	   *  The container iterators are simply built from nodes. This way
+   145	   *  incrementing the iterator is perfectly efficient independent of
+   146	   *  how many empty buckets there are in the container.
+   147	   *
+   148	   *  On insert we compute the element's hash code and use it to find the
+   149	   *  bucket index. If the element must be inserted in an empty bucket
+   150	   *  we add it at the beginning of the singly linked list and make the
+   151	   *  bucket point to _M_before_begin. The bucket that used to point to
+   152	   *  _M_before_begin, if any, is updated to point to its new before
+   153	   *  begin node.
+   154	   *
+   155	   *  Note that all equivalent values, if any, are next to each other, if
+   156	   *  we find a non-equivalent value after an equivalent one it means that
+   157	   *  we won't find any new equivalent value.
+   158	   *
+   159	   *  On erase, the simple iterator design requires using the hash
+   160	   *  functor to get the index of the bucket to update. For this
+   161	   *  reason, when __cache_hash_code is set to false the hash functor must
+   162	   *  not throw and this is enforced by a static assertion.
+   163	   *
+   164	   *  Functionality is implemented by decomposition into base classes,
+   165	   *  where the derived _Hashtable class is used in _Map_base,
+   166	   *  _Insert, _Rehash_base, and _Equality base classes to access the
+   176	   *    - __detail::_Map_base
+   177	   *    - __detail::_Insert
+   178	   *    - __detail::_Rehash_base
+   179	   *    - __detail::_Equality
+   180	   */
+   181	  template<typename _Key, typename _Value, typename _Alloc,
+   182		   typename _ExtractKey, typename _Equal,
+   183		   typename _Hash, typename _RangeHash, typename _Unused,
+   184		   typename _RehashPolicy, typename _Traits>
+   185	    class _Hashtable
+   186	    : public __detail::_Hashtable_base<_Key, _Value, _ExtractKey, _Equal,
+   187					       _Hash, _RangeHash, _Unused, _Traits>,
+   188	      public __detail::_Map_base<_Key, _Value, _Alloc, _ExtractKey, _Equal,
+   189					 _Hash, _RangeHash, _Unused,
+   190					 _RehashPolicy, _Traits>,
+   191	      public __detail::_Insert<_Key, _Value, _Alloc, _ExtractKey, _Equal,
+   192				       _Hash, _RangeHash, _Unused,
+   193				       _RehashPolicy, _Traits>,
+   194	      public __detail::_Rehash_base<_Key, _Value, _Alloc, _ExtractKey, _Equal,
+   195					    _Hash, _RangeHash, _Unused,
+   196					    _RehashPolicy, _Traits>,
+   197	      public __detail::_Equality<_Key, _Value, _Alloc, _ExtractKey, _Equal,
+   198					 _Hash, _RangeHash, _Unused,
+   199					 _RehashPolicy, _Traits>,
+   200	      private __detail::_Hashtable_alloc<
+   201		__alloc_rebind<_Alloc,
+   202			       __detail::_Hash_node<_Value,
+   203						    _Traits::__hash_cached::value>>>,
+   204	      private _Hashtable_enable_default_ctor<_Equal, _Hash, _Alloc>
+   205	    {
+   206	      static_assert(is_same<typename remove_cv<_Value>::type, _Value>::value,
+   385	
+   386	#if __cplusplus > 201402L
+   387	      using node_type = _Node_handle<_Key, _Value, __node_alloc_type>;
+   388	      using insert_return_type = _Node_insert_return<iterator, node_type>;
+   389	#endif
+   390	
+   391	    private:
+   392	      __buckets_ptr		_M_buckets		= &_M_single_bucket;
+   393	      size_type			_M_bucket_count		= 1;
+   394	      __node_base		_M_before_begin;
+   395	      size_type			_M_element_count	= 0;
+   396	      _RehashPolicy		_M_rehash_policy;
+   397	
+   398	      // A single bucket used when only need for 1 bucket. Especially
+   399	      // interesting in move semantic to leave hashtable with only 1 bucket
+   400	      // which is not allocated so that we can have those operations noexcept
+   401	      // qualified.
+   402	      // Note that we can't leave hashtable with 0 bucket without adding
+   403	      // numerous checks in the code to avoid 0 modulus.
+   404	      __node_base_ptr		_M_single_bucket	= nullptr;
+   405	
+   265	   *
+   266	   *  Important traits for hash tables.
+   267	   *
+   268	   *  @tparam _Cache_hash_code  Boolean value. True if the value of
+   269	   *  the hash function is stored along with the value. This is a
+   270	   *  time-space tradeoff.  Storing it may improve lookup speed by
+   271	   *  reducing the number of times we need to call the _Hash or _Equal
+   272	   *  functors.
+   273	   *
+   274	   *  @tparam _Constant_iterators  Boolean value. True if iterator and
+   275	   *  const_iterator are both constant iterator types. This is true
+   276	   *  for unordered_set and unordered_multiset, false for
+   277	   *  unordered_map and unordered_multimap.
+   278	   *
+   279	   *  @tparam _Unique_keys  Boolean value. True if the return value
+   280	   *  of _Hashtable::count(k) is always at most one, false if it may
+   281	   *  be an arbitrary number. This is true for unordered_set and
+   282	   *  unordered_map, false for unordered_multiset and
+   283	   *  unordered_multimap.
+   284	   */
+   285	  template<bool _Cache_hash_code, bool _Constant_iterators, bool _Unique_keys>
+   286	    struct _Hashtable_traits
+   287	    {
+   288	      using __hash_cached = __bool_constant<_Cache_hash_code>;
+   289	      using __constant_iterators = __bool_constant<_Constant_iterators>;
+   290	      using __unique_keys = __bool_constant<_Unique_keys>;
+   291	    };
+   292	
+   293	  /**
+   294	   *  struct _Hashtable_hash_traits
+   295	   *
+   296	   *  Important traits for hash tables depending on associated hasher.
+   297	   *
+   298	   */
+   299	  template<typename _Hash>
+   300	    struct _Hashtable_hash_traits
+   301	    {
+   302	      static constexpr std::size_t
+   303	      __small_size_threshold() noexcept
+   304	      { return std::__is_fast_hash<_Hash>::value ? 0 : 20; }
+   305	    };
+   306	
+   307	  /**
+   308	   *  struct _Hash_node_base
+   309	   *
+   310	   *  Nodes, used to wrap elements stored in the hash table.  A policy
+   311	   *  template parameter of class template _Hashtable controls whether
+   312	   *  nodes also store a hash code. In some cases (e.g. strings) this
+   313	   *  may be a performance win.
+   314	   */
+   315	  struct _Hash_node_base
+   316	  {
+   317	    _Hash_node_base* _M_nxt;
+   318	
+   319	    _Hash_node_base() noexcept : _M_nxt() { }
+   320	
+   321	    _Hash_node_base(_Hash_node_base* __next) noexcept : _M_nxt(__next) { }
+   322	  };
+   323	
+   324	  /**
+   325	   *  struct _Hash_node_value_base
+   326	   *
+   327	   *  Node type with the value to store.
+   328	   */
+   329	  template<typename _Value>
+   330	    struct _Hash_node_value_base
+   331	    {
+   332	      typedef _Value value_type;
+   333	
+   334	      __gnu_cxx::__aligned_buffer<_Value> _M_storage;
+   335	
+   336	      [[__gnu__::__always_inline__]]
+   337	      _Value*
+   338	      _M_valptr() noexcept
+   339	      { return _M_storage._M_ptr(); }
+   340	
+   500	      pointer
+   501	      operator->() const noexcept
+   502	      { return this->_M_cur->_M_valptr(); }
+   503	
+   504	      _Node_const_iterator&
+   505	      operator++() noexcept
+   506	      {
+   507		this->_M_incr();
+   508		return *this;
+   509	      }
+   510	
+   511	      _Node_const_iterator
+   512	      operator++(int) noexcept
+   513	      {
+   514		_Node_const_iterator __tmp(*this);
+   515		this->_M_incr();
+   516		return __tmp;
+   517	      }
+   518	    };
+   519	
+   520	  // Many of class template _Hashtable's template parameters are policy
+   521	  // classes.  These are defaults for the policies.
+   522	
+   523	  /// Default range hashing function: use division to fold a large number
+   524	  /// into the range [0, N).
+   525	  struct _Mod_range_hashing
+   526	  {
+   527	    typedef std::size_t first_argument_type;
+   528	    typedef std::size_t second_argument_type;
+   529	    typedef std::size_t result_type;
+   530	
+   531	    result_type
+   532	    operator()(first_argument_type __num,
+   533		       second_argument_type __den) const noexcept
+   534	    { return __num % __den; }
+   535	  };
+   536	
+   537	  /// Default ranged hash function H.  In principle it should be a
+   538	  /// function object composed from objects of type H1 and H2 such that
+   539	  /// h(k, N) = h2(h1(k), N), but that would mean making extra copies of
+   540	  /// h1 and h2.  So instead we'll just use a tag to tell class template
+   541	  /// hashtable to do that composition.
+   542	  struct _Default_ranged_hash { };
+   543	
+   544	  /// Default value for rehash policy.  Bucket size is (usually) the
+   545	  /// smallest prime that keeps the load factor small enough.
+   546	  struct _Prime_rehash_policy
+   547	  {
+   548	    using __has_load_factor = true_type;
+   549	
+   550	    _Prime_rehash_policy(float __z = 1.0) noexcept
+   551	    : _M_max_load_factor(__z), _M_next_resize(0) { }
+   552	
+62:struct __hash_value_type;
+68:struct __is_hash_value_type_imp<__hash_value_type<_Key, _Value> > : true_type {};
+76:_LIBCPP_EXPORTED_FROM_ABI size_t __next_prime(size_t __n);
+79:struct __hash_node_base {
+81:  typedef __hash_node_base __first_node;
+84:  typedef __node_base_pointer __next_pointer;
+86:  __next_pointer __next_;
+88:  _LIBCPP_HIDE_FROM_ABI __next_pointer __ptr() _NOEXCEPT {
+89:    return static_cast<__next_pointer>(pointer_traits<__node_base_pointer>::pointer_to(*this));
+96:  _LIBCPP_HIDE_FROM_ABI size_t __hash() const _NOEXCEPT { return static_cast<__node_type const&>(*this).__hash_; }
+98:  _LIBCPP_HIDE_FROM_ABI __hash_node_base() _NOEXCEPT : __next_(nullptr) {}
+99:  _LIBCPP_HIDE_FROM_ABI explicit __hash_node_base(__next_pointer __next) _NOEXCEPT : __next_(__next) {}
+108:struct __get_hash_node_value_type<__hash_value_type<_Key, _Tp> > {
+121:struct __get_hash_node_key_type<__hash_value_type<_Key, _Tp> > {
+129:struct __hash_node : public __hash_node_base< __rebind_pointer_t<_VoidPtr, __hash_node<_Tp, _VoidPtr> > > {
+131:  using _Base _LIBCPP_NODEBUG          = __hash_node_base<__rebind_pointer_t<_VoidPtr, __hash_node<_Tp, _VoidPtr> > >;
+132:  using __next_pointer _LIBCPP_NODEBUG = typename _Base::__next_pointer;
+134:  size_t __hash_;
+142:    __node_value_type __value_;
+146:  _LIBCPP_HIDE_FROM_ABI __node_value_type& __get_value() { return __value_; }
+159:  _LIBCPP_HIDE_FROM_ABI explicit __hash_node(size_t __hash, _Alloc& __na, _Args&&... __args)
+160:      : _Base(nullptr), __hash_(__hash) {
+164:  _LIBCPP_HIDE_FROM_ABI ~__hash_node() {}
+169:inline _LIBCPP_HIDE_FROM_ABI size_t __constrain_hash(size_t __h, size_t __bc) {
+173:inline _LIBCPP_HIDE_FROM_ABI size_t __next_hash_pow2(size_t __n) {
+178:class __hash_table;
+181:class __hash_iterator;
+183:class __hash_const_iterator;
+185:class __hash_local_iterator;
+187:class __hash_const_local_iterator;
+189:class __hash_map_iterator;
+191:class __hash_map_const_iterator;
+194:struct __hash_node_types;
+197:struct __hash_node_types<_NodePtr, __hash_node<_Tp, _VoidPtr> > {
+200:  typedef typename __hash_node_base<_NodePtr>::__next_pointer __next_pointer;
+213:struct __hash_node_types_from_iterator;
+215:struct __hash_node_types_from_iterator<__hash_iterator<_NodePtr> > : __hash_node_types<_NodePtr> {};
+217:struct __hash_node_types_from_iterator<__hash_const_iterator<_NodePtr> > : __hash_node_types<_NodePtr> {};
+219:struct __hash_node_types_from_iterator<__hash_local_iterator<_NodePtr> > : __hash_node_types<_NodePtr> {};
+221:struct __hash_node_types_from_iterator<__hash_const_local_iterator<_NodePtr> > : __hash_node_types<_NodePtr> {};
+224:class __hash_iterator {
+225:  typedef __hash_node_types<_NodePtr> _NodeTypes;
+227:  typedef typename _NodeTypes::__next_pointer __next_pointer;
+229:  __next_pointer __node_;
+238:  _LIBCPP_HIDE_FROM_ABI __hash_iterator() _NOEXCEPT : __node_(nullptr) {}
+252:  _LIBCPP_HIDE_FROM_ABI __hash_iterator& operator++() {
+255:    __node_ = __node_->__next_;
+259:  _LIBCPP_HIDE_FROM_ABI __hash_iterator operator++(int) {
+260:    __hash_iterator __t(*this);
+265:  friend _LIBCPP_HIDE_FROM_ABI bool operator==(const __hash_iterator& __x, const __hash_iterator& __y) {
+268:  friend _LIBCPP_HIDE_FROM_ABI bool operator!=(const __hash_iterator& __x, const __hash_iterator& __y) {
+273:  _LIBCPP_HIDE_FROM_ABI explicit __hash_iterator(__next_pointer __node) _NOEXCEPT : __node_(__node) {}
+276:  friend class __hash_table;
+278:  friend class __hash_const_iterator;
+280:  friend class __hash_map_iterator;
+288:class __hash_const_iterator {
+290:  typedef __hash_node_types<_NodePtr> _NodeTypes;
+292:  typedef typename _NodeTypes::__next_pointer __next_pointer;
+294:  __next_pointer __node_;
+297:  typedef __hash_iterator<_NodePtr> __non_const_iterator;
+305:  _LIBCPP_HIDE_FROM_ABI __hash_const_iterator() _NOEXCEPT : __node_(nullptr) {}
+307:  _LIBCPP_HIDE_FROM_ABI __hash_const_iterator(const __non_const_iterator& __x) _NOEXCEPT : __node_(__x.__node_) {}
+320:  _LIBCPP_HIDE_FROM_ABI __hash_const_iterator& operator++() {
+323:    __node_ = __node_->__next_;
+327:  _LIBCPP_HIDE_FROM_ABI __hash_const_iterator operator++(int) {
