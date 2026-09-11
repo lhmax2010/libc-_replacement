@@ -1,0 +1,111 @@
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:15:直接观察到：强制展开能穿过四种被测边界，沿途清理执行，线程可由创建方作为已
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:19:普通“锁未持有”错误且无人捕获时，两种构建各 10 次（自定义 terminate handler
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:20:5 次、默认 handler 5 次）最终都终止；两组的局部 `CleanupProbe` 都是 0/10。
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:23:区别在终止位置：保留规格的回溯在 condition variable 的 non-throwing 边界经
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:24:`__clang_call_terminate` 进入终止；移除规格的回溯保留了抛出函数、无规格的
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:25:`condition_variable::wait` 和无人捕获异常处理帧，最终在调用链顶端终止。
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:27:所以，对于本次“无人捕获”的普通错误用例，解除规格没有改变最终进程终止、没有
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:28:使该局部清理执行，也没有改变默认诊断文字；观测到的变化是终止边界和到达终止
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:60:  terminate handler、清理标记、join 结果和值 `PTHREAD_CANCELED`，而不是只看
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:72:普通错误用例 `code/uncaught_error_probe.cpp` 构造 `defer_lock` 的
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:74:先用自定义 terminate handler 记录局部清理计数和回溯，再用默认 handler 记录真实
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:75:诊断和信号结果。取消组中同一个清理标记能稳定出现，是“普通无人捕获路径清理为
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:82:| 构建 | 等待形态 | 次数 | 已确认进入等待 | terminate | 清理执行 | join 为 canceled | 最终退出 |
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:95:## 普通错误无人捕获矩阵
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:97:完整逐次数据见 `tables/item3_uncaught_error_matrix.tsv`。
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:99:| 构建 | handler | 次数 | 结果 | 局部清理 | 诊断/回溯 |
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:102:| 移除规格 | instrumented | 5 | 5 次退出 86 | 0/5 | 5/5 出现无规格 helper 的 `condition_variable::wait` 帧及 uncaught-exception 帧 |
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:112:  `__throw_system_error`，libc++abi 中还多出无人捕获异常处理帧。
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:114:C++ 异常机制在搜索处理器的第一阶段确定没有 catch 后可直接终止，不保证先进行
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:115:第二阶段栈展开；本次两组的局部清理均未执行是实测事实。不能把取消路径中清理
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:116:会执行外推为“所有无人捕获普通异常也会清理”。
+docs/progress/R111/ITEM3_CONDVAR_UNWIND_REPORT.md:135:- `uncaught_error_probe.cpp`：`685200c6...3933`
+docs/progress/R109/W1_REPORT.md:36:当前 libc++ 源码在普通等待入口先检查 `unique_lock::owns_lock()`，不持锁时显式生成 `EPERM`；随后若 `pthread_cond_wait` 返回非零，再按该错误码生成 `system_error`。定时等待有同类检查和底层错误处理。
+docs/progress/R109/W1_REPORT.md:38:glibc 2.40 源码列出的底层非超时错误包括：递归互斥量不由调用线程持有时的 `EPERM`；健壮互斥量重新获取时的 `EOWNERDEAD`/`ENOTRECOVERABLE`；优先级保护互斥量的优先级变更错误。定时入口还会对非法纳秒值或不支持的 clock id 返回 `EINVAL`。
+docs/progress/R109/W1_REPORT.md:60:保留规格格另以默认终止处理器重复 5 次：两类均 5/5 收到 `SIGABRT`（子进程 return code `-6`）；stderr 分别报告未捕获的 `std::__1::system_error` 和上述具体消息。自定义终止处理器格则 10/10 到达终止处理器并以 86 退出，证明不是仅凭“崩溃/退出码”作判断。
+docs/progress/R109/W1_REPORT.md:62:libstdc++ 未持锁格虽然 5/5 正常返回，但返回后 `unique_lock::owns_lock()==false`，而 native mutex 的 `try_lock` 仍报告 busy；这是静默的所有权状态不一致，不能记为“没有问题”。底层注入格 5/5 返回且 `owns_lock()==true`，说明当前实现没有把该返回码转成异常。
+docs/progress/R109/W1_REPORT.md:64:旧调用方格说明不重编并不等于自动取得新行为：符号仍能绑定，但旧调用点保留 non-throwing 契约，异常穿越时仍终止。这是当前机器上的实际观察，不是仅由 ABI 名称推断。
+docs/progress/R109/W1_REPORT.md:68:对持锁正确、底层返回成功或正常超时的现有调用，实验没有观察到变化。变化集中在原本会终止的前置条件违反和底层异常错误：
+docs/progress/R109/W1_REPORT.md:70:- 重新编译的调用方会收到 `system_error`。若希望恢复或记录后继续，需要在能定义恢复策略的位置增加针对性处理；若异常最终逃出线程入口、析构函数或其他 non-throwing 边界，进程仍可能终止，只是问题现场和清理轨迹改变。
+docs/progress/R109/W1_REPORT.md:71:- `catch (...)`、通用任务执行器或未来值封装可能捕获并吞掉异常，使原先在错误现场终止的缺陷延后或被掩盖。这是可能变差的场景。
+docs/progress/R109/W1_REPORT.md:72:- 展开期间可运行局部清理、记录上下文、由上层决定重试或降级；对于可恢复的底层故障，这比无条件终止提供更多选择，是可能变好的场景。
+docs/progress/R109/W1_REPORT.md:74:- 同一进程混用新旧调用点时，同一实现抛出的异常在新调用点可传播、在旧调用点终止，形成可观察的不一致。当前 R24 范围内 601 个发布消费记录都会重编，可消除此集合内的调用点差异；外部和预编译消费方是否存在、是否淘汰为 `NOT_AVAILABLE`。
+docs/progress/R109/W1_REPORT.md:78:现有证据支持以下有限结论：当前已发布仓的 D01/D02 消费方都在重编计划内；直接可归因源码调用没有发现未持锁的产品路径；变化在故障路径上真实存在，且旧调用方不会自动获得新语义。证据不支持“平台上没有外部旧调用方”或“底层错误永不可能发生”。是否接受这项从现场终止到可传播异常的策略变化，留给人工裁决。
+docs/progress/R109/W1_REPORT.md:90:- `tables/w1_default_terminate_matrix.tsv`：默认终止形态的 10 次重复；
+3:**待人工最终审阅。两架构官方套件结果分母已齐备，不等于全部通过或产品发布验收完成。**
+16:**允许等待中的取消穿过，并恢复共享锁写者状态。** 取消线程时，底层运行时会沿调用链退回，
+20:清除该写者设置的标记并通知排队者，而不抹掉仍合法持锁的读者状态。
+23:**为已链接旧程序保留旧入口。** 同一个库同时保留旧契约和新契约，用“符号版本”区分。
+24:它只为普通等待和 system-clock 定时等待这两个库内函数保留旧 `LLVM_22` 入口，
+25:新链接的默认入口为 `LLVM_22_TIZEN_1`。它不重新编译旧程序，也不修复旧程序内部缺少的清理代码。
+32:验证依据：[源码调用与资源核查](../../R111/ITEM1_WBUFFER_CLOSE_REPORT.md)、[新旧输出值对照](../../IMPL_0908/W3/REPORT.md)。
+37:也没有取得全部 13 个消费方已重建、同批部署的证据。计划范围不等于实际完成。
+42:下表是草稿中的**有限承诺**，并非任意 C++ 程序的取消安全保证。前提为：使用本次验证的
+45:启用 C++ 异常及相应清理信息；使用**延迟取消**（在线程到达取消点时处理请求），不是异步取消。
+46:调用链不得另有阻止展开的 `noexcept` 帧，调用方不得吞掉强制展开；正常 API 的锁所有权等前置条件仍适用。
+52:| 在上述前提及被测形态下，普通、system-clock、steady-clock、自定义 Clock 等待的取消能穿过目标边界，清理计数为 1，创建方取得已取消线程并完成回收。验证依据：[原生矩阵](../../IMPL_0908/W3/matrix_x86_64_final.tsv)、[实板矩阵](../../IMPL_0908/W3/matrix_armv7l_final.tsv)，每格 5 次。 | “干净退出”在这里指展开穿过、沿途被断言的清理执行、线程回收三件事。为什么：任意业务状态、其他回调和所有调度交错并未穷尽，不能据回收成功证明整个进程状态正确。 |
+53:| 被测普通／定时共享锁写者取消后，原读者计数保留、写者位清除，排队者获得进展，后续读者和写者能真实获取并释放锁。验证依据：[两架构共享锁状态与竞争对照](../../IMPL_0908/W3/REPORT.md)，各格 5 次。 | 定时回滚覆盖当前 steady-clock 实例，不承诺任意 Clock、模板参数、用户回调和调度公平性。为什么：有限实例与有限竞争轮次不能证明这些范围；旧头内的定时回滚代码也不会由换库补齐。 |
+54:| 被测 `timed_mutex`、普通 `future::wait` 和使用不抛出用户锁的 `condition_variable_any`，取消后清理执行且对象可再次使用；future 值为 42。验证依据：[两架构定向矩阵](../../IMPL_0908/W3/REPORT.md)。 | 不包括 `std::async` 最后共享状态的析构释放，也不包括 cv-any 用户锁重新加锁时抛出。为什么：前者仍有额外不抛帧；后者在不抛的解锁守卫析构内执行用户 `lock()`。依据：[析构路径静态核查](../../R112/REPORT.md)、[抛锁实板对照](../../R115/W3/REPORT.md)。 |
+55:| 被测正常等待、通知、超时、虚假唤醒，以及共享锁正常获取、释放和多读多写竞争，与匹配旧基线保持相同的具体值和状态。验证依据：[正常路径对照](../../IMPL_0908/W3/REPORT.md)，两架构各格 5 次。 | 不等于完整产品回归通过或性能承诺。为什么：官方套件仍有既有失败及不支持项；真实业务负载、所有优化组合及稳定性能未在本轮证明。 |
+63:以下旧 ELF 特指已经记录 `LLVM_22` 等待引用的对象；不是对任意无版本旧文件或任意动态查找方式的保证。
+64:每行普通等待已在原生和实板各测 5 次，旧／新 system-clock 入口另各测 5 次；依据为
+69:| 已链接旧程序，等待引用已记录旧节点 | `LLVM_22` | 保留旧不抛契约，进入终止处理。探针用标记处理器退出 86；86 不是默认系统信号的名称。 |
+70:| 旧 `.o`／`.a` 中的对象不重编，只重新链接双版本库 | 新默认 `LLVM_22_TIZEN_1` | **依赖旧机器码和异常清理表布局**：可能执行清理，也可能线程已回收而锁滞留。本轮 quiet 帧实测清理/解锁为 0，竞争者无法取得锁；不在干净退出承诺内。 |
+71:| 新头重编对象，并链接双版本库 | 新默认 `LLVM_22_TIZEN_1` | 在前述调用链前提下，清理和解锁各为 1，竞争者可取得锁，线程干净回收。 |
+72:| 新头重编对象，但先链接旧单版本库，之后运行时才换新库 | `LLVM_22` | 已记录的旧版本需求仍保留，进入旧终止路径；仅更新运行时库不会重选链接时已记录的版本。 |
+74:旧对象重新链接为何不能预测为统一结局：旧编译器按“不抛出”假设，可以不为该调用点生成清理区域。
+76:先前同源旧头“邻近可抛调用”与 quiet 两种形态，已在 x86_64 原生、armv7l 实板分别观察到
+77:“执行清理”和“锁滞留”。这不是随机概率，也不是说每个旧对象都必然滞留；这里的“布局”
+78:指**调用点与清理表覆盖布局**，与 Boost 的 C++ 对象内存布局问题不同。
+79:验证依据：[旧调用方两种形态及底层锁状态](../../R115/W3/REPORT.md)。
+84:无法改写旧对象中已有的这些实现；可靠生效需要重编所有相关翻译单元（一次源文件编译的单位）。
+86:| 头文件实现 | 为什么旧对象必须重编 |
+89:| 自定义 Clock 定时等待模板 | 模板实例在消费方生成；换库不重新实例化旧代码。 |
+90:| `wbuffer_convert` 析构 | 旧析构中的自动同步调用已经编入消费方；新库不能把那段旧代码删掉。 |
+92:共享锁**定时写者的回滚守卫**也在头文件内，相关对象同样必须重编。
+93:不得把新旧头生成的实现混合后偶然选中某个副本当作兼容保证；先前已观察到同名模板副本合并时的
+100:| 仅覆盖前述延迟取消形态。 | **异步取消不覆盖。** lightweight-web-engine 与 OpenMP 的特定条件路径设置异步模式；取消可能落在其他不抛帧或状态更新中间。x86_64 独立 `atomic<int>::wait` 探针避开本次目标入口仍触发终止，因此修好这些入口不等于保护那两个组件。依据：[条件可达性与独立实测](../../R108/W3_REPORT.md)。不声称每个产品必然触发，也不把该独立探针外推到 ARM。 |
+102:| cv-any 使用不抛出的普通用户锁。 | **用户锁重新加锁时抛出不覆盖。** 守卫析构仍是不抛函数，实测进入终止处理；更改等待入口不能更改用户锁契约。依据：[原生与实板对照](../../R115/W3/REPORT.md)。 |
+103:| 仅对实际验证的编译、运行库和回调实例作结论。 | **不覆盖禁用 C++ 异常的对象、额外不抛帧、吞掉强制展开、任意模板参数/Clock/facet/回调。** 为什么：清理信息可能缺失，或另有阻止展开的边界；旧无异常样本已出现“线程回收但锁残留”。依据：[旧对象实板证据](../../R115/W3/REPORT.md)。 |
+1:# Boost 剩余符号边实测（本轮）
+5:本轮结论为 **`PARTIAL`**。在既有 27/90 条已测边基础上，本轮在
+6:**aarch64、QEMU 用户态**新增测到 22 条边，累计为 **49/90**；仍有
+7:**41/90** 未在其对应架构和符号组上实测。本轮没有把 QEMU aarch64
+13:沿用上一轮的 90 条边分类，并严格按以下次序选择：
+16:   Boost.Test 7 条、Boost.Filesystem 4 条、Boost.Iostreams 1 条、
+18:2. 再补“C++ ABI 耦合但布局未证明”：Boost.Test 5 条、Boost.Thread
+19:   3 条，共 8 条。Boost.Thread 在 x86_64 通过只能说明该架构和该符号
+20:   组的实测结果，不能代替 aarch64 实测；Boost.Test 在这一分类中也
+23:逐边清单见 `tables/w3_selected_edges.tsv`，更新后的完整 90 条表见
+24:`tables/w3_edges_90_results.tsv`。
+39:- 每格断言具体状态或具体值；同时观察析构。Boost.Thread 的
+42:- Boost.Test 的输入使用平台 Boost 头文件中已核对的两个指针布局，
+51:## 实测结果
+55:| Boost.Test `normalize_test_case_name`，provider 返回 `std::string` | 5/5 返回后读取为长度 56，期望长度 16；具体值断言失败，退出 41 | 5/5 长度 16，十六进制为 `616c7068615f626574615f67616d6d61`（`alpha_beta_gamma`），退出 0 | 混合侧 5/5 consumer 析构完成且 `dlclose` 完成 |
+59:| Boost.Thread `enter/rollback/commit_once_region` | 5/5 精确状态 `1,1,0`，退出 0 | 5/5 精确状态 `1,1,0`，退出 0 | `once_flag` 为平凡析构，5/5 作用域退出完成 |
+72:| 分类 | 本轮新增 | 累计已测 | 本轮后仍未测 |
+78:累计数字中的“已测”表示该边上选定的代表符号组已在该架构实测，仍不
+84:  Filesystem 代表组在 armv7l 之外的架构尚缺，7 条是 Boost.Test
+86:  析构失败，但未测条目仍记 `NOT_OBSERVED`，不以家族结果代填。
+88:  Boost.Test/Boost.Thread 组在 armv7l 尚缺。Boost.Test 本轮出错而
+89:  Boost.Thread 本轮通过，实测再次表明这一分类内部不能统一推定
+106:  而退出 127；补入同一 R11 的 Boost.Atomic、zlib、libbz2 后重跑，
+114:  `b8c95a889773ebd4d55f14f703061caebecedf0bf31bd82e90a1a3310c4a1925`。
+120:  `cf1099bdc74b43b0873168b8dcb981634e19302f24e1c0fca99015618723cdcf`。
+5:本轮 **armv7l 物理板**完成 21 格 ×5 次取消矩阵，x86_64 原生用相同来源探针完成
+7:CANTUNWIND。不是 QEMU 用户态运行验证；QEMU 只用于主机执行 ARM 编译工具。
+35:| 形态 | x86_64 原生（每格 5 次） | armv7l 物理板（每格 5 次） |
+51:terminate 探针安装了标记处理器并 `_Exit(86)`，因此这里没有把 86 描述成原生 SIGABRT。
+71:| GCC -fno-exceptions 加 -funwind-tables 控制 | 有实际展开指令 | 本控制只检查对象 | NOT_OBSERVED（未作为额外运行格） |
+79:本地 GCC 源码 `libgcc/unwind-arm-common.inc:342` 将 CANTUNWIND 映射为 END_OF_STACK；
+93:构建日志同时观察到 g++、`-fno-exceptions`、`-funwind-tables`。
+131:不包含 angle 真实业务取消路径，不声称覆盖所有优化等级、编译器组合或板载 unwinder 的源码映射。
+docs/progress/R78/code/boundary_error.hpp:3:struct BoundaryError {
+docs/progress/R78/code/new_main.cpp:84:    } catch (const BoundaryError& error) {
+docs/progress/R78/code/old_plugin.cpp:35:  throw BoundaryError{77};
+docs/progress/P4_0909/snippets/api_01_original.c:11:55: error: unknown type name ‘size_t’
+   11 | int           engine_read(engine_handle h, char* buf, size_t buflen);
+      |                                                       ^~~~~~
+docs/progress/P4_0909/snippets/api_01_original.c:1:1: note: ‘size_t’ is defined in header ‘<stddef.h>’; did you forget to ‘#include <stddef.h>’?
+  +++ |+#include <stddef.h>
+    1 | // 头文件

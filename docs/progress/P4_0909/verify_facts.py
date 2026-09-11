@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""从旧原始输出重算关键数据并校验 150 次记录；不重跑旧测试。"""
+import collections,csv,hashlib,importlib.util,pathlib,re,subprocess
+b=pathlib.Path('docs/progress/P4_0909');r=pathlib.Path('docs/progress/R116')
+spec=importlib.util.spec_from_file_location('m','docs/progress/R66/code/compare_abi_manifests.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+lp=pathlib.Path('codes/gcc/libstdc++-v3/config/abi/post/x86_64-linux-gnu/baseline_symbols.txt')
+rp=pathlib.Path('/home/toolchain/development/libc++_replacement/progress/T4/x86_64/static/evidence/libcxx.so.1.0_defined_exports.log')
+left,right=m.stdcxx(lp),m.libcxx(rp)
+assert (len(left),len(right),len(left.keys()&right.keys()))==(6057,1969,17)
+print('ORIGINAL_EXPORT_INPUT_REPLAY',len(left),len(right),len(left.keys()&right.keys()))
+for p in [lp,rp]:print('INPUT_SHA256',hashlib.sha256(p.read_bytes()).hexdigest(),p)
+exits=collections.Counter();results=[]
+for row in csv.DictReader((r/'measurements.tsv').open(),delimiter='\t'):
+    stem=pathlib.Path(row['evidence']);s=pathlib.Path(str(stem)+'.stdout').read_text();err=pathlib.Path(str(stem)+'.stderr').read_text()
+    rc=int(pathlib.Path(str(stem)+'.exitcode').read_text());assert rc==int(row['actual_exit'])
+    assert 'PROVIDER_ASSERT=PASS' in s and 'expected='+row['provider'] in s
+    if row['provider']=='llvm':assert 'experimental_mapping=1 other_unwinder_mapping=0' in s
+    probe=row['probe']
+    if probe=='wait_retained':assert rc==86 and 'event=terminate cleanup_count=0' in s
+    elif probe=='wait_removed':assert rc==0 and 'canceled=1 cleanup_count=1' in s
+    elif probe=='control/shared':assert rc==0 and 'control_damaged=1 reader=0 writer=0 writer_bit=1' in s and 'rollback_count=0' in s
+    elif probe=='rollback/shared':assert rc==0 and 'ASSERTIONS=PASS' in s and 'rollback_count=1' in s
+    elif row['mode']=='api':
+        match=re.search(r'backtrace_frames=(\d+) plugin_frames=(\d+) exception_value=42 cleanup_count=1 dlclose=0',s)
+        assert rc==0 and match and min(map(int,match.groups()))>=3
+    elif row['abi_pair']=='unpatched':assert rc==-6 and 'foreign exception' in err
+    else:assert rc==0 and 'join=0 canceled=1 caught=1 cleaned=1' in s and 'ASSERTIONS=PASS' in s
+    results.append([str(stem),rc,'PASS',hashlib.sha256(s.encode()).hexdigest()]);exits[rc]+=1
+assert len(results)==150
+with (b/'RAW_MEASUREMENT_RECHECK.tsv').open('w',newline='') as f:
+    w=csv.writer(f,delimiter='\t');w.writerow(['raw_stem','exit','value_and_identity_recheck','stdout_sha256']);w.writerows(results)
+print('RAW_150_IDENTITY_EXIT_AND_VALUE_ASSERTIONS=PASS',dict(exits))
+links=list(csv.DictReader((b/'LINK_INVENTORY.tsv').open(),delimiter='\t'));rep=[]
+for x in links:
+    if x['local_state'].startswith('MISSING'):
+        p=pathlib.Path('docs/progress/R116')/x['target'];assert p.exists()
+        rep.append([x['report'],x['line'],x['target'],'https://github.com/lhmax2010/libc-_replacement/blob/859126994bd7e3b8bb03ee86154e23e1b04b2153/'+str(p)])
+with (b/'RELATIVE_LINK_REPLACEMENTS.tsv').open('w',newline='') as f:
+    w=csv.writer(f,delimiter='\t');w.writerow(['report','line','old_target','suggested_target']);w.writerows(rep)
+print('BROKEN_RELATIVE_LINK_REPLACEMENTS',len(rep),'ZH',sum('zh.md' in x[0] for x in rep),'EN',sum('en.md' in x[0] for x in rep))
+print('SCRIPT_SHA256',hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest())

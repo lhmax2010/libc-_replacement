@@ -1,0 +1,108 @@
+report	block	line	language	source
+api_compatibility_report.md	1	29	c	"// 头文件
+#ifdef __cplusplus
+extern ""C"" {
+#endif
+
+typedef struct engine_s* engine_handle;
+
+engine_handle engine_create(void);
+int           engine_get_width(engine_handle h);
+void          engine_set_position(engine_handle h, int x, int y);
+int           engine_read(engine_handle h, char* buf, size_t buflen);
+void          engine_destroy(engine_handle h);
+
+#ifdef __cplusplus
+}
+#endif
+"
+api_compatibility_report.md	2	56	cpp	"// 这些跨边界是安全的
+class Engine {
+public:
+    int    width() const;                    // 返回 int
+    void   setPosition(int x, int y);        // 参数是 int
+    bool   isReady() const;                  // 返回 bool
+    double scale() const;                    // 返回 double
+};
+
+struct Rect { int x, y, w, h; };             // POD，布局由 C ABI 定
+Rect   getBounds();                          // 按值返回 POD，安全
+"
+api_compatibility_report.md	3	81	cpp	"// 不安全 —— 参数和返回值都是 int，但异常会穿过去
+int engine_compute(engine_handle h) {
+    auto result = internal_cpp_function();   // 这里可能抛
+    return result;
+}
+
+// 安全 —— 挡住异常，转成错误码
+int engine_compute(engine_handle h, int* out) {
+    try {
+        *out = internal_cpp_function();
+        return 0;
+    } catch (const std::exception&) {
+        return -1;
+    } catch (...) {
+        return -2;
+    }
+}
+"
+api_compatibility_report.md	4	107	cpp	"// 不安全 —— 一侧分配，另一侧释放
+char* engine_get_name(engine_handle h);   // 内部 new[] 出来的
+// 应用侧：free(name);  ← 用的是另一套 operator delete
+
+// 安全 —— 提供配对的释放函数
+char* engine_get_name(engine_handle h);
+void  engine_free_string(char* s);        // 由提供方释放
+
+// 或者由调用方提供缓冲区
+int   engine_get_name(engine_handle h, char* buf, size_t buflen);
+"
+api_compatibility_report.md	5	129	cpp	"// 不能跨边界
+std::string  engine_get_name();                    // 返回 string
+void         engine_set_items(std::vector<int>);   // 参数是 vector
+std::map<int, std::string> engine_get_config();    // 返回 map
+"
+api_compatibility_report.md	6	154	cpp	"// 提供方（libstdc++ 构建）
+std::deque<int>* make_data() {
+    auto* d = new std::deque<int>{1, 2, 3, 4};
+    return d;                        // 报告长度 4
+}
+
+// 消费方（libc++ 构建）
+auto* d = make_data();
+printf(""%zu\n"", d->size());          // 读到 106884723786536
+"
+api_compatibility_report.md	7	173	cpp	"// 不能跨边界
+class EngineError : public std::runtime_error { ... };
+
+void engine_process();               // 内部抛 EngineError
+
+// 应用侧
+try {
+    engine_process();
+} catch (const EngineError& e) {     // 接不住 —— 类型信息对不上
+    ...
+} catch (...) {                      // 只能落到这里
+    ...
+}
+"
+api_compatibility_report.md	8	193	cpp	"// 不能跨边界
+std::unique_ptr<Widget> engine_create_widget();     // 谁来释放？
+std::shared_ptr<Config> engine_get_config();        // 控制块在哪一侧？
+"
+api_compatibility_report.md	9	204	cpp	"// 不能跨边界
+std::vector<int>::iterator engine_begin();
+"
+api_compatibility_report.md	10	223		"libstdc++ 侧:  std::string  →  { const char* data; size_t len; }
+                                        ↓ 跨边界（纯 C）
+libc++ 侧:     { const char* data; size_t len; }  →  std::string
+"
+abi_comparison_preliminary.md	1	60	cpp	"// 提供方（libstdc++ 构建）
+std::deque<int>* make_data() {
+    return new std::deque<int>{1, 2, 3, 4};   // 报告长度 4
+}
+
+// 消费方（libc++ 构建）
+auto* d = make_data();
+printf(""%zu\n"", d->size());                   // 读到 106884723786536
+"

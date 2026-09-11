@@ -1,0 +1,138 @@
+docs/progress/R112/REPORT.md:264:- `shared_mutex` 基类的 exclusive/shared lock 路径调用 `__gate1_/__gate2_.wait`；
+# W2 不随迁移重新构建的组件清单
+
+## 结论
+
+`PARTIAL`。平台已发布物和可得源码包内的三类候选已经量化，但外部产品/应用组件缺少 BOM、产物和重建策略，因而全局真实上界为 `NOT_AVAILABLE`，不能把已见文件数当成完整平台上界。
+
+## 四类组件
+
+| 类别 | 已确认/候选分母 | C++ 指标 | 确认进入产品或生产构建 | 保守上界 | 说明 |
+|---|---:|---:|---:|---:|---|
+| 预编译共享库、迁移时不重建 | 5 个已确认；另有 1,027 个源码包内共享候选 | 候选中 164 | 5 | 1,027（发现上界） | R66 确认 `pen-wave` 的 5 个架构 DSO 仅复制安装；其余候选不能仅凭存在即判定发布 |
+| 已发布静态归档 | 8,911 | 1,600 | 发布快照内 8,911 | 8,911 | 8,906 可读，5 个格式不可识别；按路径和架构计数，不是语义去重组件数 |
+| 源码包内对象文件 | 3,236 | 1,289 | 21 | 3,236（发现上界） | 21 个来自 LLVM，7 个逻辑对象在 3 个架构资产中出现，构建规则有明确引用 |
+| 外部产品/应用组件 | `NOT_AVAILABLE` | `NOT_AVAILABLE` | `NOT_AVAILABLE` | `NOT_AVAILABLE` | 缺少外部 BOM、最终产物、源代码和是否重建声明 |
+
+前三类数量不能直接相加：同一逻辑组件可能跨架构重复、静态归档与对象可能存在包含关系，源码包内残留也不等同于最终交付。由于第四类未知，全平台“可能复制旧实现”的有限真实上界无法成立。
+
+## 符号检查解释
+
+修正路径后，8,911 个静态归档中 1,600 个出现 Itanium C++ 符号，8,906 个可由 `nm` 正常读取；5 个异常分别属于 `golang-tests`（2）、`glibc-devel-static`、`app-rootstrap-devel`、`hal-rootstrap`，均保留在保守上界中。所有静态归档、源码对象和共享候选的目标实现可见命中均为 0。
+
+目标符号不可见不能降低上界，因为内联、LTO、剥离、位码、格式不兼容和类型擦除都可能消除可见名字。C++ 指标也是工作性分类，不是“包含旧实现”的证明。
+
+## 技术问题与权威表
+
+- 首轮双遍目录枚举效率不足，主动中止并保留退出码 130；随后改为单遍枚举。
+- 外部 I/O 负载一度触发资源门禁，退出码 21；W2 只读分析以 `nice 15`、`ionice idle`、并行 2 继续，构建门禁未被绕过。
+- 合并清单首轮使用了错误的静态路径基准，导致 8,911 个静态项全部报告不存在。该段数据作废但保留；源码对象和共享候选段有效。
+- `tables/w2_static_inventory.tsv` 与 `tables/w2_static_summary.tsv` 是静态归档的权威重跑结果；`tables/w2_inventory.tsv` 只用于其中两类源码候选。
+
+## 证据索引
+
+- 静态归档权威清单：`tables/w2_static_inventory.tsv`
+- 静态汇总：`tables/w2_static_summary.tsv`
+- 源码内对象/共享候选：`tables/w2_inventory.tsv`
+- 按包汇总：`tables/w2_package_rollup.tsv`
+- 生产构建引用：`tables/w2_linked_object_evidence.tsv`
+- R66/R87/R11 证据哈希：`raw/044_hash_w2_prior_evidence.stdout`
+- 失败与重试记录：`raw/020_*`、`raw/036_*`、`raw/042_*`、`raw/046_*`、`raw/046t_*`
+# 标准库与展开器迁移参考问题库
+
+截至 2026-09-07。供故障查阅，不是迁移方案推荐或优先级表。“建议探测／范围”只列条件性验证办法，不代表批准实施。外部作者报告不等于本组实测；未取得遗留状态时明确记未知。公开搜索未穷尽私有问题和全部历史。
+
+## 旧构建产物使用不同标准库
+
+- 来源／时间：ChromeOS 的 Chrome，2017-10。切换 libc++ 后，旧输出目录残留 libstdc++ 对象可导致链接错误；迁移公告向开发者说明了清理旧构建目录的方法。[公告](https://groups.google.com/a/chromium.org/g/chromium-os-dev/c/e8pJRHLisIg)。
+- 发现／处理：开发构建集成问题；改构建产物管理，不是修改异常运行时。是否覆盖全部外部缓存的遗留状态 `NOT_AVAILABLE`。
+- Tizen 判断：不确定；具备标准库切换条件，但本次未核查全部增量缓存身份。现有已成功链接的微探针不能探测未重新构建的业务对象。
+- 建议探测／范围：对比干净与增量构建，记录编译器、头文件和标准库配置键；属于受影响构建的验证问题，是否扩大清缓存范围需其所有者确认。
+- 可采用性：方法可改造使用，但不能直接清理用户现有构建树。需适配 GBS、ccache 和各包输出目录边界。
+
+## GPU／ANGLE 集成导致 libc++ 默认切换回退
+
+- 来源／时间：Chromium Linux，2017-06。默认切换后 GPU builder 失败，先回退，随后随 ANGLE 更新重新落地。[回退](https://codereview.chromium.org/2965693002/)、[重新落地](https://codereview.chromium.org/2963223003/)、[ANGLE 更新](https://chromium-review.googlesource.com/557679)。
+- 发现／处理：构建机器人发现，依赖更新后重试。已取得 ANGLE roll 提交及范围，但本次未还原其中每个子提交的故障机理；不能补写为某个具体头文件或 ABI 错误。最终全部 GPU 功能是否无遗留 `NOT_AVAILABLE`。
+- Tizen 判断：不确定；平台有 ANGLE，但与当时版本、配置及失效点的同一性未证明。
+- 盲区与探测：线程取消／小型布局探针不能代替 GPU 构建和图形功能套件；可核对实际 ANGLE 版本与构建矩阵，再跑受影响图形功能。若该依赖随本次迁移重编，相关集成结果属于该包验收；不据此扩大成平台图形重构。
+- 可采用性：历史依赖升级不能直接套用；故障定位／回归方法需按 Tizen 版本改造。
+
+## 静态初始化计数的归属变化
+
+- 来源／时间：Chromium libc++ 切换，2017-06。初始化工作由 libstdc++ 共享库移到可执行文件后，静态初始化数量预算需调整；提交解释总体工作未因此增加。[切换记录](https://codereview.chromium.org/2963223003/)。
+- 发现／处理：构建／初始化预算检查；调整预期统计。**不是已经证明启动性能退化**。实际设备性能遗留未提供。
+- Tizen 判断：不确定，取决于静态链接和统计边界。当前功能探针不测启动耗时与初始化数量。
+- 建议探测／范围：比较同口径的进程加共享库初始化总量、启动时序和耗时；若采用静态标准库时才是直接相关条件。没有静态链接变更不能仅凭历史记录判定必发。
+- 可采用性：统计口径思想可用；不能直接提高 Tizen 性能阈值或复制 Chromium 预算值。
+
+## NaCl 对实际库文件名与别名方向敏感
+
+- 来源／时间：ChromeOS，2021-10-27。`libgcc_s.so.1` 仅是指向 libunwind 的链接时出现 NaCl 故障；合入变更反转布局，使其成为物理文件。[修复](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3246062)。
+- 发现／处理：NaCl bug 报告，作者报告 `tast nacl.Pnacl` 通过；修改库生成／安装布局。其他加载器遗留范围 `NOT_AVAILABLE`。
+- Tizen 判断：同一 NaCl 故障是否发生不确定，缺产品组件清单；**同类加载命名问题存在条件性风险**，本次实验 SONAME／别名布局与该修复后的配置不同。
+- 盲区与探测：本机 dlopen 成功不能检测沙箱、安装器或依赖扫描工具对物理路径的要求。可用真实组件在隔离根中检查 SONAME、DT_NEEDED、realpath、文件清单及加载过程。若改变提供方布局，属于此改变的兼容验证，不自动要求引入 NaCl。
+- 可采用性：需改造；不能凭该提交直接认定 Tizen 所有安装布局必须相同。平台系统库未修改。
+
+## 隐式 pthread 链接依赖丢失
+
+- 来源／时间：ChromeOS binutils，2021-11-29。从 libgcc_eh 过渡到 libunwind 时 binutils 不再自动带入 pthread，修复显式加入 `-lpthread`。[提交](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3298526)。
+- 发现／处理：项目构建问题，作者本地测试；改包链接参数。其他包是否均完成审计未提供。
+- Tizen 判断：不确定；需要真实静态／动态链接命令，不能因较新 glibc 合并 pthread 就认为所有交叉或静态构建安全。
+- 盲区与探测：本次探针本来显式 `-pthread`，不能暴露业务包隐式依赖。可比较真实链接图并在隔离工具链重建相关包；这是提供方切换影响到的包级构建核查。
+- 可采用性：显式声明真实依赖的原则可用，具体改动需逐包证明；不能无差别给所有链接命令加库。
+
+## Breakpad 多架构库路径错误
+
+- 来源／时间：ChromeOS，2021-11-24。在 arm32 构建 64 位 crash reporter 时，Breakpad pkg-config 中硬编码库路径阻碍系统正确选库；删除该路径，作者在 jacuzzi＋libunwind 构建验证。[提交](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/3292637)。
+- 发现／处理：交叉／多架构构建；改 pkg-config 元数据，不是异常展开算法。未取得所有设备崩溃报告质量的后续结果。
+- Tizen 判断：不确定，需确认实际 crash reporter 位宽、pkg-config 输出和 sysroot 路径。
+- 盲区与探测：同架构探针不能发现；可检查 `.pc`、链接 map、ELF Class／Machine，并在对应架构验证生产栈回溯。若无混合位宽组件，该具体触发条件不成立；当前材料不能断言平台无此组件。
+- 可采用性：需改造；不能直接删除所有库路径，交叉环境仍需确定正确 sysroot。
+
+## 两种展开器同时进入一个进程
+
+- 来源／时间：LLVM 2023 年默认展开器讨论含 ChromeOS 维护者的真实故障报告；2024 年另有 Debian libc++ 18 取消崩溃报告。两者不是同一产品事件。[讨论](https://reviews.llvm.org/D150897)、[LLVM 发布说明](https://releases.llvm.org/18.1.1/projects/libcxx/docs/ReleaseNotes.html)、[Debian 报告](https://github.com/llvm/llvm-project/issues/90041)。
+- 发现／处理：跨提供方崩溃，涉及不同实现的私有上下文及符号介入；发行版配置可控制是否链接 LLVM 展开器。不能把某一发行版的配置建议当成所有产品的完整解决记录；全部遗留状态未知。
+- Tizen 判断：若形成不兼容的混合调用链，可发生；当前平台／外部插件是否引入第二套静态或动态实现仍缺完整材料。本次实验主动保持单提供方，没有复现故障组合。
+- 盲区与探测：逐次 maps 和 dladdr 能检测部分动态混入，不能穷尽隐藏静态实现；可核对实际链接图、各 `_Unwind_*` 与 personality 归属，排列插件加载顺序并对值／清理断言。属于提供方变更的直接边界验证，部署处置由人工决定。
+- 可采用性：受控单提供方构建思路需改造到 Tizen 全依赖及外部组件，不能只改一个开关就假定完成。
+
+## ARM EHABI 强制展开历史缺陷
+
+- 来源／时间：LLVM libunwind，2021-11。ARM 到达栈底等路径没有正确向停止回调传递结果；上游补充强制展开支持及相邻继续展开处理。[修复](https://reviews.llvm.org/D109856)、[相邻 ABI 修正](https://reviews.llvm.org/D111703)。
+- 发现／处理：补丁审查与测试；修改 ARM 展开实现及 libc++abi 相关路径。修复存在不证明任意 libc++abi、glibc、浮点 ABI 和历史二进制组合均通过。
+- Tizen 判断：本次源码包含较新实现，不据历史缺陷断言仍必现；具体 gnueabi 组合不确定，实验 ARM 运行 `NOT_OBSERVED`。
+- 盲区与探测：x86 全通过仍不能覆盖 EHABI；可在实际 ARM 组合检查停止回调、清理、重抛、栈底及非 VFP 参数约定，区分 QEMU 与物理板。若考虑 ARM 提供方变更，属于该架构验证范围。
+- 可采用性：历史补丁不能重复生搬到已含修复的源码；测试设计可改造，需使用实际平台 ABI。
+
+## glibc 引导构建受安装顺序影响
+
+- 来源／时间：ChromeOS，2023-07-12。llvm-libunwind 提前在 chroot 初始化时安装后，工具链 CQ 失败；glibc 构建禁用自动 sysroot 应用，作者报告 armv7a crossdev 成功。[提交](https://chromium-review.googlesource.com/c/chromiumos/overlays/chromiumos-overlay/+/4677913)。
+- 发现／处理：工具链持续集成；改引导构建环境。不是已发布系统退回 GNU 提供方。当前 ebuild 的其他 ARM 构建规避亦是配置证据，不能据此推断每项历史故障都在本机复现。
+- Tizen 判断：不确定；需要工具链 bootstrap DAG、各阶段 sysroot 与安装顺序。
+- 盲区与探测：在已有完整 sysroot 中构建小探针不能发现 bootstrap 循环；可在隔离环境核查分阶段依赖与链接命令。若本次仅评估不实施，无须擅自重建平台工具链；若以后更换提供方，该路径才需要其所有者验收。
+- 可采用性：不能直接采用 ChromeOS ebuild 开关；须适配 Tizen 的工具链生成流程。
+
+## 标准读写锁不一定改善实际负载
+
+- 来源／时间：Chromium StatisticsRecorder，2021—2023。维护者讨论 Windows 特定工作负载的调度／性能问题及共享锁方案；随后说明非 Windows 有开销无收益，并通过改进原锁使用方式回到 `base::Lock`。[讨论](https://groups.google.com/a/chromium.org/g/cxx/c/bIlGr1URn8I)。
+- 发现／处理：实际性能分析与实现迭代；改产品锁使用，不是修复取消回滚。不能将讨论中对某平台调度行为的描述写成所有系统的普遍定理；全部其他负载遗留未知。
+- Tizen 判断：不确定；需实际锁竞争、读写比例、线程优先级和延迟目标。
+- 盲区与探测：当前微探针断言安全性／活性，不证明吞吐及尾延迟；可比较真实负载的竞争、延迟和饥饿情况。范围取决于本次是否改变该产品同步实现，不能借此推荐全平台换锁。
+- 可采用性：负载驱动评估方法可用；不能直接移植其产品级锁选择。
+
+## GNU 兼容版本脚本和实际符号集不等价
+
+- 来源／时间：本次 LLVM 集成实验，2026-09-07；**不是冒称 Chromium 历史故障**。GNU 链接器拒绝所生成重复版本节点，lld 构建成功；实验 DSO 与 Tizen sysroot 存在 108 个缺失的符号／版本组合。[失败](raw/013_build.stderr)、[构建输出](raw/013_build.stdout)、[版本差异](symbol_comparison.tsv)、[项目责任边界](https://github.com/llvm/llvm-project/blob/main/llvm-libgcc/docs/LLVMLibgcc.md)。
+- 发现／处理：本地隔离构建和 readelf 静态核查；仅切换实验链接器使构建完成，**没有修复或声称解决符号兼容差异**。
+- Tizen 判断：差异已确认；具体哪个产品因此失败仍不确定，须有导入符号／版本集合。库总导出更多不等于原集合的超集。
+- 盲区与探测：glibc 六个入口和简单插件通过无法覆盖全部版本需求；可逐产物交叉比较导入版本并设计命中差异的加载／运算探针。若改变提供方，属于直接兼容边界；不自行生成或实施版本补丁。
+- 可采用性：不能把 lld 构建成功视为兼容修复；符号与消费者证据方法可直接使用，具体版本映射需要独立设计、验证和审批。
+docs/progress/T4/x86_64/static/evidence/red_relevant_bindings.log
+docs/progress/T4/x86_64/static/evidence/needed_closure_ldd_r.log
+docs/progress/T4/x86_64/static/evidence/green_relevant_bindings.log
+docs/progress/T4/x86_64/static/evidence/header_file_list.log
+docs/progress/T4/x86_64/static/evidence/smoke_provider_bindings.log
+4:3	C-header-20	0a32dc44e0e57ed524283bc416bdc5c4f6a00b131de5e421485b6e7bcb4b82e9	0003-Layer-C-header-batch-20-sites.patch
+5:4	C-library-30	88228328db96b38ca139ec1fa3b04ddd82c25f17b97e8a90c674feb2a654d90e	0004-Layer-C-library-batch-30-sites.patch

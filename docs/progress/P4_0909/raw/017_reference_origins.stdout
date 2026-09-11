@@ -1,0 +1,104 @@
+docs/progress/R116/code/supplement.py:5:terms=['pthread_cancel','pthread_setcanceltype','PTHREAD_CANCEL_ASYNCHRONOUS','std::shared_mutex','std::shared_timed_mutex','wbuffer_convert']
+docs/progress/R116/REFERENCES.md:16:| ABI 命名空间／版本 | [配置头](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/buildtools/third_party/libc++/__config_site) | sources/configsite_actual.txt |
+docs/progress/R116/REFERENCES.md:27:固定 libc++ 实现快照为 `sources/pinned_cv.txt`、`pinned_cv_header.txt`、`pinned_shared.txt`、`pinned_shared_header.txt`、`pinned_wbuffer.txt`；其完整 URL 和 SHA 见下载索引。检查对象是固定依赖，不是任意发行版 libc++。
+docs/progress/R116/code/acquire.py:6:for name,path in [('cpp_config','build/config/c++/c++.gni'),('cpp_build','build/config/c++/BUILD.gn'),('unwind_config','build/config/unwind.gni'),('libcxx_build','third_party/libc++/BUILD.gn'),('libcxx_config','third_party/libc++/__config_site'),('libcxx_readme','third_party/libc++/README.chromium'),('abi_build','third_party/libc++abi/BUILD.gn'),('unwind_build','third_party/libunwind/BUILD.gn'),('thread','base/threading/thread.cc'),('style','styleguide/c++/c++11.md'),('deps_pinned','DEPS')]:
+docs/progress/R116/code/acquire.py:8:rev='97b436da4c33663581d394f4ee0a5977fc38c2f4'
+docs/progress/R116/code/acquire.py:9:for name,path in [('pinned_shared','src/shared_mutex.cpp'),('pinned_shared_header','include/shared_mutex'),('pinned_cv','src/condition_variable.cpp'),('pinned_cv_header','include/__condition_variable/condition_variable.h'),('pinned_wbuffer','include/__locale_dir/wbuffer_convert.h')]:
+docs/progress/R116/snapshot_origins.tsv:6:docs/progress/R116/snapshots/condition_variable_removed.cpp	tmp/R115-W4/condition_variable_removed.cpp	a87743f952303b1c4e58f0cf833b1cec75ad2eeca1edbe690e45ac5f150142e7
+docs/progress/R116/snapshot_origins.tsv:22:docs/progress/R116/snapshots/shared_control/shared_mutex.cpp	tmp/R115-W4/control/shared_mutex.cpp	aed355371e37deb408d6d59195670b2b7c8368ae2af54192e8d77e470e66b4a4
+docs/progress/R116/snapshot_origins.tsv:23:docs/progress/R116/snapshots/shared_control/include/shared_mutex	tmp/R115-W4/control/include/shared_mutex	de8b35c78d7b1e979d878747b9c8745eb49d79883dc09031e874a41d686469cb
+docs/progress/R116/snapshot_origins.tsv:24:docs/progress/R116/snapshots/shared_control/include/__condition_variable/condition_variable.h	tmp/R115-W4/control/include/__condition_variable/condition_variable.h	8fc474737e6d536f3d3393fb3e361179430d692e5aca064552092b48090a6abe
+docs/progress/R116/snapshot_origins.tsv:25:docs/progress/R116/snapshots/shared_rollback/shared_mutex.cpp	tmp/R115-W4/rollback/shared_mutex.cpp	430761fcd17fe30df7e969991812a353ec8daadc392f3bd7d602af63b53fcd12
+docs/progress/R116/snapshot_origins.tsv:26:docs/progress/R116/snapshots/shared_rollback/include/shared_mutex	tmp/R115-W4/rollback/include/shared_mutex	930fa2d70e2b9c2b054e2cdaf188d4b9e10bd5f316f904bb4554c7a424471305
+docs/progress/R116/snapshot_origins.tsv:27:docs/progress/R116/snapshots/shared_rollback/include/__condition_variable/condition_variable.h	tmp/R115-W4/rollback/include/__condition_variable/condition_variable.h	8fc474737e6d536f3d3393fb3e361179430d692e5aca064552092b48090a6abe
+208:   POSIX allows but does not require rwlock acquisitions to be a cancellation
+209:   point.  We do not support cancellation.
+#!/usr/bin/env bash
+# Verify the final Layer C 20/30 split and the two basic_ostream invariants.
+
+set -u
+set -o pipefail
+
+if (( $# != 3 )); then
+  printf 'usage: %s HEADER_PATCH LIBRARY_PATCH REPLAY_TREE\n' "$0" >&2
+  exit 10
+fi
+
+header_patch=$1
+library_patch=$2
+replay_tree=$3
+ostream_header=$replay_tree/libcxx/include/__ostream/basic_ostream.h
+
+for path in "$header_patch" "$library_patch" "$ostream_header"; do
+  if [[ ! -r $path ]]; then
+    printf 'AUDIT_ERROR unreadable=%s\n' "$path" >&2
+    exit 10
+  fi
+done
+
+header_handlers=$(grep -Ec '^\+.*catch \(const __cxxabiv1::__forced_unwind&\)' "$header_patch")
+library_handlers=$(grep -Ec '^\+.*catch \(const __cxxabiv1::__forced_unwind&\)' "$library_patch")
+library_ios_handlers=$(awk '
+  /^diff --git a\/libcxx\/src\/ios.cpp / {inside=1; next}
+  /^diff --git / {inside=0}
+  inside && /^\+.*catch \(const __cxxabiv1::__forced_unwind&\)/ {count++}
+  END {print count+0}
+' "$library_patch")
+library_direct_handlers=$((library_handlers - library_ios_handlers))
+
+printf 'header_typed_handlers=%s\n' "$header_handlers"
+printf 'library_typed_handlers=%s\n' "$library_handlers"
+printf 'library_ios_aggregation_handlers=%s\n' "$library_ios_handlers"
+printf 'library_direct_handlers=%s\n' "$library_direct_handlers"
+printf 'library_site_total=%s\n' "$((library_direct_handlers + 16))"
+
+status=0
+if (( header_handlers != 20 )); then
+  printf 'AUDIT_FAIL header handler count expected=20 actual=%s\n' "$header_handlers"
+  status=1
+fi
+if (( library_ios_handlers != 2 || library_direct_handlers != 14 )); then
+  printf 'AUDIT_FAIL library shape expected=14_direct+2_aggregators actual=%s_direct+%s_aggregators\n' \
+    "$library_direct_handlers" "$library_ios_handlers"
+  status=1
+fi
+if grep -q '^diff --git a/libcxx/include/__ostream/basic_ostream.h ' "$library_patch"; then
+  printf 'AUDIT_FAIL library patch unexpectedly changes basic_ostream.h\n'
+  status=1
+else
+  printf 'library_patch_basic_ostream_h=ABSENT\n'
+fi
+if grep -q '^+#  include <cxxabi.h>$' "$header_patch"; then
+  printf 'header_patch_explicit_cxxabi_include=PRESENT\n'
+else
+  printf 'AUDIT_FAIL header patch does not add explicit cxxabi.h include\n'
+  status=1
+fi
+
+put_num_block=$(sed -n '/basic_ostream& __put_num(_Tp __value)/,/basic_ostream& __put_num_integer_promote/p' "$ostream_header")
+if grep -q 'catch (const __cxxabiv1::__forced_unwind&)' <<<"$put_num_block"; then
+  printf 'AUDIT_FAIL __put_num still contains a direct forced-unwind handler\n'
+  status=1
+else
+  printf '__put_num_direct_forced_handler=ABSENT\n'
+fi
+if grep -q 'this->__set_badbit_and_consider_rethrow();' <<<"$put_num_block"; then
+  printf '__put_num_aggregation_call=PRESENT\n'
+else
+  printf 'AUDIT_FAIL __put_num aggregation call is absent\n'
+  status=1
+fi
+if grep -q '^#  include <cxxabi.h>$' "$ostream_header"; then
+  printf 'replay_explicit_cxxabi_include=PRESENT\n'
+else
+  printf 'AUDIT_FAIL replay tree lacks explicit cxxabi.h include\n'
+  status=1
+fi
+
+if (( status == 0 )); then
+  printf 'semantic_split_audit=PASS\n'
+else
+  printf 'semantic_split_audit=FAIL\n'
+fi
+exit "$status"
+docs/progress/R80/raw/017_check_compilers_and_platform_edges.stdout:3:g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
