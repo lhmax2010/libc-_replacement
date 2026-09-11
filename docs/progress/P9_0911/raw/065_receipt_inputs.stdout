@@ -1,0 +1,71 @@
+docs/progress/P9_0911/raw/057_prose_and_seal.time.json
+docs/progress/P9_0911/raw/060_commit.command.txt
+docs/progress/P9_0911/raw/059_sync_ready.time.json
+docs/progress/P9_0911/raw/058_preserved_code_format.time.json
+docs/progress/P9_0911/raw/059_sync_ready.command.txt
+docs/progress/P9_0911/raw/060_commit.stderr
+docs/progress/P9_0911/raw/059_sync_ready.stderr
+docs/progress/P9_0911/raw/057_prose_and_seal.exitcode
+docs/progress/P9_0911/raw/057_prose_and_seal.command.txt
+docs/progress/P9_0911/raw/059_sync_ready.stdout
+docs/progress/P9_0911/raw/060_commit.exitcode
+docs/progress/P9_0911/raw/058_preserved_code_format.command.txt
+docs/progress/P9_0911/raw/059_sync_ready.exitcode
+docs/progress/P9_0911/raw/057_prose_and_seal.stderr
+docs/progress/P9_0911/raw/058_preserved_code_format.stderr
+docs/progress/P9_0911/raw/058_preserved_code_format.exitcode
+docs/progress/P9_0911/raw/057_prose_and_seal.stdout
+docs/progress/P9_0911/raw/058_preserved_code_format.stdout
+docs/progress/P9_0911/raw/060_commit.time.json
+docs/progress/P9_0911/raw/060_commit.stdout
+1adb3c0c7477155851d53581c8e43889a3033a0ae3a1e3fa173b04ab62bbb680  EXECUTION.md
+989664468e9ea832c4cf2d1d3907a097e750ca880d119d2d4790d1af1d5ecbf6  GNU_REVISION_CROSSCHECK.json
+f8c16dae8ba2893a8389f4e4d5792fa9b5e2d6753925869a2e046cfe7ad41eaa  GNU_REVISION_CROSSCHECK.md
+97355e8c83b00797cda71727d106b8f21348d9d731bbaee33413da90c343ee39  GNU_URL_RETRY.json
+512016fec90bf9dd11521c7c157986af0070b0be158fa3c161e0882f2fcee416  LAYOUT_ACCOUNTING.json
+952b0f5122d4f1a73443b4564077bf78cb2c3b7e3479b12e8d6509486950296c  LLVM_CACHE_CROSSCHECK.json
+# 标准库对象大小与对齐差异的成员级说明
+
+这份配套说明只分析原表中大小或对齐不同的 10 个类型。差异都有可见的成员表示原因，但**把大小改成相同并不能让两套标准库对象安全互换**。下文逐项列出实际成员、源码原文、设计依据与改动后果；结论中的“能改但不值得”是有条件的工程判断，不是技术不可能性或上游裁决。
+
+## 基线、范围与证据读法
+
+- **既有实测**：x86_64，GNU 探针 GCC 13.3.0；LLVM 探针 Clang 21.1.1，使用平台 libc++/libc++abi；libc++ 头宏 220108（22.1.8），不是编译器版本。大小／对齐来自[原表原样副本](baseline/abi_layout_comparison.tsv)，两侧[GNU 原始输出](baseline/layout_libstdcxx.tsv)、[LLVM 原始输出](baseline/layout_libcxx.tsv)和[探针源码](baseline/layout_probe.cpp)一并保留。本次没有构建、运行新探针或使用开发板。
+- **名称差异**：本地能找到的总部附表名为 `abi_layout_comparison.tsv`，与已归档的 `d11_layout_comparison.tsv` 逐字一致；任务所称 `abi_size_align_comparison.tsv` 未定位到同名文件（`NOT_AVAILABLE`）。没有改名覆盖原件。两份已定位原表 SHA256 都是 `08a99bb4ac7d314ba20c05befd92f40301dc4bcd3572fb126c8cf68c249509a7`。
+- **源码核查**：平台 GCC 14.2.0 revision `49c5060508ce8a6ed6beca375233688a6bdd9140`；平台 LLVM revision `5ed6c77278dfa7a470667cf1a137723d3c96fe60`，与原报告列出的 revision 相同。所摘平台文件逐个与其 Git blob 核对一致。LLVM 已比较的布局头与原探针缓存头逐字相同。GNU 同时保存现存宿主 `libstdc++-13-dev 13.3.0-6ubuntu2~24.04.1` 头；平台 14.2 不是该次 GNU 测量版本。对应声明逐段核对见 [GNU 版本对照](GNU_REVISION_CROSSCHECK.md)。历史探针时的宿主头文件哈希未存档，历史逐字同一性为 `NOT_AVAILABLE`，不能以包版本相同冒充哈希证明。
+- **成员字节账目**：类型、声明顺序、联合体重叠、继承和分支来自源码；成员字节数／对齐填充是按本基线 ABI 规则对源码作的静态核算，不是新增 `sizeof`、`offsetof` 或记录布局转储实测。采用 LP64（指针／long 为 8，int 为 4）：普通数据／函数指针 8，size_t 8，float 4，bool 1；来源为 [AMD64 ABI 0.99.6 §3.1.2](https://refspecs.linuxfoundation.org/elf/x86_64-abi-0.99.pdf) 与 [Itanium C++ ABI §2](https://itanium-cxx-abi.github.io/cxx-abi/abi.html#data-layout)。没有把不明的节点／控制块尺寸补成猜测值。
+- **术语**：ABI 是已编译模块之间约定的对象表示、符号和调用等二进制契约；`sizeof` 是对象占用字节数，`alignof` 是对象地址必须满足的对齐。填充是为对齐插入的空隙；`bit` 表示二进制位，8 位为 1 字节；联合体成员重叠，大小不能相加。空基类优化／`no_unique_address` 允许无状态的分配器、比较器等不额外占空间，**不是说这些空类型作为独立完整对象的大小为 0**。分配器负责申请／释放存储；哈希器和比较器负责键的分组和比较。以下均限默认分配器及默认比较／哈希器。LLVM 按缓存的 ABI version 1、Linux x86_64 分支分析；其宏原文在文末。历史成功构建日志仅保存命令摘要，完整命令行和全部宏转储 `NOT_AVAILABLE`，所以不把这里的静态分支核查冒充历史成员偏移实测。
+- **标记**：实测仅指既有输出；源码核查包括上述静态字节核算；设计说明只归因于所引上游文字。`NOT_OBSERVED` 表示本轮或既有可用证据没有观测，`NOT_AVAILABLE` 表示所需资料不可得／未找到。没有无依据的设计动机推断。
+
+## 各类型说明
+
+### `std::any`
+
+| 项 | libstdc++ | libc++ |
+|---|---|---|
+| 大小（既有实测，字节） | 16 | 32 |
+| 对齐（既有实测，字节） | 8 | 8 |
+| 成员构成（声明顺序；字节为静态核算） | 依次：管理函数指针 `_M_manager` 8；联合体 `_M_storage` 8（`void*` 8 与内联缓冲 8 共用空间）。[std/any:83](sources/gnu14/std/any.txt#L83) | 依次：处理函数指针 `__h_` 8；联合体 `__s_` 24（`void*` 8 与 `char[24]` 共用空间，对齐 8）。[any:150](sources/llvm/any.txt#L150) |
+
+**源码（实际摘录）**：
+
+[codes/gcc/libstdc++-v3/include/std/any:83–99](sources/gnu14/std/any.txt#L83)
+
+```cpp
+    // Holds either pointer to a heap object or the contained object itself.
+    union _Storage
+    {
+      constexpr _Storage() : _M_ptr{nullptr} {}
+
+      // Prevent trivial copies of this type, buffer might hold a non-POD.
+      _Storage(const _Storage&) = delete;
+      _Storage& operator=(const _Storage&) = delete;
+
+      void* _M_ptr;
+      aligned_storage<sizeof(_M_ptr), alignof(void*)>::type _M_buffer;
+    };
+
+    template<typename _Tp, typename _Safe = is_nothrow_move_constructible<_Tp>,
+	     bool _Fits = (sizeof(_Tp) <= sizeof(_Storage))
+			  && (alignof(_Tp) <= alignof(_Storage))>
+      using _Internal = std::integral_constant<bool, _Safe::value && _Fits>;
