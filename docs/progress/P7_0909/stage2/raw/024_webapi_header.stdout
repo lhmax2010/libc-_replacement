@@ -1,0 +1,206 @@
+{"source": "/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/webapi-plugins-2.92-0.src.rpm/unpacked/webapi-plugins-2.92.tar.gz/webapi-plugins-2.92/src/common/XW_Extension.h", "snapshot": "docs/progress/P7_0909/stage2/snapshots/evidence/webapi-plugins/7ea7d47e0bac_XW_Extension.h", "sha256": "7ea7d47e0bac1db3bf49ceba06d7c9418e75ebdfe3c32bb1dd0c211c9fda771b", "range": [1, 205]}
+1: // Copyright (c) 2013 Intel Corporation. All rights reserved.
+2: // Copyright (c) 2015 Samsung Electronics Co., Ltd All Rights Reserved.
+3: // Use of this source code is governed by a BSD-style license that can be
+4: // found in the LICENSE file.
+5: 
+6: #ifndef XWALK_EXTENSIONS_PUBLIC_XW_EXTENSION_H_
+7: #define XWALK_EXTENSIONS_PUBLIC_XW_EXTENSION_H_
+8: 
+9: // Crosswalk Extensions are modules of code loaded by Crosswalk runtime that
+10: // allow extending its capabilities. The extension is expected to define a
+11: // XW_Initialize() function as declared below, get the interfaces it need to
+12: // use and register to whatever callbacks it needs, then return XW_OK.
+13: //
+14: // The Extension is represented by the type XW_Extension. Each extension
+15: // loaded may be used multiple times for different pages, so to each execution
+16: // there will be an associated XW_Instance. A reasonable analogy is that the
+17: // XW_Extension represent a "class", and have concrete instances running.
+18: //
+19: // An interface is a struct with a set of functions, provided by Crosswalk,
+20: // that allow the extension code to interact with the web content. Certain
+21: // functions in an interface are used to register callbacks, so that Crosswalk
+22: // can call the extension at specific situations.
+23: //
+24: // Crosswalk won't call an extension's XW_Initialize() multiple times in the
+25: // same process.
+26: 
+27: #ifdef __cplusplus
+28: extern "C" {
+29: #endif
+30: 
+31: #if __GNUC__ >= 4
+32: #define XW_EXPORT __attribute__((visibility("default")))
+33: #elif defined(_MSC_VER)
+34: #define XW_EXPORT __declspec(dllexport)
+35: #endif
+36: 
+37: #include <stdint.h>
+38: 
+39: // XW_Extension is used to identify your extension when calling functions from
+40: // the API. You should always use the XW_Extension received at XW_Initialize().
+41: //
+42: // XW_Instance is used to identify different web contents using your
+43: // extension. Each time a new web content is created you can be notified
+44: // registering the XW_CreatedInstanceCallback, that receives the new
+45: // XW_Instance. When interacting with an Instance (for example to post a
+46: // message), you should pass the corresponding XW_Instance.
+47: //
+48: // In both types the zero value is never used by Crosswalk, so can be used to
+49: // initialize variables.
+50: typedef int32_t XW_Extension;
+51: typedef int32_t XW_Instance;
+52: 
+53: enum { XW_OK = 0, XW_ERROR = -1 };
+54: 
+55: // Returns a struct containing functions to be used by the extension. Those
+56: // structs can be stored statically and used until the extension is unloaded.
+57: // Extensions should use definitions like XW_CORE_INTERFACE, instead of using
+58: // the versioned definition or the literal string. Returns NULL if the
+59: // interface is not supported.
+60: typedef const void* (*XW_GetInterface)(const char* interface_name);
+61: 
+62: typedef int32_t (*XW_Initialize_Func)(XW_Extension extension, XW_GetInterface get_interface);
+63: 
+64: // XW_Initialize is called after the extension code is loaded. The 'extension'
+65: // value should be used in further calls that expect XW_Extension argument.
+66: //
+67: // The 'get_interface' function should be used to get access to functions that
+68: // interact with the web content. It is only valid during the execution of the
+69: // XW_Initialize() function.
+70: //
+71: // This function should return XW_OK when the extension was succesfully
+72: // loaded, otherwise XW_ERROR.
+73: XW_EXPORT int32_t XW_Initialize(XW_Extension extension, XW_GetInterface get_interface);
+74: 
+75: //
+76: // XW_CORE_INTERFACE: Basic functionality for Crosswalk Extensions. All
+77: // extensions should use this interface to set at least their name.
+78: //
+79: 
+80: #define XW_CORE_INTERFACE_1 "XW_CoreInterface_1"
+81: #define XW_CORE_INTERFACE XW_CORE_INTERFACE_1
+82: 
+83: typedef void (*XW_CreatedInstanceCallback)(XW_Instance instance);
+84: typedef void (*XW_DestroyedInstanceCallback)(XW_Instance instance);
+85: typedef void (*XW_ShutdownCallback)(XW_Extension extension);
+86: 
+87: struct XW_CoreInterface_1 {
+88:   // Set the name of the extension. It is used as the namespace for the
+89:   // JavaScript code exposed by the extension. So extension named
+90:   // 'my_extension', will expose its JavaScript functionality inside
+91:   // the 'my_extension' namespace.
+92:   //
+93:   // This function should be called only during XW_Initialize().
+94:   void (*SetExtensionName)(XW_Extension extension, const char* name);
+95: 
+96:   // Set the JavaScript code loaded in the web content when the extension is
+97:   // used. This can be used together with the messaging mechanism to implement
+98:   // a higher-level API that posts messages to extensions, see
+99:   // XW_MESSAGING_INTERFACE below.
+100:   //
+101:   // The code will be executed inside a JS function context with the following
+102:   // objects available:
+103:   //
+104:   // - exports: this object should be filled with properties and functions
+105:   //            that will be exposed in the namespace associated with this
+106:   //            extension.
+107:   //
+108:   // - extension.postMessage(): post a string message to the extension native
+109:   //                            code. See below for details.
+110:   // - extension.setMessageListener(): allow setting a callback that is called
+111:   //                                   when the native code sends a message
+112:   //                                   to JavaScript. Callback takes a string.
+113:   //
+114:   // This function should be called only during XW_Initialize().
+115:   void (*SetJavaScriptAPI)(XW_Extension extension, const char* api);
+116: 
+117:   // Register callbacks that are called when an instance of this extension
+118:   // is created or destroyed. Everytime a new web content is loaded, it will
+119:   // get a new associated instance.
+120:   //
+121:   // This function should be called only during XW_Initialize().
+122:   void (*RegisterInstanceCallbacks)(XW_Extension extension, XW_CreatedInstanceCallback created,
+123:                                     XW_DestroyedInstanceCallback destroyed);
+124: 
+125:   // Register a callback to be executed when the extension will be unloaded.
+126:   //
+127:   // This function should be called only during XW_Initialize().
+128:   void (*RegisterShutdownCallback)(XW_Extension extension, XW_ShutdownCallback shutdown_callback);
+129: 
+130:   // These two functions are conveniences used to associated arbitrary data
+131:   // with a given XW_Instance. They can be used only with instances that were
+132:   // created but not yet completely destroyed. GetInstanceData() can be used
+133:   // during the destroyed instance callback. If not instance data was set,
+134:   // getting it returns NULL.
+135:   void (*SetInstanceData)(XW_Instance instance, void* data);
+136:   void* (*GetInstanceData)(XW_Instance instance);
+137: };
+138: 
+139: typedef struct XW_CoreInterface_1 XW_CoreInterface;
+140: 
+141: /*
+142:  * XW_MESSAGING_INTERFACE_1 is no longer used in webapi-plugins
+143:  * but its declaration stays in this header, so that the dependencies
+144:  * of webapi-plugins-common can find the declaration in the XW_Extension.h
+145:  * they include.
+146:  */
+147: #define XW_MESSAGING_INTERFACE_1 "XW_MessagingInterface_1"
+148: 
+149: typedef void (*XW_HandleMessageCallback)(XW_Instance instance, const char* message);
+150: 
+151: struct XW_MessagingInterface_1 {
+152:   // Register a callback to be called when the JavaScript code associated
+153:   // with the extension posts a message. Note that the callback will be called
+154:   // with the XW_Instance that posted the message as well as the message
+155:   // contents.
+156:   void (*Register)(XW_Extension extension, XW_HandleMessageCallback handle_message);
+157: 
+158:   // Post a message to the web content associated with the instance. To
+159:   // receive this message the extension's JavaScript code should set a
+160:   // listener using extension.setMessageListener() function.
+161:   //
+162:   // This function is thread-safe and can be called until the instance is
+163:   // destroyed.
+164:   void (*PostMessage)(XW_Instance instance, const char* message);
+165: };
+166: 
+167: //
+168: // XW_MESSAGING_INTERFACE: Exchange asynchronous messages with JavaScript
+169: // code provided by extension.
+170: //
+171: 
+172: #define XW_MESSAGING_INTERFACE_2 "XW_MessagingInterface_2"
+173: #define XW_MESSAGING_INTERFACE XW_MESSAGING_INTERFACE_2
+174: 
+175: typedef void (*XW_HandleMessageCallback)(XW_Instance instance, const char* message);
+176: typedef void (*XW_HandleBinaryMessageCallback)(XW_Instance instance, const char* message,
+177:                                                size_t size);
+178: 
+179: struct XW_MessagingInterface_2 {
+180:   // Register a callback to be called when the JavaScript code associated
+181:   // with the extension posts a message. Note that the callback will be called
+182:   // with the XW_Instance that posted the message as well as the message
+183:   // contents.
+184:   void (*Register)(XW_Extension extension, XW_HandleMessageCallback handle_message);
+185: 
+186:   // Post a message to the web content associated with the instance. To
+187:   // receive this message the extension's JavaScript code should set a
+188:   // listener using extension.setMessageListener() function.
+189:   //
+190:   // This function is thread-safe and can be called until the instance is
+191:   // destroyed.
+192:   void (*PostMessage)(XW_Instance instance, const char* message);
+193: 
+194:   // Provides communication for binary data exchange
+195:   void (*RegisterBinaryMesssageCallback)(XW_Extension extension,
+196:                                          XW_HandleBinaryMessageCallback handle_message);
+197:   void (*PostBinaryMessage)(XW_Instance instance, const char* message, size_t size);
+198: };
+199: 
+200: typedef struct XW_MessagingInterface_2 XW_MessagingInterface;
+201: 
+202: #ifdef __cplusplus
+203: }  // extern "C"
+204: #endif
+205: 

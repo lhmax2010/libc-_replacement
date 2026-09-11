@@ -1,0 +1,241 @@
+{"source": "/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/webapi-plugins-2.92-0.src.rpm/unpacked/webapi-plugins-2.92.tar.gz/webapi-plugins-2.92/src/common/extension.cc", "snapshot": "docs/progress/P7_0909/stage2/snapshots/evidence/webapi-plugins/e4597e6f32ca_extension.cc", "sha256": "e4597e6f32ca604301c66bf05b0c2d5bd2e1a7be41d3423b6df25e06df6e46be", "range": [1, 240]}
+1: // Copyright (c) 2013 Intel Corporation. All rights reserved.
+2: // Copyright (c) 2015 Samsung Electronics Co., Ltd All Rights Reserved.
+3: // Use of this source code is governed by a BSD-style license that can be
+4: // found in the LICENSE file.
+5: 
+6: #include "common/extension.h"
+7: 
+8: #include <iostream>
+9: #include <map>
+10: #include <string>
+11: #include <vector>
+12: 
+13: #include "common/assert.h"
+14: #include "common/logger.h"
+15: #include "common/tools.h"
+16: 
+17: // This function is hidden, because each plugin needs to have own implementation.
+18: __attribute__((visibility("hidden"))) common::Extension* CreateExtension() {
+19:   common::Extension* e = new common::Extension();
+20:   e->SetExtensionName("common");
+21:   return e;
+22: }
+23: 
+24: namespace {
+25: 
+26: // this variable is valid only during Extension::XW_Initialize() call
+27: // do not use !!!
+28: // it's here, so we don't have to modify the interface of CreateExtension(), Extension(), etc.
+29: XW_Extension g_xw_extension_ = 0;
+30: 
+31: const XW_CoreInterface* g_core = NULL;
+32: const XW_MessagingInterface* g_messaging = NULL;
+33: const XW_Internal_SyncMessagingInterface* g_sync_messaging = NULL;
+34: const XW_Internal_EntryPointsInterface* g_entry_points = NULL;
+35: const XW_Internal_RuntimeInterface* g_runtime = NULL;
+36: const XW_Internal_PermissionsInterface* g_permission = NULL;
+37: 
+38: bool InitializeInterfaces(XW_GetInterface get_interface) {
+39:   ScopeLogger();
+40:   static bool initialized = false;
+41: 
+42:   if (!initialized) {
+43:     g_core = reinterpret_cast<const XW_CoreInterface*>(get_interface(XW_CORE_INTERFACE));
+44:     if (!g_core) {
+45:       LoggerE("Can't initialize extension: error getting Core interface.");
+46:       return false;
+47:     }
+48: 
+49:     g_messaging =
+50:         reinterpret_cast<const XW_MessagingInterface*>(get_interface(XW_MESSAGING_INTERFACE));
+51:     if (!g_messaging) {
+52:       LoggerE("Can't initialize extension: error getting Messaging interface.");
+53:       return false;
+54:     }
+55: 
+56:     g_sync_messaging = reinterpret_cast<const XW_Internal_SyncMessagingInterface*>(
+57:         get_interface(XW_INTERNAL_SYNC_MESSAGING_INTERFACE));
+58:     if (!g_sync_messaging) {
+59:       LoggerE("Can't initialize extension: error getting SyncMessaging interface.");
+60:       return false;
+61:     }
+62: 
+63:     g_entry_points = reinterpret_cast<const XW_Internal_EntryPointsInterface*>(
+64:         get_interface(XW_INTERNAL_ENTRY_POINTS_INTERFACE));
+65:     if (!g_entry_points) {
+66:       LoggerE(
+67:           "NOTE: Entry points interface not available in this version "
+68:           "of runtime, ignoring entry point data for extensions.");
+69:     }
+70: 
+71:     g_runtime = reinterpret_cast<const XW_Internal_RuntimeInterface*>(
+72:         get_interface(XW_INTERNAL_RUNTIME_INTERFACE));
+73:     if (!g_runtime) {
+74:       LoggerE(
+75:           "NOTE: runtime interface not available in this version "
+76:           "of runtime, ignoring runtime variables for extensions.");
+77:     }
+78: 
+79:     g_permission = reinterpret_cast<const XW_Internal_PermissionsInterface*>(
+80:         get_interface(XW_INTERNAL_PERMISSIONS_INTERFACE));
+81:     if (!g_permission) {
+82:       LoggerE(
+83:           "NOTE: permission interface not available in this version "
+84:           "of runtime, ignoring permission for extensions.");
+85:     }
+86: 
+87:     initialized = true;
+88:   }
+89: 
+90:   return true;
+91: }
+92: 
+93: }  // namespace
+94: 
+95: namespace common {
+96: 
+97: Extension::Extension() : xw_extension_(g_xw_extension_) {
+98:   ScopeLogger();
+99: }
+100: 
+101: Extension::~Extension() {
+102:   ScopeLogger();
+103: }
+104: 
+105: void Extension::SetExtensionName(const char* name) {
+106:   ScopeLogger();
+107:   g_core->SetExtensionName(xw_extension_, name);
+108: }
+109: 
+110: void Extension::SetJavaScriptAPI(const char* api) {
+111:   ScopeLogger();
+112:   g_core->SetJavaScriptAPI(xw_extension_, api);
+113: }
+114: 
+115: void Extension::SetExtraJSEntryPoints(const char** entry_points) {
+116:   ScopeLogger();
+117:   if (g_entry_points) g_entry_points->SetExtraJSEntryPoints(xw_extension_, entry_points);
+118: }
+119: 
+120: bool Extension::RegisterPermissions(const char* perm_table) {
+121:   ScopeLogger();
+122:   if (g_permission) return g_permission->RegisterPermissions(xw_extension_, perm_table);
+123:   return false;
+124: }
+125: 
+126: bool Extension::CheckAPIAccessControl(const char* api_name) {
+127:   ScopeLogger();
+128:   if (g_permission) return g_permission->CheckAPIAccessControl(xw_extension_, api_name);
+129:   return false;
+130: }
+131: 
+132: Instance* Extension::CreateInstance() {
+133:   ScopeLogger();
+134:   return NULL;
+135: }
+136: 
+137: // static
+138: std::string Extension::GetRuntimeVariableString(const char* var_name) {
+139:   ScopeLogger();
+140:   if (!g_runtime) return "";
+141: 
+142:   const int result_len = 1024;
+143:   std::vector<char> res(result_len + 1, 0);
+144:   g_runtime->GetRuntimeVariableString(0, var_name, &res[0], result_len);
+145:   LoggerI("GetRuntimeVariable: result %s: \"%s\"", var_name, &res[0]);
+146:   return std::string(res.data());
+147: }
+148: 
+149: std::string Extension::GetRuntimeVariable(const char* var_name, unsigned len) {
+150:   ScopeLogger();
+151:   if (!g_runtime) return "";
+152: 
+153:   std::vector<char> res(len + 1, 0);
+154:   g_runtime->GetRuntimeVariableString(xw_extension_, var_name, &res[0], len);
+155:   // crosswalk has used the double quote for the app_id from the first.
+156:   // the n-wrt (new wrt) is using the double quote also.
+157:   // but that's wrt and wrt-service's bug.
+158:   // To keep compatibilities, two case of formats should be considered in webapi-plugins.
+159:   // removing double quote to keep compatibilities with new and old wrt
+160:   std::string value = std::string(res.data());
+161:   if (0 == strncmp(var_name, "app_id", 6) && value.find('"', 0) != std::string::npos &&
+162:       value.find('"', value.size() - 1) != std::string::npos) {
+163:     value = value.erase(0, 1);
+164:     value = value.erase(value.size() - 1, 1);
+165:   }
+166: 
+167:   return value;
+168: }
+169: 
+170: // static
+171: void Extension::OnInstanceCreated(XW_Instance xw_instance, Instance* instance) {
+172:   ScopeLogger();
+173:   Assert(!g_core->GetInstanceData(xw_instance));
+174:   if (!instance) return;
+175:   instance->xw_instance_ = xw_instance;
+176:   g_core->SetInstanceData(xw_instance, instance);
+177:   instance->Initialize();
+178: }
+179: 
+180: // static
+181: void Extension::OnInstanceDestroyed(XW_Instance xw_instance) {
+182:   ScopeLogger();
+183:   Instance* instance = reinterpret_cast<Instance*>(g_core->GetInstanceData(xw_instance));
+184:   if (!instance) return;
+185:   instance->xw_instance_ = 0;
+186:   delete instance;
+187: }
+188: 
+189: // static
+190: void Extension::HandleMessage(XW_Instance xw_instance, const char* msg) {
+191:   ScopeLogger();
+192:   Instance* instance = reinterpret_cast<Instance*>(g_core->GetInstanceData(xw_instance));
+193:   if (!instance) return;
+194:   instance->HandleMessage(msg);
+195: }
+196: 
+197: void Extension::HandleBinaryMessage(XW_Instance xw_instance, const char* msg, size_t size) {
+198:   ScopeLogger();
+199:   Instance* instance = reinterpret_cast<Instance*>(g_core->GetInstanceData(xw_instance));
+200:   if (!instance) {
+201:     return;
+202:   }
+203:   // TODO maybe async version will be needed in future
+204:   instance->HandleSyncBinaryMessage(msg, size);
+205: }
+206: 
+207: // static
+208: void Extension::HandleSyncMessage(XW_Instance xw_instance, const char* msg) {
+209:   ScopeLogger();
+210:   Instance* instance = reinterpret_cast<Instance*>(g_core->GetInstanceData(xw_instance));
+211:   if (!instance) return;
+212:   instance->HandleSyncMessage(msg);
+213: }
+214: 
+215: // static
+216: int32_t Extension::XW_Initialize(XW_Extension extension, XW_GetInterface get_interface,
+217:                                  XW_Initialize_Func initialize,
+218:                                  XW_CreatedInstanceCallback created_instance,
+219:                                  XW_ShutdownCallback shutdown) {
+220:   ScopeLogger();
+221:   Assert(extension);
+222: 
+223:   if (!InitializeInterfaces(get_interface)) {
+224:     return XW_ERROR;
+225:   }
+226: 
+227:   g_xw_extension_ = extension;
+228: 
+229:   if (XW_ERROR == initialize(extension, get_interface)) {
+230:     return XW_ERROR;
+231:   }
+232: 
+233:   g_xw_extension_ = 0;
+234: 
+235:   using common::Extension;
+236:   g_core->RegisterShutdownCallback(extension, shutdown);
+237:   g_core->RegisterInstanceCallbacks(extension, created_instance, Extension::OnInstanceDestroyed);
+238:   g_messaging->Register(extension, Extension::HandleMessage);
+239:   g_sync_messaging->Register(extension, Extension::HandleSyncMessage);
+240: 

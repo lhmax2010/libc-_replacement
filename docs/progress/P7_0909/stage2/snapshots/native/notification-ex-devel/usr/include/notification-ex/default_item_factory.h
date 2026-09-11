@@ -1,0 +1,51 @@
+/*
+ * Copyright (c) 2019 Samsung Electronics Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef NOTIFICATION_EX_DEFAULT_ITEM_FACTORY_H_
+#define NOTIFICATION_EX_DEFAULT_ITEM_FACTORY_H_
+
+#include <memory>
+
+#include "notification-ex/iitem_factory.h"
+
+namespace notification {
+namespace item {
+
+/**
+ * @brief The class for predefined item.
+ * @details The DefaultItemFactory is registered in factory manager default.
+ * @since_tizen 5.5
+ */
+class EXPORT_API DefaultItemFactory : public IItemFactory {
+ public:
+  /**
+   * @brief Destructor
+   * @since_tizen 5.5
+   */
+  virtual ~DefaultItemFactory() = default;
+
+  /**
+   * @brief Creates AbstractItem
+   * @since_tizen 5.5
+   * @param[in] type The type of notification item.
+   */
+  std::unique_ptr<AbstractItem> CreateItem(int type) override;
+};
+
+}  // namespace item
+}  // namespace notification
+
+#endif  // NOTIFICATION_EX_DEFAULT_ITEM_FACTORY_H_
