@@ -1,0 +1,400 @@
+/**
+ * @file  ewk_cookie_parser
+ * @brief EWK Cookie Parser
+ *
+ * This class exposes the Chromium cookie parser. It allows
+ * for ewk components to handle cookie-alike structures without
+ * re-inventing the wheel.
+ *
+ * Copyright 2020 by Samsung Electronics, Inc.,
+ *
+ * This software is the confidential and proprietary information
+ * of Samsung Electronics, Inc. ("Confidential Information").  You
+ * shall not disclose such Confidential Information and shall use
+ * it only in accordance with the terms of the license agreement
+ * you entered into with Samsung.
+ */
+
+#include "ewk_cookie_parser.h"
+
+#include <ctime>
+#include <string>
+#include "net/cookies/cookie_util.h"
+#include "net/cookies/parsed_cookie.h"
+#include "private/ewk_private.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+EXPORT_API Eina_Bool ewk_parse_cookie(const std::string& cookie_str,
+                                      EWKCookieContents& cookie) {
+  net::ParsedCookie new_cookie(cookie_str);
+  if (!new_cookie.IsValid() || new_cookie.IsHttpOnly() || new_cookie.IsSecure())
+    return EINA_FALSE;
+
+  cookie.name = new_cookie.Name();
+  cookie.value = new_cookie.Value();
+
+  // Handle optional domain value
+  auto domain = new_cookie.Domain();
+  if (domain.has_value()) {
+    cookie.domain = domain.value();
+  }
+
+  // Handle optional path value
+  auto path = new_cookie.Path();
+  if (path.has_value()) {
+    cookie.path = path.value();
+  }
+
+  // Take "max-age" over "Expires" as expires is depreciated, so only supported
+  // for backwards compatibility. With the assumption that if you are using both
+  // then "Expires" is there to support old browsers. (see HTTP - spec).
+  auto max_age = new_cookie.MaxAge();
+  if (max_age.has_value()) {
+    // Convert string to integer without using exceptions
+    std::string max_age_str(max_age.value());
+    char* end_ptr;
+    long max_age_val = std::strtol(max_age_str.c_str(), &end_ptr, 10);
+
+    // Check if conversion was successful (entire string was consumed)
+    if (end_ptr != max_age_str.c_str() && *end_ptr == '\0' &&
+        max_age_val >= 0) {
+      cookie.expiry_date_utc = time(nullptr) + static_cast<time_t>(max_age_val);
+    } else {
+      // If conversion fails, treat as session cookie
+      cookie.expiry_date_utc = 0;
+    }
+  } else {
+    auto expires = new_cookie.Expires();
+    if (expires.has_value()) {
+      base::Time expiration_time =
+          net::cookie_util::ParseCookieExpirationTime(expires.value());
+      cookie.expiry_date_utc = expiration_time.ToTimeT();
+    } else {
+      // This is a session cookie. Set expiry time to 0
+      cookie.expiry_date_utc = 0;
+    }
+  }
+  return EINA_TRUE;
+}
+
+#ifdef __cplusplus
+}
+#endif
+// Copyright (c) 2025 Samsung Electronics Co., Ltd. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "wrt/src/service/node/xwalk_extension_node.h"
+
+#include <algorithm>
+
+#include <dlfcn.h>
+#include <glob.h>
+#include <json/json.h>
+#include <sys/utsname.h>
+#include <fstream>
+
+#include "wrt/src/base/dlog_util.h"
+#include "wrt/src/service/node/xwalk_extension_service_object.h"
+
+#ifndef XWALK_EXTENSION_SERVICE_PATH
+  #error XWALK_EXTENSION_SERVICE_PATH is not set.
+#endif
+
+namespace wrt {
+
+namespace {
+
+const char kExtensionPrefix[] = "lib";
+const char kExtensionSuffix[] = ".so";
+const char kExtensionMetadataSuffix[] = ".json";
+
+XW_Extension last_xw_extension_id = 0;
+XW_Instance last_xw_instance_id = 0;
+
+XWalkExtensionNode::Interface* GetExtensionInterface(
+    XW_Extension xw_extension_id) {
+  const auto& map = XWalkExtensionNode::GetInstance()->GetExtensions();
+  for (const auto& iter : map) {
+    if (iter.second->GetExtensionId() == xw_extension_id) {
+      return iter.second.get();
+    }
+  }
+  LOG(ERROR) << "Ignoring call. Invalid extension = " << xw_extension_id;
+  return nullptr;
+}
+
+XWalkExtensionNode::Instance* GetExtensionInstance(XW_Instance xw_instance_id) {
+  auto* extension_node = XWalkExtensionNode::GetInstance();
+  auto* instance = extension_node->GetExtensionInstance(xw_instance_id);
+  if (!instance) {
+    LOG(ERROR) << "Ignoring call. Invalid instance = " << xw_instance_id;
+  }
+  return instance;
+}
+
+void CoreSetExtensionName(XW_Extension xw_extension_id, const char* name) {
+  auto* extension_interface = GetExtensionInterface(xw_extension_id);
+  if (extension_interface) {
+    extension_interface->SetExtensionName(name);
+  }
+}
+
+void CoreSetJavaScriptAPI(XW_Extension xw_extension_id, const char* js_api) {
+  auto* extension_interface = GetExtensionInterface(xw_extension_id);
+  if (extension_interface) {
+    extension_interface->SetJavaScriptAPI(js_api);
+  }
+}
+
+void CoreRegisterInstanceCallbacks(XW_Extension xw_extension_id,
+                                   XW_CreatedInstanceCallback created,
+                                   XW_DestroyedInstanceCallback destroyed) {
+  auto* extension_interface = GetExtensionInterface(xw_extension_id);
+  if (extension_interface) {
+    extension_interface->RegisterInstanceCallbacks(created, destroyed);
+  }
+}
+
+void CoreRegisterShutdownCallback(XW_Extension xw_extension_id,
+                                  XW_ShutdownCallback shutdown) {
+  auto* extension_interface = GetExtensionInterface(xw_extension_id);
+  if (extension_interface) {
+    extension_interface->RegisterShutdownCallback(shutdown);
+  }
+}
+
+void CoreSetInstanceData(XW_Instance xw_instance_id, void* data) {
+  auto* extension_instance = GetExtensionInstance(xw_instance_id);
+  if (extension_instance) {
+    extension_instance->SetInstanceData(data);
+  }
+}
+
+void* CoreGetInstanceData(XW_Instance xw_instance_id) {
+  auto* extension_instance = GetExtensionInstance(xw_instance_id);
+  return extension_instance ? extension_instance->GetInstanceData() : nullptr;
+}
+
+void MessagingRegister(XW_Extension xw_extension_id,
+                       XW_HandleMessageCallback handle_message) {
+  auto* extension_interface = GetExtensionInterface(xw_extension_id);
+  if (extension_interface) {
+    extension_interface->RegisterHandleMessageCallback(handle_message);
+  }
+}
+
+void MessagingPostMessage(XW_Instance xw_instance_id, const char* message) {
+  auto* extension_instance = GetExtensionInstance(xw_instance_id);
+  if (extension_instance && message) {
+    extension_instance->PostMessageToJS(message);
+  }
+}
+
+void MessagingRegisterBinaryMessageCallback(
+    XW_Extension xw_extension_id,
+    XW_HandleBinaryMessageCallback handle_message) {
+  // NOT SUPPORTED
+}
+
+void MessagingPostBinaryMessage(XW_Instance xw_instance_id,
+                                const char* message,
+                                size_t size) {
+  // NOT SUPPORTED
+}
+
+void SyncMessagingRegister(XW_Extension xw_extension_id,
+                           XW_HandleSyncMessageCallback handle_sync_message) {
+  auto* extension_interface = GetExtensionInterface(xw_extension_id);
+  if (extension_interface) {
+    extension_interface->RegisterHandleSyncMsgCallback(handle_sync_message);
+  }
+}
+
+void SyncMessagingSetSyncReply(XW_Instance xw_instance_id, const char* reply) {
+  auto* extension_instance = GetExtensionInstance(xw_instance_id);
+  if (extension_instance) {
+    extension_instance->SyncReplyToJS(reply);
+  }
+}
+
+void SyncMessagingSetSyncBinaryReply(XW_Instance xw_instance_id,
+                                     const std::vector<uint8_t>& reply) {
+  LOG(INFO) << "Not supported in service application";
+}
+
+void EntryPointsSetExtraJSEntryPoints(XW_Extension xw_extension_id,
+                                      const char** entry_points) {
+  auto* extension_interface = GetExtensionInterface(xw_extension_id);
+  if (!extension_interface) {
+    return;
+  }
+
+  for (int i = 0; entry_points[i]; ++i) {
+    extension_interface->PushEntryPoint(entry_points[i]);
+  }
+}
+
+int PermissionsCheckAPIAccessControl(XW_Extension xw_extension_id,
+                                     const char* api_name) {
+  return XW_ERROR;
+}
+
+int PermissionsRegisterPermissions(XW_Extension xw_extension_id,
+                                   const char* perm_table) {
+  return XW_ERROR;
+}
+
+void RuntimeGetStringVariable(XW_Extension xw_extension_id,
+                              const char* key,
+                              char* value,
+                              unsigned int value_len) {
+  auto* extension_service = XWalkExtensionNode::GetInstance();
+  auto variable = extension_service->GetRuntimeVariable(key);
+  strncpy(value, variable.c_str(), value_len);
+}
+
+const void* GetInterfaceSet(const char* name) {
+  std::string interface_name(name);
+  if (interface_name == XW_CORE_INTERFACE_1) {
+    static const XW_CoreInterface_1 coreInterface1 = {
+        CoreSetExtensionName,          CoreSetJavaScriptAPI,
+        CoreRegisterInstanceCallbacks, CoreRegisterShutdownCallback,
+        CoreSetInstanceData,           CoreGetInstanceData};
+    return &coreInterface1;
+  } else if (interface_name == XW_MESSAGING_INTERFACE_1) {
+    static const XW_MessagingInterface_1 messagingInterface1 = {
+        MessagingRegister, MessagingPostMessage};
+    return &messagingInterface1;
+  } else if (interface_name == XW_MESSAGING_INTERFACE_2) {
+    static const XW_MessagingInterface_2 messagingInterface2 = {
+        MessagingRegister, MessagingPostMessage,
+        MessagingRegisterBinaryMessageCallback, MessagingPostBinaryMessage};
+    return &messagingInterface2;
+  } else if (interface_name == XW_INTERNAL_SYNC_MESSAGING_INTERFACE_1) {
+    static const XW_Internal_SyncMessagingInterface_1 syncMessagingInterface1 =
+        {SyncMessagingRegister, SyncMessagingSetSyncReply,
+         SyncMessagingSetSyncBinaryReply};
+    return &syncMessagingInterface1;
+  } else if (interface_name == XW_INTERNAL_ENTRY_POINTS_INTERFACE_1) {
+    static const XW_Internal_EntryPointsInterface_1 entryPointsInterface1 = {
+        EntryPointsSetExtraJSEntryPoints};
+    return &entryPointsInterface1;
+  } else if (interface_name == XW_INTERNAL_PERMISSIONS_INTERFACE_1) {
+    static const XW_Internal_PermissionsInterface_1 permissionsInterface1 = {
+        PermissionsCheckAPIAccessControl, PermissionsRegisterPermissions};
+    return &permissionsInterface1;
+  } else if (interface_name == XW_INTERNAL_RUNTIME_INTERFACE_1) {
+    static const XW_Internal_RuntimeInterface_1 runtimeInterface1 = {
+        RuntimeGetStringVariable};
+    return &runtimeInterface1;
+  }
+  LOG(ERROR) << "Interface '" << name << "' is not supported.";
+  return nullptr;
+}
+
+}  // namespace
+
+// static
+XWalkExtensionNode* XWalkExtensionNode::GetInstance() {
+  static XWalkExtensionNode self;
+  return &self;
+}
+
+XWalkExtensionNode::XWalkExtensionNode() {
+  uv_mutex_init(&thread_lock_);
+  uv_mutex_init(&instances_lock_);
+  runtime_status_ = "running";
+}
+
+XWalkExtensionNode::~XWalkExtensionNode() {
+  LOG(INFO) << "~XWalkExtensionNode";
+  instances_.clear();
+#ifndef CSHARP_COMMON_H
+#define CSHARP_COMMON_H
+
+/*
+ * Copyright (c) 2026 Samsung Electronics Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+#define SWIG_DIRECTORS
+
+#ifdef __cplusplus
+/* SwigValueWrapper is described in swig.swg */
+template<typename T>
+class SwigValueWrapper
+{
+  struct SwigMovePointer
+  {
+    T* ptr;
+    SwigMovePointer(T* p)
+    : ptr(p)
+    {
+    }
+    ~SwigMovePointer()
+    {
+      delete ptr;
+    }
+    SwigMovePointer& operator=(SwigMovePointer& rhs)
+    {
+      T* oldptr = ptr;
+      ptr       = 0;
+      delete oldptr;
+      ptr     = rhs.ptr;
+      rhs.ptr = 0;
+      return *this;
+    }
+  } pointer;
+  SwigValueWrapper& operator=(const SwigValueWrapper<T>& rhs);
+  SwigValueWrapper(const SwigValueWrapper<T>& rhs);
+
+public:
+  SwigValueWrapper()
+  : pointer(0)
+  {
+  }
+  SwigValueWrapper& operator=(const T& t)
+  {
+    SwigMovePointer tmp(new T(t));
+    pointer = tmp;
+    return *this;
+  }
+  operator T&() const
+  {
+    return *pointer.ptr;
+  }
+  T* operator&()
+  {
+    return pointer.ptr;
+  }
+};
+
+template<typename T>
+T SwigValueInit()
+{
+  return T();
+}
+#endif
+
+#include <stdexcept>
+
+/* calling conventions for Windows */
+#ifndef SWIGSTDCALL
+#if defined(_WIN32) || defined(__WIN32__) || defined(__CYGWIN__)
+#define SWIGSTDCALL __stdcall

@@ -1,0 +1,395 @@
+  if (!callback)
+    return std::string();
+
+  callback(xw_instance_, message.c_str());
+  return std::move(sync_reply_);
+}
+
+// sendSyncMessage(message: string): Uint8Array
+std::vector<uint8_t> XWalkExtension::Instance::SendSyncMessageWithBinaryReply(
+    const std::string& message) {
+#if BUILDFLAG(IS_TIZEN_TV)
+  LOG(INFO) << "[WebAPI] message:" << message;
+#endif
+  XW_HandleSyncMessageCallback callback =
+      extension_->handle_sync_msg_callback_;
+  if (!callback)
+    return std::vector<uint8_t>{};
+
+  callback(xw_instance_, message.c_str());
+  return std::move(sync_binary_reply_);
+}
+
+// postMessage(message: Uint8Array): void
+void XWalkExtension::Instance::PostBinaryMessage(
+    const std::vector<uint8_t>& message) {
+  XW_HandleBinaryMessageCallback callback =
+      extension_->handle_binary_msg_callback_;
+  if (callback)
+    callback(xw_instance_, reinterpret_cast<const char*>(message.data()),
+             message.size());
+}
+
+// sendSyncMessage(message: Uint8Array): string
+std::string XWalkExtension::Instance::SendSyncBinaryMessageWithStringReply(
+    const std::vector<uint8_t>& message) {
+  XW_HandleBinaryMessageCallback callback =
+      extension_->handle_binary_msg_callback_;
+  if (!callback)
+    return std::string();
+
+  callback(xw_instance_, reinterpret_cast<const char*>(message.data()),
+           message.size());
+  return std::move(sync_reply_);
+}
+
+// sendSyncMessage(message: Uint8Array): Uint8Array
+std::vector<uint8_t>
+XWalkExtension::Instance::SendSyncBinaryMessageWithBinaryReply(
+    const std::vector<uint8_t>& message) {
+  XW_HandleBinaryMessageCallback callback =
+      extension_->handle_binary_msg_callback_;
+  if (!callback)
+    return std::vector<uint8_t>{};
+
+  callback(xw_instance_, reinterpret_cast<const char*>(message.data()),
+           message.size());
+  return std::move(sync_binary_reply_);
+}
+
+void XWalkExtension::Instance::SetPostMessageCallback(
+    MessageCallback callback) {
+  base::AutoLock lock(callback_lock);
+  post_message_callback_ = callback;
+}
+
+void XWalkExtension::Instance::SetPostBinaryMessageCallback(
+    BinaryMessageCallback callback) {
+  base::AutoLock lock(callback_lock);
+  post_binary_message_callback_ = callback;
+}
+
+void XWalkExtension::Instance::PostMessageToJS(const std::string& message) {
+  base::AutoLock lock(callback_lock);
+  if (post_message_callback_)
+    post_message_callback_(message);
+}
+
+void XWalkExtension::Instance::PostBinaryMessageToJS(
+    const char* message, int size) {
+  base::AutoLock lock(callback_lock);
+  if (post_binary_message_callback_)
+    post_binary_message_callback_(message, size);
+}
+
+void XWalkExtension::Instance::SyncReplyToJS(const std::string& reply) {
+  sync_reply_ = reply;
+}
+
+void XWalkExtension::Instance::SyncBinaryReplyToJS(
+    const std::vector<uint8_t>& reply) {
+  sync_binary_reply_ = reply;
+}
+
+XWalkExtension::XWalkExtension(const std::string& path)
+    : lazy_loading_(false), library_path_(path) {}
+
+XWalkExtension::XWalkExtension(const std::string& path,
+                               const std::string& name,
+                               const std::vector<std::string>& entry_points)
+    : lazy_loading_(true),
+      library_path_(path),
+
+  XW_Initialize_Func initialize = reinterpret_cast<XW_Initialize_Func>(
+      dlsym(handle_, "XW_Initialize"));
+  if (!initialize) {
+    LOG(ERROR) << "Error loading extension '" << library_path
+               << "' : couldn't get XW_Initialize function.";
+    dlclose(handle_);
+    return false;
+  }
+
+  xw_extension_ = ++last_xw_extension_id_;
+  int ret = initialize(xw_extension_, GetInterface);
+  if (ret != XW_OK) {
+    LOG(ERROR) << "Error loading extension '" << library_path
+               << "' : XW_Initialize() returned error value.";
+    dlclose(handle_);
+    return false;
+  }
+
+  initialized_ = true;
+  return true;
+}
+
+XWalkExtension::Instance* XWalkExtension::CreateInstance() {
+  base::AutoLock lock(instance_lock);
+  auto id = XWalkExtensionManager::GetInstance()->GetNextInstanceID();
+  if (id == 0) {
+    LOG(ERROR) << "Exceed xwalk extension limit";
+    return nullptr;
+  }
+  Initialize(true);
+  return new Instance(this, id);
+}
+
+const std::string& XWalkExtension::GetJavascriptCode() {
+  Initialize(true);
+  return javascript_api_;
+}
+
+int XWalkExtension::CheckAPIAccessControl(const char* /*api_name*/) {
+  // Not Supported
+  return XW_OK;
+}
+
+int XWalkExtension::RegisterPermissions(const char* /*perm_table*/) {
+  // Not Supported
+  return XW_OK;
+}
+
+}  // namespace wrt
+// Copyright (c) 2015 Samsung Electronics Co., Ltd. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension_manager.h"
+
+#include <dlfcn.h>
+#include <glob.h>
+#include <json/json.h>
+#include <sys/utsname.h>
+#include <fstream>
+
+#include "base/logging.h"
+#include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/browser/navigation_entry.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "tizen_src/chromium_impl/build/tizen_version.h"
+#include "tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.h"
+
+#ifndef XWALK_EXTENSION_PATH
+  #error XWALK_EXTENSION_PATH is not set.
+#endif
+
+#ifndef XWALK_EXTENSION_SERVICE_PATH
+  #error XWALK_EXTENSION_SERVICE_PATH is not set.
+#endif
+
+namespace wrt {
+
+static_assert(std::is_same<mojo::ReceiverId, uint64_t>::value,
+    "mojo::ReceiverId must be the same type as uint64_t");
+
+namespace {
+
+const char kExtensionPrefix[] = "lib";
+const char kExtensionSuffix[] = ".so";
+const char kExtensionMetadataSuffix[] = ".json";
+
+const char kUserPluginsDirectory[] = "plugin/";
+const char kArchArmv7l[] = "armv7l";
+const char kArchI586[] = "i586";
+const char kArchDefault[] = "default";
+const char kWrtServiceJson[] = "wrtservice.json";
+
+const std::set<std::string> kWorkerSupported = {
+    "tizen.ml", "xwalk"
+};
+
+base::Lock xmanager_instance_lock;
+base::Lock preload_handle_lock;
+
+}  // namespace
+
+// static
+XWalkExtensionManager* XWalkExtensionManager::GetInstance() {
+  static XWalkExtensionManager self;
+  return &self;
+}
+
+// static
+void XWalkExtensionManager::Bind(
+    mojo::PendingReceiver<mojom::XWalkExtensionBrowser> receiver) {
+  auto* manager = GetInstance();
+  manager->receivers_.Add(manager, std::move(receiver));
+}
+
+XWalkExtensionManager::XWalkExtensionManager() {
+  auto major_version = TIZEN_VERSION / 10000;
+  auto minor_version = (TIZEN_VERSION % 1000) / 100;
+  build_tizen_version_ =
+      std::to_string(major_version) + "." + std::to_string(minor_version);
+}
+
+XWalkExtension::Instance* XWalkExtensionManager::GetExtensionInstance(
+    XW_Instance xw_instance) {
+  base::AutoLock lock(xmanager_instance_lock);
+  auto it = instances_.find(xw_instance);
+  return (it != instances_.end()) ? it->second.get() : nullptr;
+}
+
+void XWalkExtensionManager::PreloadExtensions() {
+  if (delegate_)
+    delegate_->PreloadExtensions();
+}
+
+void XWalkExtensionManager::ClearPreloadHandle(const std::string& lib_path) {
+  base::AutoLock lock(preload_handle_lock);
+  preload_handle_.erase(lib_path);
+}
+
+void* XWalkExtensionManager::GetPreloadHandle(const std::string& lib_path) {
+  base::AutoLock lock(preload_handle_lock);
+  if (preload_handle_.find(lib_path) != preload_handle_.end())
+    return preload_handle_[lib_path];
+  else
+    return nullptr;
+}
+
+void XWalkExtensionManager::SetPreloadHandle(
+    const std::string& lib_path, void* handle) {
+  base::AutoLock lock(preload_handle_lock);
+  preload_handle_[lib_path] = handle;
+}
+
+void XWalkExtensionManager::LoadExtensionsByPath(const std::string& path) {
+  if (is_loaded_by_path_)
+    return;
+
+  std::ignore = LoadExtensions(path);
+  is_loaded_by_path_ = true;
+}
+
+void XWalkExtensionManager::LoadUIAppExtensions() {
+  if (is_loaded_for_web_app_)
+    return;
+
+  std::ignore = LoadExtensions(XWALK_EXTENSION_PATH);
+  if (delegate_)
+    delegate_->LoadUIAppExtensions();
+
+ is_loaded_for_web_app_ = true;
+}
+
+void XWalkExtensionManager::LoadServiceAppExtensions() {
+  auto is_ui_service = is_loaded_for_web_app_;
+  if (is_ui_service || is_loaded_for_service_app_)
+    return;
+
+  auto files = LoadExtensions(XWALK_EXTENSION_SERVICE_PATH);
+  for (auto it = files.begin(); it != files.end(); ++it) {
+    LOG(INFO) << "*it : " << *it;
+    RegisterExtension(new XWalkExtension(*it));
+  }
+
+  is_loaded_for_service_app_ = true;
+}
+
+std::set<std::string> XWalkExtensionManager::LoadExtensions(
+    const std::string& extension_path) {
+  LOG(INFO) << "extension_path : " << extension_path;
+
+  // Gets all extension files in the XWALK_EXTENSION_PATH
+  std::string ext_pattern(extension_path);
+  ext_pattern.append("/");
+  ext_pattern.append(kExtensionPrefix);
+  ext_pattern.append("*");
+  ext_pattern.append(kExtensionSuffix);
+
+  std::set<std::string> files;
+  {
+    glob_t glob_result;
+    glob(ext_pattern.c_str(), GLOB_TILDE, nullptr, &glob_result);
+    for (unsigned int i = 0; i < glob_result.gl_pathc; ++i)
+      files.insert(glob_result.gl_pathv[i]);
+  }
+
+  // Gets all metadata files in the XWALK_EXTENSION_PATH
+  // Loads information from the metadata files and remove the loaded file from
+  // the set 'files'
+  std::string meta_pattern(extension_path);
+  meta_pattern.append("/");
+  meta_pattern.append("*");
+  meta_pattern.append(kExtensionMetadataSuffix);
+  {
+    glob_t glob_result;
+    glob(meta_pattern.c_str(), GLOB_TILDE, nullptr, &glob_result);
+    for (unsigned int i = 0; i < glob_result.gl_pathc; ++i)
+      ParseMetadata(glob_result.gl_pathv[i], &files, extension_path);
+  }
+  return files;
+}
+
+void XWalkExtensionManager::LoadUserExtensions(const std::string& app_path) {
+  if (app_path.empty()) {
+    LOG(ERROR) << "Failed to get package root path";
+    return;
+  }
+  std::string app_ext_pattern(app_path);
+  app_ext_pattern.append(kUserPluginsDirectory);
+  struct utsname u;
+// Copyright (c) 2013 Intel Corporation. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef XWALK_EXTENSIONS_PUBLIC_XW_EXTENSION_SYNCMESSAGE_H_
+#define XWALK_EXTENSIONS_PUBLIC_XW_EXTENSION_SYNCMESSAGE_H_
+
+// NOTE: This file and interfaces marked as internal are not considered stable
+// and can be modified in incompatible ways between Crosswalk versions.
+
+#ifndef XWALK_EXTENSIONS_PUBLIC_XW_EXTENSION_H_
+#error "You should include XW_Extension.h before this file"
+#endif
+
+#include <vector>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+//
+// XW_INTERNAL_SYNC_MESSAGING_INTERFACE: allow JavaScript code to send a
+// synchronous message to extension code and block until response is
+// available. The response is made available by calling the SetSyncReply
+// function, that can be done from outside the context of the SyncMessage
+// handler.
+//
+
+#define XW_INTERNAL_SYNC_MESSAGING_INTERFACE_1 \
+  "XW_InternalSyncMessagingInterface_1"
+#define XW_INTERNAL_SYNC_MESSAGING_INTERFACE \
+  XW_INTERNAL_SYNC_MESSAGING_INTERFACE_1
+
+typedef void (*XW_HandleSyncMessageCallback)(XW_Instance instance,
+                                             const char* message);
+
+struct XW_Internal_SyncMessagingInterface_1 {
+  void (*Register)(XW_Extension extension,
+                   XW_HandleSyncMessageCallback handle_sync_message);
+  void (*SetSyncReply)(XW_Instance instance, const char* reply);
+  void (*SetSyncBinaryReply)(XW_Instance instance,
+                             const std::vector<uint8_t>& reply);
+};
+
+typedef struct XW_Internal_SyncMessagingInterface_1
+    XW_Internal_SyncMessagingInterface;
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif
+
+#endif  // XWALK_EXTENSIONS_PUBLIC_XW_EXTENSION_SYNCMESSAGE_H_
+000000000603440a T ewk_context_default_get
+000000000603440f T ewk_context_new
+0000000006034416 T ewk_context_new_with_injected_bundle_path
+00000000060344fe T ewk_context_new_with_injected_bundle_path_and_storage_name
+00000000060371f7 T ewk_context_new_with_injected_bundle_path_in_incognito_mode
+000000000603bc61 T ewk_init
+000000000604227f T ewk_view_add
+0000000006049479 T ewk_view_add_dynamic_certificate_path
+0000000006042a9f T ewk_view_add_in_incognito_mode
+0000000005fac400 T ewk_view_add_item_to_back_forward_list
+000000000604236b T ewk_view_add_with_context
+0000000006042211 T ewk_view_add_with_session_data

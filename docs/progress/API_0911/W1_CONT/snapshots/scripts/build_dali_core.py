@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""不改真实 Dali 源码，独立目录构建 libc++ core；不安装到系统。"""
+import pathlib,subprocess,sys,json,hashlib
+r=pathlib.Path.cwd();out=r/'docs/progress/API_0911/W1_CONT';tmp=r/'tmp/API_0911/W1_CONT/dali_core_cxx'
+src=pathlib.Path('/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-2.5.26-1.src.rpm/unpacked/dali2-2.5.26.tar.gz/dali2-2.5.26')
+runtime=r/'tmp/IMPL_0908/build-native';cc='/home/toolchain/development/libc++_replacement/progress/R33/tools/tizen-clang++'
+def run(name,cmd):
+ rc=subprocess.run([sys.executable,str(r/'docs/progress/API_0911/record.py'),str(out/'raw'/name),'nice','-n','15','ionice','-c','3',*cmd]).returncode
+ if rc:raise SystemExit(rc)
+run('dali_core_configure',['env','PYTHONDONTWRITEBYTECODE=1','cmake','-S',str(src/'build/tizen'),'-B',str(tmp),'-DCMAKE_BUILD_TYPE=Release','-DCMAKE_CXX_COMPILER='+cc,'-DCMAKE_CXX_FLAGS=-nostdinc++ -I'+str(runtime/'include/c++/v1'),'-DCMAKE_SHARED_LINKER_FLAGS=-nostdlib++ -L'+str(runtime/'lib')+' -Wl,-rpath,'+str(runtime/'lib')+' -lc++ -lc++abi','-DCMAKE_EXE_LINKER_FLAGS=-nostdlib++ -L'+str(runtime/'lib')+' -Wl,-rpath,'+str(runtime/'lib')+' -lc++ -lc++abi','-DENABLE_PKG_CONFIGURE=OFF','-DCMAKE_EXPORT_COMPILE_COMMANDS=ON'])
+run('dali_core_build',['env','PYTHONDONTWRITEBYTECODE=1','cmake','--build',str(tmp),'--parallel','2','--target','dali2-core'])
+print('CORE_BUILD_COMPLETE',tmp)
