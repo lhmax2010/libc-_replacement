@@ -1,0 +1,49 @@
+From aafbe73ba928785fff19baf964b5a31c33be91b8 Mon Sep 17 00:00:00 2001
+From: He Fangyu <fangyu.he@samsung.com>
+Date: Tue, 8 Sep 2026 09:44:44 +0800
+Subject: [PATCH 3/5] libcxx: make wbuffer_convert destruction independent of
+ synchronization
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Do not call __close from the destructor. Keep codecvt and buffer deletion
+unchanged, and retain the helper with a comment recording that this class
+no longer calls it internally. Callers requiring complete output must use
+pubsync explicitly before destruction.
+
+Validation: strict-warning native runtime build and five repeated exact
+output checks. Explicit synchronization preserves all six sample bytes;
+without it the already-emitted first byte remains and the five buffered
+bytes are not emitted during destruction. Resource deletion code and ABI
+annotations are unchanged.
+Evidence: https://github.com/lhmax2010/libc-_replacement/tree/codex/runtime-validation/docs/progress/IMPL_0908/W1
+
+中文说明：析构不再自动同步，资源删除及 ABI 标注保持不变；保留 __close
+本身并标注此类已无内部调用。显式同步的输出完整性与不显式同步的内容差异
+已逐值验证，不能把不自动刷新误写为写入过程中完全没有输出。
+---
+ libcxx/include/__locale_dir/wbuffer_convert.h | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/libcxx/include/__locale_dir/wbuffer_convert.h b/libcxx/include/__locale_dir/wbuffer_convert.h
+index a6818aadf5d0..a99b1749147b 100644
+--- a/libcxx/include/__locale_dir/wbuffer_convert.h
++++ b/libcxx/include/__locale_dir/wbuffer_convert.h
+@@ -117,7 +117,7 @@ wbuffer_convert<_Codecvt, _Elem, _Tr>::wbuffer_convert(streambuf* __bytebuf, _Co
+ 
+ template <class _Codecvt, class _Elem, class _Tr>
+ wbuffer_convert<_Codecvt, _Elem, _Tr>::~wbuffer_convert() {
+-  __close();
++  // Flushing is explicit: callers must use pubsync() before destruction.
+   delete __cv_;
+   if (__owns_eb_)
+     delete[] __extbuf_;
+@@ -408,6 +408,7 @@ void wbuffer_convert<_Codecvt, _Elem, _Tr>::__write_mode() {
+ 
+ template <class _Codecvt, class _Elem, class _Tr>
+ wbuffer_convert<_Codecvt, _Elem, _Tr>* wbuffer_convert<_Codecvt, _Elem, _Tr>::__close() {
++  // No internal callers remain in this class; keep the helper for compatibility.
+   wbuffer_convert* __rt = nullptr;
+   if (__cv_ != nullptr && __bufptr_ != nullptr) {
+     __rt = this;

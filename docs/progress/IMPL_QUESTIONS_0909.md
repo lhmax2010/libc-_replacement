@@ -40,6 +40,11 @@ pointer_string.pass.cpp 等输出可执行文件不存在；已完成的 overflo
 
 ## W4：Gerrit review 接收前置（留人工审阅）
 
+2026-09-11 更新：该项“缺少 Change-Id”的前置已解决。人工授权后，五提交由标准 hook
+补齐唯一 footer，逐树等价核验通过，仅原 sandbox 使用精确 force-with-lease 更新，其他分支未变。
+详见 [P6 元数据记录](P6_0909/resume/REPORT.md)。正式 review 的时间与其余接收条件仍待人工审阅；
+下面保留原交付阶段的问题及取证过程，不表示当前提交仍缺 footer。
+
 五个实施提交均没有 Change-Id；已有打包基线的 Change-Id 作为检测正向对照存在。
 Gerrit 官方说明：要求 Change-Id 的项目会拒绝缺少它的 review 提交。后续只读取得完整继承链，
 查明该项目继承 scm/acls/domains 的 requireChangeId=true，覆盖根 All-Projects 的 false。

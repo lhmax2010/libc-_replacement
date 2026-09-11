@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""五提交快照、说明结构、patch-id 与旧补丁保护的只读核对。"""
+import csv,hashlib,pathlib,re,subprocess
+root=pathlib.Path.cwd();src=root/'tmp/IMPL_0908/source';out=root/'docs/progress/IMPL_0909/W4'
+base='c3f8578a4db871d9d6de96d751f4c2ea7b1638fa';head='f3c1af692b579add991861e1f7c4950f6af39932'
+def git(*args):return subprocess.check_output(['git','-C',str(src),*args])
+commits=git('rev-list','--reverse',base+'..'+head).decode().splitlines()
+assert len(commits)==5
+patches=sorted((out/'patches').glob('*.patch'));assert len(patches)==5
+rows=[];prev=base
+for commit,patch in zip(commits,patches):
+    parent=git('rev-parse',commit+'^').decode().strip();assert parent==prev;prev=commit
+    body=git('show','-s','--format=%B',commit).decode()
+    subject=body.splitlines()[0]
+    assert subject.startswith('libcxx:') and '中文说明' in body and 'Validation:' in body and 'Evidence:' in body
+    change_id=bool(re.search(r'^Change-Id: I[0-9a-f]{40}$',body,re.M))
+    assert patch.read_text().startswith('From '+commit+' ')
+    def patch_id(data):return subprocess.check_output(['git','patch-id','--stable'],input=data).decode().split()[0]
+    assert patch_id(patch.read_bytes())==patch_id(git('show','--format=fuller',commit))
+    digest=hashlib.sha256(patch.read_bytes()).hexdigest()
+    rows.append([commit,subject,str(patch.relative_to(out)),digest,'PRESENT' if change_id else 'ABSENT','MATCH'])
+    print(commit,'Change-Id='+str(change_id),'PATCH_ID_MATCH=PASS',digest)
+positive=git('show','-s','--format=%B',base).decode()
+assert re.search(r'^Change-Id: I[0-9a-f]{40}$',positive,re.M)
+print('CHANGE_ID_DETECTOR_POSITIVE_CONTROL=PASS baseline='+base)
+with (out/'COMMIT_INDEX.tsv').open('w') as f:
+    w=csv.writer(f,delimiter='\t');w.writerow(['commit','subject','patch','sha256','change_id','patch_id']);w.writerows(rows)
+assert not git('status','--porcelain').strip()
+assert git('rev-parse','HEAD').decode().strip()==head
+assert subprocess.run(['git','-C',str(src),'diff','--check',base,head]).returncode==0
+print('SOURCE_CLEAN=PASS FIVE_LINEAR_COMMITS=PASS DIFF_CHECK=PASS')
+print('SCRIPT_SHA256',hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest())
+#!/usr/bin/env python3
+"""交付双语文档、当前统计与 R81 来源核对；不改旧记录。"""
+import collections,csv,hashlib,json,pathlib,re
+base=pathlib.Path('docs/progress/IMPL_0909/W4');rows=[]
+arm=json.loads((base/'../W2/ARM_SUMMARY.json').read_text());assert arm['valid_total']==11402 and arm['missing']==0
+counts=collections.Counter()
+for c in arm['counts'].values():counts.update(c)
+assert counts=={'PASS':10080,'FAIL':211,'UNSUPPORTED':1082,'XFAIL':29}
+for name in ['DELIVERY_ZH.md','DELIVERY_EN.md']:
+    p=base/name;text=p.read_text()
+    for token in ['11402','10070','129','1176','27','10080','211','1082','29','10020','1061','7848','6657','136','1027','28','3554','Change-Id','NOT_OBSERVED','NOT_AVAILABLE']:
+        assert token in text,(name,token)
+    for stale in ['ARM 补测未完成','编译范围待用户确认','Current status: PARTIAL','ARM completion is outstanding','Continuation has not started']:
+        assert stale not in text,(name,stale)
+    for link in re.findall(r'\]\(([^)]+)\)',text):
+        if link.startswith(('http://','https://')):continue
+        q=(p.parent/link.split('#',1)[0]).resolve();assert q.exists(),(name,link)
+        rows.append([name,link,hashlib.sha256(q.read_bytes()).hexdigest() if q.is_file() else 'DIRECTORY'])
+    print('DOCUMENT_SHA256',hashlib.sha256(p.read_bytes()).hexdigest(),p)
+assert 10070+129+1176+27==11402 and 6657+136+1027+28==7848 and 7848+3554==11402
+assert 10080+211+1082+29==11402
+summary=json.loads(pathlib.Path('docs/progress/R81/tables/final_summary.json').read_text())
+assert summary['libcxx']['owner_normalized_differences']==0 and summary['libcxxabi']['differences']==0
+historical=list(csv.DictReader(open('docs/progress/IMPL_0908/W3/historical_baseline.tsv'),delimiter='\t'))
+for suite,file in [('libcxx','docs/progress/R81/raw/phase2/results/baseline_armv7l/libcxx/aggregate_result_owner_normalized.json'),
+                   ('libcxxabi','docs/progress/R81/raw/phase2/results/baseline_armv7l/libcxxabi/batch-001/result.json')]:
+    p=pathlib.Path(file);data=json.loads(p.read_text())
+    expected={e['name'].split(' :: ',1)[-1]:e['code'] for e in data['tests']}
+    actual={e['test']:e['historical_code'] for e in historical if e['arch']=='armv7l' and e['suite']==suite}
+    assert expected==actual,(suite,len(expected),len(actual))
+    print('R81_BASELINE_EXACT_MATCH',suite,len(actual),'SHA256',hashlib.sha256(p.read_bytes()).hexdigest())
+with (base/'EVIDENCE_INDEX.tsv').open('w') as f:
+    w=csv.writer(f,delimiter='\t');w.writerow(['document','reference','sha256']);w.writerows(rows)
+print('BILINGUAL_NUMBERS_AND_LOCAL_LINKS=PASS',len(rows))
+print('SCRIPT_SHA256',hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest())
+# 交付材料阶段记录
+
+状态 `COMPLETE_WITH_REVIEW_BLOCKER`；标注“待人工审阅后交付”。W2 完整结果与 W3 中英文声明
+已同步，交付材料整理完成；现有五提交仍缺 Gerrit 要求的 Change-Id，没有替人工改写提交。
+
+产物：[中文说明与验证汇总](DELIVERY_ZH.md)、[英文说明与验证汇总](DELIVERY_EN.md)、
+[五提交补丁快照](patches/)、[提交与摘要索引](COMMIT_INDEX.tsv)、[证据索引](EVIDENCE_INDEX.tsv)。
+
+五提交均在原 sandbox 远端；补丁快照与原提交的稳定 patch-id 一致，源码工作树干净，
+四个既有补丁及其覆盖内容未变。没有实施新改动、改写提交或推送 Gerrit。
+已说明第二批与第一批分别解决不同问题，以及双版本、头文件重编和部署时点的限制。
+
+五个提交说明的英文主题、原因、中英文解释和验证段落已核对；五个均缺 Change-Id，
+后续通过只读配置继承链查明 `requireChangeId=true`，见 raw/019 和 GERRIT_CONFIG_CHAIN.tsv。
+故现有提交至少未满足该项 review 接收前置；未试推 refs/for，实际服务器拒绝输出为 NOT_OBSERVED。
+不能从 sandbox 推送成功推断 review 可直接通过。这个问题留给人工的 review 准备阶段，
+本包没有自行补 footer、amend、rebase 或 force。
+
+两架构 470 次定向证据、正常路径值、三方析构对照和完整官方对照均已逐项链接。
+ARM 已补齐 3,554 项，原 7,848 项未重跑：共 11,402 项，10080 PASS、211 FAIL、1082 UNSUPPORTED、29 XFAIL，
+缺项 0。官方 FAIL 原数不改写，两架构唯一新增 FAIL 都是按 W1 已接受的 overflow，
+没有新增 noexcept 假设类或其他新增 FAIL。三项历史超时 FAIL→PASS 仍不归功于补丁。
+W3 按用户措辞说明析构行为对齐，但不是字节数或全部行为一致，交付正文也同步保留此区分。
+W2 旧十四项残留及本轮任务目录、74 份新诊断均已清除并核验；旧八份和新诊断均有主机备份，
+板子已清理并释放，见 ../W2/REPORT.md。
+
+资源 medium PASS；无构建、无板卡操作。导出补丁仅为交付快照，不改原四补丁。
+脚本快照为 [verify_delivery.py](verify_delivery.py)、[validate_documents.py](validate_documents.py)，
+SHA256 和验证输出见 raw/005、008；既有补丁保护检查见 raw/006。
+配置继承查询脚本为 read_config_chain.py，追加核验及最新摘要见 raw/021。
+用时以 raw/001 至封存记录为准，未触及四小时上限。
+续轮资源门禁 raw/022 通过；源码与 sandbox 远端再次只读核验见 raw/023。
+续轮从门禁至正文同步核验为 5 分 29 秒（raw/025）；raw/024 验证 78 个本地引用、
+完整 ARM 数字及两套 R81 逐项来源通过，最新脚本摘要同时落盘。最终索引刷新见 raw/026。
+没有重新实施、重建运行库、占用板子、改写提交或推送 Gerrit。
+# 第二批运行时改动交付说明
+
+**待人工审阅后交付。材料已补齐：ARM 官方套件完整、支持声明中英文已同步，板子已清理并释放。
+Gerrit 的 Change-Id 接收前置仍未满足：现有五提交均缺该字段。本文不是发布通过记录。**
+
+## 源码与五个提交
+
+源码分支：`sandbox/lhmax2025/libcxx-noexcept-relief`。
+基线：`c3f8578a4db871d9d6de96d751f4c2ea7b1638fa`；
+本地与本次只读查询的远端 HEAD：`f3c1af692b579add991861e1f7c4950f6af39932`。
+相对基线共五个线性提交，工作树干净；不是在本包又实施了一轮改动。
+[远端与提交原文](raw/002_sandbox_readiness.stdout)、[补测后只读复核](raw/023_final_sandbox_readonly.stdout)。
+
+五份 [补丁快照](patches/) 从原提交导出，逐份核对 commit 标识、SHA256 和稳定 patch-id
+（用于比较补丁内容的标识），均与原提交相符；未在另一棵源码树执行 git am，不能称有新增应用验证。
+完整名称、摘要及格式核查在 [COMMIT_INDEX.tsv](COMMIT_INDEX.tsv) 与
+[只读验证记录](raw/005_verify_delivery.stdout)。
+
+| 提交（完整 SHA 见索引） | 改动与原因 | 验证依据 |
+|---|---|---|
+| 753ed75f | 移除普通等待及 system／steady／custom 定时等待的相应异常规格，同步声明、定义及 C++03 镜像；让取消的强制展开穿过这些边界，通知接口不变 | [完整库构建与初测](../../IMPL_0908/W1/REPORT.md)、[两架构等待和清理矩阵](../../IMPL_0908/W3/REPORT.md) |
+| 2b94110f | 普通／定时共享锁写者预占写者位后创建局部回滚守卫；异常离开时保留读者位、清写者位、通知排队者，成功或正常超时标记完成；不增加对象字段 | [源码与初测](../../IMPL_0908/W1/REPORT.md)、[状态、进展及正常路径](../../IMPL_0908/W3/REPORT.md) |
+| aafbe73b | 现代 wbuffer_convert 析构不再调用 __close；资源删除和 helper 保留；不依赖析构完成最终同步 | [资源与调用面核查](../../R111/ITEM1_WBUFFER_CLOSE_REPORT.md)、[三方九字节用例](../W1/REPORT.md) |
+| 72e7a0f2 | 普通／system-clock 库入口保留旧 LLVM_22 包装，增加新默认 LLVM_22_TIZEN_1；公开 native_handle 访问底层句柄，版本脚本隐藏 helper，平台开关显式启用 | [真实双版本库与四种绑定](../../IMPL_0908/W2/REPORT.md)、[最终两架构符号](../../IMPL_0908/W3/raw/035_alias_verification.stdout) |
+| f3c1af69 | 修复 ARM intmax_t 为 long long 时的定时入口符号拼写，避免把 LP64 的 long 编码带入 ARM；类型静态断言，不变等待算法和版本契约 | [原缺陷与修复记录](../../IMPL_0908/W3/REPORT.md)、[旧／新定时入口两架构独立五轮](../../IMPL_0908/W3/timed_versions.tsv) |
+
+## 与第一批四个补丁的关系
+
+第一批分别处理：外来强制展开的 libc++abi 状态保存、GNU 强制展开标记类型、
+消费方实例化的二十处处理器、由库交付的三十处处理器。其目的是让运行时和 catch-all
+处理器识别并继续传播取消，而不是吞掉展开或破坏其状态。
+[第一批交付](../../R69/REPORT.md)、[第一批原补丁](../../R69/code/patches/)。
+
+第二批在这些补丁及既有打包基线之上，解决的是**不抛边界、展开后的写者状态、析构同步、
+旧新契约兼容**。强制展开是取消时沿调用链退出并执行清理的机制；`noexcept` 是禁止异常
+越过函数边界的契约。两批不是相互替代关系，只安装第二批不能重现已验证配置。
+本次再次逐文件核对第一批覆盖内容不变，见 [保护检查](raw/006_original_patch_check.stdout)。
+
+按本包和 P1 列示的四类实施改动计数：解除规格、写者回滚、现代析构不同步、双版本，
+**四类均已实施**。这不等于所有配置和产品已验收，也不声称 Boost 全部消费方已迁移部署；
+后者不由这五个提交实现。C++03 的转换缓冲析构没有随本批修改。
+
+## 兼容性与部署约束
+
+ABI 是二进制对调用与对象表示的约定。本次不改变共享锁对象字段；双版本仅覆盖两个库内
+等待入口，要求 Linux ELF、`__1` 命名空间、配套共享 libc++／libc++abi 与 GNU 展开器，
+且 `LIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS` 开启。不是静态库或任意 ABI 命名空间的保护承诺。
+
+| 调用方 | 实测绑定与后果 |
+|---|---|
+| 已链接且记录旧节点的 ELF | LLVM_22，旧不抛契约及终止路径保留 |
+| 旧对象仅重链接 | 新默认节点；清理布局依赖，quiet 样本线程已回收但锁滞留，不能保证干净退出 |
+| 新头重编，再链接双版本库 | 新默认节点；被测调用链清理、解锁、竞争者进展通过 |
+| 新头对象先链接旧单版本库，再换运行库 | 仍记录旧节点，进入旧终止路径 |
+
+新头必须先于相关对象重编，双版本库必须在最终链接时可用，并在运行时实际加载配套库。
+换库不会重选已记录的符号版本，也不会补回旧对象缺少的清理代码。两个头内定时等待、
+转换缓冲析构以及定时写者回滚均须随相关消费方重编。
+旧对象的“布局”指调用点和异常清理表覆盖，不是 Boost 的对象内存布局；同为旧头编译的
+quiet 和邻近可抛调用形态可以出现不同清理结果，不能从一个通过样本外推全部旧二进制。
+[支持范围中英候审版](../W3/REPORT.md)、[独立核验步骤](../W3/SELF_VERIFY_ZH.md)。
+
+## 验证汇总
+
+| 项目 | x86_64 原生 | armv7l 物理板 | 原始材料入口 |
+|---|---|---|---|
+| 最终定向矩阵 | 45 格 × 5＝225 | 45 格 × 5＝225 | [原生逐轮](../../IMPL_0908/W3/matrix_x86_64_final.tsv)、[实板逐轮](../../IMPL_0908/W3/matrix_armv7l_final.tsv) |
+| 定时旧／新版本补测 | 2 格 × 5＝10 | 2 格 × 5＝10 | [逐轮表](../../IMPL_0908/W3/timed_versions.tsv) |
+| 等待取消 | 四种形态 canceled=1、cleanup=1 | 同样四种形态的独立实测 | [完整报告与 raw](../../IMPL_0908/W3/REPORT.md) |
+| 共享锁回滚 | 原读者保留、写者位清除、排队者进展、后续读写可用 | 对应格独立实测 | [状态与正常竞争](../../IMPL_0908/W3/REPORT.md) |
+| 正常路径 | 等待谓词 42、通知／虚假唤醒／超时持锁；竞争 value=2000、checksum=14003 | 对应格独立实测 | [正常路径原文入口](../../IMPL_0908/W3/REPORT.md) |
+| 析构三方最小用例 | 本包 30 次；未显式同步新／旧／GNU＝3／9／0 字节，显式均 9 | 本包三方未重跑；保留此前新旧缓冲和析构取消证据 | [本包三方矩阵](../W1/matrix.tsv)、[此前实板](../../IMPL_0908/W3/REPORT.md) |
+
+前两行合计 470 次，包含预期的旧入口终止、旧 quiet 对象锁滞留等负向格。
+“断言符合预期”不等于每格都没有问题。正常路径不变也**不包括有意改变的析构输出行为**。
+共享锁探针在断言后用 _Exit 结束隔离进程，未据此覆盖全局对象析构；任意 Clock、facet、
+回调和所有调度交错均未穷尽。aarch64 动态验证为 NOT_OBSERVED。
+
+### 官方套件与失败分类（两架构完整结果）
+
+| 架构 | 有效总数 | PASS | FAIL | UNSUPPORTED | XFAIL | 缺项 |
+|---|---:|---:|---:|---:|---:|---:|
+| x86_64（两套件合计） | 11402 | 10070 | 129 | 1176 | 27 | 0 |
+| armv7l（两套件合计） | 11402 | 10080 | 211 | 1082 | 29 | 0 |
+
+原生分项统计、逐项比较见 [原生对照](../../IMPL_0908/W3/comparison_x86_64_new_full.tsv)；
+ARM 当前派生结果及逐项比较见 [ARM 与 R81 完整对照](../W2/ARM_R81_COMPARISON.tsv)。
+ARM 的 libc++ 为 11321 项：10020 PASS、211 FAIL、1061 UNSUPPORTED、29 XFAIL；
+libc++abi 为 81 项：60 PASS、21 UNSUPPORTED。原 7848 项（6657 PASS、136 FAIL、1027 UNSUPPORTED、28 XFAIL）
+无一重跑，本轮补齐 3554 项；[合并来源与统计](../W2/ARM_SUMMARY.json)。
+ARM 参照 R81 owner 标准化逐项记录；其与四补丁侧一致性有先前核对，来源映射见
+[基线脚本记录](raw/007_baseline_provenance.stdout)。原生沿用已固定的完整历史基线。
+
+已覆盖范围相对基线新增 FAIL 是 overflow：归为**已接受析构同步行为变化**，不是 noexcept
+假设类，保留原始 FAIL。本包三方实测支持用户已给定的接受标准，不代表字节数完全相同。
+此前 ARM 另有三个历史超时 FAIL 转 PASS，执行窗口不同，未归功于补丁。
+本轮补齐的 3554 项没有增加新的状态差异；两架构新增 noexcept 假设类及其他新增 FAIL 均为 0。
+原始 FAIL 保留，结果分母齐备不代表全部通过、所有既有失败原因相同或所有产品无问题。
+[完整两架构表](../W2/TWO_ARCHITECTURES.tsv)、[新增失败分类](../W2/NEW_FAILURE_CLASSIFICATION.tsv)、
+[原始测试归档及清单](../W2/REPORT.md)。新库与 libstdc++ 在“析构不自动刷新”上行为对齐；
+3／9／0 的实际字节数必须分开说明，两套库既有缓冲策略不同，本次未修改缓冲算法。
+
+## Gerrit 准备状态
+
+五提交线性、工作树干净、远端 SHA 一致，源码差异检查通过，补丁快照 patch-id 一致。
+提交说明均有 libcxx 主题、动机、中文说明、Validation 和 Evidence，与既有运行时补丁的
+说明结构相符。**但五个提交均无 Change-Id footer**；检测器以基线打包提交的有效 Change-Id
+作正向对照，见 [格式核验](raw/005_verify_delivery.stdout)。不能声称已符合所有 Gerrit 接收条件。
+
+后续只读核查已取得项目配置完整继承链：platform/upstream/llvm →
+scm/acls/domain_system/toolchain → scm/acls/domain_system → scm/acls/domains → All-Projects。
+最近的显式值在 scm/acls/domains，为 `receive.requireChangeId=true`；All-Projects 的 false
+被这一层覆盖。见 [配置链与各版本 SHA](GERRIT_CONFIG_CHAIN.tsv)、[实际查询](raw/019_read_config_chain.stdout)。
+因此现有五提交**至少未满足 Change-Id 这一项直接 review 接收前置条件**（静态配置核查）。
+Gerrit 官方说明指出，配置为要求 Change-Id 的项目会拒绝缺少它的 review 提交；
+本次没有向 refs/for 试推，实际拒绝输出仍为 NOT_OBSERVED，不伪造服务器已拒绝的回执。
+[Gerrit 官方说明](https://gerrit-review.googlesource.com/Documentation/error-missing-changeid.html)。
+继承解释依据 [官方项目配置文档](https://gerrit-review.googlesource.com/Documentation/config-project-config.html#receive.requireChangeId)。
+HTTP 两种公开配置 URL 均返回 404；随后在 tmp 隔离裸仓只读获取 refs/meta/config，
+没有改项目配置、源仓或服务器。仅记录父项目和接收选项，不输出权限成员或凭据。
+既有 sandbox 推送成功证明的是该分支上的代码可取用，不是 review 接收规则已经通过。
+是否以及何时准备正式 review 由人工决定；本包未 amend/rebase、未 force、未推正式分支或 LLVM 上游。
+
+## 尚缺与交付边界
+
+ARM 补测和中英文支持声明的数据更新已经完成；Gerrit 的 Change-Id 前置已查明但现有提交未满足，
+没有为此改写提交。原十四项残留及本轮任务目录、74 份新诊断均清理并核验；
+旧八份及新诊断均有已验摘要的主机备份，板子已清理并释放。[W2 完整记录](../W2/REPORT.md)。
+外部组件分母及重建策略 NOT_AVAILABLE；产品 GBS/RPM 和实际发布身份验收 NOT_OBSERVED。
+历史 SOURCE_PROVENANCE 锚点不是本次 sandbox 的发布认证。
+本材料只汇编已有事实与本包三方结果，不在这些缺口上补造成功。
+document	reference	sha256
+DELIVERY_ZH.md	raw/002_sandbox_readiness.stdout	f9f85b8f4491419c2a250cba2cdb375aa10946f0c48b7c7a5db33b39afbc32ca
+DELIVERY_ZH.md	raw/023_final_sandbox_readonly.stdout	78847038800363017bc49904840114b55d5206d0a47f822c19a5c37e1d1fb30e
+DELIVERY_ZH.md	patches/	DIRECTORY
+DELIVERY_ZH.md	COMMIT_INDEX.tsv	93e02646a6270a2b2adf929a2a1d69ec74ed98cf23edab10e124e59ccd534681
+DELIVERY_ZH.md	raw/005_verify_delivery.stdout	e8ba38e12b036c921ad54f1294b65280fddf6fb7152b516f41402515c1212ae1
+DELIVERY_ZH.md	../../IMPL_0908/W1/REPORT.md	5011ad7f55058667cf4e37f2bec33b1c36e8670d33f1e5ca99ff9441ea165fab
+DELIVERY_ZH.md	../../IMPL_0908/W3/REPORT.md	0ffd3f6f6fdd0b22ceb86cf7df20e57934a99eee0cc4fc516096a45e2e03f05f
+DELIVERY_ZH.md	../../IMPL_0908/W1/REPORT.md	5011ad7f55058667cf4e37f2bec33b1c36e8670d33f1e5ca99ff9441ea165fab
+DELIVERY_ZH.md	../../IMPL_0908/W3/REPORT.md	0ffd3f6f6fdd0b22ceb86cf7df20e57934a99eee0cc4fc516096a45e2e03f05f
+DELIVERY_ZH.md	../../R111/ITEM1_WBUFFER_CLOSE_REPORT.md	43d84d0523c71b31024d333b392b5019acf705a5c73186a7aa944e7e7b0fdc4a
+DELIVERY_ZH.md	../W1/REPORT.md	3f75097627512e7425154ca38a461b4bddc5bb0d92c358607a58e93dafc7d9f7
+commit	subject	patch	sha256	change_id	patch_id
+753ed75f299eb7d693df490a7a36834599199de4	libcxx: allow forced unwind through condition-variable waits	patches/0001-libcxx-allow-forced-unwind-through-condition-variabl.patch	72fb56b2343ba889031195b7434930b7e4a614820a3b219a99749be6d33157b0	ABSENT	MATCH
+2b94110f0ef5e036a17e8cfea80d0c69b0330935	libcxx: roll back interrupted shared-mutex writer reservations	patches/0002-libcxx-roll-back-interrupted-shared-mutex-writer-res.patch	005a2970cefbddbb929497b8fdef9bb96ae3c5549a73e57b3ec7755bd7ccd7b2	ABSENT	MATCH
+aafbe73ba928785fff19baf964b5a31c33be91b8	libcxx: make wbuffer_convert destruction independent of synchronization	patches/0003-libcxx-make-wbuffer_convert-destruction-independent-.patch	5e65a3b8ca417835317ce07e97f672f3500648a2503910a60b0496e22aa3e927	ABSENT	MATCH
+72e7a0f21ceeb1a2a4de60fc5137be194c748b90	libcxx: retain versioned condition-variable wait contracts	patches/0004-libcxx-retain-versioned-condition-variable-wait-cont.patch	6d5c1bd51432c64854e0b218192a25b71ccef5638126a9f78f77a9ecd786fa39	ABSENT	MATCH
+f3c1af692b579add991861e1f7c4950f6af39932	libcxx: match timed-wait aliases to the target intmax_t ABI	patches/0005-libcxx-match-timed-wait-aliases-to-the-target-intmax.patch	123167ffc26b3582978421b0d49273b3e142fefeebe9671d6be73ed68bd71096	ABSENT	MATCH

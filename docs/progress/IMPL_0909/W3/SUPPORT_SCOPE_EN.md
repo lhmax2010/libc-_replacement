@@ -1,5 +1,7 @@
 # Tizen libc++ cancellation support statement (final-review candidate)
 
+> Metadata update, 2026-09-11: commit references now identify tree-identical commits with Change-Id footers. Original test dates, results and support limits are unchanged; historical raw records identify the old commits. [Mapping and tree checks](../../P6_0909/resume/SHA_MAPPING.tsv).
+
 **Pending final human review. Both official-suite result denominators are complete; this does not mean every test passed or product-release acceptance is complete.**
 
 **For headquarters and business-team review; not a product-release guarantee.** This draft separates
@@ -7,7 +9,7 @@ the proposed, evidence-bounded commitments from known limitations. A thread exit
 not crashing, does not establish that its resources and shared state were cleaned up correctly.
 
 The implementation is on `sandbox/lhmax2025/libcxx-noexcept-relief`, commit
-`f3c1af692b579add991861e1f7c4950f6af39932`, on top of the four existing runtime patches.
+`c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13`, on top of the four existing runtime patches.
 This work used isolated builds and did not replace product system libraries. The destructor-flush
 failure is now an accepted behavior change under this round’s three-way criterion; its raw FAIL is retained.
 The original 7,848 valid ARM results were preserved and the other 3,554 completed, giving 11,402 results with zero missing.

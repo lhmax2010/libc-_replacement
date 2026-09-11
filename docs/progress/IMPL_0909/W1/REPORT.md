@@ -1,5 +1,7 @@
 # wbuffer_convert 析构行为：三方实测
 
+> 2026-09-11 元数据同步：正文源码引用指补齐 Change-Id 的等树新提交，不表示曾用新提交 ID 重建或重跑库。原构建／运行记录保持历史身份。[新旧映射与树核验](../../P6_0909/resume/SHA_MAPPING.tsv)。
+
 结论：`LIBSTDCXX_MATCHES_NEW`，**限于“同样不能满足原测试的九字节析构输出断言”这一
 任务书裁决口径**；依用户给定规则接受该已知变化，决策三维持。新 libc++ 与 libstdc++
 的实际字节数不同，不能把这个结论标签解释为逐字节或全部行为等同。
@@ -27,7 +29,7 @@ raw/run_* 的独立命令、stdout/stderr、退出码和时间。
 ## 身份与配置
 
 - 新库复用 `tmp/IMPL_0908/build-native`，源码为
-  `f3c1af692b579add991861e1f7c4950f6af39932`；旧库复用 `build-baseline-native` 的匹配基线。
+  `c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13`；旧库复用 `build-baseline-native` 的匹配基线。
   分别使用各自生成头文件，不能只切动态库而继续使用同一析构模板。
 - libc++ 两组使用既有 Tizen Clang 22.1.8，`-std=c++14 -O0 -g`，显式指定头文件、
   libc++ 和 libc++abi；只编译小探针，没有重建运行库。

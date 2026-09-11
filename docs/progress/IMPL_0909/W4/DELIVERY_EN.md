@@ -2,28 +2,34 @@
 
 **For delivery after human review. The materials are complete: the ARM official suites are complete,
 the bilingual support statement is synchronized, and the board is cleaned and released.
-Gerrit's Change-Id receive prerequisite remains unmet by all five commits. This is not a release-approval record.**
+All five commits now have unique Change-Ids from Gerrit's standard hook, and the original sandbox was updated with authorization; code trees are unchanged. This is not a release-approval record.**
+
+Metadata revision, 2026-09-11: commit and delivery-patch references are updated; original builds and
+measurements were not rerun or rewritten. Historical raw logs retain the original SHAs; consult the
+[mapping and tree checks](../../P6_0909/resume/SHA_MAPPING.tsv).
 
 ## Source and five commits
 
 Branch: `sandbox/lhmax2025/libcxx-noexcept-relief`.
 Base: `c3f8578a4db871d9d6de96d751f4c2ea7b1638fa`.
-Local and read-only remote HEAD: `f3c1af692b579add991861e1f7c4950f6af39932`.
+Local and remote HEAD after adding Change-Ids: `c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13`.
 There are five linear commits above that base and the source worktree is clean. This task did not
-implement another code change. [Remote and commit records](raw/002_sandbox_readiness.stdout).
+implement another code change. [Historical remote and commit records](raw/002_sandbox_readiness.stdout),
+[post-metadata-update remote and tree checks](../../P6_0909/resume/raw/017_post_push_verify.stdout).
 
 The five [patch snapshots](patches/) were exported from those commits. Commit identifiers, SHA256
 and stable patch-id (a content-comparison identifier) match the originals. No additional git am
 application was performed in another source tree. See [COMMIT_INDEX.tsv](COMMIT_INDEX.tsv) and
-[verification output](raw/005_verify_delivery.stdout).
+[current patch verification](../../P6_0909/resume/raw/026_verify_delivery.stdout).
+The [historical verification output](raw/005_verify_delivery.stdout) retains old messages and digests; it does not identify the current patch files.
 
 | Commit (full SHA in index) | Change and rationale | Validation basis |
 |---|---|---|
-| 753ed75f | Remove the relevant specifications for ordinary and system/steady/custom-clock waits, including declarations, definitions and C++03 mirrors; allow cancellation unwinding across those boundaries; leave notifications unchanged | [Complete-library builds and initial checks](../../IMPL_0908/W1/REPORT.md), [two-architecture wait/cleanup matrix](../../IMPL_0908/W3/REPORT.md) |
-| 2b94110f | Add local rollback guards after ordinary/timed writers reserve the writer bit; interrupted exits preserve readers, clear that bit and notify queued waiters; completion and normal timeout dismiss the guard; no new object fields | [Implementation](../../IMPL_0908/W1/REPORT.md), [state, progress and normal paths](../../IMPL_0908/W3/REPORT.md) |
-| aafbe73b | Stop the modern wbuffer_convert destructor calling __close, preserving resource deletion and the helper; do not rely on destruction for final synchronization | [Ownership and call-site inspection](../../R111/ITEM1_WBUFFER_CLOSE_REPORT.md), [three-way nine-byte sample](../W1/REPORT.md) |
-| 72e7a0f2 | Retain LLVM_22 wrappers for ordinary/system-clock library waits and publish LLVM_22_TIZEN_1 defaults; use public native_handle, hide helpers in the version map and explicitly enable the platform option | [Real library and four bindings](../../IMPL_0908/W2/REPORT.md), [final symbols](../../IMPL_0908/W3/raw/035_alias_verification.stdout) |
-| f3c1af69 | Correct the timed alias when ARM intmax_t is long long instead of the LP64 long spelling; assert the type without changing algorithms or version contracts | [Original defect and correction](../../IMPL_0908/W3/REPORT.md), [independent old/new timed-entry runs on both architectures](../../IMPL_0908/W3/timed_versions.tsv) |
+| 16a73b0a | Remove the relevant specifications for ordinary and system/steady/custom-clock waits, including declarations, definitions and C++03 mirrors; allow cancellation unwinding across those boundaries; leave notifications unchanged | [Complete-library builds and initial checks](../../IMPL_0908/W1/REPORT.md), [two-architecture wait/cleanup matrix](../../IMPL_0908/W3/REPORT.md) |
+| 72e89332 | Add local rollback guards after ordinary/timed writers reserve the writer bit; interrupted exits preserve readers, clear that bit and notify queued waiters; completion and normal timeout dismiss the guard; no new object fields | [Implementation](../../IMPL_0908/W1/REPORT.md), [state, progress and normal paths](../../IMPL_0908/W3/REPORT.md) |
+| 8e833583 | Stop the modern wbuffer_convert destructor calling __close, preserving resource deletion and the helper; do not rely on destruction for final synchronization | [Ownership and call-site inspection](../../R111/ITEM1_WBUFFER_CLOSE_REPORT.md), [three-way nine-byte sample](../W1/REPORT.md) |
+| 4c5ba1fa | Retain LLVM_22 wrappers for ordinary/system-clock library waits and publish LLVM_22_TIZEN_1 defaults; use public native_handle, hide helpers in the version map and explicitly enable the platform option | [Real library and four bindings](../../IMPL_0908/W2/REPORT.md), [final symbols](../../IMPL_0908/W3/raw/035_alias_verification.stdout) |
+| c68f376f | Correct the timed alias when ARM intmax_t is long long instead of the LP64 long spelling; assert the type without changing algorithms or version contracts | [Original defect and correction](../../IMPL_0908/W3/REPORT.md), [independent old/new timed-entry runs on both architectures](../../IMPL_0908/W3/timed_versions.tsv) |
 
 ## Relationship to the four existing patches
 
@@ -122,16 +128,20 @@ strategies, and this patch does not change the buffering algorithms.
 The five commits are linear, the source is clean, remote/local SHAs match, source diff checking
 passes, and exported patch-ids match. Every message has a libcxx subject, rationale, Chinese
 explanation, Validation and Evidence, consistent with the existing runtime-patch explanation
-structure. **None of the five has a Change-Id footer.** Detection was positively controlled against
-the packaging base commit's valid footer; see [format verification](raw/005_verify_delivery.stdout).
+structure. **All five current commits have unique Change-Id footers.** The actual standard hook was
+downloaded from Gerrit. Checks verify only a footer and its separator were added, original message
+bytes and authors were retained, and the new committer is hao.lin. See the
+[metadata reconstruction record](../../P6_0909/resume/REPORT.md) and
+[current format verification](../../P6_0909/resume/raw/026_verify_delivery.stdout).
+The [old format check](raw/005_verify_delivery.stdout) retains the missing-footer state for comparison.
 This does not establish all Gerrit receive requirements.
 
 Follow-up read-only inspection obtained the complete configuration chain: platform/upstream/llvm →
 scm/acls/domain_system/toolchain → scm/acls/domain_system → scm/acls/domains → All-Projects.
 The nearest explicit value is `receive.requireChangeId=true` in scm/acls/domains, overriding the
 root's false. See [configuration chain and revision SHAs](GERRIT_CONFIG_CHAIN.tsv) and
-[actual queries](raw/019_read_config_chain.stdout). Therefore the five commits **do not satisfy at
-least the Change-Id prerequisite for direct review submission**, based on static configuration inspection.
+[actual queries](raw/019_read_config_chain.stdout). The former commits lacked that field; the current
+five **now satisfy the Change-Id-presence prerequisite**, not every untested review-admission condition.
 Gerrit's official documentation states that projects requiring Change-Id reject review submissions
 missing it. No refs/for push was attempted; an actual rejection response is still NOT_OBSERVED,
 not a fabricated server receipt. [Official Gerrit documentation](https://gerrit-review.googlesource.com/Documentation/error-missing-changeid.html).
@@ -140,13 +150,16 @@ Both public HTTP configuration URLs returned 404; refs/meta/config was then fetc
 an isolated bare repository under tmp. No project configuration, source repository or server was
 modified. Only parent-project and receive options were recorded, not access-group membership or credentials.
 Successful sandbox pushing establishes source availability on that branch, not successful review
-admission. Humans decide whether and when to prepare formal review. No amend/rebase, force push,
-formal-branch push or LLVM-upstream push was performed.
+admission. Humans decide whether and when to prepare formal review. The original delivery task did
+not rewrite history. The subsequent metadata task on 2026-09-11 received authorization to use
+force-with-lease, pinned to the old HEAD, on this sandbox only. All other 132 branch references were
+unchanged. No formal branch, refs/for or LLVM-upstream push was performed;
+[complete branch comparison](../../P6_0909/resume/ALL_BRANCH_COMPARISON.tsv).
 
 ## Remaining gaps and delivery boundary
 
-ARM completion and the bilingual support-statement update are finished. Gerrit's Change-Id
-prerequisite is established but still unmet; the commits were not rewritten. All fourteen old residual targets,
+ARM completion and the bilingual support-statement update are finished. Change-Ids were subsequently
+added through the authorized tree-identical reconstruction; other release prerequisites remain for review. All fourteen old residual targets,
 the new task directory and 74 new diagnostic ZIPs were removed and checked. The old eight ZIPs and
 the new diagnostics have verified host backups. The board is cleaned and released. See the
 [complete W2 record](../W2/REPORT.md) and [post-test read-only source/remote verification](raw/023_final_sandbox_readonly.stdout).

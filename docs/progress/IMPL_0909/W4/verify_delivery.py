@@ -2,7 +2,7 @@
 """五提交快照、说明结构、patch-id 与旧补丁保护的只读核对。"""
 import csv,hashlib,pathlib,re,subprocess
 root=pathlib.Path.cwd();src=root/'tmp/IMPL_0908/source';out=root/'docs/progress/IMPL_0909/W4'
-base='c3f8578a4db871d9d6de96d751f4c2ea7b1638fa';head='f3c1af692b579add991861e1f7c4950f6af39932'
+base='c3f8578a4db871d9d6de96d751f4c2ea7b1638fa';head='c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13'
 def git(*args):return subprocess.check_output(['git','-C',str(src),*args])
 commits=git('rev-list','--reverse',base+'..'+head).decode().splitlines()
 assert len(commits)==5

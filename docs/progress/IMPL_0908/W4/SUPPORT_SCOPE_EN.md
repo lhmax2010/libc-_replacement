@@ -1,11 +1,13 @@
 # Tizen libc++ cancellation support statement (draft)
 
+> Metadata update, 2026-09-11: commit references now identify tree-identical commits with Change-Id footers. Original test dates, results and support limits are unchanged; historical raw records identify the old commits. [Mapping and tree checks](../../P6_0909/resume/SHA_MAPPING.tsv).
+
 **For headquarters and business-team review; not a product-release guarantee.** This draft separates
 the proposed, evidence-bounded commitments from known limitations. A thread exiting, or a process
 not crashing, does not establish that its resources and shared state were cleaned up correctly.
 
 The implementation is on `sandbox/lhmax2025/libcxx-noexcept-relief`, commit
-`f3c1af692b579add991861e1f7c4950f6af39932`, on top of the four existing runtime patches.
+`c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13`, on top of the four existing runtime patches.
 This round used isolated builds and did not replace product system libraries. There is one new
 official-test failure. The ARM official suite was interrupted by loss of board connectivity,
 and board cleanup remains incomplete. See the [validation report](../W3/REPORT.md) and

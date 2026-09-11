@@ -1,0 +1,90 @@
+From 2b94110f0ef5e036a17e8cfea80d0c69b0330935 Mon Sep 17 00:00:00 2001
+From: He Fangyu <fangyu.he@samsung.com>
+Date: Tue, 8 Sep 2026 09:44:44 +0800
+Subject: [PATCH 2/5] libcxx: roll back interrupted shared-mutex writer
+ reservations
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Create a local completion guard after reserving the writer bit in ordinary
+and timed exclusive acquisition. On an incomplete exit, clear only that
+bit and notify the first gate while the internal mutex remains locked.
+Mark successful completion and the existing timed-out cleanup as complete
+so that normal paths retain their original state transitions.
+
+No object members or layout are changed. This does not claim asynchronous
+cancellation safety or coverage of arbitrary user Clock and callback code.
+Validation: native x86_64 strict-warning runtime build and header value
+smoke pass; the guard follows the previously validated ordinary/timed
+writer rollback shape, including its normal-timeout completion rule.
+Evidence: https://github.com/lhmax2010/libc-_replacement/tree/codex/runtime-validation/docs/progress/IMPL_0908/W1
+
+中文说明：普通与定时写者在置写者位后创建守卫；异常离开时在内部锁仍被
+持有的阶段清写者位、通知第一等待队列。成功及正常超时显式标记完成，
+不增加对象成员，不扩展为任意异步取消或用户回调均安全的承诺。
+---
+ libcxx/include/shared_mutex | 13 +++++++++++++
+ libcxx/src/shared_mutex.cpp | 12 ++++++++++++
+ 2 files changed, 25 insertions(+)
+
+diff --git a/libcxx/include/shared_mutex b/libcxx/include/shared_mutex
+index 028bbf565025..176f8dedd229 100644
+--- a/libcxx/include/shared_mutex
++++ b/libcxx/include/shared_mutex
+@@ -244,6 +244,17 @@ public:
+       }
+     }
+     __base_.__state_ |= __base_.__write_entered_;
++    // Restore the writer reservation while __lk still owns the internal mutex.
++    struct __rollback_guard {
++      __shared_mutex_base& __base;
++      bool __completed = false;
++      ~__rollback_guard() {
++        if (!__completed) {
++          __base.__state_ &= ~__base.__write_entered_;
++          __base.__gate1_.notify_all();
++        }
++      }
++    } __rollback{__base_};
+     if (__base_.__state_ & __base_.__n_readers_) {
+       while (true) {
+         cv_status __status = __base_.__gate2_.wait_until(__lk, __abs_time);
+@@ -252,10 +263,12 @@ public:
+         if (__status == cv_status::timeout) {
+           __base_.__state_ &= ~__base_.__write_entered_;
+           __base_.__gate1_.notify_all();
++          __rollback.__completed = true;
+           return false;
+         }
+       }
+     }
++    __rollback.__completed = true;
+     return true;
+   }
+ 
+diff --git a/libcxx/src/shared_mutex.cpp b/libcxx/src/shared_mutex.cpp
+index 618083373695..697c3a3f5e22 100644
+--- a/libcxx/src/shared_mutex.cpp
++++ b/libcxx/src/shared_mutex.cpp
+@@ -24,8 +24,20 @@ void __shared_mutex_base::lock() {
+   while (__state_ & __write_entered_)
+     __gate1_.wait(lk);
+   __state_ |= __write_entered_;
++  // Restore the writer reservation before lk releases the internal mutex.
++  struct __rollback_guard {
++    __shared_mutex_base& __base;
++    bool __completed = false;
++    ~__rollback_guard() {
++      if (!__completed) {
++        __base.__state_ &= ~__base.__write_entered_;
++        __base.__gate1_.notify_all();
++      }
++    }
++  } __rollback{*this};
+   while (__state_ & __n_readers_)
+     __gate2_.wait(lk);
++  __rollback.__completed = true;
+ }
+ 
+ bool __shared_mutex_base::try_lock() {
