@@ -1,0 +1,78 @@
+#include <ewk_cookie_parser.h>
+#include <cstdio>
+#include <cstring>
+#include <dlfcn.h>
+#include <exception>
+int main(int argc,char**argv) {
+  if(argc!=2)return 20;
+  setvbuf(stdout,nullptr,_IONBF,0);
+  if(!dlopen("libc++.so.1",RTLD_NOW|RTLD_GLOBAL) || !dlopen("libstdc++.so.6",RTLD_NOW|RTLD_GLOBAL)) {
+    printf("RUNTIME_LOAD_ERROR=%s\n",dlerror());return 21;
+  }
+  void*lib=dlopen(argv[1],RTLD_NOW|RTLD_LOCAL);
+  if(!lib){printf("PROVIDER_LOAD_ERROR=%s\n",dlerror());return 22;}
+  auto call=reinterpret_cast<Eina_Bool(*)(const std::string&,EWKCookieContents&)>(dlsym(lib,"ewk_parse_cookie"));
+  if(!call){puts("SYMBOL_NOT_FOUND");return 23;}
+  bool cxx=false,gnu=false,provider=false;
+  FILE*f=fopen("/proc/self/maps","r");if(!f)return 24;char line[4096];
+  while(fgets(line,sizeof line,f)){fputs(line,stdout);cxx|=strstr(line,"/libc++.so.")!=nullptr;gnu|=strstr(line,"/libstdc++.so.")!=nullptr;provider|=strstr(line,argv[1])!=nullptr;}
+  fclose(f);printf("MAP_ASSERT cxx=%d gnu=%d provider=%d\n",cxx,gnu,provider);
+  if(!cxx||!gnu||!provider)return 25;
+  printf("LAYOUT string=%zu output=%zu\n",sizeof(std::string),sizeof(EWKCookieContents));
+  try {
+    {
+      std::string input="sid=ABC123; Domain=example.test; Path=/probe";
+      EWKCookieContents result{};
+      puts("BEFORE_REAL_CALL");
+      bool ok=call(input,result);
+      printf("RETURN valid=%d\n",ok);
+      printf("VALUE domain=%s name=%s path=%s value=%s expiry=%lld\n",result.domain.c_str(),result.name.c_str(),result.path.c_str(),result.value.c_str(),(long long)result.expiry_date_utc);
+      bool exact=ok&&result.domain=="example.test"&&result.name=="sid"&&result.path=="/probe"&&result.value=="ABC123"&&result.expiry_date_utc==0;
+      printf("EXACT_FIELDS=%d\n",exact);if(!exact)return 26;
+    }
+    puts("CONSUMER_OBJECTS_DESTROYED=1");return 0;
+  } catch(const std::exception&e){printf("EXCEPTION=%s\n",e.what());return 27;}
+}
+#!/usr/bin/env python3
+"""流式读取真实 SRPM 的 tar 输入，仅提取待查接口源码，不展开整树。"""
+import tarfile,sys,pathlib,hashlib,json
+dest=pathlib.Path('tmp/API_0911/W1_CONT/chromium_source');dest.mkdir(parents=True,exist_ok=True)
+rows=[];total=0
+with tarfile.open(fileobj=sys.stdin.buffer,mode='r|gz') as archive:
+    for m in archive:
+        total+=1;name=m.name.lower()
+        wanted=('ewk_cookie_parser' in name or (('/wrt/' in name or '/xwalk/' in name) and ('extension' in name or 'plugin' in name) and name.endswith(('.h','.cc','.cpp','.gni','.gn'))))
+        if not wanted or not m.isfile():continue
+        p=pathlib.PurePosixPath(m.name)
+        assert not p.is_absolute() and '..' not in p.parts
+        data=archive.extractfile(m).read();target=dest/p;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+        row=dict(member=m.name,size=len(data),sha256=hashlib.sha256(data).hexdigest(),path=str(target));rows.append(row);print(json.dumps(row),flush=True)
+out=pathlib.Path('docs/progress/API_0911/W1_CONT');(out/'source_members.json').write_text(json.dumps(dict(archive_members=total,selected=rows),indent=2)+'\n')
+print('COMPLETE',total,len(rows),flush=True)
+{
+  "start": "2026-09-11T10:09:31.562596+00:00",
+  "end": "2026-09-11T10:09:31.595227+00:00"
+}
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:26:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_0()
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:43:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_1(bool jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:62:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_2(int jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:81:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_3(float jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:100:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_4(void* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:124:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_5(void* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:148:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_6(void* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:172:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_7(void* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:196:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_8(void* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:220:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_9(void* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:244:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_10(void* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:268:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_11(void* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:292:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_12(char* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:320:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_14(void* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:344:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_15(void* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:368:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_16(void* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:392:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_17(int jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:411:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value__SWIG_18(void* jarg1)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:791:SWIGEXPORT bool SWIGSTDCALL CSharp_Dali_Property_Value_Get__SWIG_12(void* jarg1, char** jarg2)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:896:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value_Vector2_Componentwise(float x, float y)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:912:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value_Vector3_Componentwise(float x, float y, float z)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/dali-core/property-value-wrap.cpp:928:SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_new_Property_Value_Vector4_Componentwise(float x, float y, float z, float w)
+/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/dali2-csharp-binder-2.5.26-1.src.rpm/unpacked/dali2-csharp-binder-2.5.26.tar.xz/dali2-csharp-binder-2.5.26/dali-csharp-binder/common/common.cpp:127:  SWIGRegisterExceptionCallbacks_NDalic(
