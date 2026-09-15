@@ -1,0 +1,126 @@
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+struct ByteSpan { const char* p; size_t n; };
+struct CookieState { ByteSpan fields[4]; int64_t expiry; };
+typedef int (*EmitState)(void*,unsigned,const char*,size_t);
+extern "C" int bridge_configure(const char*);
+extern "C" int bridge_parse(ByteSpan,const CookieState*,void*,EmitState,int64_t*);
+#include "bridge.h"
+#include <ewk_cookie_parser.h>
+#include <stdexcept>
+static int emit(void*p,unsigned i,const char*s,size_t n){
+ auto*f=static_cast<std::string*>(p);
+ if(i>=4)return 0;try{f[i].assign(s,n);return 1;}catch(...){return 0;}
+}
+extern "C" __attribute__((visibility("default"))) int api_probe_configure_real_provider(const char*p){return bridge_configure(p);}
+extern "C" __attribute__((visibility("default"))) Eina_Bool ewk_parse_cookie(const std::string&in,EWKCookieContents&out){
+ CookieState initial{{{out.domain.data(),out.domain.size()},{out.name.data(),out.name.size()},
+                       {out.path.data(),out.path.size()},{out.value.data(),out.value.size()}},out.expiry_date_utc};
+ // Do not instantiate the shared-name EWK wrapper in both translation units:
+ // its weak destructor has the same mangled name despite different field layouts.
+ std::string next[4];int64_t expiry=0;
+ int rc=bridge_parse({in.data(),in.size()},&initial,next,emit,&expiry);
+ // Experimental policy: fail visibly; do not silently turn transport/allocation failure into success.
+ // This is NOT a claim of exception-contract equivalence with the original function.
+ if(rc<0)throw std::runtime_error("experimental adaptor transport/allocation error");
+ if(rc==0)return EINA_FALSE;
+ out.domain.swap(next[0]);out.name.swap(next[1]);out.path.swap(next[2]);out.value.swap(next[3]);
+ out.expiry_date_utc=static_cast<time_t>(expiry);return EINA_TRUE;
+}
+#include "bridge.h"
+#include <ewk_cookie_parser.h>
+#include <cstdio>
+#include <cstring>
+#include <dlfcn.h>
+static Eina_Bool(*real_parse)(const std::string&,EWKCookieContents&);
+extern "C" int bridge_configure(const char*path){
+ void*h=dlopen(path,RTLD_NOW|RTLD_LOCAL);if(!h){puts(dlerror());return 0;}
+ real_parse=reinterpret_cast<decltype(real_parse)>(dlsym(h,"ewk_parse_cookie"));
+ Dl_info info{};if(!real_parse||!dladdr(reinterpret_cast<void*>(real_parse),&info))return 0;
+ printf("REAL_PROVIDER=%s\n",info.dli_fname);return strcmp(path,info.dli_fname)==0;
+}
+extern "C" int bridge_parse(ByteSpan input,const CookieState*initial,void*ctx,EmitState emit,int64_t*expiry){
+ if(!real_parse||!initial||!emit||!expiry)return -1;
+ try{
+  std::string text(input.p,input.n);EWKCookieContents out{};
+  std::string*fields[]={&out.domain,&out.name,&out.path,&out.value};
+#ifndef ADAPTOR_DROP_INITIAL
+  for(unsigned i=0;i<4;i++)fields[i]->assign(initial->fields[i].p,initial->fields[i].n);
+  out.expiry_date_utc=static_cast<time_t>(initial->expiry);
+#endif
+  if(!real_parse(text,out))return 0;
+  for(unsigned i=0;i<4;i++)if(!emit(ctx,i,fields[i]->data(),fields[i]->size()))return -2;
+  *expiry=out.expiry_date_utc;return 1;
+ }catch(...){return -3;}
+}
+#!/usr/bin/env python3
+import pathlib,sys,json,hashlib
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
+from common import ROOT as r,EXT as e,record
+o=r/'docs/progress/ADAPTOR_0912/W2';t=r/'tmp/ADAPTOR_0912/W2';old=r/'tmp/API_0911/W1_CONT';prev=r/'docs/progress/API_0911/W1_CONT'
+rows=[];ids=[]
+version=sys.argv[1] if len(sys.argv)>1 else ''
+if version:t=t/version
+for arch,build in [('x86_64','build-native'),('armv7l','build-armv7l')]:
+ d=t/arch;d.mkdir(parents=True,exist_ok=True);b=r/'tmp/IMPL_0908'/build
+ cc=[e/'progress/R33/tools/tizen-clang++']
+ if arch=='armv7l':cc+=['--target=armv7l-tizen-linux-gnueabi','--sysroot='+str(e/'tmp/GBS-ROOT/R30-semantic-libcxx-armv7l-20260812-01/local/BUILD-ROOTS/scratch.armv7l.0'),'--ld-path='+str(e/'progress/R36/tools/armv7l-ld'),'-march=armv7-a','-mfpu=neon','-mfloat-abi=softfp','-mthumb']
+ identity=json.loads((prev/('arm_header_identity.json' if arch=='armv7l' else 'ewk_header_identity.json')).read_text())
+ inc=['-I'+p for p in sorted({str(pathlib.Path(x['path']).parent) for x in identity if 'path' in x})]
+ for x in identity:
+  if 'path' in x:assert hashlib.sha256(pathlib.Path(x['path']).read_bytes()).hexdigest()==x['sha256']
+ sdk=old/'arm/sdk/libstdc++-devel' if arch=='armv7l' else old/'gnu14_sdk'
+ heads=[p for p in sdk.rglob('vector') if p.parent.name=='c++'];assert len(heads)==1,heads
+ gh=heads[0].parent;configs=list(sdk.rglob('c++config.h'));assert len(configs)==1
+ gflags=['-nostdinc++','-I'+str(gh),'-I'+str(configs[0].parent.parent),'-nostdlib++']
+ cflags=['-nostdinc++','-I'+str(b/'include/c++/v1'),'-nostdlib++']
+ glib=[str(old/'arm/sdk/libstdc++/usr/lib/libstdc++.so.6')] if arch=='armv7l' else ['-lstdc++']
+ common=['-std=c++17','-O0','-g',*inc];link=['-L'+str(b/'lib'),'-Wl,--no-as-needed','-lc++','-lc++abi',*glib,'-ldl']
+ steps=[('front',[*cc,*cflags,*common,'-fPIC','-fvisibility=hidden','-c',o/'frontend.cpp','-o',d/'frontend.o'])]
+ for mode in ['state','drop']:
+  steps.append((mode+'_backend',[*cc,*gflags,*common,'-fPIC','-fvisibility=hidden',*(['-DADAPTOR_DROP_INITIAL'] if mode=='drop' else []),'-c',o/'backend.cpp','-o',d/(mode+'.o')]))
+  steps.append((mode+'_link',[*cc,'-nostdlib++','-shared',d/'frontend.o',d/(mode+'.o'),'-Wl,-z,defs',*link,'-o',d/(mode+'.so')]))
+ for kind,flags in [('gnu',gflags),('cxx',cflags)]:
+  steps.append(('probe_'+kind,[*cc,*flags,*common,'-include',prev/'arm_monitor.h',o/'state_probe.cpp',*link,'-o',d/('probe_'+kind)]))
+ for tag,cmd in steps:
+  rc,_=record('W2',version+arch+'_build_'+tag,cmd);rows.append(dict(arch=arch,step=tag,exit=rc))
+  if rc:raise SystemExit('构建失败，先检查原始错误：'+tag)
+ record('W2',version+arch+'_symbols',['bash','-c','readelf -d '+str(d/'state.so')+'; nm -D -C '+str(d/'state.so')+'; readelf -Ws '+str(d/'frontend.o')+'; readelf -Ws '+str(d/'state.o')])
+ for p in [*d.glob('*.so'),d/'probe_gnu',d/'probe_cxx',b/'lib/libc++.so.1.0',b/'lib/libc++abi.so.1.0']:
+  ids.append(dict(path=str(p),sha256=hashlib.sha256(p.read_bytes()).hexdigest()))
+(o/(version+'build_results.json')).write_text(json.dumps(rows,indent=2)+'\n');(o/(version+'binary_identity.json')).write_text(json.dumps(ids,indent=2)+'\n')
+
+/home/toolchain/development/libc++_replacement/tmp/R11/extracted/4e/4e803cedd52c682c1f90ffbbfc76153a5124f64f502710aaf5a59b478b431e49/usr/lib64/libchromium-ewk.so:	file format elf64-x86-64
+
+Disassembly of section .text:
+
+000000000002bd78 <ewk_parse_cookie>:
+   2bd78: 41 57                        	pushq	%r15
+   2bd7a: 41 56                        	pushq	%r14
+   2bd7c: 53                           	pushq	%rbx
+   2bd7d: 48 89 f3                     	movq	%rsi, %rbx
+   2bd80: 49 89 fe                     	movq	%rdi, %r14
+   2bd83: 4c 8d 3d 26 ad 00 00         	leaq	0xad26(%rip), %r15      # 0x36ab0
+   2bd8a: 49 8b 3f                     	movq	(%r15), %rdi
+   2bd8d: 48 85 ff                     	testq	%rdi, %rdi
+   2bd90: 75 0d                        	jne	0x2bd9f <ewk_parse_cookie+0x27>
+   2bd92: e8 e7 7e 00 00               	callq	0x33c7e <ewk_settings_uses_keypad_without_user_action_set+0x4a>
+   2bd97: 48 85 c0                     	testq	%rax, %rax
+   2bd9a: 74 21                        	je	0x2bdbd <ewk_parse_cookie+0x45>
+   2bd9c: 49 8b 3f                     	movq	(%r15), %rdi
+   2bd9f: 48 8d 35 28 3c fe ff         	leaq	-0x1c3d8(%rip), %rsi    # 0xf9ce
+   2bda6: e8 45 89 00 00               	callq	0x346f0 <dlsym@plt>
+   2bdab: 48 85 c0                     	testq	%rax, %rax
+   2bdae: 74 0d                        	je	0x2bdbd <ewk_parse_cookie+0x45>
+   2bdb0: 4c 89 f7                     	movq	%r14, %rdi
+   2bdb3: 48 89 de                     	movq	%rbx, %rsi
+   2bdb6: 5b                           	popq	%rbx
+   2bdb7: 41 5e                        	popq	%r14
+   2bdb9: 41 5f                        	popq	%r15
+   2bdbb: ff e0                        	jmpq	*%rax
+   2bdbd: 31 c0                        	xorl	%eax, %eax
+   2bdbf: 5b                           	popq	%rbx
+   2bdc0: 41 5e                        	popq	%r14
+   2bdc2: 41 5f                        	popq	%r15
+   2bdc4: c3                           	retq

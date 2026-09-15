@@ -1,0 +1,19 @@
+# adaptor 实施候选状态
+
+按人工续裁决：生产质量候选，不实施平台；生产方向待 libc++ Chromium 产物后补测。ARM 全部 `NOT_OBSERVED_BOARD_OFFLINE`，不连接开发板。
+
+| 阶段 | 状态 | 记录 |
+| --- | --- | --- |
+| 资源 | medium 通过 | 每构建进程虚拟内存上限 4 GiB，单并行，nice 19/ionice 3；未全量构建 Chromium |
+| 双 TU EWK | REVERSE_MECHANISM_VERIFIED / RELEASE_BLOCKED | 两放法各 12×5 精确通过；生产方向 NOT_AVAILABLE；后端分配失败 5/5 终止 |
+| 转发层两放法 | SOURCE_TARGET_VERIFIED | 真实 generator/main + 独立 non-TV 配置；不是完整产品 GN/RPM 重建 |
+| vector 数据层 | DATA_ONLY_VERIFIED | 四格各 8×5 通过，破坏对照可检出；真实回调 NOT_AVAILABLE |
+| 单元/边界/错误测试 | PARTIAL：发现发布阻断 | 17 个边界、30 次协议/加载单元通过；前端注入通过不代表后端错误合同闭合 |
+| 打包及待补脚本 | CANDIDATE / PARTIAL | 两份 patch 干净应用、两种独立构建成功；生产矩阵编排已备；真实回调仍缺 driver |
+| 干净目录复现 | COMPLETE | 14:19:50–14:20:30 UTC，正常矩阵及失败均可重现；完成脚本不等于质量通过 |
+
+2026-09-15 13:55 UTC 进度：完成数据层及 EWK 双 TU 小目标编译；转发源目标第一次编译失败的完整 stderr 已保存。首次构建共数十目标，尚未达到每 500 目标的 I/O 探测节点；未启动大项目或占用板子。下一步只补小目标头文件依赖并运行矩阵。
+
+2026-09-15 14:27 UTC 进度：反向两种放法、去测试导出的候选、边界/数据层已完成；小目标及空目录重建完成。发现错误路径阻断，GNU-only 同用例 5/5 正常错误返回，双运行时 5/5 终止；不猜测精确成因。打包与缺前置测试脚本已备，正在封存证据并提交。自 13:36 medium gate 起约 51 分钟，未接近 14 小时时限。
+
+待人工审阅结论：PARTIAL / RELEASE_BLOCKED。问题见 QUESTIONS.md；不宣称可上线，不替代生产方向或真实回调实测。
