@@ -1,0 +1,141 @@
+gdb-multiarch:
+  Installed: (none)
+  Candidate: 15.1-1ubuntu1~24.04.1
+  Version table:
+     15.1-1ubuntu1~24.04.1 500
+        500 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages
+     15.0.50.20240403-0ubuntu1 500
+        500 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+usage: qemu-arm [options] program [arguments...]
+Linux CPU emulator (compiled for arm emulation)
+
+Options and associated environment variables:
+
+Argument             Env-variable      Description
+-h                                     print this help
+-help                                  
+-g port              QEMU_GDB          wait gdb connection to 'port'
+-L path              QEMU_LD_PREFIX    set the elf interpreter prefix to 'path'
+-s size              QEMU_STACK_SIZE   set the stack size to 'size' bytes
+-cpu model           QEMU_CPU          select CPU (-cpu help for list)
+-E var=value         QEMU_SET_ENV      sets targets environment variable (see below)
+-U var               QEMU_UNSET_ENV    unsets targets environment variable (see below)
+-0 argv0             QEMU_ARGV0        forces target process argv[0] to be 'argv0'
+-r uname             QEMU_UNAME        set qemu uname release string to 'uname'
+-B address           QEMU_GUEST_BASE   set guest_base address to 'address'
+-R size              QEMU_RESERVED_VA  reserve 'size' bytes for guest virtual address space
+-d item[,...]        QEMU_LOG          enable logging of specified items (use '-d help' for a list of items)
+-dfilter range[,...] QEMU_DFILTER      filter logging based on address range
+-D logfile           QEMU_LOG_FILENAME write logs to 'logfile' (default stderr)
+-p pagesize          QEMU_PAGESIZE     set the host page size to 'pagesize'
+-singlestep          QEMU_SINGLESTEP   run in singlestep mode
+-strace              QEMU_STRACE       log system calls
+-seed                QEMU_RAND_SEED    Seed for pseudo-random number generator
+-trace               QEMU_TRACE        [[enable=]<pattern>][,events=<file>][,file=<file>]
+-version             QEMU_VERSION      display version information and exit
+
+Defaults:
+QEMU_LD_PREFIX  = /usr/gnemul/qemu-arm
+/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R30-semantic-libcxx-armv7l-20260812-01/local/BUILD-ROOTS/scratch.armv7l.0/lib/ld-linux.so.3
+#define _GNU_SOURCE
+#include <elf.h>
+#include <link.h>
+#include <stdint.h>
+
+static size_t append(char *buffer, size_t offset, size_t capacity,
+                     const char *text) {
+  if (!text)
+    text = "<null>";
+  while (*text && offset < capacity)
+    buffer[offset++] = *text++;
+  return offset;
+}
+
+static int equal(const char *left, const char *right) {
+  while (*left && *right && *left == *right) {
+    ++left;
+    ++right;
+  }
+  return *left == *right;
+}
+
+static int observed_symbol(const char *name) {
+  return equal(name, "_Unwind_RaiseException") ||
+         equal(name, "_Unwind_Resume") ||
+         equal(name, "_Unwind_DeleteException") ||
+         equal(name, "_Unwind_ForcedUnwind");
+}
+
+static void raw_write(const char *buffer, size_t length) {
+  register long syscall_number __asm__("rax") = 1;
+  register long file_descriptor __asm__("rdi") = 2;
+  register const char *data __asm__("rsi") = buffer;
+  register size_t count __asm__("rdx") = length;
+  __asm__ volatile("syscall"
+                   : "+r"(syscall_number)
+                   : "r"(file_descriptor), "r"(data), "r"(count)
+                   : "rcx", "r11", "memory");
+}
+
+static void emit(const char *kind, uintptr_t *refcook, uintptr_t *defcook,
+                 const char *symbol) {
+  if (!observed_symbol(symbol))
+    return;
+  const struct link_map *referrer = (const struct link_map *)*refcook;
+  const struct link_map *provider = (const struct link_map *)*defcook;
+  const char *referrer_name =
+      referrer && referrer->l_name && referrer->l_name[0]
+          ? referrer->l_name
+          : "<main>";
+  const char *provider_name =
+      provider && provider->l_name && provider->l_name[0]
+          ? provider->l_name
+          : "<main>";
+  char buffer[4096];
+  size_t length = 0;
+  length = append(buffer, length, sizeof(buffer), "AUDIT_");
+  length = append(buffer, length, sizeof(buffer), kind);
+  length = append(buffer, length, sizeof(buffer), "\treferrer=");
+  length = append(buffer, length, sizeof(buffer), referrer_name);
+  length = append(buffer, length, sizeof(buffer), "\tprovider=");
+  length = append(buffer, length, sizeof(buffer), provider_name);
+  length = append(buffer, length, sizeof(buffer), "\tsymbol=");
+  length = append(buffer, length, sizeof(buffer), symbol);
+  if (length < sizeof(buffer))
+    buffer[length++] = '\n';
+  raw_write(buffer, length);
+}
+
+unsigned int la_version(unsigned int version) {
+  (void)version;
+  return LAV_CURRENT;
+}
+
+unsigned int la_objopen(struct link_map *map, Lmid_t lmid,
+                        uintptr_t *cookie) {
+  (void)lmid;
+  *cookie = (uintptr_t)map;
+  return LA_FLG_BINDTO | LA_FLG_BINDFROM;
+}
+
+uintptr_t la_symbind64(Elf64_Sym *symbol, unsigned int index,
+                       uintptr_t *refcook, uintptr_t *defcook,
+                       unsigned int *flags, const char *name) {
+  (void)index;
+  (void)flags;
+  emit("BIND", refcook, defcook, name);
+  return symbol->st_value;
+}
+
+Elf64_Addr la_x86_64_gnu_pltenter(Elf64_Sym *symbol, unsigned int index,
+                                  uintptr_t *refcook, uintptr_t *defcook,
+                                  La_x86_64_regs *registers,
+                                  unsigned int *flags, const char *name,
+                                  long int *frame_size) {
+  (void)index;
+  (void)registers;
+  (void)flags;
+  (void)frame_size;
+  emit("CALL", refcook, defcook, name);
+  return symbol->st_value;
+}

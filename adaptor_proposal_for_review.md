@@ -1,6 +1,6 @@
 # 跨标准库 adaptor：证据、部署变体与决策边界
 
-待人工审阅。本文重组既有正式分析与三家评审意见，不新增实验，不批准实施，不排列方案优先级。实测、静态核查和推断分别标明；“未测”不等于失败，“样本通过”不等于普遍兼容。[分析底本](docs/progress/ADAPTOR_0912/W4/adaptor_analysis_zh.md)
+待人工审阅。本文以既有正式分析为底本，补入定案前的符号引用核查、异常运行时实验和真实 EWK 构建前置复核；不批准实施，不排列方案优先级。实测、静态核查和推断分别标明；“未测”不等于失败，“样本通过”不等于普遍兼容。[分析底本](docs/progress/ADAPTOR_0912/W4/adaptor_analysis_zh.md)、[本轮核查](docs/progress/P11_0916/REPORT.md)
 
 ## 一、问题、范围与已经裁决的前提
 
@@ -75,7 +75,7 @@ GNU 编译单元读取 GNU 对象，libc++ 编译单元构造 libc++ 对象；�
 
 **已排除的方案。**不传旧状态、只加 hidden、把两个同名包装对象分别放进两个 TU，都不能满足上述已测情形。实验 catch-all 转状态再抛本地 `runtime_error` 也不保持原异常类型、部分写入或取消契约。不能原样作为生产错误处理。
 
-**反驳需要什么。**同身份、同输入及旧状态下出现字段差异，即反驳限定的字段修复结论。要反驳“尚未证明透明部署”，需补齐上述状态、引用、错误和旧入口路由，以及真实 **GNU 消费方→libc++ EWK provider** 的矩阵；该实际迁移方向仍为 `NOT_OBSERVED`，已有尝试未获得真实 libc++ EWK 产物。[构建缺口](docs/progress/ADAPTOR_0912/W1/REPORT.md)
+**反驳需要什么。**同身份、同输入及旧状态下出现字段差异，即反驳限定的字段修复结论。要反驳“尚未证明透明部署”，需补齐上述状态、引用、错误和旧入口路由，以及真实 **GNU 消费方→libc++ EWK provider** 的矩阵。本轮沿用原命令、仅换隔离输出目录重试真实 parser 编译，仍缺 `base/functional/callback_forward.h`；真实 libc++ provider 为 `NOT_AVAILABLE`，反向矩阵为 `NOT_OBSERVED`。既有 360 次相反方向场景观察不填补这一缺口。[构建缺口](docs/progress/ADAPTOR_0912/W1/REPORT.md)、[本轮复核](docs/progress/P11_0916/experiment3/REPORT.md)
 
 ### 3.3 其他接口，不能借 EWK 的通过代替
 
@@ -117,11 +117,59 @@ GNU 编译单元读取 GNU 对象，libc++ 编译单元构造 libc++ 对象；�
 | future/promise | 本侧对象配远端结果/错误协议 | deferred、线程退出通知、broken_promise、等待与析构语义。 |
 | 迭代器/内部引用 | 远端操作代理，或约定只读快照 | 旧内联解引用、实时别名、失效规则；快照不等于原引用。 |
 
-**已排除的概括。**两库共存不等于“两套独立堆”，也不能据此断言必然堆损坏。既有特定 new/delete 绑定诊断不能外推任意第三方库/内存调试器组合。相反，普通异常确有反例：真实 GNU 插件抛共享 `BoundaryError`，libc++ 主程序在 x86_64 原生和 armv7l 物理板均只进入 catch-all、退出 12；同轮受控 POSIX 取消链却能跨两侧，守卫各执行一次、join 得到取消值。普通异常与强制展开必须分开。[异常与取消原始记录](docs/progress/R78/REPORT.md)
+### 5.1 普通异常的两条候选成因，不能只凭 catch-all 归因
 
-typeinfo（运行时类型信息）的未合一，与不该合并的同名实现被合并，是不同机制。另一次强制展开对照显示，类型信息是否导出到 `.dynsym` 会改变 handler 命中；仅加 `--export-dynamic` 并未使最终重抛正常，仍退出 134。它不是上述 `BoundaryError` 失败成因的直接实验。不能将“静态归档再隐藏符号”当成无条件安全修复。[类型信息对照](docs/progress/R39/R39_report.md)
+**事实链。**personality 是展开时判断处理器与清理动作的函数；exception_class 是异常头中的来源标识。必须并列区分：（一）foreign 异常进入不识别它的运行时，未走普通类型匹配；（二）异常被视为本运行时的，但 RTTI（运行时类型信息）身份或匹配失败。这是不同机制，不是 catch-all 外观的同义说法。
 
-既有源码核对另指出，相关 libc++abi personality 的普通 typed catch 对 foreign（非本运行时）异常不进入该类型匹配路径。因此名字深比较建议仍是待验证假设，不能仅因两侧类型名相同就承诺宏开关能修复。特定绑定轨迹中 new/delete 的 GNU 与 LLVM 版本分别绑定到本侧；这不证明全部加载组合安全，也没有证明 `<stdexcept>` 所有九个类都已发生错误。[异常与分配核对](docs/progress/P4_0909/FINDINGS.md)、[实际绑定轨迹](docs/progress/API_0911/W2/raw/008_binding_trace.stderr)
+【实测】既有受控 GNU 插件抛 `BoundaryError{77}`、libc++ 主程序退出 12 的二进制，本轮在 x86_64 原生和 armv7l **QEMU 用户态**各复测五次。throw 和 personality 都实际进入 libc++abi，标识为 LLVM 的 `0x434c4e47432b2b00`，并进入 typed-catch 匹配；同名类型的 RTTI/名字地址不同，ARM 直接记录匹配返回 false。**这组失败确认是类型身份/匹配问题，不是 foreign 路径。** 原先 ARM 物理板的退出 12 仍是历史观察，本轮没有在物理板补记内部轨迹。[逐次轨迹与边界](docs/progress/P11_0916/experiment1/REPORT.md)
+
+【实测对照】GNU 同侧 5/5 捕获 77、guard=1；保持原导出条件的 LLVM 同侧也 5/5 退出 12。故不能写成“仅跨两套标准库才会失败”。隔离用例仅增加 `--export-dynamic` 后，跨库 5/5 捕获 77、guard=1，另外五次轨迹确认两侧 RTTI/名字地址合一；不是对任意应用的链接建议。另一次**强制展开**实验加该选项后仍退出 134，实验对象不同，不能混用结论。[本轮对照](docs/progress/P11_0916/experiment1/CONTROLS.json)、[合一轨迹](docs/progress/P11_0916/experiment1/raw/export_trace_r1.stdout)、[强制展开旧对照](docs/progress/R39/R39_report.md)
+
+【另一组实测】版本隔离的 `throw int` 夹具中，GNU throw 产生 `0x474e5543432b2b00`，随后实际进入 libc++abi personality 并落到 catch-all，确认 **foreign 是另一条真实路径**。这不改变上面 BoundaryError 的归因。[落点矩阵](docs/progress/P11_0916/experiment1/R14B_TRACES.json)
+
+**已排除的概括。**不能再将 BoundaryError 的退出 12 当作 foreign 的直接证据，也不能说跨库 typed catch 一律失败。名字深比较宏尚未实验；本轮身份对照不证明该宏保持完整异常/销毁契约。两库共存也不等于两套独立堆；有限 new/delete 绑定记录不证明全部加载组合或全部九个标准异常类安全/失败。[分配绑定记录](docs/progress/API_0911/W2/raw/008_binding_trace.stderr)
+
+**反驳需要什么。**在相同二进制、库和加载条件下取得相反的 throw/personality/标识或类型匹配轨迹，或指出观测参数无效；改变加载条件后通过只改变适用范围。普通异常与强制展开仍需分开验收。
+
+### 5.2 异常运行时共存矩阵与关键路径候选
+
+【既有实测＋本轮复测】96 格异常矩阵全部为 x86_64，**两方案都使用 libc++abi，不是 libcxxabi/libsupc++ 两设置对照**；同时改变了版本隔离、运行库组合及加载方式。它直接涉及方案 B 的第三条部署契约，但不是方案 B 自身的 EWK 实测。[原矩阵](docs/progress/P11_0916/experiment1/snapshots/R14b_matrix_all.tsv)、[原构建](docs/progress/P11_0916/experiment1/snapshots/R14b_build_l2.log)
+
+本轮每格五次、共 480 次：48 个同侧格共 240 次类型/清理/顺序通过；版本隔离方案的 24 个跨侧格共 120 次 catch-all；另一方案全局可见的 16 个跨侧格共 80 次精确通过，局部作用域的 8 个跨侧格共 40 次信号终止（15 SIGABRT、25 SIGSEGV）。五次信号种类与对应历史单次不同，不能把历史信号比例写成不变规律。另有 8 格各五次的实际落点观察。[逐格结果](docs/progress/P11_0916/experiment1/R14B_REPEATS.json)、[说明](docs/progress/P11_0916/experiment1/REPORT.md)
+
+【本轮实测】`LIBCXX_CXX_ABI=libsupc++` 从延期项移为**关键路径候选**：两架构已在 tmp 用该设置构建 libc++，将 GNU libsupc++ 静态 ABI 支持链接进实验 libc++.so。与原 libcxxabi 产物比较，并分别使用默认 GNU、进程预加载 LLVM 两种展开器设置；按实际函数落点确认，不把映射到两库写成只有一套展开器。
+
+| 异常运行，均每格五次 | libcxxabi＋GNU | libcxxabi＋LLVM 预加载 | libsupc++＋GNU | libsupc++＋LLVM 预加载 |
+| --- | --- | --- | --- | --- |
+| x86_64 原生 | catch-all / 12 | catch-all / 12 | typed=77、guard=1 | typed=77、guard=1 |
+| armv7l QEMU 用户态 | catch-all / 12 | catch-all / 12 | typed=77、guard=1 | 5/5 SIGABRT |
+
+对应普通 C 缓冲区对照全部得到 `old:ping`、长度 8、guard=1。ARM 失败诊断为 personality 返回未知结果 5；未完成的 typed catch/清理不能记通过。两个架构合计 80 次程序运行，另有调试轨迹；ABI 构建并非排除所有混杂因素的单变量实验。[配置、身份及限制](docs/progress/P11_0916/experiment1/REPORT.md)
+
+**已排除的结论。**切换到 libsupc++ 不能据此“关掉整条异常契约”，也不能由 x86_64 通过外推 ARM。**反驳/升级所需证据。**解释并解决所列 ARM 失败，核实真实部署的全部运行时落点、类型身份、异常对象布局和生命周期，并补齐取消、其他旧二进制等未覆盖组合。候选资格不等于实施推荐或批准。
+
+### 5.3 转发层的结构
+
+**事实链（静态核查）。**三架构真实 `libchromium-ewk.so` 定义旧名称 `ewk_parse_cookie`；函数体取句柄，以 `dlsym` 按名称查找实现，恢复原参数后间接跳转。它不是一条普通的 `UND ewk_parse_cookie@版本` 引用；当前目标导出无命名版本节点。完整样本与覆盖缺口见 [版本核查](docs/progress/P11_0916/experiment2/REPORT.md)，反汇编见 [x86_64](docs/progress/P11_0916/experiment2/raw/elf_07_forwarder.stdout)、[armv7l](docs/progress/P11_0916/experiment2/raw/021_arm_thumb_forwarder.stdout)、[aarch64](docs/progress/P11_0916/experiment2/raw/elf_01_forwarder.stdout)。
+
+**待验设计／推论，不是实测。**转发层已是薄壳，是放置转换层的候选位置；**未实测，机制上是否可行取决于 `dlsym` 找到哪个实现**。还需验证原句柄的搜索范围、默认/版本入口、递归或绕行、旧参数布局与转换后的目标。三架构静态形态不等于三架构转换原型已运行。
+
+**已排除的推断。**无旧版本需求不能自动推成所有同 DSO 兼容入口都不可能；有双版本定义也不会自动识别调用方的对象布局。当前缺三个独立旧应用样本，不能外推全部已发布 ELF。**反驳/升级需要什么。**在真实旧转发链和 libc++ 实现库上观测解析地址与 maps，完成双向状态、值、引用和销毁断言；若该句柄解析无法路由到正确侧，该候选即不成立。业务问题须先明确旧 ELF 范围及允许的平台路由变化，不能先把未验证部署方式并列交业务选择。
+
+### 5.4 公开头文件 static_assert 哨兵：仅评估
+
+static_assert 是编译时拒绝不满足条件的代码的检查。以下是**设计评估，未修改任何平台头文件**：
+
+| 位置 | 可检查什么 | 能挡住什么，不能证明什么 |
+| --- | --- | --- |
+| `ewk_cookie_parser.h`：输入 string 与 EWKCookieContents 声明 | 经批准的接口侧 ABI 标签、标准库/双 ABI 配置；按目标架构基线检查 string/结构大小及适用时的成员偏移 | 可拒绝新编译调用方使用未批准布局；不保护旧 ELF、不保证 dlsym 路由、状态保留或异常语义 |
+| `XW_Extension_SyncMessage.h`：vector 回调槽 | 接口表版本、编译侧 ABI 标签与相关类型特征 | 可拒绝误用的重编插件；两侧 vector 同为 24 字节时，仅 sizeof 检查无辨别力，也不验证实例生命周期 |
+| binder 内部使用的 Dali C++ 头与构建适配头 | binder/core/adaptor/toolkit 的一致 ABI 构建标签 | 属内部 C++ 依赖检查；不把 C# 外层 C 边界误判成需要相同 C++ 标准库；不证明任意多态对象兼容 |
+| 已选 Native 纯 C 声明 | 保留原 C 类型与版本约束 | 不因应用换标准库就新增 blanket 拒绝；否则可能误伤本来没有 C++ 对象跨界的路径 |
+
+宏如 `_LIBCPP_VERSION`、`_GLIBCXX_USE_CXX11_ABI` 只能作为配置输入，不是自动生成的完整兼容证明。允许集合需由接口维护者确认；保留旧 GNU 门面时不能一律禁止 GNU。offsetof 只在满足对应类型要求时使用；跨架构不能共用一个硬编码大小。哨兵可独立设计，但要单独批准源码改动；这里未实施，也未声称它解决旧应用兼容性。
+
+位置依据：[EWK 声明](docs/progress/P7_0909/stage2/snapshots/evidence/chromium-efl/55f75e1f273b_ewk_cookie_parser.h)、[回调槽声明](docs/progress/P7_0909/stage2/snapshots/evidence/webapi-plugins/353da9cbd3a2_XW_Extension_SyncMessage.h)、[Dali Control](docs/progress/P7_0909/stage2/snapshots/evidence/dali2-toolkit/d8297163615c_control.h)、[Native C 声明](docs/progress/P7_0909/stage2/snapshots/native/capi-appfw-app-control-devel/usr/include/appfw/app_control.h)。SDK 身份仍沿用已有未确认范围，不把这些候选位置全称为已发布 SDK。
 
 **反驳需要什么。**针对确定的接口协议证明完整代理语义，便可反驳“简单字节桥不能覆盖该契约”的更强解释；但某个代理样本不能证明任意对象可透明跨库。需要逐项核对：
 
@@ -152,7 +200,7 @@ typeinfo（运行时类型信息）的未合一，与不该合并的同名实现
 | --- | --- | --- |
 | 方案 A：选择性不迁移 | 把相关完整组件及 C++ 依赖继续放在 GNU 一侧，原 GNU 客户端不跨库；隔离仍需核查。 | **因组件方决定而排除**。既有 GNU 构建证明历史构建形态存在，不证明任意未来版本都能维持。条件改变可重审机制。 |
 | 分离 DSO 的 adaptor | 两套薄接口层经 POD 转换，可能保留旧 Native 二进制入口。 | 机制有样本；旧入口部署、反方向和契约未闭合。平台承担两个构建侧与路由维护。 |
-| 方案 B：同 DSO 双版本＋符号版本路由 | 同一 libc++ 核心外放 GNU/LLVM 两套接口层，选择明确入口后转换；不是新机制，是 adaptor 部署变体。 | 允许，但不等于已实现目标双版本。三条未测生产契约见 2.2；旧无版本 ELF、旧对象重链、导出策略还需目标实测。 |
+| 方案 B：同 DSO 双版本＋符号版本路由 | 同一 libc++ 核心外放 GNU/LLVM 两套接口层，选择明确入口后转换；不是新机制，是 adaptor 部署变体。 | 允许，但未证明目标部署成立。三条未闭合契约见 2.2；异常已有有限实测，旧按名 dlsym 路由前置见 5.3，不能假定旧 VERNEED 会自动分流。 |
 | 改 C 数据接口 | 新接口显式传字节/长度/句柄；直接改用它的应用要改源码。 | 已有具体设计见 6.3，尚未实施。平台与应用共同定义错误、缓冲和并存契约。 |
 | 头文件 inline 封送 | 保留源码层调用形态，在应用本侧编译转换包装，调用新 C 入口。 | 改 C 接口的变体，应用源码可不改、**必须重编/重链**；不保护已发布旧 ELF，需验证旧调用语义。 |
 | 应用及依赖迁移 libc++ | 双方同库且依赖配套时移除混用前提。 | 需源码、构建和依赖迁移条件；外部应用是否具备条件不可得，不能承诺全体可做。 |
@@ -160,6 +208,8 @@ typeinfo（运行时类型信息）的未合一，与不该合并的同名实现
 | 预加载拦截入口 | 另一个装载路由变体，不替代转换或状态契约。 | 若需修改应用启动环境，不符合本文严格零改动定义；解析顺序、句柄范围和生产装载未验证，不作为已通过部署法。 |
 
 在方案 A 因组件方决定排除后，adaptor 是剩余方案中唯一应用零改动的——**这句话仅限本表内“保留原功能、原入口的旧 Native C++ 二进制”目标，并把方案 B 和旧 ABI 兼容门面计入 adaptor 家族**；不是所有未来机制的唯一性定理，也不是部署成功保证。平台内部统一迁移、外层 C#/JS 应用无需变化，是另一种不应删去的情形。
+
+上述是条件性方案分类，**不是已证明存在适用于全部旧 ELF 的零改动部署**；转发链路由与真实反向 provider 前置未闭合，须先按 5.3 明确兼容对象和验收条件。
 
 ### 6.3 已有 C 接口设计与改动点
 
@@ -200,32 +250,31 @@ void (*SetSyncBinaryReplyBytes)(XW_Instance instance,
 
 ### 7.1 不能遗漏的范围限制
 
-真实 libc++ EWK 反向、真实 browser receiver、完整 Dali 对象/虚调用、生产旧 ELF 装载、异常/取消与部分写入、并发重入、内部引用寿命、完整分配和性能、LTO/其他工具链仍未验证。aarch64 **adaptor** 无实测，不能拿 aarch64 的其他 Boost 对照填补。SDK 资格、外部应用分母和全部跨库接口不可得；没有把它们写成“不存在”。
+真实 libc++ EWK provider 本轮仍为 NOT_AVAILABLE，反向运行、真实 browser receiver、完整 Dali 对象/虚调用、生产旧 ELF 路由、部分写入、并发重入、内部引用寿命、完整分配和性能、LTO/其他工具链仍未验证。异常运行时有 5.1–5.2 的有限对照，不等于生产异常/取消契约全覆盖。aarch64 **adaptor** 无实测，不能拿 aarch64 的其他 Boost 对照或转发库静态检查填补。SDK 资格、外部应用分母和全部跨库接口不可得；没有把它们写成不存在。
 
 静态盘点中还有 bundle 的 `GetString/GetKeys`、Web 引擎 `EvaluateJavaScript` 的 string/function、图表标签 vector、cion 的 vector/shared_ptr、组件工厂 map/unique_ptr/虚调用等候选。它们提示待查面，不是已证明对 SDK 开放或已测失败。[候选接口原件](docs/progress/P7_0909/stage2/REPORT.md)。动态符号图的盲区包括内联、模板、重复静态状态和运行时绑定；本文不声称“四处就是平台全部问题”。
 
 ### 7.2 评审建议及本轮不实施的原因
 
-本轮只修订文档，下列事项均**待后续评估**，不新增实验，不将预期结果写成事实。
+下列事项仍**待后续评估**；libsupc++ 已按人工要求开展隔离实验，移至 5.2 的关键路径候选，不再列为未做。其余建议没有因本轮实验而自动获准实施。
 
 | 提出者 | 建议及要验证什么 | 本轮处置与原因 |
 | --- | --- | --- |
 | Claude Code | `_LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION=2`：名字深比较能否改变共享 BoundaryError 的 typed catch 失败 | 待实验。当前只有建议，不证明该宏一定修复完整类型/销毁契约；构建变体和双向验证超出本轮。 |
 | Claude Code | 空消息异常涉及 `_S_empty_rep_storage` 的释放路径 | 待实验。核对空/非空表示、实际绑定和释放归属；不能根据名字猜测已经错误释放。 |
-| Claude Code | `LIBCXX_CXX_ABI=libsupc++` | 待评估共用低层 ABI 支持库的可构建性、异常与取消语义；不声称切换它即可消除标准库布局差异，也未声称历史全仓绝无相关工作。 |
 | Claude Code | veneer（薄兼容门面）原型 | 待实验。验证旧 ABI 入口到 POD/新核心的真实路由与契约；属于允许的薄接口层方向，不能当已可部署。 |
 | Kimi Code | 同 DSO 双版本、预加载路由，三层生成器、CI 差分，缺失输入矩阵，其他低层 ABI 运行时先例 | 部署变体/生成器及缺口已写入；目标实现、工具接入、外部先例适用性和性能测试留后续，不把参考机制等同 Tizen 验证。 |
 | Codex | update mask/共享解析核心；由双配置生成骨架；异常、智能指针、多态、future、迭代器代理；真实注册/借用期验证 | 条件设计已接入；未初始化读取和指针有效期列为静态限制。实现及验证留后续，不改实验文件。 |
 | Kimi Code、Codex | 推荐先后次序、全量迁移/保留旧组件，以及隔离或代理的行业先例 | 机制和成本保留；不采纳排序。完整 GNU Chromium 被人工前提排除；行业先例仅作为后续核查线索，未补新平台实验。 |
 
-开头补充评审的归属尚待人工确认；意见按原文段落保留在处置表，不自行归给某一家。上表四项 Claude 建议在文件末尾具名段落中可直接核对。评审对“类型信息对照已解释 BoundaryError 原因”“现在没有 compatibility wrapper”等转述，分别按实验对象和历史时点收紧，不能盲目沿用。
+开头补充评审的归属尚待人工确认；意见按原文段落保留在处置表，不自行归给某一家。原四项 Claude 建议中，三项在上表延期，libsupc++ 已移入 5.2 的关键路径候选。历史评审对类型信息实验对象、compatibility wrapper 时点的转述仍按原证据限定；本轮直接对 BoundaryError 的归因另见 5.1。
 
 ## 八、供评审与业务裁决的问题
 
 1. 双 TU 机制的有限样本结论是否恰当？从它升级到生产契约还缺哪些可反驳的验证？
 2. EWK 已有 12 场景之外，未初始化字段、未写字段引用寿命和错误分支是否还有遗漏？
 3. 自定义布局、单 TU 和同 DSO 双版本的适用边界是否表述准确，是否混淆编译与运行时绑定？
-4. **在方案 A 排除后，adaptor 与方案 B 之间如何选？**这里是分离 DSO 部署与同 DSO 部署的选择，不是两种互不相关的转换机制。
+4. **在方案 A 排除后，先如何验证旧按名查找能稳定到达正确接口？**此前置成立后，再比较分离 DSO adaptor 与同 DSO 方案 B；不先把未验证部署方式交业务任选。
 5. 生成器能减少哪些重复劳动，哪些语义仍需接口维护者负责？是否需要共享核心和字段更新标记？
 6. 复杂对象的句柄/代理需要保持哪些具体契约；哪些旧内联调用无法由新增门面拦截？
 7. 哪些目标 flavor、依赖和 SDK/应用范围需要业务确认，哪些已有证据尚未纳入？

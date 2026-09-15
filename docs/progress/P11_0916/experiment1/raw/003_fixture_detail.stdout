@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+code="$workspace/progress/R78/code"
+out="$workspace/progress/R78/build/x86_64"
+wrapper="$workspace/progress/R33/tools/tizen-clang++"
+new_install="$workspace/tmp/R68/build-patched-x86_64/libcxx/test-suite-install"
+
+mkdir -p "$out/runtime"
+
+/usr/bin/g++ -std=c++17 -O1 -g -fPIC -shared \
+  "$code/old_plugin.cpp" -pthread \
+  -Wl,-soname,libold_plugin.so \
+  -o "$out/libold_plugin.so"
+
+for source in new_main pen_wave_probe; do
+  "$wrapper" -std=c++17 -O1 -g \
+    -nostdinc++ -I "$new_install/include/c++/v1" \
+    "$code/$source.cpp" \
+    -nostdlib++ -L "$new_install/lib" \
+    -Wl,-rpath,'$ORIGIN/runtime' \
+    -Wl,--no-as-needed -lc++ -lc++abi -Wl,--as-needed \
+    -pthread -ldl \
+    -o "$out/$source"
+done
+
+cp -a "$new_install/lib/libc++.so.1.0" "$out/runtime/"
+cp -a "$new_install/lib/libc++abi.so.1.0" "$out/runtime/"
+ln -sfn libc++.so.1.0 "$out/runtime/libc++.so.1"
+ln -sfn libc++abi.so.1.0 "$out/runtime/libc++abi.so.1"
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace=/home/toolchain/development/libc++_replacement
+code="$workspace/progress/R78/code"
+out="$workspace/progress/R78/build/armv7l"
+wrapper="$workspace/progress/R68/tools/armv7l_lit_host_clangxx.sh"
+old_root="$workspace/tmp/GBS-ROOT/R30-semantic-default-armv7l-20260812-01/local/BUILD-ROOTS/scratch.armv7l.0"
+new_install="$workspace/tmp/R68/build-patched-armv7l/libcxx/test-suite-install"
+gcc_cxx="$old_root/usr/lib/gcc/armv7l-tizen-linux-gnueabi/14.2.0/include/c++"
+
+mkdir -p "$out"
+
+"$wrapper" -std=c++17 -O1 -g -fPIC -shared \
+  -nostdinc++ \
+  -I "$gcc_cxx" \
+  -I "$gcc_cxx/armv7l-tizen-linux-gnueabi" \
+  -I "$gcc_cxx/backward" \
+  "$code/old_plugin.cpp" \
+  -nostdlib++ -L "$old_root/usr/lib" -lstdc++ \
+  -pthread -Wl,-soname,libold_plugin.so \
+  -o "$out/libold_plugin.so"
+
+for source in new_main pen_wave_probe icu_probe; do
+  "$wrapper" -std=c++17 -O1 -g \
+    -nostdinc++ -I "$new_install/include/c++/v1" \
+    "$code/$source.cpp" \
+    -nostdlib++ -L "$new_install/lib" \
+    -Wl,-rpath,'$ORIGIN/runtime' \
+    -Wl,--no-as-needed -lc++ -lc++abi -Wl,--as-needed \
+    -pthread -ldl -latomic \
+    -o "$out/$source"
+done
+#include "boundary_error.hpp"
+
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <dlfcn.h>
+#include <link.h>
+#include <pthread.h>
+#include <string>
+#include <unistd.h>
+
+namespace {
+using OldNormal = int (*)(const char*, char*, unsigned);
+using OldThrow = void (*)();
+using OldCancelWait = void (*)();
+using OldWaitReady = int (*)();
+using OldGuardValue = int (*)();
+
+std::atomic<int> new_guard_count{0};
+
+struct NewGuard {
+  ~NewGuard() { new_guard_count.fetch_add(1, std::memory_order_relaxed); }
+};
+
+struct WorkerArgs {
+  OldCancelWait wait;
+};
+
+void* worker(void* opaque) {
+  NewGuard guard;
+  static_cast<WorkerArgs*>(opaque)->wait();
+  return reinterpret_cast<void*>(0xBAD);
+}
+
+int library_callback(dl_phdr_info* info, size_t, void*) {
+  if (info->dlpi_name &&
+      (std::strstr(info->dlpi_name, "libc++.so") ||
+       std::strstr(info->dlpi_name, "libc++abi.so") ||
+       std::strstr(info->dlpi_name, "libstdc++.so")))
+    std::printf("LOADED=%s\n", info->dlpi_name);
+  return 0;
+}
+
+template <class T>
+T symbol(void* handle, const char* name) {
+  dlerror();
+  void* value = dlsym(handle, name);
+  const char* error = dlerror();
+  if (error) {
+    std::fprintf(stderr, "DLSYM_ERROR name=%s error=%s\n", name, error);
+    std::exit(20);
+  }
+  return reinterpret_cast<T>(value);
+}
+}  // namespace
+
+int main(int argc, char** argv) {
+  if (argc != 3) {
+    std::fprintf(stderr, "usage: %s OLD_PLUGIN normal|exception|cancel\n", argv[0]);
+    return 2;
+  }
+  void* handle = dlopen(argv[1], RTLD_NOW | RTLD_GLOBAL);
+  if (!handle) {
+    std::fprintf(stderr, "DLOPEN_ERROR=%s\n", dlerror());
+    return 3;
+  }
+  dl_iterate_phdr(library_callback, nullptr);
+  OldGuardValue old_guard_value = symbol<OldGuardValue>(handle, "old_guard_value");
+
+  if (std::strcmp(argv[2], "normal") == 0) {
+    char output[64] = {};
+    int length = symbol<OldNormal>(handle, "old_normal")("ping", output, sizeof(output));
+    bool ok = length == 8 && std::string(output) == "old:ping" && old_guard_value() == 1;
+    std::printf("SCENARIO=normal LENGTH=%d OUTPUT=%s OLD_GUARD=%d ASSERT=%s\n",
+                length, output, old_guard_value(), ok ? "PASS" : "FAIL");
+    return ok ? 0 : 10;
+  }
+
+  if (std::strcmp(argv[2], "exception") == 0) {
+    int caught = 0;
+    try {
+      symbol<OldThrow>(handle, "old_throw")();
+    } catch (const BoundaryError& error) {
+      caught = error.code;
+    } catch (...) {
+      std::fprintf(stderr, "WRONG_EXCEPTION_TYPE\n");
+      return 12;
+    }
+    bool ok = caught == 77 && old_guard_value() == 1;
+    std::printf("SCENARIO=exception CAUGHT=%d OLD_GUARD=%d ASSERT=%s\n",
+                caught, old_guard_value(), ok ? "PASS" : "FAIL");
+    return ok ? 0 : 11;
+  }
+
+  if (std::strcmp(argv[2], "cancel") == 0) {
+    OldWaitReady ready = symbol<OldWaitReady>(handle, "old_wait_ready");
+    WorkerArgs args{symbol<OldCancelWait>(handle, "old_cancel_wait")};
+    pthread_t thread{};
+    int create_rc = pthread_create(&thread, nullptr, worker, &args);
+    if (create_rc != 0) {
+      std::fprintf(stderr, "PTHREAD_CREATE=%d\n", create_rc);
+      return 13;
+    }
+    int spins = 0;
+    while (!ready() && spins++ < 5000)
+      usleep(1000);
+    if (!ready()) {
+      std::fprintf(stderr, "WAIT_READY_TIMEOUT\n");
+      return 14;
+    }
+    int cancel_rc = pthread_cancel(thread);
+    void* result = nullptr;
+    int join_rc = pthread_join(thread, &result);
+    int new_guards = new_guard_count.load(std::memory_order_relaxed);
+    int old_guards = old_guard_value();
+    bool ok = cancel_rc == 0 && join_rc == 0 && result == PTHREAD_CANCELED &&
+              new_guards == 1 && old_guards == 1;
+    std::printf("SCENARIO=cancel CANCEL_RC=%d JOIN_RC=%d CANCELED=%d "
+                "NEW_GUARD=%d OLD_GUARD=%d ASSERT=%s\n",
+                cancel_rc, join_rc, result == PTHREAD_CANCELED,
+                new_guards, old_guards, ok ? "PASS" : "FAIL");
+    return ok ? 0 : 15;
+  }
+
+  std::fprintf(stderr, "UNKNOWN_SCENARIO=%s\n", argv[2]);
+  return 4;
+}
+#include "boundary_error.hpp"
+
+#include <atomic>
+#include <condition_variable>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+
+namespace {
+std::atomic<int> old_guard_count{0};
+std::atomic<int> wait_ready{0};
+std::mutex wait_mutex;
+std::condition_variable wait_cv;
+
+struct OldGuard {
+  ~OldGuard() { old_guard_count.fetch_add(1, std::memory_order_relaxed); }
+};
+}  // namespace
+
+extern "C" __attribute__((visibility("default"))) int
+old_normal(const char* input, char* output, unsigned output_size) {
+  OldGuard guard;
+  std::string value = "old:";
+  value += input;
+  if (value.size() + 1 > output_size)
+    return -1;
+  std::memcpy(output, value.c_str(), value.size() + 1);
+  return static_cast<int>(value.size());
+}
+
+extern "C" __attribute__((visibility("default"))) void old_throw() {
+  OldGuard guard;
+  throw BoundaryError{77};
+}
+
+extern "C" __attribute__((visibility("default"))) void old_cancel_wait() {
+  OldGuard guard;
+  std::unique_lock<std::mutex> lock(wait_mutex);
+  wait_ready.store(1, std::memory_order_release);
+  wait_cv.wait(lock, [] { return false; });
+}
+
+extern "C" __attribute__((visibility("default"))) int old_wait_ready() {
+  return wait_ready.load(std::memory_order_acquire);
+}
+
+extern "C" __attribute__((visibility("default"))) int old_guard_value() {
+  return old_guard_count.load(std::memory_order_relaxed);
+}
+#pragma once
+
+struct BoundaryError {
+  int code;
+};
+#include "shared.hpp"
+
+#if defined(R14B_NEW_SIDE)
+#define R14B_SIDE_ID 1
+#define R14B_SET_OBSERVER new_set_observer
+#define R14B_THROW new_throw
+#define R14B_CATCH new_catch
+#define R14B_THROW_EVENT "THROW:new"
+#define R14B_INNER_EVENT "DTOR:new:inner"
+#define R14B_RETHROW_EVENT "RETHROW:new"
+#define R14B_OUTER_EVENT "DTOR:new:outer"
+#define R14B_CATCH_NEW_EVENT "CATCH:new:new"
+#define R14B_CATCH_LEGACY_EVENT "CATCH:new:legacy"
+#define R14B_CATCH_OTHER_EVENT "CATCH:new:other"
+#elif defined(R14B_LEGACY_SIDE)
+#define R14B_SIDE_ID 2
+#define R14B_SET_OBSERVER legacy_set_observer
+#define R14B_THROW legacy_throw
+#define R14B_CATCH legacy_catch
+#define R14B_THROW_EVENT "THROW:legacy"
+#define R14B_INNER_EVENT "DTOR:legacy:inner"
+#define R14B_RETHROW_EVENT "RETHROW:legacy"
+#define R14B_OUTER_EVENT "DTOR:legacy:outer"
+#define R14B_CATCH_NEW_EVENT "CATCH:legacy:new"
+#define R14B_CATCH_LEGACY_EVENT "CATCH:legacy:legacy"
+#define R14B_CATCH_OTHER_EVENT "CATCH:legacy:other"
+#else
+#error "Select exactly one R14b side"
+#endif
+
+namespace {
+r14b_observer_fn observer;
+
+__attribute__((noinline)) void emit(const char *event) {
+  if (observer)
+    observer(event);
+}
+
+struct Cleanup {
+  const char *event;
+  ~Cleanup() { emit(event); }
+};
+} // namespace
+
+extern "C" __attribute__((visibility("default"))) void
+R14B_SET_OBSERVER(r14b_observer_fn fn) {
+  observer = fn;
+}
+
+extern "C" __attribute__((visibility("default"), noinline)) void R14B_THROW() {
+  Cleanup outer{R14B_OUTER_EVENT};
+  try {
+    Cleanup inner{R14B_INNER_EVENT};
+    emit(R14B_THROW_EVENT);
+    throw R14B_SIDE_ID;
+  } catch (...) {
+    emit(R14B_RETHROW_EVENT);
+    throw;
+  }
+}
+
+extern "C" __attribute__((visibility("default"), noinline)) int
+R14B_CATCH(r14b_throw_fn thrower) {
+  try {
+    thrower();
+  } catch (int origin) {
+    if (origin == 1)
+      emit(R14B_CATCH_NEW_EVENT);
+    else if (origin == 2)
+      emit(R14B_CATCH_LEGACY_EVENT);
+    else
+      emit(R14B_CATCH_OTHER_EVENT);
+    return origin;
+  } catch (...) {
+    emit(R14B_CATCH_OTHER_EVENT);
+    return -99;
+  }
+  return -100;
+}
+#pragma once
+
+extern "C" {
+typedef void (*r14b_observer_fn)(const char *event);
+typedef void (*r14b_throw_fn)(void);
+}
+L0
+L1
+L2
+runtime
+armv7l
+x86_64
+coverage.tsv
+ld_debug_binding_summary.tsv
+ld_debug_bindings.tsv
+matrix_all.tsv
+matrix_cross.tsv
+matrix_same.tsv
+outcome_summary.tsv
+scheme_A_B_comparison.tsv
+symbol_landing.tsv

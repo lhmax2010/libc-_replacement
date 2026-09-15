@@ -4,10 +4,10 @@
 
 | 项目 | 状态 | 用时 | 产物 | 说明 |
 | --- | --- | --- | --- | --- |
-| 实验 2：旧 EWK 引用版本 | PARTIAL，停下交审 | 核查与初稿约 20 分钟；交付时间另见 delivery | [报告](experiment2/REPORT.md) | medium 闸门通过；三架构组件均无 EWK 命名版本，转发层按名称 dlsym；缺三个独立应用样本，未对所有方案作二值定案 |
-| 实验 1：异常归因与配置 | NOT_STARTED | — | — | 严格遵守实验 2 后先停一次的要求 |
-| 实验 3：反方向 EWK | NOT_STARTED | — | — | 不提前构建、不占用板子 |
-| 中英文方案文档修正 | NOT_STARTED | — | — | 此阶段不修改已交付 P10 文稿 |
+| 实验 2：旧 EWK 引用版本 | PARTIAL，已审阅通过 | 核查与初稿约 20 分钟；交付时间另见 delivery | [报告](experiment2/REPORT.md) | 原材料不改；三个独立应用缺口保留；已获准继续 |
+| 实验 1：异常归因与配置 | COMPLETE（含确定失败，非兼容性通过） | 闸门 12:17:43 至最终 ARM 校验 12:41:44 UTC，约 24 分钟；撰文另见记录 | [报告](experiment1/REPORT.md) | 两架构原异常为类型身份问题；96 格各五次；两 ABI/两展开器配置对照包含 ARM LLVM 组合 SIGABRT |
+| 实验 3：反方向 EWK | NOT_AVAILABLE | 原断点复核，未启动完整构建 | [报告](experiment3/REPORT.md) | 缺真实 libc++ EWK provider；反方向运行 NOT_OBSERVED，不阻塞文档 |
+| 中英文方案文档修正 | COMPLETE，待人工审阅 | 12:45:26 UTC 起，终点见 doc_revision/CHECKS.json；未超三小时 | [汇总](REPORT.md)、[自检](doc_revision/SELF_CHECK.md) | 回接异常矩阵、转发层推论；哨兵只评估，不修改平台头文件 |
 
 疑问见 [QUESTIONS.md](QUESTIONS.md)。本目录作为归档产物目录；未在既有 progress/ 或实验材料中覆盖文件。
 
