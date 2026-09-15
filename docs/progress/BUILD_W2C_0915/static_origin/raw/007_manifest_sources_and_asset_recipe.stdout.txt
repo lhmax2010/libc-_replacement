@@ -1,0 +1,875 @@
+     1	# This Dockerfile is used to test STATIC_LINKING=ON builds in the CI
+     2	
+     3	FROM alpine:3.22
+     4	
+     5	RUN apk add --update \
+     6	  asciidoctor \
+     7	  argp-standalone \
+     8	  bash \
+     9	  bcc-dev \
+    10	  bcc-static \
+    11	  binutils-dev \
+    12	  bison \
+    13	  blazesym-dev \
+    14	  blazesym-static \
+    15	  bpftool \
+    16	  bzip2-static \
+    17	  build-base \
+    18	  cereal \
+    19	  clang18-dev \
+    20	  clang18-extra-tools \
+    21	  clang18-static \
+    22	  cmake \
+    23	  elfutils-dev \
+    24	  flex-dev \
+    25	  git \
+    26	  libbpf-dev \
+    27	  libelf-static \
+    28	  libpcap-dev \
+    29	  libc6-compat \
+    30	  linux-headers \
+    31	  llvm18-dev \
+    32	  llvm18-gtest \
+    33	  llvm18-static \
+    34	  musl-obstack-dev \
+    35	  openssl-dev \
+    36	  pahole \
+    37	  procps \
+    38	  python3 \
+    39	  wget \
+    40	  xxd \
+    41	  xz-static \
+    42	  zlib-dev \
+    43	  zlib-static \
+    44	  zstd-dev \
+    45	  zstd-static
+    46	
+    47	# It looks like llvm18 prefers to dynamically link against zstd. Extremely
+    48	# unclear why.  Work around it by modifying LLVMExports.cmake.
+    49	RUN sed -i 's/libzstd_shared/libzstd_static/g' /usr/lib/llvm18/lib/cmake/llvm/LLVMExports.cmake
+    50	
+    51	# bcc-static needs clang/llvm 18 instead of the latest 19. As a consequence,
+    52	# CMake reports errors as that it cannot find files in /usr/lib/cmake/clang/ as
+    53	# it's a symlink for /usr/lib/cmake/clangXX/ which is only created when the
+    54	# latest clang is installed. To fix this, create the symlink manually.
+    55	RUN ln -s 'clang18' /usr/lib/cmake/clang
+commit d63c8f0dae915021e9497981f257a89244582314
+Author: DongHun Kwak <dh0128.kwak@samsung.com>
+Date:   Wed Jul 22 11:49:37 2026 +0900
+
+    Convert shell scripts from bash to dash compatibility
+    
+    Change-Id: I440c04eee48bb832ab8a0cfcffc430ecf5b58a95
+    Signed-off-by: DongHun Kwak <dh0128.kwak@samsung.com>
+
+ .clang-format                                      |   95 +
+ .clang-format-ignore                               |    2 +
+ .clang-tidy                                        |   46 +
+ .devcontainer/Dockerfile                           |    9 +
+ .devcontainer/devcontainer.json                    |   13 +
+ .editorconfig                                      |   14 +
+ .envrc                                             |    1 +
+ .gbs.conf                                          |    4 +
+ .git-blame-ignore-revs                             |    2 +
+ .gitattributes                                     |    3 +
+ .github/CODEOWNERS                                 |    3 +
+ .github/FUNDING.yml                                |    1 +
+ .github/ISSUE_TEMPLATE/bug_report.md               |   17 +
+ .github/ISSUE_TEMPLATE/config.yml                  |    5 +
+ .github/ISSUE_TEMPLATE/feature_request.md          |   14 +
+ .github/ISSUE_TEMPLATE/release.md                  |   37 +
+ .github/PULL_REQUEST_TEMPLATE.md                   |   17 +
+ .github/actions/configure_kvm/action.yml           |   19 +
+ .github/codeql/codeql-config.yml                   |    2 +
+ .github/include/aot_allow.txt                      |  228 +
+ .github/include/ci.py                              |  428 ++
+ .github/include/static.sh                          |   34 +
+ .github/workflows/binary.yml                       |   41 +
+ .github/workflows/ci.yml                           |  128 +
+ .github/workflows/codeql.yml                       |   68 +
+ .github/workflows/distros.yml                      |   27 +
+ .github/workflows/flakehub.yml                     |   35 +
+ .github/workflows/issue-metrics.yml                |   57 +
+ .github/workflows/release.yml                      |   30 +
+ .github/workflows/static.yml                       |   19 +
+ .github/workflows/stdlib-docs.yml                  |   36 +
+ .github/workflows/tidy.yml                         |   28 +
+ .gitignore                                         |   19 +
+ .vscode/settings.json                              |    9 +
+ CHANGELOG.md                                       | 2153 ++++++
+ CMakeLists.txt                                     |  249 +
+ CONTRIBUTING-TOOLS.md                              |    7 +
+ CONTRIBUTING.md                                    |   61 +
+ GOVERNANCE.md                                      |   98 +
+ INSTALL.md                                         |  338 +
+ LICENSE                                            |  202 +
+ README.md                                          |  105 +
+ cmake/BuildBPF.cmake                               |  138 +
+ cmake/CmakeUninstall.cmake.in                      |   26 +
+ cmake/Embed.cmake                                  |   48 +
+ cmake/Embed.tmpl                                   |    9 +
+ cmake/EmbedRun.cmake                               |    6 +
+ cmake/FindGMock.cmake                              |  129 +
+ cmake/FindLibBcc.cmake                             |   84 +
+ cmake/FindLibBfd.cmake                             |  111 +
+ cmake/FindLibBlazesym.cmake                        |   29 +
+ cmake/FindLibBpf.cmake                             |   68 +
+ cmake/FindLibBz2.cmake                             |   19 +
+ cmake/FindLibCereal.cmake                          |   18 +
+ cmake/FindLibDw.cmake                              |   41 +
+ cmake/FindLibEbl.cmake                             |   21 +
+ cmake/FindLibElf.cmake                             |   46 +
+ cmake/FindLibLzma.cmake                            |   19 +
+ cmake/FindLibOpcodes.cmake                         |   34 +
+ cmake/FindLibPcap.cmake                            |   39 +
+ cmake/FindLibZ.cmake                               |   21 +
+ cmake/Util.cmake                                   |   17 +
+ cmake/Version.cmake                                |   30 +
+ docker/Dockerfile.debian                           |   39 +
+ docker/Dockerfile.fedora                           |   39 +
+ docker/Dockerfile.static                           |   55 +
+ docker/Dockerfile.ubuntu                           |   39 +
+ docs/coding_guidelines.md                          |  110 +
+ docs/dependency_support.md                         |   43 +
+ docs/design_principles.md                          |   54 +
+ docs/developers.md                                 |  209 +
+ docs/fuzzing.md                                    |  120 +
+ docs/internals_development.md                      |  785 ++
+ docs/language.md                                   | 2081 ++++++
+ docs/migration_guide.md                            |  192 +
+ docs/nix.md                                        |  152 +
+ docs/reference_guide.md                            |    5 +
+ docs/release_process.md                            |  112 +
+ docs/stdlib.md                                     | 1657 +++++
+ docs/tutorial_one_liners.md                        |  330 +
+ docs/tutorial_one_liners_chinese.md                |  322 +
+ docs/tutorial_one_liners_japanese.md               |  327 +
+ flake.lock                                         |  176 +
+ flake.nix                                          |  344 +
+ images/bpftrace.graffle                            | 6730 +++++++++++++++++
+ images/bpftrace_Full_Logo-Black.svg                |    1 +
+ images/bpftrace_Full_Logo-White.svg                |    1 +
+ images/bpftrace_probes_2018.png                    |  Bin 0 -> 251027 bytes
+ images/ci_appimage_artifact.png                    |  Bin 0 -> 61548 bytes
+ images/ci_job_env.png                              |  Bin 0 -> 84637 bytes
+ libbpf                                             |    1 +
+ man/CMakeLists.txt                                 |    4 +
+ man/adoc/CMakeLists.txt                            |   26 +
+ man/adoc/bpftrace.adoc                             |  508 ++
+ man/man8/CMakeLists.txt                            |   12 +
+ man/man8/bashreadline.bt.8                         |   53 +
+ man/man8/biolatency.bt.8                           |   63 +
+ man/man8/biosnoop.bt.8                             |   59 +
+ man/man8/biostacks.bt.8                            |   58 +
+ man/man8/bitesize.bt.8                             |   56 +
+ man/man8/capable.bt.8                              |   62 +
+ man/man8/cpuwalk.bt.8                              |   46 +
+ man/man8/dcsnoop.bt.8                              |   70 +
+ man/man8/execsnoop.bt.8                            |   62 +
+ man/man8/gethostlatency.bt.8                       |   63 +
+ man/man8/killsnoop.bt.8                            |   66 +
+ man/man8/loads.bt.8                                |   57 +
+ man/man8/mdflush.bt.8                              |   62 +
+ man/man8/naptime.bt.8                              |   65 +
+ man/man8/oomkill.bt.8                              |   58 +
+ man/man8/opensnoop.bt.8                            |   64 +
+ man/man8/pidpersec.bt.8                            |   49 +
+ man/man8/runqlat.bt.8                              |   57 +
+ man/man8/runqlen.bt.8                              |   55 +
+ man/man8/setuids.bt.8                              |   65 +
+ man/man8/ssllatency.bt.8                           |   62 +
+ man/man8/sslsnoop.bt.8                             |   64 +
+ man/man8/statsnoop.bt.8                            |   66 +
+ man/man8/swapin.bt.8                               |   58 +
+ man/man8/syncsnoop.bt.8                            |   59 +
+ man/man8/syscount.bt.8                             |   65 +
+ man/man8/tcpaccept.bt.8                            |   77 +
+ man/man8/tcpconnect.bt.8                           |   73 +
+ man/man8/tcpdrop.bt.8                              |   78 +
+ man/man8/tcplife.bt.8                              |   89 +
+ man/man8/tcpretrans.bt.8                           |   74 +
+ man/man8/tcpsynbl.bt.8                             |   59 +
+ man/man8/threadsnoop.bt.8                          |   60 +
+ man/man8/undump.bt.8                               |   57 +
+ man/man8/vfscount.bt.8                             |   56 +
+ man/man8/vfsstat.bt.8                              |   59 +
+ man/man8/writeback.bt.8                            |   59 +
+ man/man8/xfsdist.bt.8                              |   60 +
+ packaging/bpftrace.manifest                        |    5 +
+ packaging/bpftrace.spec                            |  109 +
+ packaging/prebuilt-static-bpftrace.tar.gz          |  Bin 0 -> 102216246 bytes
+ scripts/bash-completion/bpftrace                   |   76 +
+ scripts/check_kernel_features.sh                   |   58 +
+ scripts/clang_tidy.sh                              |   72 +
+ scripts/compare_tool_codegen.sh                    |   72 +
+ scripts/compare_tool_elf.sh                        |   60 +
+ scripts/compare_tool_speed.sh                      |   86 +
+ scripts/create-assets.sh                           |   60 +
+ scripts/generate_stdlib_docs.py                    |  191 +
+ scripts/seccomp.c                                  |  208 +
+ scripts/sync_headers.sh                            |  189 +
+ scripts/tracepoint_variable_sized_types.py         |   37 +
+ src/CMakeLists.txt                                 |  226 +
+ src/aot/CMakeLists.txt                             |   36 +
+ src/aot/aot.cpp                                    |  355 +
+ src/aot/aot.h                                      |   19 +
+ src/aot/aot_main.cpp                               |  147 +
+ src/arch/CMakeLists.txt                            |   10 +
+ src/arch/arch.cpp                                  |   42 +
+ src/arch/arch.h                                    |  112 +
+ src/arch/arm.cpp                                   |  414 ++
+ src/arch/loongarch64.cpp                           |  235 +
+ src/arch/mips64.cpp                                |  246 +
+ src/arch/ppc64.cpp                                 |  159 +
+ src/arch/riscv64.cpp                               |  110 +
+ src/arch/s390.cpp                                  |  108 +
+ src/arch/x86_64.cpp                                |  109 +
+ src/ast/CMakeLists.txt                             |  104 +
+ src/ast/ast.cpp                                    |  418 ++
+ src/ast/ast.h                                      | 1405 ++++
+ src/ast/async_event_types.cpp                      |  122 +
+ src/ast/async_event_types.h                        |  125 +
+ src/ast/async_ids.h                                |   46 +
+ src/ast/attachpoint_parser.cpp                     |  787 ++
+ src/ast/attachpoint_parser.h                       |   71 +
+ src/ast/clone.h                                    |   90 +
+ src/ast/codegen_helper.cpp                         |   40 +
+ src/ast/codegen_helper.h                           |   39 +
+ src/ast/context.cpp                                |   45 +
+ src/ast/context.h                                  |  129 +
+ src/ast/diagnostic.cpp                             |   96 +
+ src/ast/diagnostic.h                               |  153 +
+ src/ast/dibuilderbpf.cpp                           |  458 ++
+ src/ast/dibuilderbpf.h                             |   76 +
+ src/ast/helpers.cpp                                |   39 +
+ src/ast/helpers.h                                  |   12 +
+ src/ast/irbuilderbpf.cpp                           | 2881 ++++++++
+ src/ast/irbuilderbpf.h                             |  332 +
+ src/ast/location.cpp                               |  101 +
+ src/ast/location.h                                 |  118 +
+ src/ast/pass_manager.cpp                           |   76 +
+ src/ast/pass_manager.h                             |  364 +
+ src/ast/passes/c_macro_expansion.cpp               |   79 +
+ src/ast/passes/c_macro_expansion.h                 |    9 +
+ src/ast/passes/clang_build.cpp                     |  218 +
+ src/ast/passes/clang_build.h                       |   28 +
+ src/ast/passes/clang_parser.cpp                    |  888 +++
+ src/ast/passes/clang_parser.h                      |   30 +
+ src/ast/passes/codegen_llvm.cpp                    | 5580 ++++++++++++++
+ src/ast/passes/codegen_llvm.h                      |   82 +
+ src/ast/passes/codegen_resources.cpp               |   39 +
+ src/ast/passes/codegen_resources.h                 |   35 +
+ src/ast/passes/collect_nodes.h                     |   47 +
+ src/ast/passes/config_analyser.cpp                 |   85 +
+ src/ast/passes/config_analyser.h                   |    9 +
+ src/ast/passes/deprecated.cpp                      |   90 +
+ src/ast/passes/deprecated.h                        |    9 +
+ src/ast/passes/field_analyser.cpp                  |  399 +
+ src/ast/passes/field_analyser.h                    |    9 +
+ src/ast/passes/fold_literals.cpp                   |  677 ++
+ src/ast/passes/fold_literals.h                     |   18 +
+ src/ast/passes/import_scripts.cpp                  |   56 +
+ src/ast/passes/import_scripts.h                    |   11 +
+ src/ast/passes/link.cpp                            |  110 +
+ src/ast/passes/link.h                              |   34 +
+ src/ast/passes/macro_expansion.cpp                 |  399 +
+ src/ast/passes/macro_expansion.h                   |    9 +
+ src/ast/passes/map_sugar.cpp                       |  323 +
+ src/ast/passes/map_sugar.h                         |   23 +
+ src/ast/passes/named_param.cpp                     |  122 +
+ src/ast/passes/named_param.h                       |   15 +
+ src/ast/passes/parser.h                            |   56 +
+ src/ast/passes/pid_filter_pass.cpp                 |  103 +
+ src/ast/passes/pid_filter_pass.h                   |    9 +
+ src/ast/passes/portability_analyser.cpp            |  122 +
+ src/ast/passes/portability_analyser.h              |    9 +
+ src/ast/passes/printer.cpp                         |  587 ++
+ src/ast/passes/printer.h                           |   70 +
+ src/ast/passes/probe_expansion.cpp                 |  335 +
+ src/ast/passes/probe_expansion.h                   |   71 +
+ src/ast/passes/probe_prune.cpp                     |   33 +
+ src/ast/passes/probe_prune.h                       |    9 +
+ src/ast/passes/recursion_check.cpp                 |   86 +
+ src/ast/passes/recursion_check.h                   |    9 +
+ src/ast/passes/resolve_imports.cpp                 |  351 +
+ src/ast/passes/resolve_imports.h                   |  104 +
+ src/ast/passes/resource_analyser.cpp               |  623 ++
+ src/ast/passes/resource_analyser.h                 |    9 +
+ src/ast/passes/return_path_analyser.cpp            |   75 +
+ src/ast/passes/return_path_analyser.h              |    9 +
+ src/ast/passes/semantic_analyser.cpp               | 4639 ++++++++++++
+ src/ast/passes/semantic_analyser.h                 |    9 +
+ src/ast/passes/type_system.cpp                     |   63 +
+ src/ast/passes/type_system.h                       |   27 +
+ src/ast/passes/unstable_feature.cpp                |  161 +
+ src/ast/passes/unstable_feature.h                  |    9 +
+ src/ast/signal.cpp                                 |   41 +
+ src/ast/signal_bt.h                                |   12 +
+ src/ast/visitor.h                                  |  332 +
+ src/async_action.cpp                               |  300 +
+ src/async_action.h                                 |   62 +
+ src/attached_probe.cpp                             | 1642 +++++
+ src/attached_probe.h                               |   67 +
+ src/benchmark.cpp                                  |  141 +
+ src/benchmark.h                                    |   22 +
+ src/bfd-disasm.cpp                                 |  132 +
+ src/bfd-disasm.h                                   |   19 +
+ src/bpf_assembler.h                                |  168 +
+ src/bpfbytecode.cpp                                |  395 +
+ src/bpfbytecode.h                                  |   94 +
+ src/bpffeature.cpp                                 |  682 ++
+ src/bpffeature.h                                   |  171 +
+ src/bpfmap.cpp                                     |  318 +
+ src/bpfmap.h                                       |  145 +
+ src/bpfprogram.cpp                                 |  125 +
+ src/bpfprogram.h                                   |   42 +
+ src/bpftrace.cpp                                   | 1424 ++++
+ src/bpftrace.h                                     |  286 +
+ src/btf.cpp                                        | 1294 ++++
+ src/btf.h                                          |  194 +
+ src/btf/CMakeLists.txt                             |    7 +
+ src/btf/btf.cpp                                    | 1020 +++
+ src/btf/btf.h                                      |  875 +++
+ src/btf/compat.cpp                                 |  116 +
+ src/btf/compat.h                                   |   63 +
+ src/btf/helpers.cpp                                |  158 +
+ src/btf/helpers.h                                  |   36 +
+ src/btf/irbuilder.cpp                              |  181 +
+ src/btf/irbuilder.h                                |   49 +
+ src/build_info.cpp                                 |   46 +
+ src/build_info.h                                   |   12 +
+ src/child.cpp                                      |  307 +
+ src/child.h                                        |  119 +
+ src/config.cpp                                     |  383 +
+ src/config.h                                       |   96 +
+ src/config_parser.h                                |   29 +
+ src/cxxdemangler/CMakeLists.txt                    |    2 +
+ src/cxxdemangler/cxxdemangler.h                    |   10 +
+ src/cxxdemangler/cxxdemangler_llvm.cpp             |   17 +
+ src/cxxdemangler/cxxdemangler_stdlib.cpp           |   12 +
+ src/debugfs/CMakeLists.txt                         |    4 +
+ src/debugfs/debugfs.cpp                            |   19 +
+ src/debugfs/debugfs.h                              |   16 +
+ src/disasm.cpp                                     |   23 +
+ src/disasm.h                                       |   30 +
+ src/driver.cpp                                     |   79 +
+ src/driver.h                                       |   48 +
+ src/dwarf_parser.cpp                               |  420 ++
+ src/dwarf_parser.h                                 |  108 +
+ src/format_string.cpp                              |  352 +
+ src/format_string.h                                |   92 +
+ src/functions.cpp                                  |  160 +
+ src/functions.h                                    |  144 +
+ src/globalvars.cpp                                 |  598 ++
+ src/globalvars.h                                   |  219 +
+ src/kfuncs.h                                       |   23 +
+ src/ksyms.cpp                                      |  185 +
+ src/ksyms.h                                        |   47 +
+ src/lexer.l                                        |  295 +
+ src/libbpf/bpf.h                                   |  381 +
+ src/lockdown.cpp                                   |   58 +
+ src/lockdown.h                                     |   17 +
+ src/log.cpp                                        |  151 +
+ src/log.h                                          |  150 +
+ src/main.cpp                                       | 1023 +++
+ src/map_info.h                                     |  105 +
+ src/output/CMakeLists.txt                          |    6 +
+ src/output/json.cpp                                |  502 ++
+ src/output/json.h                                  |   32 +
+ src/output/output.cpp                              |   43 +
+ src/output/output.h                                |  165 +
+ src/output/text.cpp                                |  683 ++
+ src/output/text.h                                  |   38 +
+ src/parser.yy                                      |  807 +++
+ src/pcap_writer.cpp                                |   74 +
+ src/pcap_writer.h                                  |   29 +
+ src/probe_matcher.cpp                              |  665 ++
+ src/probe_matcher.h                                |  115 +
+ src/probe_types.cpp                                |   76 +
+ src/probe_types.h                                  |  157 +
+ src/procmon.cpp                                    |  103 +
+ src/procmon.h                                      |   45 +
+ src/required_resources.cpp                         |   57 +
+ src/required_resources.h                           |  255 +
+ src/run_bpftrace.cpp                               |  154 +
+ src/run_bpftrace.h                                 |   13 +
+ src/scopeguard.h                                   |   39 +
+ src/stdlib/CMakeLists.txt                          |   64 +
+ src/stdlib/base.bt                                 | 1261 ++++
+ src/stdlib/include/.clang-format                   |    2 +
+ src/stdlib/include/__stddef_max_align_t.h          |   43 +
+ src/stdlib/include/asm-generic/bitsperlong.h       |   31 +
+ src/stdlib/include/asm-generic/errno-base.h        |   40 +
+ src/stdlib/include/asm-generic/errno.h             |  123 +
+ src/stdlib/include/asm-generic/fcntl.h             |  220 +
+ src/stdlib/include/asm-generic/int-ll64.h          |   40 +
+ src/stdlib/include/asm-generic/ioctl.h             |  107 +
+ src/stdlib/include/asm-generic/posix_types.h       |  101 +
+ src/stdlib/include/asm-generic/types.h             |    9 +
+ src/stdlib/include/asm/arm/bitsperlong.h           |   31 +
+ src/stdlib/include/asm/arm/byteorder.h             |   26 +
+ src/stdlib/include/asm/arm/errno.h                 |  123 +
+ src/stdlib/include/asm/arm/fcntl.h                 |   12 +
+ src/stdlib/include/asm/arm/ioctl.h                 |  107 +
+ src/stdlib/include/asm/arm/posix_types.h           |   38 +
+ src/stdlib/include/asm/arm/rwonce.h                |   98 +
+ src/stdlib/include/asm/arm/swab.h                  |   54 +
+ src/stdlib/include/asm/arm/types.h                 |   41 +
+ src/stdlib/include/asm/arm64/bitsperlong.h         |   24 +
+ src/stdlib/include/asm/arm64/byteorder.h           |   26 +
+ src/stdlib/include/asm/arm64/errno.h               |  123 +
+ src/stdlib/include/asm/arm64/fcntl.h               |   30 +
+ src/stdlib/include/asm/arm64/ioctl.h               |  107 +
+ src/stdlib/include/asm/arm64/posix_types.h         |   11 +
+ src/stdlib/include/asm/arm64/rwonce.h              |   98 +
+ src/stdlib/include/asm/arm64/swab.h                |   19 +
+ src/stdlib/include/asm/arm64/types.h               |    9 +
+ src/stdlib/include/asm/loongarch/bitsperlong.h     |   31 +
+ src/stdlib/include/asm/loongarch/byteorder.h       |   13 +
+ src/stdlib/include/asm/loongarch/errno.h           |  123 +
+ src/stdlib/include/asm/loongarch/fcntl.h           |  220 +
+ src/stdlib/include/asm/loongarch/ioctl.h           |  107 +
+ src/stdlib/include/asm/loongarch/posix_types.h     |  101 +
+ src/stdlib/include/asm/loongarch/rwonce.h          |   98 +
+ src/stdlib/include/asm/loongarch/swab.h            |   19 +
+ src/stdlib/include/asm/loongarch/types.h           |    9 +
+ src/stdlib/include/asm/mips/bitsperlong.h          |    9 +
+ src/stdlib/include/asm/mips/byteorder.h            |   20 +
+ src/stdlib/include/asm/mips/errno.h                |  130 +
+ src/stdlib/include/asm/mips/fcntl.h                |   60 +
+ src/stdlib/include/asm/mips/ioctl.h                |   28 +
+ src/stdlib/include/asm/mips/posix_types.h          |   26 +
+ src/stdlib/include/asm/mips/rwonce.h               |   98 +
+ src/stdlib/include/asm/mips/swab.h                 |   71 +
+ src/stdlib/include/asm/mips/types.h                |   31 +
+ src/stdlib/include/asm/powerpc/bitsperlong.h       |   13 +
+ src/stdlib/include/asm/powerpc/byteorder.h         |   17 +
+ src/stdlib/include/asm/powerpc/errno.h             |   11 +
+ src/stdlib/include/asm/powerpc/fcntl.h             |   12 +
+ src/stdlib/include/asm/powerpc/ioctl.h             |   14 +
+ src/stdlib/include/asm/powerpc/posix_types.h       |   21 +
+ src/stdlib/include/asm/powerpc/rwonce.h            |   98 +
+ src/stdlib/include/asm/powerpc/swab.h              |   24 +
+ src/stdlib/include/asm/powerpc/types.h             |   41 +
+ src/stdlib/include/asm/riscv/bitsperlong.h         |   14 +
+ src/stdlib/include/asm/riscv/byteorder.h           |   12 +
+ src/stdlib/include/asm/riscv/errno.h               |  123 +
+ src/stdlib/include/asm/riscv/fcntl.h               |  220 +
+ src/stdlib/include/asm/riscv/ioctl.h               |  107 +
+ src/stdlib/include/asm/riscv/posix_types.h         |  101 +
+ src/stdlib/include/asm/riscv/rwonce.h              |   98 +
+ src/stdlib/include/asm/riscv/swab.h                |   19 +
+ src/stdlib/include/asm/riscv/types.h               |    9 +
+ src/stdlib/include/asm/s390/bitsperlong.h          |   14 +
+ src/stdlib/include/asm/s390/byteorder.h            |    7 +
+ src/stdlib/include/asm/s390/errno.h                |  123 +
+ src/stdlib/include/asm/s390/fcntl.h                |  220 +
+ src/stdlib/include/asm/s390/ioctl.h                |  107 +
+ src/stdlib/include/asm/s390/posix_types.h          |   58 +
+ src/stdlib/include/asm/s390/rwonce.h               |   98 +
+ src/stdlib/include/asm/s390/swab.h                 |   19 +
+ src/stdlib/include/asm/s390/types.h                |   30 +
+ src/stdlib/include/asm/x86/bitsperlong.h           |   14 +
+ src/stdlib/include/asm/x86/byteorder.h             |    7 +
+ src/stdlib/include/asm/x86/errno.h                 |  123 +
+ src/stdlib/include/asm/x86/fcntl.h                 |  220 +
+ src/stdlib/include/asm/x86/ioctl.h                 |  107 +
+ src/stdlib/include/asm/x86/posix_types.h           |   10 +
+ src/stdlib/include/asm/x86/posix_types_64.h        |   20 +
+ src/stdlib/include/asm/x86/rwonce.h                |   98 +
+ src/stdlib/include/asm/x86/swab.h                  |   37 +
+ src/stdlib/include/asm/x86/types.h                 |    9 +
+ src/stdlib/include/float.h                         |  160 +
+ src/stdlib/include/limits.h                        |  118 +
+ src/stdlib/include/linux/bpf.h                     | 7583 ++++++++++++++++++++
+ src/stdlib/include/linux/bpf_common.h              |   57 +
+ src/stdlib/include/linux/btf.h                     |  201 +
+ src/stdlib/include/linux/byteorder/big_endian.h    |  107 +
+ src/stdlib/include/linux/byteorder/little_endian.h |  107 +
+ src/stdlib/include/linux/compiler-clang.h          |  138 +
+ src/stdlib/include/linux/compiler.h                |  392 +
+ src/stdlib/include/linux/compiler_attributes.h     |  412 ++
+ src/stdlib/include/linux/compiler_types.h          |  597 ++
+ src/stdlib/include/linux/const.h                   |   53 +
+ src/stdlib/include/linux/errno.h                   |    1 +
+ src/stdlib/include/linux/fcntl.h                   |  162 +
+ src/stdlib/include/linux/if_link.h                 | 2004 ++++++
+ src/stdlib/include/linux/if_xdp.h                  |  183 +
+ src/stdlib/include/linux/ioctl.h                   |    8 +
+ src/stdlib/include/linux/kasan-checks.h            |   50 +
+ src/stdlib/include/linux/kcsan-checks.h            |  533 ++
+ src/stdlib/include/linux/kernel.h                  |    8 +
+ src/stdlib/include/linux/netdev.h                  |  231 +
+ src/stdlib/include/linux/netlink.h                 |  383 +
+ src/stdlib/include/linux/openat2.h                 |   43 +
+ src/stdlib/include/linux/perf_event.h              | 1486 ++++
+ src/stdlib/include/linux/pkt_cls.h                 |  801 +++
+ src/stdlib/include/linux/pkt_sched.h               | 1214 ++++
+ src/stdlib/include/linux/posix_types.h             |   38 +
+ src/stdlib/include/linux/socket.h                  |   38 +
+ src/stdlib/include/linux/stddef.h                  |   79 +
+ src/stdlib/include/linux/swab.h                    |  305 +
+ src/stdlib/include/linux/sysinfo.h                 |   25 +
+ src/stdlib/include/linux/types.h                   |   63 +
+ src/stdlib/include/stdarg.h                        |   51 +
+ src/stdlib/include/stdbool.h                       |   34 +
+ src/stdlib/include/stddef.h                        |  137 +
+ src/stdlib/include/stdint.h                        |  704 ++
+ src/stdlib/stdlib.cpp.in                           |   17 +
+ src/stdlib/stdlib.h                                |   16 +
+ src/stdlib/test/test.bpf.c                         |    3 +
+ src/struct.cpp                                     |  222 +
+ src/struct.h                                       |  154 +
+ src/tracefs/CMakeLists.txt                         |    3 +
+ src/tracefs/tracefs.cpp                            |   27 +
+ src/tracefs/tracefs.h                              |   29 +
+ src/tracepoint_format_parser.cpp                   |  226 +
+ src/tracepoint_format_parser.h                     |   41 +
+ src/types.cpp                                      |  676 ++
+ src/types.h                                        |  620 ++
+ src/types_format.cpp                               |  708 ++
+ src/types_format.h                                 |   54 +
+ src/usdt.cpp                                       |  165 +
+ src/usdt.h                                         |   39 +
+ src/usyms.cpp                                      |  444 ++
+ src/usyms.h                                        |   73 +
+ src/util/CMakeLists.txt                            |   31 +
+ src/util/bpf_funcs.cpp                             |   14 +
+ src/util/bpf_funcs.h                               |    9 +
+ src/util/bpf_names.cpp                             |   35 +
+ src/util/bpf_names.h                               |   45 +
+ src/util/bpf_progs.cpp                             |  138 +
+ src/util/bpf_progs.h                               |   13 +
+ src/util/cgroup.cpp                                |  249 +
+ src/util/cgroup.h                                  |   21 +
+ src/util/cpus.cpp                                  |   60 +
+ src/util/cpus.h                                    |   11 +
+ src/util/env.cpp                                   |   42 +
+ src/util/env.h                                     |   14 +
+ src/util/exceptions.cpp                            |   16 +
+ src/util/exceptions.h                              |   33 +
+ src/util/fd.h                                      |   61 +
+ src/util/hash.h                                    |   16 +
+ src/util/int_parser.cpp                            |  160 +
+ src/util/int_parser.h                              |   52 +
+ src/util/io.cpp                                    |   99 +
+ src/util/io.h                                      |   51 +
+ src/util/kernel.cpp                                |  519 ++
+ src/util/kernel.h                                  |   45 +
+ src/util/math.cpp                                  |   26 +
+ src/util/math.h                                    |    9 +
+ src/util/memfd.cpp                                 |   64 +
+ src/util/memfd.h                                   |   36 +
+ src/util/opaque.cpp                                |   57 +
+ src/util/opaque.h                                  |  221 +
+ src/util/paths.cpp                                 |  299 +
+ src/util/paths.h                                   |   26 +
+ src/util/result.cpp                                |   29 +
+ src/util/result.h                                  |  142 +
+ src/util/similar.h                                 |   35 +
+ src/util/stats.h                                   |   73 +
+ src/util/strings.cpp                               |  122 +
+ src/util/strings.h                                 |   47 +
+ src/util/symbols.cpp                               |   99 +
+ src/util/symbols.h                                 |   75 +
+ src/util/system.cpp                                |  263 +
+ src/util/system.h                                  |   23 +
+ src/util/temp.cpp                                  |  130 +
+ src/util/temp.h                                    |   90 +
+ src/util/time.cpp                                  |   45 +
+ src/util/time.h                                    |   39 +
+ src/util/tseries.cpp                               |   93 +
+ src/util/tseries.h                                 |   16 +
+ src/util/type_name.h                               |   26 +
+ src/util/wildcard.cpp                              |   62 +
+ src/util/wildcard.h                                |   19 +
+ src/version.h.in                                   |    5 +
+ tests/CMakeLists.txt                               |  129 +
+ tests/README.md                                    |  151 +
+ tests/arch.cpp                                     |  100 +
+ tests/async_action.cpp                             |  477 ++
+ tests/bpfbytecode.cpp                              |   50 +
+ tests/bpftrace.cpp                                 | 1495 ++++
+ tests/btf.cpp                                      |  545 ++
+ tests/btf_common.h                                 |   69 +
+ tests/child.cpp                                    |  275 +
+ tests/childhelper.h                                |   43 +
+ tests/clang_parser.cpp                             |  908 +++
+ tests/codegen-tests.sh                             |    3 +
+ tests/collect_nodes.cpp                            |  123 +
+ tests/config.cpp                                   |   87 +
+ tests/config_analyser.cpp                          |  172 +
+ tests/data/CMakeLists.txt                          |   38 +
+ tests/data/data_source.c                           |  204 +
+ tests/data/data_source_cxx.cpp                     |  106 +
+ tests/deprecated.cpp                               |   41 +
+ tests/dwarf_common.h                               |   33 +
+ tests/field_analyser.cpp                           |  584 ++
+ tests/fold_literals.cpp                            |  473 ++
+ tests/function_registry.cpp                        |  368 +
+ tests/globalvars.cpp                               |   86 +
+ tests/imports.cpp                                  |  194 +
+ tests/include/sdt-config.h                         |    6 +
+ tests/include/sdt.h                                |  507 ++
+ tests/location.cpp                                 |   51 +
+ tests/log.cpp                                      |  152 +
+ tests/macro_expansion.cpp                          |  154 +
+ tests/main.cpp                                     |   17 +
+ tests/memfd.cpp                                    |   53 +
+ tests/mocks.cpp                                    |  214 +
+ tests/mocks.h                                      |  256 +
+ tests/named_param.cpp                              |   70 +
+ tests/opaque.cpp                                   |  388 +
+ tests/output.cpp                                   |  163 +
+ tests/parser.cpp                                   | 3354 +++++++++
+ tests/pass_manager.cpp                             |  137 +
+ tests/pid_filter_pass.cpp                          |  106 +
+ tests/portability_analyser.cpp                     |  107 +
+ tests/probe.cpp                                    |  101 +
+ tests/probe_expansion.cpp                          |  326 +
+ tests/procmon.cpp                                  |   41 +
+ tests/recursion_check.cpp                          |   37 +
+ tests/required_resources.cpp                       |  166 +
+ tests/resource_analyser.cpp                        |  131 +
+ tests/result.cpp                                   |   93 +
+ tests/return_path_analyser.cpp                     |  105 +
+ tests/runtime-tests.sh                             |   20 +
+ tests/runtime/addrspace                            |    4 +
+ tests/runtime/array                                |  175 +
+ tests/runtime/basic                                |  409 ++
+ tests/runtime/bool                                 |   65 +
+ tests/runtime/btf                                  |  101 +
+ tests/runtime/builtin                              |  283 +
+ tests/runtime/call                                 |  780 ++
+ tests/runtime/complex_types                        |   15 +
+ tests/runtime/config                               |   41 +
+ tests/runtime/dwarf                                |   74 +
+ tests/runtime/engine/cmake_vars.py                 |    1 +
+ tests/runtime/engine/main.py                       |   99 +
+ tests/runtime/engine/parser.py                     |  263 +
+ tests/runtime/engine/runner.py                     |  596 ++
+ tests/runtime/file-output                          |   15 +
+ tests/runtime/for                                  |  137 +
+ tests/runtime/intcast                              |   33 +
+ tests/runtime/interop                              |    3 +
+ tests/runtime/intptrcast                           |    9 +
+ tests/runtime/json-output                          |  207 +
+ tests/runtime/languages                            |   16 +
+ tests/runtime/macro                                |  188 +
+ tests/runtime/map                                  |   65 +
+ tests/runtime/other                                |  409 ++
+ tests/runtime/outputs/complex.json                 |    4 +
+ tests/runtime/outputs/hist.json                    |   14 +
+ tests/runtime/outputs/hist.txt                     |    9 +
+ tests/runtime/outputs/hist_10g.json                |   12 +
+ tests/runtime/outputs/hist_2_values.txt            |    6 +
+ tests/runtime/outputs/hist_2args.json              |    1 +
+ tests/runtime/outputs/hist_multiple.json           |   20 +
+ .../outputs/hist_multiple_multiple_keys.json       |   31 +
+ tests/runtime/outputs/hist_zero.json               |    3 +
+ tests/runtime/outputs/lhist.json                   |   15 +
+ tests/runtime/outputs/lhist.txt                    |    9 +
+ tests/runtime/outputs/lhist_multiple.json          |   18 +
+ tests/runtime/outputs/lhist_zero.json              |    3 +
+ tests/runtime/outputs/map.json                     |    5 +
+ tests/runtime/outputs/multiple_maps.ndjson         |    2 +
+ tests/runtime/outputs/print_avg_map_args.txt       |    3 +
+ .../outputs/print_avg_map_with_large_top.txt       |    5 +
+ tests/runtime/outputs/scalar.json                  |    3 +
+ tests/runtime/outputs/scalar_str.json              |    3 +
+ tests/runtime/outputs/stats.json                   |    3 +
+ tests/runtime/outputs/stats_multiple.json          |    5 +
+ tests/runtime/pid_namespace                        |   41 +
+ tests/runtime/pointers                             |  105 +
+ tests/runtime/precedence                           |   15 +
+ tests/runtime/probe                                |  667 ++
+ tests/runtime/regression                           |  148 +
+ tests/runtime/scripts/bpf_attach.bt                |   13 +
+ tests/runtime/scripts/fentry_order.bt              |   14 +
+ tests/runtime/scripts/fexit_order.bt               |   11 +
+ tests/runtime/scripts/hardware_order.bt            |   10 +
+ tests/runtime/scripts/hello_world.bt               |    5 +
+ tests/runtime/scripts/interval_order.bt            |    5 +
+ tests/runtime/scripts/interval_runtime_order.bt    |   10 +
+ tests/runtime/scripts/kprobe_order.bt              |   16 +
+ tests/runtime/scripts/kretprobe_order.bt           |   10 +
+ tests/runtime/scripts/named_params.bt              |    1 +
+ tests/runtime/scripts/parallel_map_access.bt       |   24 +
+ tests/runtime/scripts/profile_order.bt             |   10 +
+ tests/runtime/scripts/rawtracepoint_order.bt       |   14 +
+ tests/runtime/scripts/software_order.bt            |   10 +
+ tests/runtime/scripts/struct_array.bt              |   39 +
+ tests/runtime/scripts/struct_array_vars.bt         |   46 +
+ tests/runtime/scripts/struct_let.bt                |   29 +
+ tests/runtime/scripts/struct_walk.bt               |   26 +
+ tests/runtime/scripts/tracepoint_order.bt          |   18 +
+ tests/runtime/scripts/uprobe_order.bt              |   10 +
+ tests/runtime/scripts/uprobe_pid_check.bt          |   20 +
+ tests/runtime/scripts/uretprobe_order.bt           |   10 +
+ .../scripts/usdt_file_activation_multiprocess.bt   |   28 +
+ tests/runtime/scripts/usdt_multi_modules.bt        |    9 +
+ tests/runtime/scripts/usdt_order.bt                |   10 +
+ tests/runtime/scripts/variable_scope.bt            |   14 +
+ tests/runtime/scripts/variable_scope_late_decl.bt  |   20 +
+ tests/runtime/scripts/watchpoint_multiattach.bt    |   16 +
+ tests/runtime/scripts/watchpoint_unwatch.bt        |   21 +
+ tests/runtime/selftest                             |    7 +
+ tests/runtime/signals                              |   16 +
+ tests/runtime/signed_ints                          |   36 +
+ tests/runtime/stdlib                               |    8 +
+ tests/runtime/strcontains                          |  107 +
+ tests/runtime/struct                               |   47 +
+ tests/runtime/tuples                               |  123 +
+ tests/runtime/uprobe                               |   71 +
+ tests/runtime/usdt                                 |  240 +
+ tests/runtime/variable                             |  158 +
+ tests/runtime/watchpoint                           |   76 +
+ tests/scopeguard.cpp                               |   79 +
+ tests/semantic_analyser.cpp                        | 5614 +++++++++++++++
+ tests/temp.cpp                                     |   73 +
+ tests/testlibs/CMakeLists.txt                      |   18 +
+ tests/testlibs/simple.c                            |    3 +
+ tests/testlibs/usdt_tp.c                           |   17 +
+ tests/testlibs/usdt_tp.h                           |    4 +
+ tests/testprogs/CMakeLists.txt                     |   70 +
+ tests/testprogs/array_access.c                     |   81 +
+ tests/testprogs/bitfield_test.c                    |   40 +
+ tests/testprogs/complex_struct.c                   |   31 +
+ tests/testprogs/disable_aslr.c                     |    8 +
+ tests/testprogs/false.c                            |    4 +
+ tests/testprogs/fentry_args.c                      |   19 +
+ tests/testprogs/hello_go.go                        |    3 +
+ tests/testprogs/hello_rust.rs                      |    7 +
+ tests/testprogs/inline_function.c                  |   28 +
+ tests/testprogs/intptrcast.c                       |   15 +
+ tests/testprogs/mountns_pivot_wrapper.c            |  123 +
+ tests/testprogs/mountns_wrapper.c                  |   74 +
+ tests/testprogs/nanosleep_loop.c                   |   27 +
+ tests/testprogs/ptr_to_ptr.c                       |   18 +
+ tests/testprogs/simple_struct.c                    |   18 +
+ tests/testprogs/stack_args.c                       |   21 +
+ tests/testprogs/string_args.c                      |   12 +
+ tests/testprogs/struct_array.c                     |   41 +
+ tests/testprogs/struct_walk.c                      |   37 +
+ tests/testprogs/struct_with_union.c                |   23 +
+ tests/testprogs/syscall.c                          |  223 +
+ tests/testprogs/true.c                             |    4 +
+ tests/testprogs/uprobe_fork_loop.c                 |   30 +
+ tests/testprogs/uprobe_library.c                   |    9 +
+ tests/testprogs/uprobe_loop.c                      |   22 +
+ tests/testprogs/uprobe_namesan.c                   |    9 +
+ tests/testprogs/uprobe_negative_retval.c           |   14 +
+ tests/testprogs/uprobe_symres.c                    |   17 +
+ tests/testprogs/uprobe_symres_exited_process.c     |   17 +
+ tests/testprogs/uprobe_test.c                      |   87 +
+ tests/testprogs/uprobe_test_cxx.cpp                |   34 +
+ tests/testprogs/usdt_args.c                        |  141 +
+ tests/testprogs/usdt_inlined.c                     |   41 +
+ tests/testprogs/usdt_lib.c                         |   10 +
+ tests/testprogs/usdt_multi_args.c                  |   26 +
+ tests/testprogs/usdt_multiple_locations.c          |   25 +
+ tests/testprogs/usdt_quoted_probe.c                |   13 +
+ tests/testprogs/usdt_semaphore_test.c              |   33 +
+ tests/testprogs/usdt_sized_args.c                  |   21 +
+ tests/testprogs/usdt_test.c                        |   28 +
+ tests/testprogs/wait10.c                           |    7 +
+ tests/testprogs/wait4_ru.c                         |   20 +
+ tests/testprogs/watchpoint.c                       |   38 +
+ tests/testprogs/watchpoint_exec.c                  |   36 +
+ tests/testprogs/watchpoint_func.c                  |   18 +
+ tests/testprogs/watchpoint_func_many_probes.c      |   15 +
+ tests/testprogs/watchpoint_func_wildcard.c         |   58 +
+ tests/testprogs/watchpoint_threaded.c              |   45 +
+ tests/testprogs/watchpoint_unwatch.c               |   23 +
+ tests/testprogs/work_loop.c                        |   23 +
+ tests/tools-parsing-test.sh                        |   75 +
+ tests/tracepoint_format_parser.cpp                 |  259 +
+ tests/type_system.cpp                              |  128 +
+ tests/types.cpp                                    |   79 +
+ tests/unstable_feature.cpp                         |   92 +
+ tests/utils.cpp                                    |  558 ++
+ tools/CMakeLists.txt                               |    5 +
+ tools/README.md                                    |   46 +
+ tools/bashreadline.bt                              |   44 +
+ tools/biolatency-kp.bt                             |   72 +
+ tools/biolatency.bt                                |   34 +
+ tools/biosnoop.bt                                  |   80 +
+ tools/biostacks.bt                                 |   95 +
+ tools/bitesize.bt                                  |   59 +
+ tools/capable.bt                                   |   95 +
+ tools/cpuwalk.bt                                   |   99 +
+ tools/dcsnoop.bt                                   |   79 +
+ tools/execsnoop.bt                                 |   63 +
+ tools/gethostlatency.bt                            |   61 +
+ tools/killsnoop.bt                                 |  108 +
+ tools/loads.bt                                     |   58 +
+ tools/mdflush.bt                                   |   52 +
+ tools/naptime.bt                                   |   51 +
+ tools/old/CMakeLists.txt                           |    2 +
+ tools/old/biosnoop-pre-5.17.bt                     |   56 +
+ tools/old/biosnoop-pre-6.4.bt                      |   56 +
+ tools/old/biostacks.bt                             |   43 +
+ tools/old/mdflush.bt                               |   33 +
+ tools/old/runqlen.bt                               |   40 +
+ tools/old/tcpdrop.bt                               |   84 +
+ tools/oomkill.bt                                   |   65 +
+ tools/opensnoop.bt                                 |   76 +
+ tools/pidpersec.bt                                 |   67 +
+ tools/runqlat.bt                                   |  210 +
+ tools/runqlen.bt                                   |   56 +
+ tools/setuids.bt                                   |   89 +
+ tools/ssllatency.bt                                |  177 +
+ tools/sslsnoop.bt                                  |  110 +
+ tools/statsnoop.bt                                 |  104 +
+ tools/swapin.bt                                    |   63 +
+ tools/syncsnoop.bt                                 |   40 +
+ tools/syscount.bt                                  |   71 +
+ tools/tcpaccept.bt                                 |   91 +
+ tools/tcpconnect.bt                                |   81 +
+ tools/tcpdrop.bt                                   |  106 +
+ tools/tcplife.bt                                   |  122 +
+ tools/tcpretrans.bt                                |  108 +
+ tools/tcpsynbl.bt                                  |   57 +
+ tools/threadsnoop.bt                               |   47 +
+ tools/undump.bt                                    |   63 +
+ tools/vfscount.bt                                  |   57 +
+ tools/vfsstat.bt                                   |   72 +
+ tools/writeback.bt                                 |   83 +
+ tools/xfsdist.bt                                   |  103 +
+ 774 files changed, 136375 insertions(+)
+d63c8f0dae915021e9497981f257a89244582314 Convert shell scripts from bash to dash compatibility
+
+qemu-accel
+  targettype aarch64 block!
+  targettype armv7l block!
+  targettype riscv64 block!
+  targettype 32bit block!
+  autoreqprov off
+  +/
+  requires "gcc"
+  config -/pkg-config$
+  post "#PLUGIN_POSTIN#"
+  postun "#PLUGIN_POSTUN#"
+
+python-accel
+  targettype aarch64 block!
+  targettype armv7l block!
+  targettype riscv64 block!
+  targettype 32bit block!
+  autoreqprov off
+  +/
+  post "#PYTHON_POSTIN#"
+
+clang-accel
+  targettype aarch64 block!
+  targettype armv7l block!
+  targettype riscv64 block!
+  targettype 32bit block!
+  autoreqprov off
+  +/
+  post "#CLANG_POSTIN#"
+144:[  174s] [102/119] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/qemu-accel-x86_64-armv7l-0.4-1.1.armv7l.rpm ... 
+194:[  211s] [30/44] preinstalling qemu-accel-x86_64-armv7l...
+211:[  216s] running qemu-accel-x86_64-armv7l postinstall script
+319:[  218s] [94/125] cumulate qemu-accel-x86_64-armv7l-0.4-1.1
+454:[  247s] qemu-accel-x86_64-armv7l-0.4-1.1      ########################################
