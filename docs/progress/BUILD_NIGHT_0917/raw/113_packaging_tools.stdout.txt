@@ -1,0 +1,114 @@
+/usr/bin/rpm2cpio
+/usr/bin/cpio
+<a href="cereal-devel-1.3.2-1.1.x86_64.rpm">cereal-devel-1.3.2-1.1.x86_64.rpm</a>                  13-Sep-2026 00:11              209321
+"""Verify small public static RPM payloads; no package installation or build."""
+import hashlib
+from html.parser import HTMLParser
+import json
+from pathlib import Path
+import re
+import shlex
+import subprocess
+
+p=Path('progress/BUILD_NIGHT_0916')
+downloads=Path('tmp/BUILD_NIGHT_0916.h4taGY/dependency-rpms')
+downloads.mkdir(exist_ok=True)
+base='https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/'
+log=(p/'repository_commands.jsonl').open('w',buffering=1)
+class Links(HTMLParser):
+ def __init__(self):super().__init__();self.links=[]
+ def handle_starttag(self,tag,attrs):
+  if tag=='a':
+   href=dict(attrs).get('href','')
+   if href.endswith('.rpm'):self.links.append(href)
+def run(args,required=True):
+ r=subprocess.run(args,capture_output=True,text=True,errors='replace')
+ log.write(json.dumps(dict(command=shlex.join(args),exitcode=r.returncode,stdout=r.stdout,stderr=r.stderr))+'\n')
+ if required:assert r.returncode==0,(args,r.returncode)
+ return r
+records=[];indices=[]
+for arch in ['x86_64','aarch64','armv7l']:
+ path=p/f'reference_{arch}_index.html'
+ if arch!='aarch64':
+  run(['curl','-q','--fail','--location','--silent','--show-error','--max-time','60','--output',str(path),base+arch+'/'])
+ parser=Links();parser.feed(path.read_text())
+ links=sorted(set(parser.links))
+ indices.append(dict(arch=arch,url=base+arch+'/',sha256=hashlib.sha256(path.read_bytes()).hexdigest(),rpm_entries=len(links)))
+ for package in ['libbpf-static','liblzma-static','zlib-devel-static','libxml2-devel','libffi-devel-static']:
+  names=[x for x in links if re.match(re.escape(package)+r'-[0-9]',x)]
+  if not names:
+   records.append(dict(arch=arch,package=package,status='NOT_AVAILABLE_IN_CURRENT_INDEX',tried=base+arch+'/'));continue
+  assert len(names)==1,(arch,package,names)
+  name=names[0];target=downloads/name
+  run(['curl','-q','--fail','--location','--silent','--show-error','--max-time','120','--output',str(target),base+arch+'/'+name])
+  run(['rpm','--checksig','--nosignature',str(target)])
+  meta=run(['rpm','-qp','--qf','%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\t%{VCS}\n',str(target)]).stdout.strip()
+  files=run(['rpm','-qpl',str(target)]).stdout.splitlines()
+  row=dict(arch=arch,package=package,url=base+arch+'/'+name,path=str(target),
+           bytes=target.stat().st_size,sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+           rpm=meta,archives=[x for x in files if '.a'==Path(x).suffix],files=files,
+           status='RPM_PAYLOAD_LIST_VERIFIED')
+  records.append(row)
+  print(arch,package,row['archives'],flush=True)
+(p/'repository_static_packages.json').write_text(json.dumps(dict(indices=indices,records=records,
+scope='Current rolling reference package indices, queried in this run; not a pinned snapshot or the old local RPM set. RPM digests checked, signatures not authenticated.'),indent=2)+'\n')
+  passes/unstable_feature.cpp
+)
+
+add_dependencies(ast parser)
+target_compile_definitions(ast PRIVATE ${BPFTRACE_FLAGS})
+target_link_libraries(ast PRIVATE debugfs tracefs util stdlib)
+target_link_libraries(ast PUBLIC ast_defs arch compiler_core parser btf)
+
+if (NOT SYSTEM_INCLUDE_PATHS EQUAL "auto")
+  MESSAGE(STATUS "Using SYSTEM_INCLUDE_PATHS=${SYSTEM_INCLUDE_PATHS}")
+endif()
+target_compile_definitions(ast PUBLIC SYSTEM_INCLUDE_PATHS="${SYSTEM_INCLUDE_PATHS}")
+
+if(STATIC_LINKING)
+  include(Util)
+
+  set(llvm_lib_names
+      bpfcodegen
+      coverage
+      frontenddriver
+      frontendhlsl
+      frontendopenmp
+      ipo
+      irreader
+      lto
+      mcjit
+      option
+      orcjit
+      ${LLVM_TARGETS_TO_BUILD})
+
+  llvm_map_components_to_libnames(llvm_libs ${llvm_lib_names})
+
+  # It's extremely unclear why the clang static libraries export link
+  # dependencies on the llvm and clang shared libraries. Regardless, we need
+  # this hack to remove them.
+  unlink_transitive_dependency("${CLANG_EXPORTED_TARGETS}" "LLVM")
+  unlink_transitive_dependency("${CLANG_EXPORTED_TARGETS}" "$<LINK_ONLY:clang-cpp>")
+
+  if(LIBCLANG_STATIC_PATH)
+    get_filename_component(LIBCLANG_STATIC_ABS_PATH "${CMAKE_SOURCE_DIR}/${LIBCLANG_STATIC_PATH}" ABSOLUTE)
+    message(STATUS "Using custom libclang absolute path: ${LIBCLANG_STATIC_ABS_PATH}")
+    target_link_libraries(ast PUBLIC ${LIBCLANG_STATIC_ABS_PATH} bpf clangIndex clangDriver clangFrontend clangCodeGen)
+  else()
+    target_link_libraries(ast PUBLIC libclang_static clangDriver clangFrontend clangCodeGen)
+  endif()
+  target_link_libraries(ast PUBLIC ${llvm_libs})
+else()
+  if (TARGET LLVM)
+    # llvm_config macro comes from the LLVM toolchain and will auto-resolve component
+    # names to library names. USE_SHARED option will tell llvm_config macro to prefer
+    # shared library / DLL on the system over the static libraries
+    llvm_config(ast USE_SHARED bpfcodegen ipo irreader mcjit orcjit)
+  else()
+    # some build environment(e.g facebookexperimental/ExtendedAndroidTools) doesn't
+    # have libLLVM.so, drop `USE_SHARED` to avoid forcing link to `-lLLVM`.
+    llvm_config(ast bpfcodegen ipo irreader mcjit orcjit)
+  endif()
+
+  target_link_libraries(ast PUBLIC libclang clang-cpp)
+endif()

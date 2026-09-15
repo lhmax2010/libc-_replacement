@@ -3,7 +3,7 @@
 | 任务 | 状态 | 用时 | 产物路径 | 备注 |
 | --- | --- | --- | --- | --- |
 | W1 libcxx 静态库 | COMPLETE_TARGET_BUILDS | 944 秒 | runtime-*.build.log、specs 副本 | x86_64 优先；原源码和构建根只读挂载 |
-| W2 libclang.a | NOT_STARTED | 0 | 待补 | 仅相关目标，限 5 小时 |
+| W2 libclang.a | COMPLETE_TARGET_BUILDS | 4601 秒 | libclang-*.build.log | Clang 官方 standalone 入口，复用已安装 LLVM；x86_64 静态目标 1059 步 |
 | W3 bpftrace-static | NOT_STARTED | 0 | 待补 | 依赖 W1/W2；候选不推包仓 |
 | W4 21.1.1 归档来源 | NOT_STARTED | 0 | 待补 | 编译器身份须独立核查 |
 
@@ -27,3 +27,19 @@ libcxx-runtimes 原 spec 强制 Clang，与 _toolchain=gcc 的平台选择无关
 验证新静态开关在 GCC/未定义配置均 OFF，且展开后的 spec 与基线相同（忽略空行）。
 新静态归档的 %files 条目也必须同条件保护，否则开启安装后会产生未打包文件。
 完整 RPM 写包尚未执行，不把 CMake 目标构建写成全包验证。
+
+### 进度记录 2026-09-15T23:43:52.641177+08:00
+
+- libclang-x86_64-libcxx-build.events.jsonl: finished, 1059/1059, exitcode=0.
+- libclang-x86_64-gcc-build.events.jsonl: running, 610/1060, exitcode=NOT_OBSERVED.
+
+### 进度记录 2026-09-15T23:44:12.928887+08:00
+
+- libclang-x86_64-libcxx-build.events.jsonl: finished, 1059/1059, exitcode=0.
+- libclang-x86_64-gcc-build.events.jsonl: running, 627/1060, exitcode=NOT_OBSERVED.
+
+### 进度记录 2026-09-16T00:10:57.873786+08:00
+
+- libclang-x86_64-libcxx-build.events.jsonl: finished, 1059/1059, exitcode=0.
+- libclang-x86_64-gcc-build.events.jsonl: finished, 1060/1060, exitcode=0.
+- libclang-aarch64-libcxx-build.events.jsonl: running, 708/1059, exitcode=NOT_OBSERVED.

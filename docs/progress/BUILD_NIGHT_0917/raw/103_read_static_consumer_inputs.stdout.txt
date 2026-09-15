@@ -1,0 +1,320 @@
+add_library(ast_defs STATIC
+  ast.cpp
+  context.cpp
+  helpers.cpp
+  location.cpp
+)
+add_dependencies(ast_defs parser)
+target_link_libraries(ast_defs util)
+
+add_library(ast STATIC
+  async_event_types.cpp
+  attachpoint_parser.cpp
+  codegen_helper.cpp
+  diagnostic.cpp
+  dibuilderbpf.cpp
+  irbuilderbpf.cpp
+  pass_manager.cpp
+  signal.cpp
+
+  passes/c_macro_expansion.cpp
+  passes/clang_parser.cpp
+  passes/clang_build.cpp
+  passes/named_param.cpp
+  passes/codegen_resources.cpp
+  passes/config_analyser.cpp
+  passes/deprecated.cpp
+  passes/field_analyser.cpp
+  passes/fold_literals.cpp
+  passes/import_scripts.cpp
+  passes/link.cpp
+  passes/map_sugar.cpp
+  passes/macro_expansion.cpp
+  passes/pid_filter_pass.cpp
+  passes/portability_analyser.cpp
+  passes/printer.cpp
+  passes/probe_expansion.cpp
+  passes/probe_prune.cpp
+  passes/resource_analyser.cpp
+  passes/semantic_analyser.cpp
+  passes/codegen_llvm.cpp
+  passes/resolve_imports.cpp
+  passes/return_path_analyser.cpp
+  passes/recursion_check.cpp
+  passes/type_system.cpp
+  passes/unstable_feature.cpp
+)
+
+add_dependencies(ast parser)
+target_compile_definitions(ast PRIVATE ${BPFTRACE_FLAGS})
+target_link_libraries(ast PRIVATE debugfs tracefs util stdlib)
+target_link_libraries(ast PUBLIC ast_defs arch compiler_core parser btf)
+
+if (NOT SYSTEM_INCLUDE_PATHS EQUAL "auto")
+  MESSAGE(STATUS "Using SYSTEM_INCLUDE_PATHS=${SYSTEM_INCLUDE_PATHS}")
+endif()
+target_compile_definitions(ast PUBLIC SYSTEM_INCLUDE_PATHS="${SYSTEM_INCLUDE_PATHS}")
+
+if(STATIC_LINKING)
+  include(Util)
+
+  set(llvm_lib_names
+      bpfcodegen
+      coverage
+      frontenddriver
+      frontendhlsl
+      frontendopenmp
+      ipo
+      irreader
+      lto
+      mcjit
+      option
+      orcjit
+      ${LLVM_TARGETS_TO_BUILD})
+
+  llvm_map_components_to_libnames(llvm_libs ${llvm_lib_names})
+
+  # It's extremely unclear why the clang static libraries export link
+  # dependencies on the llvm and clang shared libraries. Regardless, we need
+  # this hack to remove them.
+  unlink_transitive_dependency("${CLANG_EXPORTED_TARGETS}" "LLVM")
+  unlink_transitive_dependency("${CLANG_EXPORTED_TARGETS}" "$<LINK_ONLY:clang-cpp>")
+
+  if(LIBCLANG_STATIC_PATH)
+    get_filename_component(LIBCLANG_STATIC_ABS_PATH "${CMAKE_SOURCE_DIR}/${LIBCLANG_STATIC_PATH}" ABSOLUTE)
+    message(STATUS "Using custom libclang absolute path: ${LIBCLANG_STATIC_ABS_PATH}")
+    target_link_libraries(ast PUBLIC ${LIBCLANG_STATIC_ABS_PATH} bpf clangIndex clangDriver clangFrontend clangCodeGen)
+  else()
+    target_link_libraries(ast PUBLIC libclang_static clangDriver clangFrontend clangCodeGen)
+  endif()
+  target_link_libraries(ast PUBLIC ${llvm_libs})
+else()
+  if (TARGET LLVM)
+    # llvm_config macro comes from the LLVM toolchain and will auto-resolve component
+    # names to library names. USE_SHARED option will tell llvm_config macro to prefer
+    # shared library / DLL on the system over the static libraries
+    llvm_config(ast USE_SHARED bpfcodegen ipo irreader mcjit orcjit)
+  else()
+    # some build environment(e.g facebookexperimental/ExtendedAndroidTools) doesn't
+    # have libLLVM.so, drop `USE_SHARED` to avoid forcing link to `-lLLVM`.
+    llvm_config(ast bpfcodegen ipo irreader mcjit orcjit)
+  endif()
+
+  target_link_libraries(ast PUBLIC libclang clang-cpp)
+endif()
+    -P ${CMAKE_SOURCE_DIR}/cmake/Version.cmake
+)
+add_dependencies(runtime version_h)
+add_dependencies(bpftrace version_h)
+add_dependencies(libbpftrace version_h)
+
+target_compile_definitions(required_resources PRIVATE ${BPFTRACE_FLAGS})
+target_compile_definitions(runtime PRIVATE ${BPFTRACE_FLAGS})
+target_include_directories(libbpftrace PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_compile_definitions(libbpftrace PRIVATE ${BPFTRACE_FLAGS})
+
+# Linking
+if(STATIC_LINKING)
+  target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")
+endif(STATIC_LINKING)
+
+
+target_link_libraries(runtime debugfs output tracefs util)
+target_link_libraries(runtime ${LIBBPF_LIBRARIES} ${ZLIB_LIBRARIES})
+target_link_libraries(libbpftrace parser runtime aot ast arch util cxxdemangler_llvm)
+
+if(LIBPCAP_FOUND)
+  target_link_libraries(libbpftrace ${LIBPCAP_LIBRARIES})
+endif(LIBPCAP_FOUND)
+
+if(HAVE_BFD_DISASM)
+  if(STATIC_LINKING OR LIBBFD_STATIC)
+    add_library(LIBBFD STATIC IMPORTED)
+    set_property(TARGET LIBBFD PROPERTY IMPORTED_LOCATION ${LIBBFD_LIBRARIES})
+    target_link_libraries(runtime LIBBFD)
+    add_library(LIBOPCODES STATIC IMPORTED)
+    set_property(TARGET LIBOPCODES PROPERTY IMPORTED_LOCATION ${LIBOPCODES_LIBRARIES})
+    target_link_libraries(runtime LIBOPCODES)
+    add_library(LIBIBERTY STATIC IMPORTED)
+    set_property(TARGET LIBIBERTY PROPERTY IMPORTED_LOCATION ${LIBIBERTY_LIBRARIES})
+    target_link_libraries(runtime LIBIBERTY)
+
+    add_library(LIBZSTD STATIC IMPORTED)
+    if (LIBZSTD_LIBRARIES)
+      set_property(TARGET LIBZSTD PROPERTY IMPORTED_LOCATION ${LIBZSTD_LIBRARIES})
+      target_link_libraries(runtime LIBZSTD)
+    endif(LIBZSTD_LIBRARIES)
+
+    add_library(LIBSFRAME STATIC IMPORTED)
+    if (LIBSFRAME_LIBRARIES)
+      set_property(TARGET LIBSFRAME PROPERTY IMPORTED_LOCATION ${LIBSFRAME_LIBRARIES})
+      target_link_libraries(runtime LIBSFRAME)
+    endif(LIBSFRAME_LIBRARIES)
+  else()
+    target_link_libraries(runtime ${LIBBFD_LIBRARIES})
+    target_link_libraries(runtime ${LIBOPCODES_LIBRARIES})
+  endif(STATIC_LINKING OR LIBBFD_STATIC)
+endif(HAVE_BFD_DISASM)
+
+# Link to bcc libraries (without LLVM) if possible
+if(LIBBCC_BPF_CONTAINS_RUNTIME)
+  target_link_libraries(runtime ${LIBBCC_BPF_LIBRARIES})
+else()
+  target_link_libraries(runtime ${LIBBCC_LIBRARIES})
+endif()
+
+if(STATIC_LINKING)
+  # These are not part of the static libbcc so have to be added separate
+  target_link_libraries(runtime ${LIBBCC_BPF_LIBRARIES})
+  target_link_libraries(runtime ${LIBBPF_LIBRARIES})
+  target_link_libraries(runtime ${LIBBCC_LOADER_LIBRARY_STATIC})
+
+  find_package(LibLzma)
+  add_library(LIBLZMA STATIC IMPORTED)
+  set_property(TARGET LIBLZMA PROPERTY IMPORTED_LOCATION ${LIBLZMA_LIBRARIES})
+  target_link_libraries(runtime LIBLZMA)
+
+  add_library(LIBELF STATIC IMPORTED)
+  set_property(TARGET LIBELF PROPERTY IMPORTED_LOCATION ${LIBELF_LIBRARIES})
+  target_link_libraries(runtime LIBELF)
+else()
+  target_link_libraries(runtime ${LIBELF_LIBRARIES})
+endif(STATIC_LINKING)
+
+if (LIBDW_FOUND)
+  if(STATIC_LINKING)
+    find_package(LibBz2)
+    find_package(LibEbl)
+
+    add_library(LIBBZ2 STATIC IMPORTED)
+    set_property(TARGET LIBBZ2 PROPERTY IMPORTED_LOCATION ${LIBBZ2_LIBRARIES})
+
+    add_library(LIBDW STATIC IMPORTED)
+    set_property(TARGET LIBDW PROPERTY IMPORTED_LOCATION ${LIBDW_LIBRARIES})
+
+    set(LIBDW_LIBS LIBBZ2 LIBELF LIBLZMA)
+
+    if (${LIBEBL_FOUND})
+      # libebl is not necessary on some systems (e.g. Alpine)
+      add_library(LIBEBL STATIC IMPORTED)
+      set_property(TARGET LIBEBL PROPERTY IMPORTED_LOCATION ${LIBEBL_LIBRARIES})
+      set(LIBDW_LIBS ${LIBDW_LIBS} LIBEBL)
+    endif()
+
+    target_link_libraries(LIBDW INTERFACE ${LIBDW_LIBS})
+
+    target_link_libraries(runtime LIBDW)
+  else()
+    target_link_libraries(runtime ${LIBDW_LIBRARIES})
+  endif()
+endif()
+
+# Support for std::filesystem
+# GCC version <9 and Clang (all versions) require -lstdc++fs
+if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR ${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS "9")
+  target_link_libraries(runtime "stdc++fs")
+  target_link_libraries(libbpftrace "stdc++fs")
+endif()
+
+if (BUILD_ASAN)
+  target_compile_options(bpftrace PUBLIC "-fsanitize=address")
+  target_link_options(bpftrace PUBLIC "-fsanitize=address")
+endif()
+
+if (STATIC_LINKING)
+  if(ANDROID)
+    target_link_libraries(libbpftrace "-Wl,-Bdynamic" "-ldl" "-lm" "-lz")
+    target_link_libraries(runtime "-Wl,-Bdynamic" "-ldl" "-lm" "-lz")
+  else()
+    target_link_libraries(libbpftrace "-Wl,-Bdynamic" "-lrt" "-lpthread" "-ldl" "-lm")
+    target_link_libraries(libbpftrace "-Wl,-Bstatic" "-lz")
+    target_link_libraries(runtime "-Wl,-Bdynamic" "-lrt" "-lpthread" "-ldl" "-lm")
+    target_link_libraries(runtime "-Wl,-Bstatic" "-lz")
+  endif()
+endif()
+
+if (ENABLE_SYSTEMD)
+  target_link_libraries(runtime PkgConfig::libsystemd)
+endif()
+
+unset(BPFTRACE)
+
+add_subdirectory(aot)
+add_subdirectory(arch)
+add_subdirectory(ast)
+add_subdirectory(btf)
+add_subdirectory(cxxdemangler)
+add_subdirectory(debugfs)
+add_subdirectory(output)
+add_subdirectory(stdlib)
+add_subdirectory(tracefs)
+{
+  "bcc_static_rpms": [
+    {
+      "arch": "armv7l",
+      "path": "tmp/BUILD_W2C_0915/bcc-libcxx-repo/armv7l/bcc-tools-static-0.35.0-115.2.armv7l.rpm",
+      "sha256": "3346af458514de7d82fc70787a3d53b0688aa9e3583145101ec8b65af042ded6",
+      "rpm": "bcc-tools-static\t0.35.0-115.2\tarmv7l\tplatform/upstream/bcc#dd26ba03fc8109396bf841f1bbf7b4df0a8ed9d2-dirty",
+      "files": [
+        "/usr/lib/libbcc-loader-static.a",
+        "/usr/lib/libbcc.a",
+        "/usr/lib/libbcc_bpf.a"
+      ]
+    },
+    {
+      "arch": "aarch64",
+      "path": "tmp/BUILD_W2C_0915/bcc-libcxx-repo/aarch64/bcc-tools-static-0.35.0-112.1.aarch64.rpm",
+      "sha256": "0ed804e7ea2499604c2b59127a4f24a2d98fccf30be98bb7d84c628c21910a82",
+      "rpm": "bcc-tools-static\t0.35.0-112.1\taarch64\tplatform/upstream/bcc#dd26ba03fc8109396bf841f1bbf7b4df0a8ed9d2-dirty",
+      "files": [
+        "/usr/lib64/libbcc-loader-static.a",
+        "/usr/lib64/libbcc.a",
+        "/usr/lib64/libbcc_bpf.a"
+      ]
+    },
+    {
+      "arch": "x86_64",
+      "path": "tmp/GBS-ROOT/BUILD-W2-bcc-x86-libcxx/local/repos/tizen_base_standard/x86_64/RPMS/bcc-tools-static-0.35.0-112.3.x86_64.rpm",
+      "sha256": "31ab66d6a237ee2d13a17b693db68d04d893428f2503b9d92734599e95513bc5",
+      "rpm": "bcc-tools-static\t0.35.0-112.3\tx86_64\tplatform/upstream/bcc#dd26ba03fc8109396bf841f1bbf7b4df0a8ed9d2-dirty",
+      "files": [
+        "/usr/lib64/libbcc-loader-static.a",
+        "/usr/lib64/libbcc.a",
+        "/usr/lib64/libbcc_bpf.a"
+      ]
+    }
+  ],
+  "static_branch": "624f68d5f67a673083e5ad08ea205742613d6e53",
+  "prebuilt_tar_sha256": "0ac7bac842a0cbfa64a8227bd554a0a9c3d85d54d3795a44791603917359264a",
+  "members": [
+    {
+      "path": "prebuilt/usr",
+      "size": 0,
+      "type": "5",
+      "linkname": ""
+    },
+{
+  "indices": [
+    {
+      "arch": "x86_64",
+      "url": "https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/",
+      "sha256": "e9191d6e459234d0d2df1bec54068b6ff94738f3586d4c9ae79e31530ee36c6d",
+      "rpm_entries": 537
+    },
+    {
+      "arch": "aarch64",
+      "url": "https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/aarch64/",
+      "sha256": "55f9d22a8d757efeff8a9971d3f7c5f7c0a0e2e93835f0a350850939f7c8fce4",
+      "rpm_entries": 538
+    },
+    {
+      "arch": "armv7l",
+      "url": "https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/",
+      "sha256": "19bd06ec74eeb7b1cc17af4594942676993a0b856aa872760426ae4aded1b5ad",
+      "rpm_entries": 533
+    }
+  ],
+  "records": [
+    {
+      "arch": "x86_64",
+      "package": "libbpf-static",

@@ -5,6 +5,10 @@ from pathlib import Path
 p=argparse.ArgumentParser(); p.add_argument('--label',required=True); p.add_argument('--deadline',required=True,type=float); p.add_argument('command',nargs=argparse.REMAINDER); a=p.parse_args()
 cmd=a.command[1:] if a.command[:1]==['--'] else a.command
 out=Path('progress/BUILD_NIGHT_0917'); log=out/(a.label+'.build.log')
+if log.exists():
+    n=1
+    while (out/(a.label+f'.previous-{n}.build.log')).exists(): n+=1
+    log.rename(out/(a.label+f'.previous-{n}.build.log'))
 events=(out/(a.label+'.events.jsonl')).open('a',buffering=1)
 def note(kind,**kw):
     row=dict(time=datetime.datetime.now().astimezone().isoformat(),event=kind,**kw); events.write(json.dumps(row)+'\n'); print(json.dumps(row),flush=True)

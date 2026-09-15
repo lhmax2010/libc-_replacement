@@ -10,3 +10,6 @@ for filename in sys.argv[1:]:
 name='archive_'+hashlib.sha256('|'.join(sys.argv[1:]).encode()).hexdigest()[:12]+'.json'
 (out/name).write_text(json.dumps(rows,indent=2)); print(name)
 for r in rows: print(r['path'],r['bytes'],r['exact_std1_lines'],r['exact_cxx11_lines'])
+for r in rows:
+    if '/libclang-' in r['path'] and '-libcxx/' in r['path']:
+        assert r['exact_std1_lines']>0 and r['exact_cxx11_lines']==0, 'libclang libc++ archive ABI gate failed'
