@@ -1,0 +1,490 @@
+三份检索都回来了。有几条直接修正我上一条回复,我必须先更正,再补充。
+
+一、我上一条回复里说错或说弱的三处
+更正 1:跨库异常的 typed catch 失败,你们已经实测过了,不是我的推测
+我在第 6 问里把"libstdc++ 侧抛、libc++ 侧按类型捕获会失败"标成了【推测,需验证】。这是错的,它已经在 R78/REPORT.md 里被实测,而且是两个架构。
+
+原文第 10 到 11 行:普通 C++ 异常跨界"在两架构均无法按共享的 BoundaryError 类型捕获,只落入 catch(...) 并退出 12"。armv7l 物理板与 x86_64 同结论。方向正是旧插件只依赖 libstdc++、主程序只依赖 libc++,经 dlopen 加载。
+
+同一轮还有一个反面结果,同样值得纳入正文:POSIX 强制展开可以跨两套运行时正确穿越。pthread_cancel 从 libstdc++ 插件的 condition_variable::wait 发起,跨过旧插件和 libc++ 主程序,两侧析构各执行一次,pthread_join 返回 PTHREAD_CANCELED,两架构全满足。这印证了我说的展开器共用,并且说明正文第五节"异常穿越边界"一刀切得比证据允许的更宽。
+
+机制上还要补一层。R78 测的 BoundaryError 是共享头里的自定义类型,失败原因在 R39/R39_report.md:38-41 讲清楚了:两个 DSO 各自生成 WEAK DEFAULT 的 typeinfo,若没有被动态链接器统一到同一个定义,can_catch 就不匹配。这和我分析的 std::runtime_error 撞名是两条不同的失效路径,一条是"同名但没合一",一条是"同名且合错了"。两条都真实存在。
+
+我的 _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION=2 建议依然成立,而且现在有了明确靶子:BoundaryError 两侧的名字串相同,深比较会匹配上,R78 那个退出 12 的用例应当能被救回。这个建议值得优先于我提的其他任何东西去试,因为它对着一个已实测的失败。
+
+更正 2:我建议"把 libc++ 侧静态归档",这条要撤回
+我在第 5 问里建议用自定义 ABI 命名空间加静态归档做符号隔离。R39 有一个直接反例,我当时没读到。
+
+R38 的测试件静态链接 libc++.a,typeinfo 只进了 .symtab、没进 .dynsym,于是 libc++abi 绑到自己那份定义,进程里存在两个未被动态合一的地址来源,can_catch 不匹配,落入 catch-all,glibc 报 FATAL: exception not rethrown。决定性对照是:同一个对象文件、同一个静态 libc++、同一个 libc++abi,只加 --export-dynamic,两个 typeinfo 进入 .dynsym,行为立刻从 catch-all 变成 forced-handler。
+
+所以静态归档加隐藏可见性是拿一个问题换另一个问题。我的建议里只有 LIBCXX_ABI_NAMESPACE 自定义那半截站得住,静态化那半截撤回。
+
+更正 3:我提的"双构建"和"进程外代理",你们自己早就列过了
+我在第 4 问里把这两个当作正文没考虑的方案提出来。更准确的说法是:它们在 R110/DECISION_BACKGROUND.md 的五方案表里,是你们自己写的。 那张表列了五项:全体重编为同一运行库、provider 保留 libstdc++ 而边界改 C ABI 或不透明句柄、为两套 ABI 提供隔离的并行产物、使用进程边界隔离并经 IPC 序列化、接受现有混合边界。每项都带"可避免什么"与"新增什么限制"。
+
+这把我的批评从"你们没想到"变成了更重的一条:正文第六节把自己五个选项里的两个删掉,然后写"adaptor 是唯一应用零改动且平台侧可实施的方案"。 这不是遗漏,是把已有的分析压没了。
+
+同样地,API_0911/W3/OPTIONS.md 已经逐接口做了四方案评估,而且把 C 接口签名设计出来了:
+
+
+struct ewk_cookie_text_out { ... };
+int ewk_parse_cookie_bytes(const char *input, size_t input_length,
+                           struct ewk_cookie_text_out *output);
+连改动点都定位了:1 个头文件、1 个既有声明、1 个新入口、2 个 C 结构。SetSyncBinaryReplyBytes 也有,定位到 XW_Extension_SyncMessage.h 的 1 个回调槽加 extension.cc 的 1 个调用点。正文第六节那张四行表里"改成 C 接口"只有一句"改接口 + 保留旧接口一段时间",而具体设计就在你们自己的材料里。
+
+我第 4 问里真正新的只有一样:把封送写成头文件 inline 函数,让它在应用自己的 TU 里编译。它不替代 ewk_parse_cookie_bytes,它是叠在上面的一层,让应用源码一个字都不用改,只需重编。这一层在 OPTIONS.md 里没有,那里写的应用侧动作是"接入新协议"。
+
+二、新增的部署风险,都该进第 9 问
+风险五:COMDAT 折叠是"先出现者胜出",而且 abi_tag 受构建配置影响
+R112/REPORT.md 第 3 节有 30 次实测,比 W2 那一次 SIGSEGV 广得多:
+
+链接形态	最终选中
+旧对象在前	旧定义,两入口 5/5 终止
+新对象在前	新定义,两入口 5/5 捕获
+旧成员在前的静态归档	旧定义
+判定原文是"同一链接单元两个入口共同采用先出现的 COMDAT 定义","是可重复的先出现者胜出,不是随机选择"。含义:adaptor 的两个 TU 谁先出现在链接命令行上,会改变最终选中的实现,而这通常由构建系统的文件枚举顺序决定,不受人控制。
+
+更隐蔽的一层:_LIBCPP_HIDE_FROM_ABI 的 abi_tag 由 hardening 档位、断言语义、是否启用异常以及 libc++ 版本共同构成。也就是说,改一个 hardening 开关就会改变符号身份,而这类开关在生产与开发构建之间经常不同。
+
+风险六:并行产物若不隔离,旧消费方仍能绑上新产物
+这一条有量化证据。R111/ITEM2_BOOST_TRANSITION_REPORT.md 对 aarch64 适配后的 provider 复核 30 条旧边,30 条全部至少保留一个修饰名相同的符号,其中 15 条全保留。所以如果走双构建路线,符号、SONAME 与插件发现三处隔离一个都不能少,否则旧消费方照样会绑到新产物上。这正好是 R110 那张表里"需要符号/SONAME/插件发现隔离"那一栏的实测支撑。
+
+顺带回答第 5 问里"符号版本能不能减少维护"。R113/REPORT.md 第 4 节用 R69 的 54 个对象重链了两套完整 libc++,四种绑定情形每格 5 次,结论是:双版本保护的是已经在最终 ELF 里记录了旧节点的引用,不是所有曾经用旧头编译过的目标文件。即使用新头重编,只要链接阶段看到的还是单版本旧库,最终 ELF 仍记旧节点。R86 第 3 节则证明机制本身有表达力,.symver 探针成功同时导出了两个节点,但 libc++ 当前只有 LLVM_22 { global: *; },没有现成的 compatibility wrapper。
+
+三、一条冲着验证方法来的发现
+这是我认为第三轮检索里最该引起注意的一条,它不针对某个接口,针对你们的验收设计本身。
+
+R110/DECISION_BACKGROUND.md:251-255 归纳了四种后果形态,正文第一节只写了其中一种:
+
+静默错值
+取值前终止
+值正确、随后在析构阶段失败,aarch64 的 Boost.Program Options 是 5/5 值精确通过然后退出 139
+有限样本精确通过,Boost.Thread 5/5 精确通过,材料明确写"该成功不能外推到竞争、其他符号或架构"
+最后一条直接指向 EWK 矩阵的设计。"每场景 5 次"这个重复数,在同一份材料里刚刚被证明可以整齐地通过而仍然不能外推。 正文第三节用"每场景 5/5、共 360 次场景观察"作为主要说服力来源,但你们自己的 R110 已经给出了一个 5/5 通过却被判为不可外推的先例。这一点必须在正文里讲明,否则评审一旦读到 R110 就会反过来质疑 360 这个数字的分量。
+
+第三条也值得说一句:EWK 矩阵确实检查了作用域销毁完成,这是对的,而且 W2 报告很克制地写了"销毁完成不代表状态正确"。R110 的 139 号退出给了这个检查一个具体的存在理由,正文可以引它。
+
+四、其余可直接补进正文的
+性能数据是选择不做,不是做不了。 R115/W4 里已有纳秒级微基准方法学,每次 50 万个获得释放对、每组 5 次、交替顺序,x86_64 10.867 纳秒、armv7l 116.284 纳秒,并自带"未固定 CPU 频率的粗测、区间交叠"的自限。同一套方法可以直接用到 adaptor 上。
+P4 纠正过一个说法,别再写回去。 P4_0909/FINDINGS.md:72-86 的 M04 指出,libstdc++ 与 libc++abi 的 operator new 与 delete 都落到 malloc 与 free,"仅因加载两套 C++ 库不能推成两套独立堆或必然破坏堆"。旧稿里"跨边界释放会破坏堆结构"已被推翻。
+绑定轨迹里 operator new 并没有被抢占。 同一份 008_binding_trace.stderr 显示 _Znwm 与 _ZdlPv 两侧各绑各的,由 LLVM_22 与 GLIBCXX_3.4 两个版本节点分开。我上一条回复没有声称这里出问题,但为免误读:出问题的是 <stdexcept> 那九个类,不是分配函数,因为前者被上游刻意设计成同名。
+盘点方法学的盲区正好盖住了 W2 那次故障。 R26/METHODOLOGY.md:39-40 声明 header-only 的 inline 与模板"没有跨包动态符号,不进入符号图,规模 NOT_AVAILABLE",弱符号绑定时序也在既有盲区里。而 _ZN17EWKCookieContentsD2Ev 恰恰是这一类。【推测】这意味着"960 个头文件到四处"的收敛,在方法上对这类符号是看不见的。建议在正文第七节把这条盲区显式写出来。评审完成。我核对过的原始材料包括：`API_0911/W2`（含 REPORT 与矩阵说明）、`ADAPTOR_0912/W1/W2/W3/W4`（含 W1 的源码摘录 `008_targeted.stdout`、W2 的故障原始记录 `006/007`）、`R80/REPORT.md`、`P7_0909/REPORT.md`、`P9_0911/MEMBER_LAYOUT_ZH.md`、`HQ_files/chromium_research_zh.md`、`docs/progress/W4`。下面逐问回答，"（确认）"表示我对照过原始材料或源码，"（推测）"表示我的推断。
+
+---
+
+## 总体意见
+
+机制成立，证据质量高于常规水平（有负向对照、双架构、失败记录未删、计数诚实）。**但有四处实质异议**：(1) "adaptor 是唯一零改动方案"不成立，"选择性不迁移"这一整类方案被正文遗漏；(2) 2.2 第三项的论证与你们自己的实验相矛盾；(3) 12 场景缺两个我对照源码确认的 expiry 分支；(4) 正文按"两套标准库"建模，但 Chromium 自带 libc++ 用 `__Cr` 命名空间，EWK 反向 adaptor 面对的实际情况是三方 flavor。详见各问。
+
+---
+
+## 甲、方案可行性
+
+### 第 1 问：机制与证据
+
+**机制成立，"机制可行（限已测范围）"的表述合格。**（确认）
+
+- 类型系统层面无矛盾：两个 TU 各见一套 std 头文件，中间只传 POD，各自构造/销毁。Boost 真实 provider 双向 4 格 20 次、每次 maps + `dladdr` + `LD_DEBUG=bindings` 交叉核验（`API_0911/W2/REPORT.md`）；EWK 12 场景 360 次观察（`ADAPTOR_0912/W2/REPORT.md`）。
+- **负向对照是这份材料里最有价值的证据**：故意丢旧状态的模式在真实 provider 上稳定产生 40/60 错值且"不崩"——它证明的不是 adaptor 可行，而是**测试方法能检出静默错值**。这比全绿矩阵更能支撑结论。
+- 但"可行"的支撑范围恰好等于测过的范围，有三个机制层面（非场景层面）的未测维度：
+  1. 异常路径：绑定日志显示 shim 的 `__gxx_personality_v0` 绑到了 libc++abi 的 `LLVM_22`（`API_0911/W2/REPORT.md` "本次如何控制"节，确认）——异常在边界上的实际行为未测；
+  2. 全局 `operator new/delete` 符号抢占：两套运行时都导出这些符号，绑定由装载顺序决定。实验纪律性地避免了交叉释放，但生产进程里第三方 DSO 不受此纪律约束（推测其后果大概率良性——两家都最终调 malloc/free——但无实测）；
+  3. aarch64 无任何运行数据。
+
+### 第 2 问：12 场景的覆盖
+
+**字段保留语义部分覆盖完整，expiry 分支有缺口。**
+
+我对照 `ewk_cookie_parser.cc` 源码摘录（`ADAPTOR_0912/W1/raw/008_targeted.stdout`，函数体 30–80 行）逐分支核对：
+
+- name/value 无条件覆盖（36–37 行）、domain/path `has_value` 条件覆盖（40–49 行）、显式空≠缺失、拒绝分支位于任何写入之前（33–34 行）——场景 0–7、11 与这些分支一一对应，设计质量好。（确认）
+- **缺口 1（确认）：Max-Age=0**。源码 62–64 行的条件是 `max_age_val 0`，0 会走 `expiry = time(nullptr) + 0`（≈当前时刻），与 session 的 `expiry=0` 是可观察地区分的两个结果。场景 10 只测了 Max-Age=60，0 这个边界值恰恰踩在条件分支的等号上。
+- **缺口 2（确认）：Max-Age 与 Expires 同时出现**。源码 54–69 行是 if/else 结构，Max-Age 存在时 Expires 整体被忽略；场景 9、10 分别单测，组合输入未测——这是唯一能检验"优先级接线是否正确"的输入。
+- 缺口 3（确认分支存在，但认为测试价值低）：非法 Max-Age 字符串（"abc"、负数）走 66–67 行 `expiry=0`，与 session 分支（77 行）可观察结果相同，字段层面不可区分。
+- 缺口 4（推测，风险低）：字段值含非 UTF-8 字节/内嵌 NUL。复制层是指针+长度，理论透明，Boost 实验测过内嵌 NUL（`API_0911/W2`），但 EWK 的 12 场景未含此类输入。
+- 补充建议（不是漏洞）：场景序列缺"**先成功后拒绝**"（成功写入 → 再用拒绝输入调用 → 旧字段应全部保留）。场景 11 是成功+成功；成功→拒绝最接近真实复用错误模式。该性质目前由静态源码（33–34 行的位置）+ 场景 5–7 联合支撑，加一个运行序列更稳。
+
+### 第 3 问：2.2"不成立的做法"
+
+- **第一项（自定义兼容类型）：严密，无异议。** C++ 类型同一性按定义判定，布局仿造类型不是 `std::string`；靠伪造同名/同修饰则构成 ODR 违反。
+- **第二项（单 TU shim）：结论成立，表述需修正。** "该编译单元只能链一套标准库"不精确——准确说法是"一个 TU 只能看到一套 std 头文件定义；编译时类型选择与最终动态链接是不同阶段"。你们自己在 `API_0911/W2/REPORT.md` 第 2 条已作此修正，正文应沿用修正版。
+- **第三项（provider 双版本）：同意你们自评的"未穷尽"，并且要加强——现有证据方向上反驳"不成立"。**（确认）`API_0911/W2` 的实验形态本身就是"两个不同标准库编译的 `.o` 链进**同一个 `.so`**"并双向运行通过——这正是"provider 同时导出两套版本"的最小构造。因此"两套分属不同项目、同时编进去会冲突"作为论断与你们自己的实验相矛盾。真正未解决的问题是：(i) 同名弱符号合并（EWK 初版实测，`ADAPTOR_0912/W2/raw/007_object_symbols.stdout` 显示两个 TU 各有 `WEAK HIDDEN` 的 `EWKCookieContents::~EWKCookieContents()`）；(ii) `operator new/delete` 抢占；(iii) 异常运行时共存。这三条都不是"编不进去"，而是"编进去之后的行为契约"。**建议把该项从"不成立"降级为"adaptor 的同 DSO 部署形态，附三条未测行为契约"** —— 这会直接改变第 4 问的答案空间（见方案 B）。
+
+---
+
+## 乙、更好的方案（重点）
+
+先把"应用零改动"的方案空间归纳完整：**避开边界、桥接边界（adaptor 属此类）、转移边界到装载期、声明不支持**。正文只覆盖了后三类中的两类。
+
+### 第 4 问：别的零改动方案
+
+**方案 A（新，建议正式纳入对比）：选择性不迁移 —— 避开边界，而不是桥接边界。**
+
+- **机制**：已确认的两条"应用/插件侧跨库"边界——`ewk_parse_cookie` 与 `SetSyncBinaryReply`——都在 chromium-efl 一个组件内。让 chromium-efl 整体保持 libstdc++ 构建，平台其余部分迁 libc++。旧应用与 EWK 之间根本不存在跨库边界，不需要任何转换代码和语义复刻。
+- **与 adaptor 的差别**：不是"转换做得更好"，而是消去被转换的对象。对该边界，静默错值风险从"需逐接口防控"降为零；成本从"逐接口语义复刻+永久回归"变为"web 进程长期装载两套运行时的内存与维护"。
+- **依据与先例**（确认）：`ADAPTOR_0912/W1/REPORT.md` 已核实 `build/config/c++/c++.gni:17,28` 的 `use_custom_libcxx` 配置入口存在、Tizen 默认 `false`——即**现状就是 libstdc++构建**，"不迁"是零构建改动，不是新工程。R80 的触发条件分析（故障发生在 provider 与 consumer 非原子迁移时）逻辑上等价支持：不迁就没有非原子性。Dali binder 链同理：`ADAPTOR_0912/W1` 显示完整 binder 本来就是整链 GNU 依赖，"binder 不迁"是同形态选项。
+- **风险（未核实，明确标注）**：上游 Chromium 对 libstdc++ 构建路径的支持趋势——若上游移除该构建方式，此方案在下一次大版本 rebase 时死亡。我检索未得确证。这一点必须在采纳前查清，它决定方案 A 的寿命。
+- **验证方法**：构建矩阵（chromium-efl 保持 GNU + 平台 libc++）；用 R22/R80 的 ELF 图方法复核该组件没有其他跨库 consumer 边；现有 12 场景在同侧直接跑（不需要 adaptor）。
+- **局限**：若平台目标本身就是"Chromium 也必须迁 libc++"（例如为了跟随上游安全更新），方案 A 与目标冲突——这是业务权衡。但正文第六节的对比表里没有这一行，而对这两条已确认边界，它在风险、工作量、验证成本三个维度上都优于 adaptor。
+
+**方案 B（部署变体，诚实说明：不是新机制）：同 DSO 双版本导出 + 符号版本路由。**
+
+- **机制**：迁到 libc++ 的 provider DSO 内同时包含一个 libstdc++ 编译的兼容 TU。旧修饰名入口（或对 `extern "C"` 的 `ewk_parse_cookie`，用符号版本区分新旧）由版本脚本自动路由：旧二进制绑到兼容入口，新应用直连新入口。
+- **与 adaptor 的差别**：转换逻辑、语义复刻、验证成本**完全相同**。省掉的是独立 adaptor DSO 的部署与路由问题（正是第 9 问第 1 条风险的解），以及新应用的转换开销。
+- **先例**（确认）：glibc 兼容符号——`memcpy@GLIBC_2.2.5` 与 2.14 行为分裂，用版本脚本让旧二进制绑定旧语义（GNU ld 版本脚本机制见你们已引用的 [binutils VERSION 文档](https://sourceware.org/binutils/docs/ld/VERSION.html)）；libstdc++ ABI 是同库双版本的命名空间实现（[GCC Dual ABI](https://gcc.gnu.org/onlinedocs/libstdc++/manual/using_dual_abi.html)）；单 DSO 双 TU 共存由 `API_0911/W2` 实测。
+- **验证**：在现有矩阵上加三项——`LD_DEBUG=bindings` 确认新旧二进制各绑到正确版本、版本 VERNEED 回归、`operator new/delete` 抢占探针。
+
+**方案 C（弱，列出备查，不推荐）**：应用侧 LD_PRELOAD 兼容层。把 adaptor 的接口 TU 做成 preload 库拦截旧符号；Tizen 应用经 launcher 启动，技术上可注入。先例：Steam Runtime / Flat 兼容层。但它把平台问题转嫁到每个应用的进程环境，责任边界和可调试性差。
+
+**结论**：我没有找到机制上不同于"转换 / 避开 / 改约"三类的第四种零改动方案。但"避开"这一类在正文中被遗漏了，而对已确认的两条 chromium-efl 边界它可能是最优解。
+
+### 第 5 问：实施方式能否更好
+
+转换代码自动生成——分三层，可行性递减：
+
+1. **序列化骨架（可生成，确认有先例）**：签名 → POD 封送的骨架可从 DWARF 或头文件解析推导。先例：libabigail（`abidw`/`abidiff` 从 DWARF 提取 ABI 描述并做差分，[sourceware.org/libabigail](https://sourceware.org/libab/)）、SWIG、rust-bindgen、CsWinRT 源生成器。对 EWK 这类"4 字符串 + 整数"的结构，骨架生成无障碍。
+2. **布局漂移守卫（可生成）**：从两侧构建的 DWARF 自动生成 `sizeof`/`offsetof` 静态断言进 CI，上游换版本即响亮失败。这条正文没有，成本低、收益直接。
+3. **语义层（不能从头文件推导，EWK 就是反例）**：`has_value` 条件覆盖（`ewk_cookie_parser.cc:40-49`）在头文件中不存在，任何纯头文件生成器都会产出你们初版那个错误协议。**可行的不是"生成语义"，而是"生成差分探针"**：把头文件可推导的空间（字段组合、预填非空旧值、重复调用、拒绝输入）自动展开成变形测试，以同侧真实 provider 为 oracle——即把你们手工做的负向对照方法论自动化。"预填旧值 + 缺省输入"这一条变形规则就能机械地发现初版那类 bug，无需事先读懂隐含约定；但发现差异后仍要人工读源码定性——生成只能缩小要读的范围，不能免除。
+
+另外两个正文未提的实施改进：
+
+- **把 12 场景（及其反方向版本）做成随 provider 源码一起跑的构建时测试**，上游 rebase 自动触发。这比第四节"跟进上游时多检查一处"的人工纪律可靠——静默错值的特征就是人工检查最容易漏。
+- **符号版本**（方案 B）只减少路由维护，不减转换维护——不要期望它语义复刻问题。
+
+### 第 6 问：不能覆盖的类别有没有别的解法
+
+- **异常：有一个你们材料里已引用、但未纳入第五节的方向——共用低层 C++ ABI 运行时。**（推测为主，明确标注）`API_0911/W2/REPORT.md` 引用了 [LLVM 开发者关于 FreeBSD 让两套标准库共用 libcxxrt的记录](https://lists.llvm.org/pipermail/cfe-dev/2016-August/050278.html) 和 [libcxxrt 项目](https://github.com/libcxxrt/libcxxrt)；libcxxrt 的设计目标之一正是跨库异常互操作。若 libstdc++ 与 libc++ 跑在同一套 `__cxa` 运行时上展开机制、foreign exception 处理有真实先例。**限定**：这解决"展开机制"，不解决 std 类型布局和 typed catch 的 typeinfo 一致性；且 Tizen 现状是 libsupc++ + libc++abi 两套，换运行时是平台级手术。建议列为"值得一次 spike 的方向"，不是现成答案。
+- **补充一个第五节没列类别（推测，已查接口中未发现实例）：头文件内联状态的分裂。** inline 函数内的函数级 static、inline 变量、模板静态成员，在两份头文件实例化下每侧一份。若接口语义依赖这类全局状态（计数器、注册表、单例），adaptor 两边看到的是分裂状态，转换无法合并。W3 判据表第 10 行"同名定义合并"讲的是链接器合并，与此不同——建议把它加入第五节清单和逐接口判据。
+- 迭代器、所有权转移、多态/虚调用、future/promise：**同意原判，无零改动解法**。唯一路径是句柄/代理，而那就是设计。无异议。
+
+---
+
+## 丙、遗漏与风险
+
+### 第 7 问：已查清但未纳入的材料
+
+1. **`HQ_files/chromium_research_zh.md` 与 `docs/progress/W4`（Chromium/AOSP libc++ 调研）——最重要的遗漏。**（确认）Chromium 自带 libc++ 的 ABI 命名空间设为 `__Cr`、ABI 版本 2，且"组件构建时可共享链接，非组件构建采用静态形式"（chromium_research_zh.md"构建和退出机制"节；W4 集成点 C04 也记录了 ABI namespace/库名隔离）。这意味着"平台迁到 libc++"后，chromium-efl 内部很可能既不是 libstdc++ 也不是平台 libc++（`__1`），而是**第三种 flavor**。直接影响：WK 反向 adaptor 的实现层 TU 必须匹配 Chromium 实际使用的那套标准库；若它是 `__Cr` 静态链接且符号隐藏，"平台侧加一个独立 adaptor DSO"的部署形态不成立，转换层只能放进 Chromium 构建内部。**建议把"确认 chromium-efl 迁移后的实际标准库 flavor 与链接形式"列为方案前置条件。2. **`docs/progress/R110`（四项待决事项背景材料）**：与方案选型直接相关，正文未引用。我未通读全文，只确认其存在与主题（标注：未核对）。
+3. R22 ELF 图（90 条 Boost 符号相交边）经 R80 间接引用，可接受；但"分批迁移即可达"的论证正文未带，它支撑问题的普遍性，不影响 adaptor 本身。
+
+### 第 8 问：结论超出证据之处
+
+1. **第六节"adaptor 是唯一'应用零改动'且'平台侧可实施'的方案"——过强，这是正文最重要的超界表述。** 方案 A（选择性不迁移）同样零改动、平台侧可实施， W1 的构建配置事实支撑。
+2. **2.2 第三项**——你们已自标，我的加强意见见第 3 问。
+3. **第一节"Native 四族的内联包装……不传标准库对象，无需处理"**——底层结论限定在"所选边"（`ADAPTOR_0912/W3/REPORT.md` 明确写"非全族运行安全声明"），正文把所选边泛化成了四族整体。建议改回"所选边"。
+4. **第一节"传递 C++ 对象时会静默出错"的"会"字**——R80 同时记录了反例形态：`std::string` 按值返回时 cxx11 ABI tag 进入符号名，表现为响亮的链接失败而非静默错值（R80REPORT.md"过程异常"末节）。建议改为"可能静默错值，也可能响亮失败；本方案针对前者"。（`API_0911/W2/REPORT.md`"错误表现"行的表述是正确的。）
+5. **3.2 的叙事与归档记录有轻微出入**（确认）：正文写"第一版 adaptor 失败了……复用输出结构时 5/5 字段静默改变"。而 `ADAPTOR_0912/W2/REPORT.md` 的记录是：初版 adaptor 的失败形态是 **WEAK HIDDEN 析构合并导致 free 内 SIGSEGV**（`native_matrix.json` 记初版两模式各 5 次故障；`raw/006_debug_state.stdout` 1264–1266行实测栈）；"复用时字段静默改变"来自**故意关闭初始状态复制的负向模式**（20/60 正确）。结论（必须复刻语义）不受影响，但叙事把两件事合并了，评审材料应与归档记录严格一致。
+6. 3.1 四格矩阵、"360 次场景观察"及"12 场景≠12 接口"表述与底层一致，合格。
+
+### 第 9 问：部署时最可能出什么错
+
+按可能性排序，每条给到接口/场景/错误表现：
+
+1. **`ewk_parse_cookie` 的同名 `extern "C"` 符号在灰度期被抢占**（最高风险，确认机制前提）。场景：分阶段升级期间，系统内同时存在 GNU chromium-efl DSO、新 libc++ DSO、adaptor DSO 中的任意两个；`ewk_parse_cookie` 是 `extern "C"`（`ewk_cookie_parser.cc:26-31`），符号名不带任何类型信息，旧应用按名字绑到先装载的导出。错误表现：绑到未包装的 libc++ 导出时——链接装载全部成功、进程不崩，cookie 的 domain/path 字段读到垃圾或旧值残留，**即 R80 最小用例的线上版，且因 `extern "C"` 连符号名防火墙都没有**。`API_0911/W2` 已明确"同名导出没有参数修饰名区分条件……本轮未实现/验证这种路由"。对策：方案 B 的版本脚本，或部署上原子替换 + 打包期 lint（全系统该符号导出者唯一）。
+2. **生产构建配置重新触发同名弱符号合并**（确认有实测先例）。场景：实验用特定 `-O`/编译器通过，量产镜像换优化级别或开 LTO；adaptor 两个 TU 若都化同一外部包装类（或未来维护中有人加回去），WEAK HIDDEN 定义被合并。错误表现：`free` 内 SIGSEGV——`raw/006` 的实测栈就是这个样子；它随内联决策漂移，可能 x86_64 全绿、armv7l 量产才（或反之）。
+3. **上游 chromium-efl rebase 改变 `ewk_parse_cookie` 语义而 adaptor 滞后**（确认错误的静默性）。场景：上游改拒绝规则或优先级（SameSite 进入此函数、Max-Age 解析改动），平台打包时 adaptor 未同步。错误表现：只在"复用输出 + 缺省属性"类边缘静默丢字段——负向对照已证明这类错在"固定样本+不崩"的冒烟测试下全绿。对策：第 5 问的构建时差分测试。
+4. **`SetSyncBinaryReply` 在真实 receiver 未跑的情况下随平台发布**（确认判定未闭合）。场景：插件经接口表回调进入引擎，instance 失效或同步消息序错乱。错误表现：插件偶发拿不到同步回复——数据丢失型静默错，不崩、难复现。底层判定本来就是"需进一步验证"，风险在发布决策越过该判定。
+5. **aarch64 无实测随主力产品镜像发布**（确认无数据）。armv7l 物理板通过不外推 aarch64（不同 ABI、不同结构体传递规则）。错误表现未知这正是问题本身。
+6. **（推测）双运行时 `operator new/delete` 抢占与平台内存调试工具的交互**。量产进程第三方 DSO 装载顺序不可控，若发生跨运行时释放，glibc 下大概率良性，但平台内存检查工具可能误报或堆元数据异常。无实测依据，列为观察项。
+
+---
+
+## 结论
+
+- **adaptor 桥接机制可以采纳**，其证据链在所述限定内成立；
+- 但决策前应先把**方案 A（选择性不迁移）**补进对比表做正式成本比较——对已确认的两条 chromium-efl 边界，它很可能优于 adaptor，正文遗漏这一整类方案是最主要的实质缺陷；
+- 若采纳 adaptor，落地形态优先考虑**方案 B（同 DSO + 符号版本路由）**；
+- 部署前置项：补 Q2 的两个 expiry 场景、Q9 第 1 条的导出唯一性检查、确认 Chromium 迁移后的实际标准库 flavor（`__1` 还是 `__Cr`、共享还是静态）、aarch64 实测、反方向 EWK 实测。
+
+上面是Kimi Code的review意见
+
+## 总体结论
+
+**对“两侧各用本侧标准库操作对象，中间传明确的数据协议”这一机制，无异议。现有证据足以支持有限范围的机制可行性。**
+
+但当前正文有三项需要实质修正：
+
+1. **adaptor 不是唯一能实现应用零改动的方案**，平台内部相关组件共同迁移、保留 GNU 兼容组件及其依赖，也是候选。
+2. **EWK 的 12 场景没有覆盖全部语义**。本次静态评审发现，修订原型会读取可能未初始化的时间字段，并会替换原函数没有修改的字符串。
+3. **对象、虚调用、异常等不能靠字段复制解决，但不能据此判定所有代理方案都不成立。** W3 原报告对此比正文严谨。
+
+以下“已确认”指核对过源码或既有原始记录；“静态推导”没有重新运行验证；方案建议均不代表已在 Tizen 实施。本次没有修改文件、构建或运行测试。
+
+## 1．机制是否成立，证据是否足够？
+
+**成立，足以证明已测机制，尚不足以证明旧应用透明部署完成。**
+
+我核对了 Boost 两侧转换源码和原始输出：provider 侧构造本侧 `wstring/string`，返回字节在 caller 侧构造本侧字符串；两个方向分别使用真实的 libc++、GNU provider。原始日志确有精确 provider 路径、内嵌 NUL 的 `610062`、长度比较和析构后标记。[provider 侧源码](/home/toolchain/development/libcxx_runtime_validation/docs/progress/API_0911/W2/snapshots/scripts/provider_side.cpp:8)、[GNU→libc++ 原始输出](/home/toolchain/development/libcxx_runtime_validation/docs/progress/API_0911/W2/raw/gnu_to_cxx_shim_1.stdout:1)、[反方向输出](/home/toolchain/development/libcxx_runtime_validation/docs/progress/API_0911/W2/raw/cxx_to_gnu_shim_1.stdout:1)。
+
+EWK 的统计也成立：两架构合计 **120 次修订 adaptor 场景观察、120 次同侧对照、120 次负向对照**；360 次不是全部成功的 adaptor 调用。[原始汇总](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W2/summary.json)。
+
+但“两个编译单元各链自己的标准库”应更准确地写成：
+
+> 两侧分别使用对应头文件和 ABI 编译；最终产物还必须控制同名符号、ABI 支持库和真实入口的绑定。
+
+编译单元不是动态链接隔离单元。现有绑定日志已显示 shim 的 `__gxx_personality_v0` 绑定到 libc++abi，不能认为 GNU TU 自动拥有独立的 GNU 异常运行时。[绑定日志](/home/toolchain/development/libcxx_runtime_validation/docs/progress/API_0911/W2/raw/008_binding_trace.stderr:3730)。Clang 官方也区分了“两套标准库共存”和“多个 C++ ABI 支持库共存”。[官方说明](https://clang.llvm.org/docs/Toolchain.html#c-abi-library)。
+
+## 2．EWK 的 12 场景是否覆盖全部语义？
+
+**没有。最重要的遗漏不只是增加几种 cookie 文本，而是输出对象的合法初始状态和未修改字段的行为。**
+
+### 2.1 修订原型新增了未初始化读取
+
+以下是普通调用方式：
+
+```cpp
+EWKCookieContents c;  // 没有 {}
+if (ewk_parse_cookie("sid=x", c)) {
+    use(c.expiry_date_utc);
+}
+```
+
+**已确认事实：**
+
+- 头文件的 `expiry_date_utc` 没有默认初始化器，参数还标为 `[out]`。
+- 原函数成功路径写入 expiry，拒绝路径不读取它。
+- 修订 frontend 在调用 backend 前，无条件读取 `out.expiry_date_utc`。
+- 现有场景都从已初始化输出开始，没有覆盖上述方式。
+
+依据：[原始头文件](/home/toolchain/development/libcxx_runtime_validation/docs/progress/P7_0909/stage2/raw/057_ewk_exception.stdout:39)、[真实实现](/home/toolchain/development/libcxx_runtime_validation/tmp/API_0911/W1_CONT/chromium_source/chromium-efl-1.1.144/tizen_src/ewk/efl_integration/public/ewk_cookie_parser.cc:54)、[frontend](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W2/snapshots/frontend.cpp:10)、[场景源码](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W2/snapshots/state_probe.cpp:7)。
+
+**静态推导：**原调用不需要读取未初始化值，adaptor 却引入了该读取；按材料使用的 C++20 规则，这是未定义行为。不能承诺它必然表现为某个固定错值。[N4861：不确定值](https://timsong-cpp.github.io/cppwp/n4861/basic.indet)。
+
+**修正方向：不要传入旧 expiry。** 拒绝时 frontend 不写它，成功时接收新值，已足以保持这里的原有行为。
+
+### 2.2 值相同，不代表未修改字段的行为相同
+
+考虑先保存一个长 Domain 的 `c_str()` 指针，再解析不含 Domain 的 cookie。
+
+原函数不修改 `cookie.domain`，旧指针继续有效。修订 frontend 却无条件 `swap` 四个字符串；长 Domain 的原缓冲区进入临时字符串，随后被销毁。**静态推导：旧指针会悬空，之后访问可能发生释放后使用。** 现有逐字节检查发现不了这种差异。[原函数条件赋值](/home/toolchain/development/libcxx_runtime_validation/tmp/API_0911/W1_CONT/chromium_source/chromium-efl-1.1.144/tizen_src/ewk/efl_integration/public/ewk_cookie_parser.cc:39)、[无条件提交](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W2/snapshots/frontend.cpp:20)。
+
+原报告已经注明地址稳定性未验证，这个限定本身没有错误；上述是把该限制具体化后的反例场景。
+
+### 2.3 尚未覆盖的正常解析分支
+
+| 场景 | 应核对的行为 |
+|---|---|
+| 同时提供 Max-Age、Expires | Max-Age 优先 |
+| Max-Age 为空、负数、含尾随非数字，同时有合法 Expires | 当前源码把失败转换设为 session expiry，不回退 Expires |
+| 显式空 Path、重复 Domain/Path | 空与缺省的区别、重复属性的选择 |
+| 输入内嵌 NUL、名称和值长度边界 | 拒绝行为及五字段保持 |
+
+前两项直接对应 parser 的 54–77 行；底层 `ParsedCookie` 还检查终止控制字符和长度。[底层检查源码](/home/toolchain/development/libcxx_runtime_validation/tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/net/cookies/parsed_cookie.cc:517)。
+
+不必为 adaptor 重做整个 Chromium 测试体系；可以复用解析器用例，对同侧原实现和桥接实现做差分检查。**但“覆盖全部语义”应改为“覆盖所列正常返回与复用场景”。**
+
+## 3．三项“不成立”的论证是否严密？
+
+| 做法 | 评审 |
+|---|---|
+| 自定义兼容布局 string | **限定为普通 C++ 类型替换时，无异议。** 自定义类型不是原类型。但 EWK 是 C 链接名，不能仅用“签名对不上”排除手工 ABI 仿真实现；后者还须实现旧对象生命周期、长短串、分配释放等，远超布局仿造。 |
+| 单 TU shim | “同一套 `std` 定义直接解释两种对象”不成立；“一个 TU 只能链接一套标准库”不准确。它可以通过 C 接口调用另一套库的代码，隔离工作仍必须在某处完成。 |
+| provider 双版本 | **不能判定不成立。** 可以隔离两套实现、保留旧入口，并为新入口使用不同名称、版本或库身份。问题是如何隔离和路由，而非来自不同项目便必然冲突。 |
+
+实际上，[API W2 原报告第 19–25 行](/home/toolchain/development/libcxx_runtime_validation/docs/progress/API_0911/W2/REPORT.md:19)已经给出了这些必要限定，正文没有完整保留。
+
+双版本还须分清两种实现：
+
+- **两套完整 provider**：各自服务匹配的调用方，复杂 C++ 对象留在对应实现内部。
+- **两套 ABI 门面共享一个核心**：门面之间经稳定协议衔接，本质仍是 adaptor。
+
+GCC Dual ABI 证明了不同链接名称下两套实现可以共存，不能充当 libc++ 兼容开关；ICU 的多版本方案也使用符号重命名和对应依赖集合。[GCC Dual ABI](https://gcc.gnu.org/onlinedocs/libstdc++/manual/using_dual_abi.html)、[ICU 多版本设计](https://unicode-org.github.io/icu/userguide/icu/design#linking-against-multiple-versions-of-icu4c)。
+
+**EWK 的具体约束：**两个未经版本区分的 `ewk_parse_cookie` 调用不能靠参数自动辨别 ABI。可保留旧名称服务 GNU 应用，让平台新代码调用另名入口。符号版本负责选择入口，转换代码负责对象转换，二者不能互相替代。[GNU ld 文档](https://sourceware.org/binutils/docs/ld/VERSION.html)。
+
+## 4．有没有其他应用零改动方案？
+
+**有。建议先按边界归属选择方案，而不是所有候选接口都部署 adaptor。**
+
+### 方案 A：在既有 C／托管边界以内共同迁移平台组件
+
+**机制：**把仍相互传递 C++ 对象的平台组件迁到一致 ABI，应用继续调用原有 C、P/Invoke 或 JavaScript 接口。
+
+具体到材料：
+
+- **Dali/NUI**：保留 C# 所用库名、C 导出、参数编组和生命周期契约；迁移 binder 及实际相连的 Dali C++ 依赖。
+- **Web**：若引擎与相关原生插件均由平台控制，两端共同迁移，或者共同把内部回复表改为字节接口；JavaScript 应用不需要变化。
+
+**与 adaptor 的差别：**消除平台内部这条混库边，不逐次转换它上的 C++ 对象。
+
+**依据与先例：**现有 binder 已经把 Control 的创建、访问、删除放在 C 入口之后；Native 所选四族也已有本地 C++ 包装调用 C 接口的结构。[真实 Control 包装源码](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W3/raw/002_workload.stdout:16)。FreeBSD 的迁移文献也采用明确区分 STL 边界和 C／不含 STL 的边界的方法。[Chisnall，*LLVM in the FreeBSD Toolchain*，§3](https://2016.asiabsdcon.org/papers/abc2014-proc-all.pdf#page=13)。
+
+**验证方式：**用未重编的 C#／Web 应用验证原入口、对象创建删除、信号回调和二进制回复；检查真实加载集合中这些 C++ 边两侧一致。只换 core 已有失败记录，因此迁移集合须按实际调用关系确定。
+
+**限制：**若某个原生插件本身也是不可改的第三方二进制，这条边仍需兼容处理。
+
+**建议：这是 Dali/NUI 和平台自有 Web 插件应优先评估的方案。** 它不能直接消除旧 GNU 原生应用调用 EWK parser 的问题。
+
+### 方案 B：保留 GNU 兼容组件及其 C++ 依赖
+
+**机制：**旧应用继续加载旧 ABI 的 provider；平台新组件使用 libc++ 版本。保留旧 SONAME、符号版本及入口，让旧应用不必重新链接。两组之间仅通过已有稳定边界通信，必要时隔离符号解析范围。
+
+**与 adaptor 的差别：**旧 C++ 调用直接进入 GNU 实现；主要成本转为维护两套组件和依赖，而不是每接口复制与语义转换。
+
+**先例：**
+
+- FreeBSD 文献记载了向 libc++ 迁移时提供 9-COMPAT 库，并调整旧 libstdc++ 的 ABI 支持符号解析。[同篇 §3](https://2016.asiabsdcon.org/papers/abc2014-proc-all.pdf#page=14)。
+- ICU 展示了多版本实现及其依赖并存。
+- Android linker namespace 展示了依赖和符号解析隔离。[AOSP 文档](https://source.android.com/docs/core/architecture/vndk/linker-namespace)。
+
+这些分别是兼容库、多版本、隔离机制的先例，**不是 Tizen 完整部署已经成功的证明**。
+
+**验证方式：**选一个旧应用及其实际 provider 集合，保持应用二进制不变，核查直接链接和 `dlopen/dlsym` 的绑定身份，再验证对象、回调、异常和销毁；若同进程加载两套实现，还须验证全局状态和对象不会串用。
+
+**限制：**只保留 `libstdc++.so` 不够，接收旧对象的 provider 及相关 C++ 依赖也要保留。大型 Chromium 的兼容集合可能很大，成本尚无测量。若产品要求全部业务 provider 都必须迁至 libc++，这条路便不符合该额外约束。
+
+### 我的选择建议
+
+| 边界 | 优先路线 |
+|---|---|
+| 平台控制的 binder→Dali、引擎→插件 | 共同迁移或修改内部协议 |
+| 少量必须保持旧 C++ ABI的数据接口，如 EWK parser | adaptor，采用第 5 问的实现改进 |
+| 大量涉及对象身份、内联操作、所有权的不可改旧客户端 | 评估 GNU 兼容组件及依赖，再决定是否值得做全面代理 |
+
+没有证据表明某一种方案在全部边界上成本最低。
+
+## 5．adaptor 能否更好地实现、自动生成？
+
+**可以自动生成机械部分；不能只从头文件推出完整兼容契约。更重要的改进是让语义只由一处实现决定。**
+
+### 5.1 EWK：共享解析核心，返回“哪些字段被写入”
+
+建议在平台内部提供一个只传字节和标量的解析接口，结果包含字段值和更新标记：
+
+| 结果 | 旧 ABI 门面的操作 |
+|---|---|
+| 拒绝 | 不修改输出 |
+| 接受 | 写 name、value、expiry |
+| `has_domain` 为真 | 写 domain，包括显式空串 |
+| `has_path` 为真 | 写 path，包括显式空串 |
+
+更新标记应来自真实解析结果的 `Domain().has_value()`、`Path().has_value()`，**不能通过“字符串是否为空”或“是否等于旧值”猜测**。
+
+这能避免：
+
+- 读取旧 expiry；
+- 复制本来不需要的旧 name/value；
+- 为保留缺省字段而把它们往返复制；
+- 替换原本未修改的 Domain/Path。
+
+这是基于现有实现的**设计建议，尚未验证**。核心可以仍由 libc++ 编译；“提供 C 协议”不要求业务代码改写成 C。旧应用继续调用 GNU 门面，因此不需要采用新接口。
+
+若还要求保留异常时的部分写入，单个最终结果包仍不充分，需要另外设计赋值顺序与错误返回；不能把“最后统一提交”默认视为原语义。
+
+### 5.2 自动生成从什么推导？
+
+可使用以下三类输入：
+
+1. **两侧真实编译配置下的 AST**：函数、字段、引用、重载、回调签名和实际类型。
+2. **已审计的类型转换规则**：例如 string 的字节／长度、vector 的元素协议、对象句柄。
+3. **逐接口语义描述**：输入输出方向、条件写入、借用期限、失败保持、异常、回调线程和注销规则。
+
+Clang LibTooling 可用于按真实编译参数读取 AST；SWIG typemap 展示了按类型和参数模式复用转换规则的成熟做法。[LibTooling](https://clang.llvm.org/docs/LibTooling.html)、[SWIG typemap](https://www.swig.org/Doc4.3/Typemaps.html)。
+
+**EWK 是不能只靠声明生成的现成反例：**头文件写 `[out]`，实际部分字段具有保留旧状态的语义。源码控制流分析能辅助发现条件赋值和提前返回，但别名、间接调用、回调和异常路径不能默认分析完整。无法确定时，应标为需人工规则。
+
+自动化适合生成两侧封送代码、类型专用转换器、入口清单和差异报告；验收仍应对照真实 provider，而非只检查生成代码自己的往返一致性。
+
+### 5.3 符号与构建维护
+
+保留旧入口，将新核心设为明确的私有入口；两侧采用独立构建目标和受控导出集合。符号版本可以减少入口选择的歧义，**不能减少语义规则本身的维护**。
+
+尤其不能把 `hidden` 当作完整隔离：现有 EWK 实验已经证明，同一 DSO 内同名弱析构定义仍可能合并。
+
+## 6．第五节“不能覆盖”的类别有没有解法？
+
+**有条件的解法存在，但它们属于操作代理或状态协议，超出了单纯字段复制。**
+
+| 类别 | 可行的条件性思路 | 不能自动保证的部分 |
+|---|---|---|
+| 异常 | 在所属侧捕获已知异常，传类型编号和数据，在调用侧重建本地异常 | 任意用户异常类型、对象身份、部分写入、取消强制展开 |
+| 智能指针 | 调用侧拥有本侧代理和控制块，通过释放入口管理另一侧对象 | `use_count`、弱引用、别名所有权、默认删除器作用于真实远端类型 |
+| 多态对象 | 对象留在实现侧；调用侧保持旧 ABI 代理，方法和回调经协议转发 | 直接字段访问、不可拦截的内联代码、任意继承和 RTTI |
+| future/promise | 返回调用侧本地 future，由桥接状态把结果或异常交给本地 promise | deferred 执行、线程退出就绪、broken_promise 和销毁同步语义 |
+| 迭代器／引用 | 容器和迭代器留在一侧，暴露操作协议；部分只读场景可用本地快照 | 旧应用直接执行内联迭代器操作时，无法自动保持实时共享及失效规则 |
+
+**已核实先例：**UNO C++ bridge 将 C++ 接口映射到带 dispatch、acquire、release 的二进制接口，并处理输出参数和异常返回；LibreOffice 也明确存在多种 C++ ABI bridge。[UNO bridge 文档](https://wiki.openoffice.org/wiki/Documentation/DevGuide/AdvUNO/UNO_C%2B%2B_Bridges)、[LibreOffice bridges](https://docs.libreoffice.org/bridges.html)。
+
+该先例支持“行为可以代理”，不证明任意既有 Dali C++ 类都能透明代理。
+
+此外，异常跨边界并非一概“两套 RTTI 独立，所以不可能”：FreeBSD 的共享 ABI 支持库方案曾支持符合条件的跨库异常。它不能证明当前 Tizen 双 runtime 配置安全，但足以反驳绝对不可能性。
+
+因此第五节应改为：**这些类别不由当前字段复制方案覆盖；部分可通过平台内部协议解决，部分受旧应用内联代码和对象布局限制。**
+
+## 7．有没有已查清但正文没纳入的材料？
+
+**有，且影响方案规模判断。**
+
+### 7.1 已发生的同名析构合并故障
+
+两个对象文件都生成了同名 `EWKCookieContents::~EWKCookieContents()`，属性为 `WEAK HIDDEN`；回溯显示 backend 析构进入 `free` 后崩溃。修订 front 改用四个独立字符串才避开该问题。[原始符号表](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W2/raw/007_object_symbols.stdout:1)、[故障栈](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W2/raw/006_debug_state.stdout:1264)。
+
+这是正文应明确纳入的实施条件。
+
+### 7.2 P7 并不只找到正文所列“四处”
+
+我核对了以下原始声明：
+
+| 已记录的其他边界 | 原始材料 |
+|---|---|
+| bundle：`GetString(const std::string&)`、`GetKeys()` 返回 vector | [bundle 头摘录](/home/toolchain/development/libcxx_runtime_validation/docs/progress/P7_0909/stage2/raw/085_native_bundle.stdout:10) |
+| LWE：`EvaluateJavaScript` 传 string、function 回调 | [精确声明](/home/toolchain/development/libcxx_runtime_validation/docs/progress/P7_0909/stage2/raw/114_lwe_api_exact.stdout:19) |
+| ChartAxis：`SetLabels/GetLabels` 传递 `vector<Dali::String>` | [原始声明](/home/toolchain/development/libcxx_runtime_validation/docs/progress/P7_0909/stage2/raw/052_chart_std.stdout:37) |
+| cion：`SendData` 传 vector，`TryConnect` 传 shared_ptr | [原始声明](/home/toolchain/development/libcxx_runtime_validation/docs/progress/P7_0909/stage2/raw/084_native_cion.stdout:18) |
+| component-based：虚方法返回 `map<string, unique_ptr<FactoryBase>>` | [原始声明](/home/toolchain/development/libcxx_runtime_validation/docs/progress/P7_0909/stage2/raw/064_native_component.stdout:18) |
+
+**这些是已确认的边界候选，不是已确认的正式 SDK 开放接口或实测故障。** SDK 未定没有错误；正文应把“四处”写成“本方案选取的四组分析对象”。
+
+### 7.3 其他应保留的事实
+
+- Dali 六个 Get 重载存在失败保持输出的条件，标量接口也需要语义协议。[原始实现摘录](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W2/raw/005_get_state.stdout:7)。
+- 只替换 Dali core 的完整链曾因 `Scene::GetFrameRenderedCallback(...)` 缺符号而无法加载。[ARM 原始错误](/home/toolchain/development/libcxx_runtime_validation/docs/progress/API_0911/W1_CONT/raw/arm_physical_dali_full_gnu_to_cxx_1.stdout:49)。
+- P9 区分了既有大小测量与成员级静态解释；“把大小改成相同不足以兼容”的结论无异议，不应扩大为完整布局仿真已经得到普遍不可能性证明。
+
+## 8．哪些结论超出证据？
+
+除前面已经说明的“全部语义”“唯一方案”“整对象不适用”外，还有以下几项：
+
+| 正文表述 | 应收紧为 |
+|---|---|
+| “深入了 27 个包族” | 27 是最初建议范围；第二阶段深入 Dali/NUI 8 族、Web 3 族，Native 12 族快速扫描，其余 4 族未按原计划展开。[阶段二报告](/home/toolchain/development/libcxx_runtime_validation/docs/progress/P7_0909/stage2/REPORT.md:5) |
+| “每次调用一次数据复制” | 当前 EWK 复制输入、四个初始字符串、四个返回字符串，另有 provider 自身操作；不能概括为一次。[backend](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W2/snapshots/backend.cpp:16) |
+| “上游跟进不是额外负担” | 增加了 ABI、转换协议、符号绑定和兼容回归的维护职责。“本来打包”不能证明这些增量为零。[W3 维护说明](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W3/REPORT.md:74) |
+| “改成 C 接口，应用必须改” | 若删除旧接口并要求应用采用新接口，则成立；若平台内部采用 C 核心并保留旧 ABI 门面，应用可以不改。 |
+| EWK 复用时“5/5 字段静默改变” | 原记录是五次调用均出现 domain/path 丢失，不是五个字段全部改变。[原实验报告](/home/toolchain/development/libcxx_runtime_validation/docs/progress/API_0911/W1_CONT/REPORT.md:50) |
+
+真实 libc++ EWK、浏览器实例、aarch64、异常和并发等已经明确标注的缺口，**我将其视为限制，不作为材料错误**。
+
+## 9．部署时最应防范哪些具体问题？
+
+以下列出具体触发方式和后果；推导场景没有被冒充为实测。
+
+| 接口／场景 | 会出什么错 | 依据性质 |
+|---|---|---|
+| **EWK：旧应用按原方式加载库，未执行探针专用配置** | 若没有自动接入兼容入口，会直接把 GNU 对象交给 libc++ 实现；若误用全局同名查找，还可能查到 wrapper 自身而递归 | 部署推导。现有探针显式加载并调用配置函数，尚非旧 ELF 的原样运行。[探针](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W2/snapshots/state_probe.cpp:11) |
+| **EWK：调用者使用 `EWKCookieContents c;`** | adaptor 读取未初始化 expiry，引入未定义行为 | 本次静态发现，见第 2 问 |
+| **EWK：保存长 Domain 的字符指针，随后解析缺 Domain 的输入** | 字段字节仍相同，但原缓冲区被释放；保存的指针悬空 | 本次静态推导，见第 2 问 |
+| **EWK：两侧再次生成同名包装类析构** | 链接时选中错误布局的析构，释放错误地址并崩溃 | 既有原始实验已发生；`hidden` 未能防止 |
+| **SetSyncBinaryReply：只包装某个符号，没有替换真实注册表入口** | 插件继续通过函数表把 GNU vector 直接交给 libc++ receiver，转换被绕过 | 源码推导。真实调用在 `g_sync_messaging->SetSyncBinaryReply`。[注册及调用链](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W1/raw/030_registration.stdout:165) |
+| **SetSyncBinaryReply：把借用字节指针缓存到回调返回之后** | 插件局部 vector 销毁后，回复读取悬空数据；可能得到错字节或崩溃 | 源码推导。原 receiver 会把 reply 复制进 instance，随后返回路径取出。[真实 receiver](/home/toolchain/development/libcxx_runtime_validation/tmp/API_0911/W1_CONT/chromium_extension_source/chromium-efl-1.1.144/tizen_src/chromium_impl/components/xwalk_extensions/browser/xwalk_extension.cc:338) |
+| **Dali `Get(bool&)`：Value 为 STRING，旧输出为 true，桥接代码失败后仍拷回零值** | 返回 false，同时把原 true 改成 false，产生静默状态变化 | 条件性源码推导；原实现不写该输出 |
+| **EWK：把实验异常策略原样部署，分配失败被转换为 runtime_error** | 原本捕获 `bad_alloc` 的调用者可能捕获不到；原函数可能已有部分写入，而 adaptor 保持旧输出 | 原型策略差异已确认，具体失败运行未测。[错误策略](/home/toolchain/development/libcxx_runtime_validation/docs/progress/ADAPTOR_0912/W2/REPORT.md:36) |
+
+**最终建议：通过 adaptor 的机制选型评审，暂不认定当前原型已完成旧应用透明兼容。** 平台内部边优先共同迁移；EWK 保留旧 GNU 入口，改进为由真实解析核心提供条件更新信息；复杂旧 C++ 对象接口同时评估 GNU 兼容组件方案。部署验收应使用未改动的旧应用走原加载路径，补齐上述具体场景。
+
+上面是Codex的review意见
+Chromium 的对照值得一提。 P5_0909/reports/chromium_research_zh.md 记录上游 Chromium 把 libc++ 的 ABI 命名空间设为 __Cr、ABI 版本设为 2 来隔离符号,而 Tizen 的 chromium-efl 明确不走这条路,use_custom_libcxx 默认是 !is_tizen,42 个 ELF 全部依赖 libstdc++.so.6、没有一个依赖 libc++.so.1。这是内联命名空间隔离最现成的先例,就在你们打包的这个组件的上游里。
+LIBCXX_CXX_ABI=libsupc++ 全树没有任何评估。 检索确认一处都没有,平台固定用 libcxxabi。这是我提的建议里唯一完全没被碰过的方向。
+五、修订后的下一步顺序
+我把上一条回复的建议顺序改一下,理由是现在有了更明确的靶子:
+
+试 _LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION=2,拿 R78 那个退出 12 的用例当验收。这是唯一一个"有已实测失败、有明确假设、改一个构建开关"的组合。
+跑空消息异常那个一行实验,验证我上一条说的 _S_empty_rep_storage 释放路径。
+把正文改回 W4 正稿的表述,并把 R110 的五方案表与 API_0911/W3/OPTIONS.md 的逐接口设计接回第六节。第六节"唯一"那句必须去掉。
+在正文第三节加上 R110 的四种故障形态,特别是"有限样本精确通过",并说明 5 次重复的分量。
+补迁移的成功判据。
+veneer 原型与第 2 问那几个遗漏场景。
+最后重申我没有异议的部分,而且现在比上一条更肯定:这个项目的原始工作质量很高,R78、R110、R112、R113、R39 这几轮都是设计干净、自限严谨、失败记录不删的实测。问题完全出在 adaptor_proposal_for_review.md 这一层。它比它引用的材料弱,也比它没引用的材料弱得更多。 我建议的不是补做实验,主要是把已经做完的东西接回去。
+
+上面是Claude Code的review意见
+
+

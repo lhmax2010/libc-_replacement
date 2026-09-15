@@ -1,0 +1,414 @@
+# W1 续测：三组目标接口及专用 shim 边界
+
+2026-09-11；分支 `codex/runtime-validation`。本报告是本次续测的现行结果，原轮 W1–W4 文件保留原轮证据范围。**总状态：PARTIAL，不是三组接口全部验收通过。**
+
+## 结论总览
+
+| 目标 | 本轮事实 | 判定及限定 |
+| --- | --- | --- |
+| `ewk_parse_cookie` | x86_64 原生、armv7l 物理板：GNU 同侧各 5/5 四字段正确；libc++ 消费方→GNU provider 各 5/5 在调用中触发 SIGSEGV | 已测混用方向 `CONFIRMED_INCOMPATIBLE`；完整双向矩阵 `PARTIAL`，没有 libc++ Chromium provider 的反方向实测 |
+| `SetSyncBinaryReply` | 定位到浏览器侧真实接收/赋值路径；vector 表示有独立实测；未建立真实、有效实例上的回调运行格 | `PARTIAL`；实际回调行为 `NOT_OBSERVED`，不能判安全，也不能报告错值 |
+| binder→Dali | 两架构上，真实属性包装源码子集→真实完整 core 的 4 格×5 次均正确；完整 GNU binder→GNU 依赖链各 5/5 正确；只将 core 换为 libc++ 时各 5/5 加载失败 | `PARTIAL`；属性子集通过不等于完整 binder/图形/虚调用兼容；已测的是具体依赖链的链接故障，不是所有 Dali 边都失败 |
+
+[主矩阵](MATRIX.md)逐格链接全部五次原始输出。计数为 **16 个已执行目标格、80 次尝试**：60 次具体值符合，10 次 EWK 故障信号，10 次完整 binder 依赖链加载失败。**这不是完整需求分母**，未观测格不能从分母中消失。另有 shim、表示诊断、初次 Dali 矩阵和环境试跑，均未混进上述数字。
+
+## 环境、组件身份与方法
+
+- 按人工确认选择 `elementary-tizen`。x86_64 使用冻结 RPM 的实际动态库和 Tizen 加载器，在 `tmp/` 组装依赖目录；未安装或替换系统库。板端另实查安装了 `elementary-tizen-1.25.1-0.armv7l`。这两个环境不是同一产品镜像，架构结果分别记录。
+- 修复的是**探针的依赖解析方法**：识别 RPM 的 SONAME 符号链接后找到 sessiond、jsoncpp 等；随后避免混用缺少平台扩展符号的宿主 PulseAudio/libpng。原轮“未取得”不等于平台没有这些库。详见 [闭包](closure.json)、`raw/025–026` 及各次加载诊断。
+- GNU Chromium provider 是实际 `libchromium-impl.so`，不是重写的 cookie parser。直接定位其导出函数，没有把薄封装库的加载成功当作实现已执行。其原始成员、实现摘录和二进制摘要见 [源码事实](SOURCE_FACTS.md)、[成员索引](source_members.json)、[二进制摘要](supplement_binary_identity.json)。
+- Dali 的 libc++ provider 是**原始源码完整构建的 `dali2-core`**，两架构都有；没有构造模拟 core。另一方面，重编的 binder 测试件只包括原样的 `common.cpp`、`property-value-wrap.cpp`，**不是完整 binder 包**。另外单独运行冻结/板端完整 GNU binder 作对照。
+- 两架构完整 core 的配置/构建见 `build_dali_core.py`、`build_dali_core_arm.py` 和对应原始记录。CMake 输出仅放临时目录，关闭会在源码侧生成 pkg-config 文件的选项。原始 core 1,100 个文件、binder 477 个文件逐字节摘要对照归档一致；内存中翻转一个字节的正向对照有效。见 [源码完整性](source_integrity.json)。
+- x86_64 GNU 探针/初版 GNU bridge 使用宿主 GCC 13.3.0 头文件和编译器；实际加载的 GNU 运行库来自 Tizen 闭包。libc++ 侧使用 Clang 22.1.8 与既有 libc++ 产物。**不把宿主头文件当成平台头文件**：vector 又用冻结 GNU 14.2 头文件独立重复五次。ARM 则使用 ARM devel 包和 GNU 14.2 头文件。
+- 原 ARM/QEMU 编译包装器本轮报 frontend exit 255；未改其配置，改用 x86_64 Clang 22.1.8 交叉生成 ARM ELF、既有 ARM sysroot/链接器。**编译工具是否经 QEMU 与测试执行环境分开**：ARM 行为测试是在 rpi4 **物理板**，不是 QEMU 用户态。
+- 每个有效运行格保存 `/proc/self/maps`，断言两套标准库与实际目标 provider/包装件同时加载，随后比较具体值。完整 binder 加载失败格另保存加载前实际 core 映射；失败后 binder 被加载器回滚，**不能声称该格完整映射断言通过**。
+
+## 一、`ewk_parse_cookie`
+
+### 直接调用：实测
+
+固定输入：`sid=ABC123; Domain=example.test; Path=/probe`。初始输出对象为空；预期 `domain=example.test`、`name=sid`、`path=/probe`、`value=ABC123`、`expiry_date_utc=0`。
+
+| 消费方→provider | x86_64 原生 | armv7l 物理板 |
+| --- | --- | --- |
+| GNU→GNU，同侧对照 | 5/5 四字符串、expiry 正确；消费方销毁路径完成 | 5/5 同上 |
+| libc++→GNU | 5/5 在真实调用中 SIGSEGV；返回值/四字段/消费方正常销毁 `NOT_OBSERVED` | 5/5 观测 SIGSEGV；字段未返回 |
+| libc++→libc++，同侧对照 | `NOT_OBSERVED` | `NOT_OBSERVED` |
+| GNU→libc++ | `NOT_OBSERVED` | `NOT_OBSERVED` |
+
+实测 `sizeof(std::string)` / `sizeof(EWKCookieContents)`：x86_64 GNU **32 / 136**、libc++ **24 / 104**；armv7l GNU **24 / 100**、libc++ **12 / 52**。这些是当前探针编译配置的数字，不外推到其他 ABI 开关。
+
+x86_64 补充回溯位于实际 Chromium impl 中，调用栈包含 `ewk_parse_cookie`（[原始回溯](raw/054_ewk_backtrace_selective.stdout)）。更深的两帧没有符号名，**未推断具体源码行或究竟先读错哪个字段**。ARM 为避免板端 crash-manager 产物，在探针中装置信号记录器，观测 SIGSEGV 后退出 139；没有修改 provider 或系统信号配置。这个 ARM 结果应称“观测故障信号”，不是默认信号处理下的 core dump 实测。
+
+缺口：本次取得并运行的是 GNU Chromium provider；没有取得/构建配套的 libc++ Chromium impl。实际源码已流式读取，但**源码可得不等于迁移后的完整 provider/运行配置已可得**。反方向及其同侧对照均未运行，不以本方向替代。需要对应的真实 libc++ 产物、构建身份与依赖配置。
+
+### 专用 shim：既有成功，也有明确的原型问题
+
+本轮不是仅引用 Boost 机制：确实构建了两个 TU（独立编译单元），前端使用 libc++、后端使用 GNU，中间仅传字符指针、长度、标量和不透明回调上下文；后端调用**同一个真实 Chromium provider**。原对外签名保留，`dlsym`/`dladdr` 检查实际函数来自指定 provider，内部桥函数隐藏可见性。见 [构建与运行脚本](run_ewk_shim.py)、[结果](ewk_shim_results.json)。
+
+- 对上述完整 cookie、空输出对象：x86_64 libc++→shim→GNU **5/5** 四字段正确，前端对象作用域销毁完成，三方映射满足。GNU→GNU 直接调用与 libc++→GNU 直接故障构成对应对照。
+- **进一步发现原型语义不完整**：输出预置 `domain=keep.example`、`path=/keep`，输入仅 `sid=ABC123`。真实 GNU 直接调用 **5/5 保留**这两个未被输入指定的字段；实验 shim **5/5 将其清空**，虽然返回成功且销毁完成。值断言退出 28。见 [复用输出实测](ewk_reused_output_results.json)、[直接调用样本](raw/ewk_reused_output_gnu_1.stdout)、[shim 样本](raw/ewk_reused_output_cxx_1.stdout)。
+- **静态原因**：真实实现有条件更新 domain/path；原型后端总是建立空输出再把四字段传回，未传入调用前的输出状态。没有把这一差异掩盖成“全部通过”，也没有对平台实施修正。
+
+因此：**指针/长度可承载数据，单向固定样本的转换机制已实测；这个原型不能直接作为保持全部原语义的部署实现。目标部署仍 `SHIM_UNCERTAIN`。** 上述状态差异不证明双 TU 思路不可行；它说明还要处理输入/输出状态、失败后的更新规则等，不能只按四个新字符串复制估价。反方向、异常/内存不足、并发、其他输入、ARM shim、旧 ELF 自动路由均未验证。
+
+原型规模：2 个 TU；数据路径为原签名入口、GNU 后端调用/转换、统一四字段接收函数，另有 2 个配置/定位辅助函数。不是每个字符串都必须单独写一对函数。为保持复用输出语义，还需传递/保留调用前的状态；完整部署代码量 `NOT_AVAILABLE`，不能把此原型的规模当总改动量。
+
+## 二、`SetSyncBinaryReply`
+
+### 真实路径的静态核查
+
+实际浏览器实现：`Interface::SyncMessagingSetSyncBinaryReply(instance, const std::vector<uint8_t>&)` 查找有效实例，再调用 `Instance::SyncBinaryReplyToJS(reply)`，后者执行 `sync_binary_reply_ = reply`。从插件回到引擎的这一次回复是 **插件提供 vector、引擎读取/复制 vector**；不能因最初请求由引擎发起，就把回调的方向反过来。[原始源码摘录](SOURCE_FACTS.md)
+
+同一归档还有 service/node 实现，它只记录“不支持”，不读取 vector。**没有使用这个 no-op 作为浏览器数据传递的正向对照。** 源码归档共扫描 921,773 个成员，按相关文件名读取 6,356 个候选，找到三处目标名所在文件；这只是本次检索范围，不能称全平台只有这些调用。[检索索引](extension_source_members.json)
+
+### 为什么实际回调矩阵仍是 `NOT_OBSERVED`
+
+- 真实回调需要已注册的有效 `XW_Instance`，通过实际 `XW_Initialize` 的接口表取得入口。当前 impl 的动态导出表检索没有得到可直接调用的这些 C++ 私有入口；同一 ELF 的 `ewk_parse_cookie`/EWK 初始化导出作为检索正向对照。**不等于内部没有实现**，实现源码已找到。
+- x86_64 真实 `ewk_init()` 前置试跑等待 Wayland server，30 秒到期，未取得有效浏览器实例（[记录](raw/053_browser_initialization.stdout)、[诊断](raw/053_browser_initialization.stderr)）。仅仅 `dlopen` 成功不解决实例初始化。
+- 未构造假 manager、假实例、手写接收回调或无效 ID 的 no-op 来替代真实引擎。ARM 本轮未建立有效 Web 应用/插件会话；不是以板子不可连接为理由跳过。
+- 两方向及同侧对照，实际回调长度/内容均 `NOT_OBSERVED`。还缺可复用的真实浏览器/插件初始化流程和对应两套 provider 产物。没有把这些格记为 `CONFIRMED_SAFE` 或 `CONFIRMED_INCOMPATIBLE`。
+
+### vector 内部表示：独立实测，非接口替代实测
+
+x86_64 普通配置，冻结 **GNU 14.2 头文件**与 libc++ 头文件各 5 次。每次包含长度 **0、1、4、257**、预留容量 **512** 的四个对象，逐字节比较 `(i*37+19)%256`，读取对象的原始三个机器字并对照 `data()`、`size()`、`capacity()`；随后在本库内复制、清空原对象、销毁，检查复制内容。
+
+两侧均为 24 字节、对齐 8；四个所测状态中的三个字分别与 **数据起点、已用末尾、容量末尾**一致，全部比较通过。不是只测 `sizeof`。此前宿主 GNU 13.3 头文件的额外 5 次也保留，但不拿它代替平台 GNU 14.2 头文件结果。[GNU 14.2 结果](vector_gnu14_results.json)、[libc++ 与附加 GNU 13 结果](vector_representation_results.json)
+
+**能说到的强度**：所测普通配置、四种状态的表示位置和含义一致。**不能说**：真实 `SetSyncBinaryReply` 已兼容。该辅助探针不调用该回调，没有验证跨库赋值/销毁、调试模式、自定义 allocator、空但未分配对象、异常路径或完整实例生命周期。每次虽也加载真实 provider 并留 maps，但加载它不等于调用了目标接口。
+
+### shim 适用性：静态可表达，部署未证
+
+`uint8_t` 序列可以表达为 `const uint8_t* + size_t`：发送侧取本库的 data/size，接收侧创建本库 vector，并在真实实例上调用/赋值。这里不必传 allocator 或 vector 对象，也不应让另一库释放发送侧缓冲。
+
+针对**一个选定回复入口**可有一对两侧转换入口；还需要接口表/回调注册适配、`XW_Instance` 生命周期与必要的上下文映射。不能只写两个普通函数就声称已接入实际回调链。完整相关入口数与实现工作量尚未量化；零长度、借用缓冲的有效期、重入、失败处理仍需验证。结论 **`SHIM_UNCERTAIN`**，不是数据形态不可转换。
+
+## 三、binder 与 Dali
+
+### 两架构实测范围
+
+| binder 消费方→core provider | x86_64 原生 | armv7l 物理板 |
+22:默认启用自带 libc++；组件构建时可共享链接，非组件构建采用静态形式，不能概括成“一律静态”。libc++abi 是对应的 C++ ABI 支持库；具体目标类型还随是否由可执行文件导出符号而变化。自带 LLVM libunwind 的默认条件是 Fuchsia 或 Android；**Linux 默认并不是一并使用自带 libunwind**。libc++ ABI 命名空间设置为 `__Cr`、ABI 版本为 2，以隔离标准库符号；这不转换跨边界对象布局。[标准库配置](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/c++/c++.gni)、[展开器配置](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/unwind.gni)、[ABI 配置](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/buildtools/third_party/libc++/__config_site)。
+90:| 跨 DSO | 上下文及 personality 必须形成一致协议。 | 插件抛出整数 42，主程序捕获且清理计数 1，各提供方 5 次；镜像 `NOT_OBSERVED`。 | 同一 ABI 对的异常样本通过；不同标准库对象布局、深绑定、多提供方顺序不在本次覆盖。 |
+107:| backtrace＋插件跨 DSO 异常 | 5/5 通过 | 5/5 通过 | 栈帧阈值、整数 42、清理 1、关闭成功。 |
+134:| 旧调用方双版本符号 | `__Cr` 命名空间与受控构建不是同一函数的旧／新行为双版本；对任意旧第三方二进制承诺不可得。 | GCC 兼容符号版本和提供方命名有证据，SDK 切换有提交；不是 libc++ 等待函数双语义版本。 | 机制可比较，但不能认为已采用相同方案或解决所有旧内联调用点。 |
+138:源码依据：[条件变量实现](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/libcxx/src/condition_variable.cpp)、[等待头文件](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/libcxx/include/__condition_variable/condition_variable.h)、[写者实现](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/libcxx/src/shared_mutex.cpp)、[定时写者头文件](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/libcxx/include/shared_mutex)、[转换缓冲析构](https://chromium.googlesource.com/external/github.com/llvm/llvm-project/+/97b436da4c33663581d394f4ee0a5977fc38c2f4/libcxx/include/__locale_dir/wbuffer_convert.h)、[Boost 历史评审](https://codereview.chromium.org/2242483003/)。
+154:| 使用 `base::Thread` 的线程，退出走请求停止、处理退出工作、join 的协作协议。 | [固定版本 thread.cc](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/base/threading/thread.cc) | 已检查源码有真实取消调用；lightweight-web-engine 与 OpenMP 的条件路径启用异步模式。不能假定这些线程全部经该封装退出；这里证明的是条件可达，不是每个产品都实际触发。 | [两个组件的源码路径及异步取消实测](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R108/W3_REPORT.md) |
+155:| 协作退出的有效性依赖调用方采用并遵守协议，不能从代码封装推成全仓强制规则。本次主仓选定文本仅发现一处直接 `pthread_cancel` 调用，但它确实存在。 | [gRPC 的实际调用](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/third_party/grpc/source/src/core/util/posix/thd.cc)、[固定范围检索结果](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R116/chromium_usage.tsv) | Tizen 的仓外应用、供应商组件及插件不在完整覆盖范围内。现有材料无法保证它们全部遵守统一退出协议；库更新本身也不能要求不可得的源码一律改用该协议。这不是“永远不能制定产品约束”的断言。 | [外部组件缺口、材料与责任方](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R110/W1_REPORT.md) |
+156:| 统一构建配置及固定依赖使受该构建管理的目标可保持一致；**配置不能证明“monorepo 每次全量重编、完全不考虑旧二进制”**。 | [标准库构建配置](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/c++/c++.gni)、[固定依赖清单](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/DEPS) | 已确认 5 个只复制安装、不随迁移重建的预编译 DSO；仓外第三方产物和重建策略的分母仍不可得。因此不能把“所有边界两侧都会重编”作为平台前提；也不能给未知外部集合补写数量或确定策略。 | [不随迁移重建组件清单](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R108/W2_REPORT.md)、[外部支持范围缺口](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R110/W1_REPORT.md) |
+157:| ABI 命名空间 `__Cr` 隔离标准库符号；该机制不是跨标准库对象转换。 | [固定版本 __config_site](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/buildtools/third_party/libc++/__config_site) | 布局实例中，libstdc++ 提供方与 libc++ 消费方成功链接／加载，却把同一 `deque` 解释成不同大小和元素数。命名空间不能修复未在接口名中暴露的内部布局；该实例是 x86_64 最小探针，不是断言所有生产边都失败。 | [跨库对象布局实例与原始证据索引](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R80/REPORT.md) |
+158:| 普通 Linux 默认不启用自带 libunwind，而使用系统提供方；系统为 GNU libgcc 时仍走 GNU 展开器。不能把该配置泛化为所有 Linux 产品（包括 ChromeOS）都用 GNU。 | [固定版本 unwind.gni](https://chromium.googlesource.com/chromium/src/+/ec7cb9cc99bba09cdac51acfecc3eff6adba2ac1/build/config/unwind.gni) | **在同用 GNU 提供方的比较下，展开器不是差异点。** 本地 30 格 GNU／LLVM 对照又表明，换展开器不消除规格终止或写者残留。该实测来自宿主，不冒充 Tizen 镜像验证。 | [30 格对照及环境身份](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R116/MEASUREMENTS.md)、[逐格结果](https://github.com/lhmax2010/libc-_replacement/blob/d211d4453d60545605a6b4398d4fc442aa14ed0a/docs/progress/R116/measurement_summary.tsv) |
+# 四方案条件性评估：待业务裁决
+
+## 前置限制
+
+W1 四组均为 PARTIAL：没有目标接口的完整跨库运行矩阵。W2 仅在真实 Boost 的普通字符串转换上证明双 TU 桥可行。故下文对三组需要关注的非 C 数据/原生 C++ 边界作**条件性方案评估**，不冒称已找出三组“实测不能支持”的接口，也不替业务选择方案。Native 所选边是 C 数据形态，单列限制，不强行提出改造需求。
+
+这里“接口不变”分两层：函数声明/导出可保持，不代表异常类型、别名关系、内存所有权、回调时序也保持。完整生产改造量、外部应用分母、迁移意愿与产品 SDK 最终白名单为 `NOT_AVAILABLE`；已试方法是 P7 冻结源码/头、SDK 配方及本轮真实 ELF 核查，它们不包含业务应用清单或部署策略。
+
+## 1. ewk_parse_cookie
+
+| 方案 | 平台侧要做什么 | 应用侧要做什么 | 条件、成本与未决项 |
+| --- | --- | --- | --- |
+| 改 C 数据接口 | 增加下面的字节接口；内部仍由真实 parser 解析；输出字段转换为调用方缓冲区。处理长度、容量、编码与日期范围错误 | 直接调用此 API 的原生应用改传 buffer/length，按状态取四字段；仅二进制且无源码的应用无法直接采用新声明 | 新入口可避免 std 对象交叉解释，但语义/错误路径未实现与验证；外部调用方数未知 |
+| shim | 两侧 TU 在各自 std 定义下构造对象，中间传四字段字节和日期；必须解决 ewk_parse_cookie 同名 C 符号路由及避免递归 | 若完整保留导出与契约，可不改源码；仍需部署 shim/修改链接或加载安排，不能承诺所有旧二进制零操作 | W2 的不同 C++ 修饰名样本不能证明这里的同名寻址；复制与异常转换有额外成本，SHIM_UNCERTAIN |
+| 应用改 libc++ | 平台交付匹配头、库、构建约束与可复核版本 | 应用方重编本身及所有跨 C++ 边界依赖并回归 | 有源码、工具链、依赖可迁者技术上可尝试；无源码/依赖供应商不配合者不能据此完成。没有逐应用清单，不能报比例 |
+| 接受限制并声明 | 声明该 std-bearing 接口只在匹配标准库/ABI 设置下承诺，并说明旧入口与部署边界 | 应用确认实际绑定与 std 实现；不匹配时不能依赖该层承诺，可选择不使用该功能 | “同一套库”仍需 ABI 宏、版本、类型/生命周期一致；不是全面兼容保证 |
+
+**设计签名（未实施）**：
+
+```c
+#include <stddef.h>
+#include <stdint.h>
+struct ewk_text_out { char *data; size_t capacity; size_t length; };
+struct ewk_cookie_text_out {
+    int64_t expiry_utc_seconds;
+    struct ewk_text_out domain, name, path, value;
+};
+int ewk_parse_cookie_bytes(const char *input, size_t input_length,
+                           struct ewk_cookie_text_out *output);
+```
+
+需写入契约：长度单位为字节；是否加 NUL、不足容量是否只返回所需长度、失败时各字段状态、输入输出能否重叠及会话 cookie 日期含义。输出内存由调用方持有，平台只按容量写入；这些是方案待定义事项，**不是已经具有的安全保证**。
+
+**可定位改动点**：1 个已取得的头文件、1 个既有函数声明；真实实现位于组件中，但本轮没有展开其完整源码调用图。设计增加 1 个入口及 2 个 C 数据结构，是设计项数，**不是“平台只改 1 个文件/函数”**。完整平台文件/函数数 `NOT_AVAILABLE`。
+
+**旧入口与期限**：若继续支持仍调用旧入口的二进制，就需要保留其可用路径或提供经验证的适配；保留一个同名导出本身不能转换旧 std 布局。是否放弃这批调用方、并存多久，需应用清单与支持周期裁决，本任务不指定期限。
+
+## 2. SetSyncBinaryReply：插件调用引擎的函数指针
+
+| 方案 | 平台/组件侧要做什么 | 应用侧要做什么 | 条件与成本 |
+| --- | --- | --- | --- |
+| 改 C 数据接口 | 引擎提供新版本接口表，插件取到后用 data/size 调用；保持真实实例映射和同步生命周期 | 普通 JS 应用若 JS 契约保持，可以不接触此 C++ 改动；原生第三方插件若使用此表，需要更新并重编 | 必须协同接口表生产方与消费方；不能在旧表中直接改函数指针类型后称兼容 |
+| shim | 在真实 GetInterface/注册路径放入调用方匹配的适配表；接收其 vector 后转字节，另侧构造引擎匹配的 vector | JS 层通常无源码改动；原生插件的部署/加载依赖仍需核对 | W2 证明复制桥机制，不证明真实回调方向、实例、长度/所有权/时序；SHIM_UNCERTAIN |
+| 应用/插件改 libc++ | 提供匹配引擎开发环境；协同插件及其依赖重编 | 这里主要是**原生插件维护方**，不是要求 JS 重编标准库 | 无原生插件源码或固定二进制依赖时不可直接完成；未知插件分母 |
+| 接受限制并声明 | 声明原生引擎插件接口必须使用匹配 std/ABI 的构建组合 | JS 使用者不因此直接承担 C++ ABI；原生插件提供方遵守构建/版本约束 | 限制针对原生边，不泛化成“Web 应用不兼容” |
+
+**设计签名（未实施，V2 新接口槽）**：
+
+```c
+/* XW_Instance 沿用已定义的整型实例标识。 */
+void (*SetSyncBinaryReplyBytes)(XW_Instance instance,
+                               const uint8_t *data, size_t length);
+```
+
+新接口必须明确数据仅在调用期间借用、还是接收方需复制保存；若异步留存，需要另一种生命周期协议。保留旧 V1 表能否继续工作取决于其 provider 是否仍理解旧 vector，不能只保留表名。V1/V2 并存期由引擎/插件版本清单决定，当前 `NOT_AVAILABLE`。
+
+**可定位改动点**：`XW_Extension_SyncMessage.h` 1 个回调槽；`extension.cc` 1 个 `Instance::SendSyncBinaryReply` 方法内的引擎调用点，共 2 个已核文件。引擎表初始化/接收实现及其他消费者尚缺，不报告全量文件/函数数。“2 文件、1 方法、1 槽”是已定位点，不是完成估算。原文行及 SHA 见 [known_points.json](known_points.json)。
+
+## 3. dali2-csharp-binder → Dali 原生边
+
+应用 C# 经 C 名称/句柄进入 binder；binder 再调用 Dali C++。**不能从内部风险推导应用正在直接传 std 对象，也不能从应用经 C 边界推导内部已安全。** W1 尚未测到混用不同标准库的故障，因此“必须同批迁移”仍是待验证判断，不是本轮事实。
+
+| 方案 | 平台/组件侧要做什么 | 应用侧要做什么 | 条件与成本 |
+| --- | --- | --- | --- |
+| 内部改 C/不透明句柄 | 把 Dali 对象创建、操作、引用计数与销毁集中到与 Dali 匹配的一侧；binder 改用新 C 适配层 | NUI C# 若现有导出名、参数与行为契约不变，可以不改应用源码；直连 Dali C++ 的 Native 应用是另一条路径，不能自动受保护 | 不只是给 Control::New 套函数：所有仍把指针当 Control* 解释的方法都必须审计，虚调用、事件、属性与派生对象难度较高 |
+| shim | 对可序列化的值可做双 TU 转换；对 handle/虚对象/引用计数需要对象级操作协议和身份映射 | C# 层可能保持；原生直连使用者未必能透明保留 | 不是每类型两次复制就覆盖；W2 不涉及 Dali 对象图，SHIM_UNCERTAIN |
+| 消费方改 libc++ | binder、Dali 组件及跨 C++ 依赖协调构建和回归 | C# 应用本身没有“改用 libc++”这一步；需改的是其 native binder。Native 直连应用若有源码则另行重编 | 匹配构建减少异构 std 边界，但是否需要同批发布取决于实测与实际安装原子性，未证明 |
+| 接受限制并声明 | 约束 native binder/Dali 的受支持构建组合，明确应用侧 C 边界与内部 C++ 边界不同 | C# 业务确认使用的绑定组件版本；原生 Dali 使用方确认自己的工具链 | 不宜将组件约束写成所有 NUI 应用需源码迁移；允许/禁止过渡组合由业务裁决 |
+
+**对象级设计示例（未实施）**：
+
+```c
+struct dali_control_handle;
+int dali_control_create(uint32_t behaviour, struct dali_control_handle **out);
+void dali_control_release(struct dali_control_handle *handle);
+/* 对象操作也需相应 C 入口，不能在 binder 中再转回另一侧 Control*。 */
+```
+
+**可定位改动点**：同一个 `control-wrap.cpp` 中 `CSharp_Dali_View_New`、`CSharp_Dali_View_NewWithBehaviour`、`CSharp_Dali_delete_View` 3 个函数。它们调用 New、复制构造/分配、销毁的原文已取得；**1 文件/3 函数是代表下界，不能当整套 binder 改造量**。其他 wrapper、生成模板与 Dali provider 全量改动计数 `NOT_AVAILABLE`。例中的 2 个新 C 操作亦只是设计起点。
+
+旧 C# 导出若保留，可保持应用接入层；但内部句柄解释须完整替换，不能只替换创建函数。旧 Native C++ ABI 是否另保留、期限多长仍需消费方清单和发布契约。
+
+## 4. Native 四族所选内联包装
+
+没有证据表明当前选择的 GetId、Set/GetOperation、Run 平台边必须套上述改造。8 个最终 ELF 支持“所选边为 C 数据”而非四族全量安全。它们仍需真实应用上下文、C ABI/编码、分配释放契约与用户回调不泄漏异常等前提；未验证部分继续 PARTIAL。不能把应用本地 string 符号当成平台跨库传 string。
+
+## 哪些情形四种方案都无法在当前约束下保证目标
+
+**条件性推论，不是已找到具体应用的事实**：若某应用/插件仅有固定二进制，不能重编、不能改变接口或加载安排，依赖又跨标准库传不透明 C++ 对象且缺少可用生命周期协议，则前 3 方案不能据本轮证据完成；第 4 项只是声明限制，不会恢复该功能。当前无这类应用的实际清单，不能声称有多少应用“无解”。
+
+本阶段未实施任何设计，未排优先级。待业务决定：产品/profile、实际应用/原生插件列表、支持旧二进制的承诺与期限、可接受复制/发布/回归成本、是否投入补齐目标接口矩阵。
+    60	取值前终止
+    61	值正确、随后在析构阶段失败,aarch64 的 Boost.Program Options 是 5/5 值精确通过然后退出 139
+    62	有限样本精确通过,Boost.Thread 5/5 精确通过,材料明确写"该成功不能外推到竞争、其他符号或架构"
+    63	最后一条直接指向 EWK 矩阵的设计。"每场景 5 次"这个重复数,在同一份材料里刚刚被证明可以整齐地通过而仍然不能外推。 正文第三节用"每场景 5/5、共 360 次场景观察"作为主要说服力来源,但你们自己的 R110 已经给出了一个 5/5 通过却被判为不可外推的先例。这一点必须在正文里讲明,否则评审一旦读到 R110 就会反过来质疑 360 这个数字的分量。
+    64	
+    65	第三条也值得说一句:EWK 矩阵确实检查了作用域销毁完成,这是对的,而且 W2 报告很克制地写了"销毁完成不代表状态正确"。R110 的 139 号退出给了这个检查一个具体的存在理由,正文可以引它。
+    66	
+    67	四、其余可直接补进正文的
+    68	性能数据是选择不做,不是做不了。 R115/W4 里已有纳秒级微基准方法学,每次 50 万个获得释放对、每组 5 次、交替顺序,x86_64 10.867 纳秒、armv7l 116.284 纳秒,并自带"未固定 CPU 频率的粗测、区间交叠"的自限。同一套方法可以直接用到 adaptor 上。
+    69	P4 纠正过一个说法,别再写回去。 P4_0909/FINDINGS.md:72-86 的 M04 指出,libstdc++ 与 libc++abi 的 operator new 与 delete 都落到 malloc 与 free,"仅因加载两套 C++ 库不能推成两套独立堆或必然破坏堆"。旧稿里"跨边界释放会破坏堆结构"已被推翻。
+    70	绑定轨迹里 operator new 并没有被抢占。 同一份 008_binding_trace.stderr 显示 _Znwm 与 _ZdlPv 两侧各绑各的,由 LLVM_22 与 GLIBCXX_3.4 两个版本节点分开。我上一条回复没有声称这里出问题,但为免误读:出问题的是 <stdexcept> 那九个类,不是分配函数,因为前者被上游刻意设计成同名。
+    71	盘点方法学的盲区正好盖住了 W2 那次故障。 R26/METHODOLOGY.md:39-40 声明 header-only 的 inline 与模板"没有跨包动态符号,不进入符号图,规模 NOT_AVAILABLE",弱符号绑定时序也在既有盲区里。而 _ZN17EWKCookieContentsD2Ev 恰恰是这一类。【推测】这意味着"960 个头文件到四处"的收敛,在方法上对这类符号是看不见的。建议在正文第七节把这条盲区显式写出来。评审完成。我核对过的原始材料包括：`API_0911/W2`（含 REPORT 与矩阵说明）、`ADAPTOR_0912/W1/W2/W3/W4`（含 W1 的源码摘录 `008_targeted.stdout`、W2 的故障原始记录 `006/007`）、`R80/REPORT.md`、`P7_0909/REPORT.md`、`P9_0911/MEMBER_LAYOUT_ZH.md`、`HQ_files/chromium_research_zh.md`、`docs/progress/W4`。下面逐问回答，"（确认）"表示我对照过原始材料或源码，"（推测）"表示我的推断。
+    72	
+    73	---
+    74	
+    75	## 总体意见
+    76	
+    77	机制成立，证据质量高于常规水平（有负向对照、双架构、失败记录未删、计数诚实）。**但有四处实质异议**：(1) "adaptor 是唯一零改动方案"不成立，"选择性不迁移"这一整类方案被正文遗漏；(2) 2.2 第三项的论证与你们自己的实验相矛盾；(3) 12 场景缺两个我对照源码确认的 expiry 分支；(4) 正文按"两套标准库"建模，但 Chromium 自带 libc++ 用 `__Cr` 命名空间，EWK 反向 adaptor 面对的实际情况是三方 flavor。详见各问。
+    78	
+    79	---
+    80	
+    81	## 甲、方案可行性
+    82	
+    83	### 第 1 问：机制与证据
+    84	
+    85	**机制成立，"机制可行（限已测范围）"的表述合格。**（确认）
+    86	
+    87	- 类型系统层面无矛盾：两个 TU 各见一套 std 头文件，中间只传 POD，各自构造/销毁。Boost 真实 provider 双向 4 格 20 次、每次 maps + `dladdr` + `LD_DEBUG=bindings` 交叉核验（`API_0911/W2/REPORT.md`）；EWK 12 场景 360 次观察（`ADAPTOR_0912/W2/REPORT.md`）。
+    88	- **负向对照是这份材料里最有价值的证据**：故意丢旧状态的模式在真实 provider 上稳定产生 40/60 错值且"不崩"——它证明的不是 adaptor 可行，而是**测试方法能检出静默错值**。这比全绿矩阵更能支撑结论。
+    89	- 但"可行"的支撑范围恰好等于测过的范围，有三个机制层面（非场景层面）的未测维度：
+    90	  1. 异常路径：绑定日志显示 shim 的 `__gxx_personality_v0` 绑到了 libc++abi 的 `LLVM_22`（`API_0911/W2/REPORT.md` "本次如何控制"节，确认）——异常在边界上的实际行为未测；
+    91	  2. 全局 `operator new/delete` 符号抢占：两套运行时都导出这些符号，绑定由装载顺序决定。实验纪律性地避免了交叉释放，但生产进程里第三方 DSO 不受此纪律约束（推测其后果大概率良性——两家都最终调 malloc/free——但无实测）；
+    92	  3. aarch64 无任何运行数据。
+    93	
+    94	### 第 2 问：12 场景的覆盖
+    95	
+    96	**字段保留语义部分覆盖完整，expiry 分支有缺口。**
+    97	
+    98	我对照 `ewk_cookie_parser.cc` 源码摘录（`ADAPTOR_0912/W1/raw/008_targeted.stdout`，函数体 30–80 行）逐分支核对：
+    99	
+   100	- name/value 无条件覆盖（36–37 行）、domain/path `has_value` 条件覆盖（40–49 行）、显式空≠缺失、拒绝分支位于任何写入之前（33–34 行）——场景 0–7、11 与这些分支一一对应，设计质量好。（确认）
+   101	- **缺口 1（确认）：Max-Age=0**。源码 62–64 行的条件是 `max_age_val 0`，0 会走 `expiry = time(nullptr) + 0`（≈当前时刻），与 session 的 `expiry=0` 是可观察地区分的两个结果。场景 10 只测了 Max-Age=60，0 这个边界值恰恰踩在条件分支的等号上。
+   102	- **缺口 2（确认）：Max-Age 与 Expires 同时出现**。源码 54–69 行是 if/else 结构，Max-Age 存在时 Expires 整体被忽略；场景 9、10 分别单测，组合输入未测——这是唯一能检验"优先级接线是否正确"的输入。
+   103	- 缺口 3（确认分支存在，但认为测试价值低）：非法 Max-Age 字符串（"abc"、负数）走 66–67 行 `expiry=0`，与 session 分支（77 行）可观察结果相同，字段层面不可区分。
+   104	- 缺口 4（推测，风险低）：字段值含非 UTF-8 字节/内嵌 NUL。复制层是指针+长度，理论透明，Boost 实验测过内嵌 NUL（`API_0911/W2`），但 EWK 的 12 场景未含此类输入。
+   105	- 补充建议（不是漏洞）：场景序列缺"**先成功后拒绝**"（成功写入 → 再用拒绝输入调用 → 旧字段应全部保留）。场景 11 是成功+成功；成功→拒绝最接近真实复用错误模式。该性质目前由静态源码（33–34 行的位置）+ 场景 5–7 联合支撑，加一个运行序列更稳。
+   106	
+   107	### 第 3 问：2.2"不成立的做法"
+   108	
+   109	- **第一项（自定义兼容类型）：严密，无异议。** C++ 类型同一性按定义判定，布局仿造类型不是 `std::string`；靠伪造同名/同修饰则构成 ODR 违反。
+   110	- **第二项（单 TU shim）：结论成立，表述需修正。** "该编译单元只能链一套标准库"不精确——准确说法是"一个 TU 只能看到一套 std 头文件定义；编译时类型选择与最终动态链接是不同阶段"。你们自己在 `API_0911/W2/REPORT.md` 第 2 条已作此修正，正文应沿用修正版。
+   111	- **第三项（provider 双版本）：同意你们自评的"未穷尽"，并且要加强——现有证据方向上反驳"不成立"。**（确认）`API_0911/W2` 的实验形态本身就是"两个不同标准库编译的 `.o` 链进**同一个 `.so`**"并双向运行通过——这正是"provider 同时导出两套版本"的最小构造。因此"两套分属不同项目、同时编进去会冲突"作为论断与你们自己的实验相矛盾。真正未解决的问题是：(i) 同名弱符号合并（EWK 初版实测，`ADAPTOR_0912/W2/raw/007_object_symbols.stdout` 显示两个 TU 各有 `WEAK HIDDEN` 的 `EWKCookieContents::~EWKCookieContents()`）；(ii) `operator new/delete` 抢占；(iii) 异常运行时共存。这三条都不是"编不进去"，而是"编进去之后的行为契约"。**建议把该项从"不成立"降级为"adaptor 的同 DSO 部署形态，附三条未测行为契约"** —— 这会直接改变第 4 问的答案空间（见方案 B）。
+   112	
+   113	---
+   114	
+   115	## 乙、更好的方案（重点）
+   116	
+   117	先把"应用零改动"的方案空间归纳完整：**避开边界、桥接边界（adaptor 属此类）、转移边界到装载期、声明不支持**。正文只覆盖了后三类中的两类。
+   118	
+   119	### 第 4 问：别的零改动方案
+   120	
+   121	**方案 A（新，建议正式纳入对比）：选择性不迁移 —— 避开边界，而不是桥接边界。**
+   122	
+   123	- **机制**：已确认的两条"应用/插件侧跨库"边界——`ewk_parse_cookie` 与 `SetSyncBinaryReply`——都在 chromium-efl 一个组件内。让 chromium-efl 整体保持 libstdc++ 构建，平台其余部分迁 libc++。旧应用与 EWK 之间根本不存在跨库边界，不需要任何转换代码和语义复刻。
+   124	- **与 adaptor 的差别**：不是"转换做得更好"，而是消去被转换的对象。对该边界，静默错值风险从"需逐接口防控"降为零；成本从"逐接口语义复刻+永久回归"变为"web 进程长期装载两套运行时的内存与维护"。
+   125	- **依据与先例**（确认）：`ADAPTOR_0912/W1/REPORT.md` 已核实 `build/config/c++/c++.gni:17,28` 的 `use_custom_libcxx` 配置入口存在、Tizen 默认 `false`——即**现状就是 libstdc++构建**，"不迁"是零构建改动，不是新工程。R80 的触发条件分析（故障发生在 provider 与 consumer 非原子迁移时）逻辑上等价支持：不迁就没有非原子性。Dali binder 链同理：`ADAPTOR_0912/W1` 显示完整 binder 本来就是整链 GNU 依赖，"binder 不迁"是同形态选项。
+   126	- **风险（未核实，明确标注）**：上游 Chromium 对 libstdc++ 构建路径的支持趋势——若上游移除该构建方式，此方案在下一次大版本 rebase 时死亡。我检索未得确证。这一点必须在采纳前查清，它决定方案 A 的寿命。
+   127	- **验证方法**：构建矩阵（chromium-efl 保持 GNU + 平台 libc++）；用 R22/R80 的 ELF 图方法复核该组件没有其他跨库 consumer 边；现有 12 场景在同侧直接跑（不需要 adaptor）。
+   128	- **局限**：若平台目标本身就是"Chromium 也必须迁 libc++"（例如为了跟随上游安全更新），方案 A 与目标冲突——这是业务权衡。但正文第六节的对比表里没有这一行，而对这两条已确认边界，它在风险、工作量、验证成本三个维度上都优于 adaptor。
+   129	
+   130	**方案 B（部署变体，诚实说明：不是新机制）：同 DSO 双版本导出 + 符号版本路由。**
+   131	
+   132	- **机制**：迁到 libc++ 的 provider DSO 内同时包含一个 libstdc++ 编译的兼容 TU。旧修饰名入口（或对 `extern "C"` 的 `ewk_parse_cookie`，用符号版本区分新旧）由版本脚本自动路由：旧二进制绑到兼容入口，新应用直连新入口。
+   133	- **与 adaptor 的差别**：转换逻辑、语义复刻、验证成本**完全相同**。省掉的是独立 adaptor DSO 的部署与路由问题（正是第 9 问第 1 条风险的解），以及新应用的转换开销。
+   134	- **先例**（确认）：glibc 兼容符号——`memcpy@GLIBC_2.2.5` 与 2.14 行为分裂，用版本脚本让旧二进制绑定旧语义（GNU ld 版本脚本机制见你们已引用的 [binutils VERSION 文档](https://sourceware.org/binutils/docs/ld/VERSION.html)）；libstdc++ ABI 是同库双版本的命名空间实现（[GCC Dual ABI](https://gcc.gnu.org/onlinedocs/libstdc++/manual/using_dual_abi.html)）；单 DSO 双 TU 共存由 `API_0911/W2` 实测。
+   135	- **验证**：在现有矩阵上加三项——`LD_DEBUG=bindings` 确认新旧二进制各绑到正确版本、版本 VERNEED 回归、`operator new/delete` 抢占探针。
+   136	
+   137	**方案 C（弱，列出备查，不推荐）**：应用侧 LD_PRELOAD 兼容层。把 adaptor 的接口 TU 做成 preload 库拦截旧符号；Tizen 应用经 launcher 启动，技术上可注入。先例：Steam Runtime / Flat 兼容层。但它把平台问题转嫁到每个应用的进程环境，责任边界和可调试性差。
+   138	
+   139	**结论**：我没有找到机制上不同于"转换 / 避开 / 改约"三类的第四种零改动方案。但"避开"这一类在正文中被遗漏了，而对已确认的两条 chromium-efl 边界它可能是最优解。
+   140	
+   141	### 第 5 问：实施方式能否更好
+   142	
+   143	转换代码自动生成——分三层，可行性递减：
+   144	
+   145	1. **序列化骨架（可生成，确认有先例）**：签名 → POD 封送的骨架可从 DWARF 或头文件解析推导。先例：libabigail（`abidw`/`abidiff` 从 DWARF 提取 ABI 描述并做差分，[sourceware.org/libabigail](https://sourceware.org/libab/)）、SWIG、rust-bindgen、CsWinRT 源生成器。对 EWK 这类"4 字符串 + 整数"的结构，骨架生成无障碍。
+   146	2. **布局漂移守卫（可生成）**：从两侧构建的 DWARF 自动生成 `sizeof`/`offsetof` 静态断言进 CI，上游换版本即响亮失败。这条正文没有，成本低、收益直接。
+   147	3. **语义层（不能从头文件推导，EWK 就是反例）**：`has_value` 条件覆盖（`ewk_cookie_parser.cc:40-49`）在头文件中不存在，任何纯头文件生成器都会产出你们初版那个错误协议。**可行的不是"生成语义"，而是"生成差分探针"**：把头文件可推导的空间（字段组合、预填非空旧值、重复调用、拒绝输入）自动展开成变形测试，以同侧真实 provider 为 oracle——即把你们手工做的负向对照方法论自动化。"预填旧值 + 缺省输入"这一条变形规则就能机械地发现初版那类 bug，无需事先读懂隐含约定；但发现差异后仍要人工读源码定性——生成只能缩小要读的范围，不能免除。
+   148	
+   149	另外两个正文未提的实施改进：
+   150	
+# 全部问题与替换文本
+
+定位为原文件行号；API＝`HQ_files/api_compatibility_report.md`，
+ABI＝`HQ_files/abi_comparison_preliminary.md`。中英 Chromium 分别简称 C-ZH／C-EN。
+以下仅给出供人工采用的修改，不改原报告。相同问题多处出现合并列出，不能只修其中一处。
+
+## 必须改
+
+### M01　接口总表把条件性分析写成通用实测安全结论
+
+位置：API 11–19、48–73；ABI 15–24。
+证据：R78 只测 C ABI 插件与 ICU 单函数，R80 只测 33 个标准库类型指标；
+`Engine`／`Rect` 对应跨库成员调用没有原始实测。非静态方法还有隐式 `this`，不能只看显式参数。
+已有 Boost.Thread 的特定 once_flag 边界取得精确状态通过，这是有界的 C++ ABI 交互样本，
+但并不是 Engine／Rect 类接口的实测，也不能据此推广全部内置类型／POD 接口。
+性质：**静态核查＋有限实测回查**，不是断言这些接口不能实现。
+
+替换概要与表中“已实测可以”为：
+
+> 接口传递的数据、对象生命周期、异常／取消路径及实际 ABI 配置共同决定兼容条件。
+> 已实测的 C 接口样本在其固定环境与输入下通过；不代表任意 C 接口天然安全。
+> 仅传内置类型或 POD 的 C++ 接口，在两侧目标 ABI、完整类型定义、调用约定、编译选项、
+> 对象生命周期及异常边界一致时，原则上可设计兼容边界；这是条件性分析。
+> 本文的 Engine／Rect 示例尚无相应跨库实测，不能标为“已实测支持”。
+
+标准库对象、异常与所有权三行如保留“不支持”，改为：
+
+> 当前支持范围不承诺这类未统一 ABI 的直接跨界用法；已有反例证明链接成功不足以保证正确，
+> 不是断言每个类型、所有组合均必然发生同一种错误。
+
+### M02　“安全”异常适配示例缺取消与指针前提
+
+位置：API 81–98、75–79。代码加头后可编译，但 `*out` 要求有效指针；catch-all 会截获
+可到达的强制展开，不能把吞取消后返回错误码作为通用安全模板。
+证据：原块语法检查 `raw/syntax/api_03*`；R116 的 `code/api_probe.cpp` 明确 catch 后重抛；
+R69 补丁逐处在 catch-all 前辨识／重抛强制展开；R78 跨库取消样本确认展开可穿越边界。
+性质：**源码核查／条件性风险，不是新增运行实验**。
+
+替换“安全——挡住异常”及紧邻说明为：
+
+> 下面只示意普通 C++ 错误转错误码：前提是 out 指向有效可写 int，且本调用区间不会
+> 发生线程取消。实际接口还应明确空指针／错误输出语义。允许线程取消时不得用
+> catch (...) 吞掉强制展开；需在匹配的运行时中辨识并继续传播，且另外核验完整调用链
+> 的清理与不抛边界。这个简化示例不构成该取消场景的安全实现。
+
+若保留代码，在 try 前加 `if (out == nullptr) return -3;`，并仍保留上述取消前提。
+这不是建议平台禁用取消，也不是已经核准一个通用 C 异常桥接实现。
+
+### M03　异常反例被替换成未测类型，机理过度简化
+
+位置：API 18、101–103、173–189；ABI 20、131–132。
+原始依据：[共享异常类型](../R78/code/boundary_error.hpp)、
+[旧插件](../R78/code/old_plugin.cpp)、[接收方](../R78/code/new_main.cpp)、
+[逐场景记录](../R78/tables/scenario_matrix.tsv)、[R78 原材料入口](../R78/REPORT.md)。
+原始代码路径在仓根为 `docs/progress/R78/code/`。
+两架构测的是简单聚合 `BoundaryError { int code; }`，不是 runtime_error 派生类。
+libc++abi `cxa_personality.cpp` 的 typed catch 分支先检查 native_exception；foreign 不进入
+该类型匹配。不能把这一机制等同于“所有 RTTI 类型信息都丢失”。
+
+替换机理与“已实测”段为：
+
+> 在所测 libstdc++ 插件→libc++ 接收方组合中，插件抛 BoundaryError{77}；
+> x86_64 原生和 armv7l 实板均未进入同类型 catch，而进入 catch-all 并退出 12。
+> 相关 libc++abi personality 将非本运行时异常视为 foreign，普通 typed catch 不匹配
+> 这一路径。结果依赖实际异常运行时、personality 和符号绑定，不能外推为任意 DSO、
+> 方向或类型均不可按类型捕获。EngineError 派生类本身未测。
+
+代码改用原 `BoundaryError` 形态，或明确把 EngineError 标为“说明性伪代码、此类型未测”。
+对于 non-throwing 边界改写为“异常实际越过其边界时会触发终止”，不是只要调用链任一处
+存在 noexcept 就一定终止。
+
+### M04　分配释放示例和“两套独立堆”解释错误
+
+位置：API 105–121；ABI 21。
+`free(name)` 不调用 operator delete；对 new[] 结果调用 free 是分配释放 API 不配对，
+-rw-rw-r-- 1 toolchain toolchain 9.4M Sep 15 15:35 docs/progress/P10_0915/evidence_before.json
+[
+  {
+    "architecture": "x86_64",
+    "environment": "原生",
+    "path": "direct",
+    "runs": 5,
+    "case_observations": 60,
+    "exact_case_observations": 60,
+    "destroyed_case_scopes": 60
+  },
+  {
+    "architecture": "x86_64",
+    "environment": "原生",
+    "path": "state",
+    "runs": 5,
+    "case_observations": 60,
+    "exact_case_observations": 60,
+    "destroyed_case_scopes": 60
+  },
+  {
+    "architecture": "x86_64",
+    "environment": "原生",
+    "path": "drop",
+    "runs": 5,
+    "case_observations": 60,
+    "exact_case_observations": 20,
+    "destroyed_case_scopes": 60
+  },
+  {
+    "architecture": "armv7l",
+    "environment": "物理板",
+    "path": "direct",
+    "runs": 5,
+    "case_observations": 60,
+    "exact_case_observations": 60,
+    "destroyed_case_scopes": 60
+  },
+  {
+    "architecture": "armv7l",
+    "environment": "物理板",
+    "path": "state",
+    "runs": 5,
+    "case_observations": 60,
+    "exact_case_observations": 60,
+    "destroyed_case_scopes": 60
+  },
+  {
+    "architecture": "armv7l",
+    "environment": "物理板",
+    "path": "drop",
+    "runs": 5,
+    "case_observations": 60,
+    "exact_case_observations": 20,
+    "destroyed_case_scopes": 60
+  }
+]

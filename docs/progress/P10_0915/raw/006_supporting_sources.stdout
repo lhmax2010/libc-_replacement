@@ -1,0 +1,726 @@
+# 双编译单元 shim：固定样本 SHIM_VIABLE，目标接口仍待验证
+
+## 已完成的实测，不外推的范围
+
+**SHIM_VIABLE 仅指本报告的普通输入转换样本**。真实 provider 是平台构建的 Boost.Program_options 1.83.0（GNU 构建 release 105.10.8、libc++ 构建 release 105.10.7），不是模拟实现。调用的原接口为 `std::string boost::program_options::to_internal(const std::wstring&)`。这是验证双编译单元机制的独立实例，**不是 EWK、SetSyncBinaryReply 或 Dali 的替代实测**；这三处 shim 的部署可行性仍为 `SHIM_UNCERTAIN`。
+
+| 应用 → 实际 provider | 路径 | 运行次数 | 每次具体内容断言 | maps/作用域检查 |
+| --- | --- | ---: | --- | --- |
+| libstdc++ → libc++ | 两 TU shim | 5/5 | 5/5 | 两库与精确 provider 路径均通过；两侧返回/局部对象离开作用域 |
+| libc++ → libstdc++ | 两 TU shim | 5/5 | 5/5 | 同上 |
+| libstdc++ → libstdc++ | 直接调用正向控制 | 5/5 | 5/5 | 同时显式加载 libc++；不是仅单库环境的对照 |
+| libc++ → libc++ | 直接调用正向控制 | 5/5 | 5/5 | 同时显式加载 libstdc++ |
+
+总计 **4 格、20 次运行、100 项内容比较**；额外 1 次 `LD_DEBUG=bindings` 是绑定诊断，不增加矩阵格数。全部为 **x86_64 原生**。五项输入：空串、ASCII、中文加补充平面字符、内嵌 NUL、257 字符长串；输出长度分别 0、9、11、3、257，逐字节/长度比较而非只看退出码。逐项 hex 在原始输出中。[矩阵](matrix.json)、[产物与库 SHA256](identity.json)。
+
+provider TU 自行构造并销毁其 wstring/string，通过隐藏 C 函数把 wchar 指针/长度与 char 指针/长度交给调用方 TU；调用方 TU 创建自己的 string。输入输出 std 对象不穿过两 TU 中间边界。不让消费方拿另一库构造的 std 对象自行析构；那会重新制造本来要避开的边界。
+作用域完成标记证明代码到达析构后的检查点，**不是内存泄漏检测、全部分配器证明或取消清理证明**。
+
+## 三种表述需要限定，不能当作普遍不可能性证明
+
+1. **自定义兼容布局类型直接代替 std::string：原签名下不成立。** 自定义类型不是该声明的参数类型；强制改指针解释不会建立合法对象生命周期，也不保持标准库不变量。若改为显式 C 数据协议则变成另一种设计，不是类型直接替换。仅 `sizeof` 相同也不够；本探针 string 为 GNU 32、libc++ 24 字节，而 vector<uint8_t> 两边均为 24 字节，**后者不证明 vector 跨库安全**。
+2. **单 TU 用同一套 std 定义同时解释两种布局：不成立。** 但“一个 TU/程序只能链接一套标准库”不准确；编译时类型选择与最终动态链接是不同阶段。一个 TU 也可经 C/不透明接口调用另一侧，后者仍需合适实现。Clang 官方说明允许不同标准库的代码共存，但不应跨边界传标准库对象，同时警告 C++ ABI 运行库的共存问题。[官方工具链说明](https://clang.llvm.org/docs/Toolchain.html#c-standard-library)。
+3. **把一个 provider 原样编两次直接无控制地塞一起：不能据此获得兼容。** 同名导出、ODR、公共异常/分配符号需要解决。但“来自两个项目所以双版本一定无法导出”**尚未证明，不能写死**。GCC 双 ABI 是它自己两套实现与命名空间的机制，不是 libc++ 兼容开关；符号版本能选择入口，不能转换对象布局。[GCC Dual ABI](https://gcc.gnu.org/onlinedocs/libstdc++/manual/using_dual_abi.html)、[GNU ld 版本脚本](https://sourceware.org/binutils/docs/ld/VERSION.html)。
+
+同理，“两个 TU 是唯一可能形态”也不能当排他定理：两个 DSO 以 C 协议通信等属于同一隔离原理的其他封装方式，本轮未测试。
+
+## 本次如何控制解析，哪些仍未控制
+
+`caller.cpp` 只看到应用侧 std 头，保持原函数签名；`provider_side.cpp` 只看到 provider 侧 std 头。两个 PIC `.o` 链进一个 `.so`，用 `-fvisibility=hidden` 隐藏 C 桥，只显式暴露调用入口与探针计数。真实 provider 未重编、未修改。
+
+GNU 参数含 `std::__cxx11`，libc++ 参数含 `std::__1`，本例的**不同修饰名**区分 shim 导出和真实 provider 导入。每次 `dladdr` 打印真实 callee 的精确路径，maps 核实实际加载，另以动态符号表、版本表和 loader 绑定日志交叉核验：`raw/*_symbols.*`、`raw/009_versions.*`、`raw/008_binding_trace.*`。
+
+**这不是每个公共 C++ ABI 符号都按 TU 隔离。** 绑定日志显示本次 shim 的 `__gxx_personality_v0` 绑定到 libc++abi 的 LLVM_22，而 GNU 运行库内部仍有 CXXABI_1.3 绑定；不能据普通返回的成功证明跨边界异常正确。`new/delete`、RTTI、异常、取消与链接次序变化仍需另测。既有平台版本化运行库是本次环境条件，不能换成任意系统库后沿用结果。
+
+EWK 的 `extern "C"` 同名导出没有本例的参数修饰名区分条件。若要保留同名入口，还要证明包装入口与真实函数的寻址不递归、不被抢先解析（例如经过明确句柄取得真实入口，或定义版本化入口）；本轮**未实现/验证这种路由**。vector 回调还需要在真实注册点接入双方匹配的接口表；Dali 需要处理对象、虚方法与生命周期，不是 string 复制的同义词。
+
+## 构建体系与先例
+
+**静态核查**：真实 binder spec 用 CMake/make，并区分 MOBILE/TV/COMMON；见 `raw/007_platform_build_fact.*`。CMake 支持对象库及逐 target 编译选项，所以表达“两个对象集合分别编译再链接”有现成机制。[对象库](https://cmake.org/cmake/help/latest/command/add_library.html#object-libraries)、[编译选项](https://cmake.org/cmake/help/latest/command/target_compile_options.html)。
+**实测**：当前工具链手工命令能够完成上述两个 TU 的编译和链接。
+**未观测**：未修改真实包配方，未在 GBS 中重建这三组目标；全局工具链 wrapper、LTO、打包规则、RPM 自动依赖能否保留这种细粒度设置仍待包内验证。不能写“平台构建体系已全面支持”。
+
+**已有相关先例**：LLVM 开发者记录了 FreeBSD 让两套标准库共用 libcxxrt，以及部分 Linux 配置让 libc++ 使用 GNU ABI 支持的做法。[开发者原始记录](https://lists.llvm.org/pipermail/cfe-dev/2016-August/050278.html)、[libcxxrt 项目](https://github.com/libcxxrt/libcxxrt)。这是**共存前提/ABI 支持库的先例，不是本任务三个接口已上线同款双 TU shim 的证据**。以 libc++/libstdc++/shim/wrapper/two translation units 搜索后，本轮没有核实一项精确同形态生产案例，记 `NOT_OBSERVED`，不等于不存在。
+
+## 代价、边界及反驳条件
+
+| 事项 | 可核的代价或限制 | 谁承担 |
+| --- | --- | --- |
+| 转换维护 | string/vector 元素协议、长度单位、编码、空值、错误、allocator/句柄分别定义；“每类型一对”不能覆盖所有函数语义 | 平台接口与 shim 维护方 |
+| 复制 | 本例 wchar 输入在 provider 侧复制，UTF-8 输出在 caller 侧复制；另有真实 provider 编码转换。时间/峰值内存未基准测量，不编造微秒或百分比 | 平台承担运行开销；业务决定可接受阈值 |
+| 上游演进 | 参数、字段、回调表顺序/版本变化要同步；旧应用链接身份与入口选择需回归 | provider、shim 与测试维护方 |
+| 错误表现 | 可以静默错值，也可链接失败、异常、终止、悬挂或内存破坏；不限定为只有静默错值 | 测试需字节/长度/长短串/边界值/双方向/加载身份/生命周期检查 |
+| 异常 | 样本把失败转 C 状态，调用侧再建本地异常；**不保持原异常类型/消息/捕获契约**，异常场景未实测。catch-all 样本不适用于线程取消语义，不可原样部署 | 需要接口契约与取消路径单独验证 |
+| 迭代器/引用 | 复制不能透明维持原对象位置、引用有效期或零拷贝迭代器；需句柄/操作协议 | 双方接口维护者，可能触及应用 |
+| 所有权 | 可在生产侧销毁后复制出数据；不能自动支持消费侧 delete 另一标准库对象、shared_ptr 控制块等 | 创建/释放必须配对并验证 |
+
+若普通样本在相同 SHA/加载身份/输入条件下可复现错值或销毁失败，则本报告限定的 `SHIM_VIABLE` 可被反驳。反过来，若能为三个目标完成真实双方向、同名符号/回调路由、异常与生命周期矩阵，就可以提升目前针对它们的 `SHIM_UNCERTAIN`。不需要先认同本报告，原始脚本和结果可独立复核。
+
+## 引用与自行判断
+
+选择现有双库 Boost 构建，是为了验证机制而不制造 provider；没有用它补齐 W1 的空格。使用既有平台 libc++ 与主机 GNU 运行库的精确 SHA 记录在 identity.json，不宣称同一套产品 rootfs。
+网页访问与快照见 [sources.json](sources.json)；GCC、GNU ld 页面可经检索工具读取，本地 curl 返回 HTTP 错误，记录未隐藏；libcxxrt 原猜测 README.md 返回错误，改查项目首页。检索可见不等于所有网络环境均可直接下载。
+[
+  {
+    "path": "docs/progress/P7_0909/stage2/snapshots/evidence/chromium-efl/55f75e1f273b_ewk_cookie_parser.h",
+    "sha256": "55f75e1f273bd0f4a586cafe327f923f5da5d0bd600aed0dab91750641a59db7",
+    "pattern": "ewk_parse_cookie\\(",
+    "matched_lines": 1,
+    "hits": [
+      {
+        "line": 70,
+        "text": "EXPORT_API Eina_Bool ewk_parse_cookie(const std::string& cookie_str,"
+      }
+    ],
+    "unit": "匹配行；不等于完整改造函数数"
+  },
+  {
+    "path": "docs/progress/P7_0909/stage2/snapshots/evidence/webapi-plugins/353da9cbd3a2_XW_Extension_SyncMessage.h",
+    "sha256": "353da9cbd3a2d048cdd4a90940a8cbc5e0cc967075316b5642254d7eba9cad00",
+    "pattern": "SetSyncBinaryReply",
+    "matched_lines": 1,
+    "hits": [
+      {
+        "line": 36,
+        "text": "  void (*SetSyncBinaryReply)(XW_Instance instance, const std::vector<uint8_t>& reply);"
+      }
+    ],
+    "unit": "匹配行；不等于完整改造函数数"
+  },
+  {
+    "path": "docs/progress/P7_0909/stage2/snapshots/evidence/webapi-plugins/e4597e6f32ca_extension.cc",
+    "sha256": "e4597e6f32ca604301c66bf05b0c2d5bd2e1a7be41d3423b6df25e06df6e46be",
+    "pattern": "void Instance::SendSyncBinaryReply|g_sync_messaging->SetSyncBinaryReply",
+    "matched_lines": 2,
+    "hits": [
+      {
+        "line": 340,
+        "text": "void Instance::SendSyncBinaryReply(const std::vector<uint8_t>& reply) {"
+      },
+      {
+        "line": 348,
+        "text": "  g_sync_messaging->SetSyncBinaryReply(xw_instance_, reply);"
+      }
+    ],
+    "unit": "匹配行；不等于完整改造函数数"
+  },
+  {
+    "path": "docs/progress/P7_0909/stage2/snapshots/evidence/dali2-csharp-binder/b0487e765ad5_control-wrap.cpp",
+    "sha256": "b0487e765ad5cc3dcb0933df12c711f3373cfca2c37e27ff3c628fcfee34ac9f",
+    "pattern": "SWIGEXPORT.*(?:CSharp_Dali_View_New\\(|CSharp_Dali_View_NewWithBehaviour\\(|CSharp_Dali_delete_View\\()",
+    "matched_lines": 3,
+    "hits": [
+      {
+        "line": 153,
+        "text": "SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_View_New()"
+      },
+      {
+        "line": 170,
+        "text": "SWIGEXPORT void* SWIGSTDCALL CSharp_Dali_View_NewWithBehaviour(int csBehaviour)"
+      },
+      {
+        "line": 187,
+        "text": "SWIGEXPORT void SWIGSTDCALL CSharp_Dali_delete_View(void* jarg1)"
+      }
+    ],
+    "unit": "匹配行；不等于完整改造函数数"
+  }
+]
+# R78：新旧标准库共存场景验证
+
+## 结论
+
+`PARTIAL`
+
+两架构的可控同进程形态均完成：正常 C ABI 路径通过；线程取消从
+libstdc++ 插件的 `condition_variable::wait` 发起，强制展开跨过旧插件和
+libc++ 主程序后，两侧析构各执行一次且 `pthread_join` 返回
+`PTHREAD_CANCELED`；普通 C++ 异常跨界则在两架构均无法按共享的
+`BoundaryError` 类型捕获，只落入 `catch(...)` 并退出 12。
+
+至少一个真实安装组件的场景已实际通过：armv7l 板上的
+`/usr/lib/libicuuc.so.78.1` 直接依赖 `libstdc++.so.6`，补丁 libc++ 主程序经
+其 C API `u_getVersion` 得到 78.1.0.0。`LD_DEBUG` 和进程加载枚举同时证明
+进程中存在任务版 `libc++.so.1`、`libc++abi.so.1`、系统
+`libstdc++.so.6` 和真实 ICU DSO，退出 0、行为断言 PASS。
+
+仍记 `PARTIAL` 而非 `COEXISTENCE_VERIFIED`，因为最重要的厂商个案
+`pen-wave` 在本板镜像缺少其 `DT_NEEDED libGLESv2.so.2`，实际 C API 未能
+进入；不能用 ICU 或受控插件的成功替代 `pen-wave` 自身结论。
+
+实际运行时间：2026-08-28T21:03:24+08:00 至
+2026-08-28T21:20:28+08:00，约 17 分钟；设计阶段约 20 分钟以内，未超过
+80 分钟硬上限。资源门禁 `medium` 退出 0，可用内存约 21 GiB。
+
+## 场景设计与真实性
+
+完整表见 `tables/scenario_design.tsv`。优先顺序如下：
+
+1. 真实已安装的旧运行时 DSO，由迁移后的 libc++ 主程序经 C ABI 调用；
+2. 受控插件中让取消点位于旧侧、调用栈跨越两套运行时；
+3. 故意跨界传递普通 C++ 异常，用来检验此前“禁止跨界 C++ 语义”的边界；
+4. 分进程共存只记录设计，不占用本次同进程验证时间。
+
+真实性依据：
+
+- `pen-wave` 源包只带预编译库；armv7l 库 SHA256
+  `0dd24e53a6f87f64c4db3fc1828f8564f6a3e0f28a31c77caacc8112f0bf3843`
+  与板上实际安装文件一致，直接需要 `libstdc++.so.6`，且头文件公开大量
+  C linkage API。
+- 板上 ICU 78.1 是现存产品 DSO；拉回文件 SHA256
+  `f9690941908929db307395cb905a8b957e95b9285434eb72ae2147b978cb3e93`，
+  ELF 直接需要 `libstdc++.so.6`，并导出无 C++ 类型的 `u_getVersion`。
+- R11 包统计显示 armv7l 运行时 ELF 样本中存在 121 个同时含 C++ 与可操作
+  纯 C ELF 的包，说明 C/C++ 边界形态并非纯理论构造；这只是包级形态依据，
+  不等于 121 包均经本轮运行。
+
+## 用例结构与判据
+
+### 正常路径
+
+`new_main` 只直接依赖补丁 libc++/libc++abi；`libold_plugin.so` 只直接依赖
+libstdc++。主程序用 `dlopen` 加载旧插件，通过 C 参数缓冲区调用插件内部
+`std::string` 操作，断言结果为 `old:ping` 且旧侧 guard 析构一次。
+
+真实 ICU 探针采用相同边界但不使用自制插件：通过 `dlsym` 调用系统 ICU 的
+真实 C API，断言版本，并枚举加载对象。
+
+### 跨界线程取消
+
+调用链是：补丁 libc++ 主程序中的裸 `pthread_create` 线程入口 →
+libstdc++ 插件 `old_cancel_wait` → libstdc++ `condition_variable::wait` →
+`pthread_cond_wait` 取消点。线程入口和调用链用户函数均未声明 `noexcept`。
+主线程只在旧插件报告已进入 wait 后调用 `pthread_cancel`。
+
+行为判据不是单看退出码，而是同时要求：`pthread_cancel == 0`、
+`pthread_join == 0`、join 值为 `PTHREAD_CANCELED`、新旧两侧 guard 析构计数
+都等于 1。armv7l 和 x86_64 全部满足。
+
+### 跨界普通异常
+
+旧插件抛出共享头定义的 `BoundaryError{77}`，新侧先尝试同类型 catch，再设
+catch-all。两架构都进入 catch-all 而非 typed catch，退出 12。该结果不是
+产品补丁回归，而是刻意触犯既有禁止边界后的观察。
+
+## 验证矩阵
+
+逐格结果及证据路径见 `tables/scenario_matrix.tsv`。摘要：
+
+| 架构 | 真实 ICU C API | 正常 C ABI | 跨界取消 | 跨界普通异常 | `pen-wave` |
+|---|---|---|---|---|---|
+| armv7l | PASS / 0 | PASS / 0 | PASS / 0 | typed catch 失败 / 12 | 缺 GLES / 3 |
+| x86_64 | `NOT_OBSERVED` | PASS / 0 | PASS / 0 | typed catch 失败 / 12 | `NOT_AVAILABLE` |
+
+所有运行保存完整 `LD_DEBUG=libs` 输出；加载枚举确认每个成功的受控格同时有
+libc++、libc++abi 和 libstdc++。armv7l 使用 R68/R69 最终补丁运行库；
+x86_64 使用同一最终补丁构建产物。构建命令原文、ELF `DT_NEEDED`、SHA256、
+stdout/stderr 均在 `commands/` 和 `raw/`。
+
+## 与既有结论的关系
+
+观察支持并细化此前结论：
+
+- “两套运行时可在同一进程共存”得到实际支持，包括真实 ICU C API 和两架构
+  受控正常路径；
+- “禁止跨界传递 C++ 语义”得到普通异常反例支持：相同源码类型并未在另一
+  运行时被 typed catch；
+- POSIX 强制展开是本方案专门兼容的机制，不应与普通 C++ 异常合并表述。
+  本轮只观察到受控取消栈在两架构正确完成，不能据此允许任意 C++ 对象、
+  allocator、RTTI 或异常跨界。
+
+因此建议性结论不变（本任务只做验证而未修改产品）：共存边界必须保持 C ABI
+或其他明确无 C++ 所有权/异常语义的协议；本报告没有把测试代码写入产品。
+
+## `pen-wave` 专门确认
+
+- 板上实际文件存在，且 hash 与源包预编译 armv7l DSO 一致；
+- 补丁 libc++ 探针实际执行 `dlopen`，动态加载器因缺少
+  `libGLESv2.so.2` 返回失败；远端退出 3；
+- 因 DSO 未加载完成，`SetResourcePath` / `GetResourcePath` 未被调用，结果为
+  `NOT_OBSERVED`，没有补造 GLES stub，也没有改产品或系统文件；
+- 该失败只说明当前开发板镜像的依赖闭包不足，不能判定具备完整图形栈的产品
+  镜像会成功或失败。x86_64 供给包没有 x86_64 预编译库，记
+  `NOT_AVAILABLE`。
+
+## 技术性错误与处置
+
+- 首次部署的远端 chmod 子句因本地/远端变量转义错误指向 `/new_main`，但
+  `sdb push` 实际文件均已落到预期任务目录。只读定位确认根目录无误放文件，
+  随后用硬编码完整路径补做 chmod/symlink；未删除未知文件。
+- 首次 `pen-wave` 运行暴露 `sdb shell` 不传递远端程序退出码；新增包装器在
+  远端输出 `__R78_REMOTE_EXIT_CODE` 并由主机解析，已对相关格重新执行。
+- x86_64 首次运行脚本错误地把构建 sysroot 的 glibc 加入宿主
+  `LD_LIBRARY_PATH`，进 main 前退出 139。删除该注入后从 x86 三格重跑，
+  结果稳定；原失败完整保留。
+- 两次板上 DSO 扫描得到 0 的原因是板上没有 `readelf`，不是没有旧运行时
+  DSO；能力检查和更正后的 ICU `ldd` / 拉回 ELF 分析均保留。
+
+以上均只改测试脚本或诊断流程，没有修改四个补丁、平台源码、系统库或
+`codes/`。
+
+## 未覆盖范围、自行判断与疑问
+
+- 未覆盖：具备 GLES 完整依赖闭包的 `pen-wave` 实机调用；aarch64；其他真实
+  厂商 DSO；跨界 C++ 对象所有权、allocator、RTTI 和回调并发组合。
+- 自行判断：以板上 ICU 作为补充的真实旧运行时组件，因为它可由 ELF 和真实
+  C API 完整验证，而不能用缺依赖的 `pen-wave` 冒充成功。
+- 自行判断：第二架构沿用既有全量验证的 x86_64，与 armv7l 组成两架构矩阵。
+- 自行判断：结论选 `PARTIAL`，尽管核心可控矩阵和真实 ICU 已通过，因为
+  `pen-wave` 是任务背景中的长期共存关键个案且本轮未进入其 API。
+- 尚存需人工裁决疑问：无。后续若要验证 `pen-wave`，需要一块合法安装
+  `libGLESv2.so.2` 及其图形依赖的目标镜像；本轮不自行改变板卡环境。
+
+## 清理与材料
+
+最终只删除精确目录
+`/opt/usr/home/owner/share/tmp/r78_coexist_20260829`，确认目录不存在且相关
+进程为零。未删除板上预存的 `/usr/lib/libpen-wave.so.1.4.0` 或 ICU。
+
+# R112：三家评审关键论断核实记录
+
+## 1. 范围与判定口径
+
+本轮只核实论断，不修改平台源码或四个补丁，不给出处置建议。静态源码身份为
+`codes/llvm` 提交 `5ed6c77278dfa7a470667cf1a137723d3c96fe60`；运行时实验均记录了
+实际库映射或构建输入。`NOT_OBSERVED` 表示本轮没有观察到，`NOT_AVAILABLE`
+表示所需材料不可得。
+
+总判定如下：
+
+| 论断 | 判定 | 证据性质 |
+|---|---|---|
+| 旧调用方解除规格后必然静默死锁 | **按“必然”表述不成立；在无可用清理表的旧帧中成立** | 源码核查 + x86_64 实测 |
+| 混合目标文件发生 COMDAT 折叠，语义受链接顺序影响 | **成立**；但 ABI 标签“只随版本变化”的解释不成立 | 源码核查 + x86_64 实测 |
+| 去掉 `wbuffer_convert` 析构同步后，约 4095 字符以内一字不留 | **不成立**；本用例保留首字符，其余大量丢失 | 源码核查 + x86_64 实测 |
+| 既有 Boost 失败实验全部是过渡期反方向，实际方向未测 | **在本轮前成立**；本轮已补两类实际方向 | 材料核查 + aarch64 QEMU 实测 |
+| 部分符号缺失在无 `BIND_NOW` 时首次调用才失败 | **机制成立，举例的 33→21 成立；对该产品进程的最终结果仍有条件** | ELF 核查 + x86_64 机制实测 |
+| `async` 最后一个共享状态释放路径还有不抛帧 | **成立** | 静态核查 |
+| 四类 libc++ 内部消费路径存在且此前未运行时测试 | **成立** | 静态核查 + 既有探针范围核查 |
+| C++03 镜像也须同步改变才会改变 C++03 调用方 | **成立** | 静态核查 + 编译包含链核查 |
+| N4861 对 `wbuffer_convert` 析构只列出删除 `cvtptr` | **成立** | 标准原文核查 |
+| 601 是可见外联消费记录，不含内联与外部产品 | **成立** | 既有材料原文核查 |
+| 平台发布/允许静态链接 `libc++.a`，形成 601 的现实盲区 | **发布这一前提不成立；组织策略不可得；机制假设成立** | 打包规格 + 冻结清单核查 |
+
+## 2. 旧调用方在取消路径上的实际结局
+
+### 2.1 评审源码引用
+
+静态核查确认引用的代码分支存在：
+
+- `EHStreamer.cpp` 在处理调用指令时区分 `nounwind` 调用与可能抛出的调用；
+  `SawPotentiallyThrowing` 只因后者置位。它在需要时生成 landing pad 为 0 的
+  call-site 区间，作为不应落入相邻清理区间的空隙。
+- `cxa_personality.cpp` 在没有 LSDA 时返回继续展开；命中 landing pad 为 0 的
+  call-site 记录时也继续展开；扫描后找不到覆盖 IP 的记录时调用终止路径。
+
+对应摘录及行号在 `raw/003_inspect_eh_sources.*`、
+`raw/004_inspect_cxa_personality_full.*`。因此评审列出的三个 personality 分支属实。
+
+推理中并非必然的环节是：“旧头把目标调用编成普通 `call`”不能单独推出“该次
+展开必定跳过整个旧帧的清理”。最终 IP 被哪条 LSDA 区间覆盖还取决于同一函数
+附近的其他调用、代码生成和布局。实测恰好观察到两种结果。
+
+### 2.2 实测设计
+
+探针使用裸 `pthread_create`、延迟取消和真实 `condition_variable::wait`。
+解除规格组链接解除规格的实现，但旧调用方仍用带 `noexcept` 的旧头编译。
+探针分别记录：
+
+- 帧内清理对象的析构是否执行；
+- `unique_lock` 析构引发的目标 mutex 解锁次数；
+- `pthread_mutex_trylock` 所见底层所有权状态；
+- 另一线程用 300 ms `pthread_mutex_timedlock` 获取同一 mutex 的结果；
+- `pthread_join` 是否得到 `PTHREAD_CANCELED`。
+
+“有邻近可抛调用”形态在等待前后保留 `puts`；“quiet”形态去掉这两个调用。
+每格 5 次。脚本在 `code/item1_oldcaller_cancel.cpp`、`build_item1.sh`、
+`run_item1_matrix.py`，汇总在 `tables/item1_cancel_matrix.tsv`。
+
+### 2.3 结果
+
+| 调用方/实现 | 5 次结果 | 帧清理 | mutex 最终状态 | 另一线程 |
+|---|---|---:|---|---|
+| 旧头 + 保留规格 | 5/5 进入终止处理器，退出 86 | 进程先终止，未到达后续检查 | `NOT_OBSERVED` | `NOT_OBSERVED` |
+| 旧头 + 解除规格，有邻近调用 | 5/5 干净 join 为 canceled | 5/5 | 5/5 可重新获取 | 5/5 获取成功 |
+| 旧头 + 解除规格，quiet | 5/5 join 为 canceled | 0/5 | 5/5 `EBUSY` | 5/5 `ETIMEDOUT` |
+| `-fno-exceptions` 旧头 + 解除规格，有邻近调用 | 5/5 join 为 canceled | 0/5 | 5/5 `EBUSY` | 5/5 `ETIMEDOUT` |
+| `-fno-exceptions` 旧头 + 解除规格，quiet | 同上 | 0/5 | 5/5 `EBUSY` | 5/5 `ETIMEDOUT` |
+| 新头 + 解除规格，两种布局 | 共 10/10 干净退出 | 10/10 | 10/10 可重新获取 | 10/10 获取成功 |
+
+quiet 旧帧及两个 `-fno-exceptions` 格完整符合评审所述：pthread 取消清理已经
+重新锁定 mutex，C++ 帧清理未运行，其他线程之后持续等不到该锁。这里的“死锁”
+由定时获取的 `ETIMEDOUT` 和底层 `EBUSY` 共同确认，不是以“进程没有崩溃”替代
+行为断言。
+
+有邻近可抛调用的旧帧则执行了清理，直接反例说明“所有旧调用方必然静默死锁”
+不成立。`raw/014_inspect_item1_worker_ir_sections.*` 还确认 quiet worker 没有
+personality/LSDA，而带邻近调用的 worker 有清理 landing pad；`-fno-exceptions`
+worker 没有 personality。
+
+最终判定：**静默锁滞留是解除规格后旧调用方的一种真实第三结果，但不是仅凭旧头
+即可断言的必然结果；是否发生取决于具体旧帧的展开表与布局。**
+
+### 2.4 平台 `-fno-exceptions` 数量
+
+现有冻结源码材料能检出显式文本选项，但不能把源码树中出现一个选项等同于实际
+交付 ELF 的编译命令。平台所有包逐编译单元的命令数据库/完整构建日志不可得，
+所以“实际有多少包以此选项编译”记为 `NOT_AVAILABLE`。
+
+可得的 R98 抽样构建日志中至少观察到 `angle` 的真实 C++ 编译命令带
+`-fno-exceptions`；R100 摘要还显示 `openfst` 的 C++ 预处理/配置命令带该选项，
+但摘要没有保留足以证明所有实际编译单元的完整命令。`glibc` spec 中构建辅助
+wrapper 的命令也带该选项。它们只能形成“至少有实际例子”的下界，不能形成平台
+包数。证据见 `raw/061_inspect_available_build_log_fno_evidence.*`；全源码和抽样
+完整日志的追加扫描因底层文件 I/O 长时间阻塞而中止，原始退出记录保留在
+`raw/053_*`、`raw/062_*`、`raw/063_*`，不把不完整扫描结果作为分母。
+
+## 3. 头文件内联函数的 COMDAT 折叠
+
+### 3.1 宏和 ABI 标签
+
+`_LIBCPP_HIDE_FROM_ABI` 由隐藏可见性、排除显式实例化和
+`abi_tag(_LIBCPP_ODR_SIGNATURE)` 组成。评审所称“标签只随 libc++ 版本变化”
+不准确：当前 ODR 签名由 hardening 模式、断言语义、是否启用异常以及 libc++
+版本共同构成。源码见 `raw/017_inspect_item2_macro.*`、
+`raw/021_inspect_item2_symbols_and_archive_scope_retry.*`。
+
+平台补丁只改变目标函数的异常规格，没有改变上述四个签名输入。实验中的旧、新
+目标文件因此都发射 `[abi:nqe220108]` 的完全同名弱 COMDAT 定义。
+
+### 3.2 混合链接实测
+
+两个 TU 分别用旧头和解除规格头编译，各自实例化 steady-clock
+`wait_until/__do_timed_wait`。每个最终入口各跑 5 次：
+
+| 链接形态 | 旧入口 | 新入口 | 最终选中语义 |
+|---|---|---|---|
+| `old.o new.o` | 5/5 终止 | 5/5 终止 | 旧定义 |
+| `new.o old.o` | 5/5 捕获 `system_error` | 5/5 捕获 | 新定义 |
+| 旧成员在前的混合静态归档、whole-archive | 5/5 终止 | 5/5 终止 | 旧定义 |
+
+总计 30 次均符合断言。对象 section group、最终符号和 link map 均记录在
+`raw/021_*`，行为矩阵在 `tables/item2_comdat_matrix.tsv`。
+
+因此，“旧对象各自保留旧行为”不成立：在本次 GNU/ELF/lld 链接中，同一链接
+单元两个入口共同采用先出现的 COMDAT 定义。这里观察到的是可重复的“先出现者
+胜出”，不是观察到随机选择；其他链接器策略未实测。
+
+### 3.3 支持范围与 8,911 个静态归档
+
+事实影响是：混合链接单元不能按单个 `.o` 的编译头版本分别陈述运行语义；必须
+把最终链接所选择的 COMDAT 定义纳入范围描述。
+
+静态归档确实可以携带旧对象并在最终链接时参加同名 COMDAT 折叠，本轮归档用例
+直接证明该机制。此前 8,911 是冻结材料中“已发布静态归档”的总数，其中
+1,600 个仅有宽泛 C++ 指标；它不是已证明携带目标内联函数的归档数。因此：
+
+- “静态归档是这种混合的一种来源”成立；
+- “8,911 个归档都是这种混合来源”不成立；
+- 实际包含目标实例的归档数为 `NOT_AVAILABLE`。
+
+## 4. `wbuffer_convert` 的实际丢失量
+
+### 4.1 源码路径
+
+当前构造函数调用 `setbuf(nullptr, 4096)`。首次输出进入 `overflow`；首个宽字符
+先被转换并写到底层 byte streambuf，随后 `__write_mode` 才把内部缓冲的
+`__ibs_-1`（4095）个元素设为 put 区。后续写满时再由 `overflow` 刷出。
+相关源码在 `raw/023_inspect_wbuffer_sources.*` 和
+`raw/028_inspect_wbuffer_first_write_path.*`。
+
+这解释了评审推理漏掉的首字符：put 区不是在第一个字符写入前就已建立。
+
+### 4.2 300 次实测
+
+每个长度、实现和结束方式跑 5 次。UTF-8 ASCII 输入使宽字符数等于输出字节数。
+
+| 输入宽字符数 | 保留同步：析构结束 | 去掉同步：析构结束 | 去掉同步：显式 `pubsync()`/`seekoff()` |
+|---:|---:|---:|---:|
+| 1 | 1 | 1 | 1 |
+| 3 | 3 | 1 | 3 |
+| 100 | 100 | 1 | 100 |
+| 4094 | 4094 | 1 | 4094 |
+| 4095 | 4095 | 1 | 4095 |
+| 4096 | 4096 | 1 | 4096 |
+| 4097 | 4097 | 4097 | 4097 |
+| 5000 | 5000 | 4097 | 5000 |
+| 8191 | 8191 | 4097 | 8191 |
+| 8192 | 8192 | 4097 | 8192 |
+# R113：第二轮评审四项新发现核实记录
+
+## 1. 范围与结论总览
+
+本轮只验证论断，不修改平台源码或四个补丁，不实施方案，也不给处置建议。
+静态源码身份为 libc++ `5ed6c77278dfa7a470667cf1a137723d3c96fe60`、
+libstdc++ `49c5060508ce8a6ed6beca375233688a6bdd9140`。运行实验均为
+x86_64 原生；要求使用 armv7l 物理板的核查因板卡不可连接而为
+`NOT_AVAILABLE`。
+
+| 核查项 | 判定 | 证据性质 |
+|---|---|---|
+| `shared_mutex` 写者取消后保留写入标记 | **成立**；`shared_timed_mutex` 定时写者路径也成立 | libc++/libstdc++ 静态核查 + x86_64 原生实测 |
+| armv7l 原生取消矩阵与 `.cantunwind` 推测 | **NOT_AVAILABLE**；物理板三次连接失败 | 连接实测；未以 QEMU 替代 |
+| 双版本不能保护重新链接的旧 `.o`/`.a` | **成立** | 真实完整 libc++ 双版本实验 + x86_64 原生实测 |
+| 四处文字准确性 | 两处需收窄、一处原口径错误、一处源码论断成立 | 静态核查 + 既有实验边界复核 |
+
+`NOT_OBSERVED` 表示本轮未运行或未观察；`NOT_AVAILABLE` 表示完成指定核查所需的
+环境或材料不可得。
+
+## 2. `shared_mutex` 写者取消后的状态
+
+### 2.1 libc++ 源码核查
+
+`codes/llvm/libcxx/src/shared_mutex.cpp:22-29` 的排他锁路径是：
+
+```cpp
+void __shared_mutex_base::lock() {
+  unique_lock<mutex> lk(__mut_);
+  while (__state_ & __write_entered_)
+    __gate1_.wait(lk);
+  __state_ |= __write_entered_;
+  while (__state_ & __n_readers_)
+    __gate2_.wait(lk);
+}
+```
+
+函数中没有清除 `__write_entered_` 的 RAII 守卫或 `catch`。正常 `unlock()` 会把
+全部状态清零；但被取消的写者尚未取得排他所有权，不会调用 `unlock()`。
+
+`shared_timed_mutex::try_lock_until` 位于
+`codes/llvm/libcxx/include/shared_mutex:233-260`。它同样先设置写入标记再等待
+`__gate2_`。只有收到正常 `timeout` 返回时，253 行才清标记并通知 `__gate1_`；
+异常展开路径没有对应恢复代码。源码原文见 `raw/002_*`。
+
+### 2.2 libstdc++ 对应实现
+
+libstdc++ 有两种后端：
+
+- `pthread_rwlock_t` 后端不使用上述写入标记状态机；本机头文件宏实际选择此后端：
+  `_GLIBCXX_USE_PTHREAD_RWLOCK_T=1`、`_GTHREAD_USE_MUTEX_TIMEDLOCK=1`。
+- 条件变量 fallback `__shared_mutex_cv` 使用与 libc++ 同源的算法：
+  `_M_gate1.wait` 后设置 `_S_write_entered`，再在 `_M_gate2.wait` 等待；没有异常
+  回滚。定时路径也只在正常超时分支清标记并通知。
+
+因此，论断在“条件变量状态机实现”层面是两库共有；在当前 x86_64 libstdc++
+实际选择的 pthread rwlock 后端上不存在该内部标记。armv7l 平台最终使用哪个
+libstdc++ 后端本轮没有物理板或对应预处理结果，记 `NOT_OBSERVED`。证据见
+`raw/003_*`、`raw/012_*`。
+
+### 2.3 x86_64 原生实测
+
+实验库重编了解除四处条件变量异常规格后的 `condition_variable.cpp`，并用同一
+新头重编 `mutex.cpp`、`shared_mutex.cpp`、`future.cpp`；探针的 `DT_NEEDED`
+顺序和符号定义见 `raw/010_*`。所有用例使用裸 `pthread_create`、延迟取消、
+底层 mutex 状态或带时限的竞争者断言，每格 5 次。
+
+| 设施 | 线程回收与帧清理 | 取消后对象状态 | 5 次结果 |
+|---|---|---|---|
+| `timed_mutex::lock` | canceled，清理执行 | 解锁持有者后可再次 `try_lock_for` | 5/5 可用 |
+| `shared_mutex` 底层 `__shared_mutex_base::lock` | canceled，清理执行，内部 mutex 可再次取得 | 写入标记仍为 1；原读者退出后，新读者、新写者各等待 300 ms 均返回 `ETIMEDOUT` | 5/5 损坏 |
+| `shared_timed_mutex::try_lock_for` | canceled，清理执行 | 原读者退出后，新读者和新写者的带时限尝试均失败 | 5/5 损坏 |
+| `future::wait` | canceled，清理执行 | promise 置值后同一 future 就绪并取得精确值 42 | 5/5 可用 |
+| `condition_variable_any::wait` | canceled，清理执行 | 用户 mutex 可取得；同一 cv-any 再次定时等待正常超时并保持锁 | 5/5 可用 |
+| cv-any + 展开时会抛出的用户锁 | 未能回收到主线程 | `__unlock_guard` 的 non-throwing 析构内 `lock()` 抛出，进入终止处理器 | 5/5 终止 |
+
+`shared_mutex` 格直接读取实现公开的内部 base 状态，同时用两个独立竞争线程分别
+验证读者和写者阻塞；不是以“进程没崩溃”代替断言。`shared_timed_mutex` 不读取
+私有布局，使用公开带时限接口观察状态。完整 30 行矩阵在
+`tables/item1_facility_cancel.tsv`，代表输出及构建失败修正过程在 `raw/006_*`、
+`raw/008_*`、`raw/009_*`、`raw/011_*`、`raw/032_*`。
+
+### 2.4 对修改范围的事实含义
+
+若目标事实被定义为“取消可以穿过四处等待边界，且上述内部同步对象取消后仍可
+使用”，只解除四处异常规格不能满足这一结果：`shared_mutex` 和
+`shared_timed_mutex` 的状态恢复是额外的实现问题；cv-any 用户锁在重新加锁时抛出
+仍会因 `__unlock_guard::~__unlock_guard() noexcept` 终止。`timed_mutex`、普通
+`future::wait` 和不抛用户锁的 cv-any 在本轮格中不需要额外状态恢复即可继续使用。
+这是实验覆盖范围内的事实，不是处置建议。
+
+## 3. armv7l 物理板取消矩阵
+
+### 3.1 连接结果
+
+资源闸门通过。既有成功记录给出的物理板入口是
+`192.168.108.26:26101`。本轮：
+
+1. `sdb devices` 启动服务后设备列表为空；
+2. 对该入口连接三次，三次文本均为
+   `error: failed to connect to remote target '192.168.108.26'`；
+3. 值得单列的是，三次 `sdb connect` 的进程退出码均为 0，不能只看退出码判断连接
+   成功；随后的远端预检明确返回 `target not found`、退出 1。
+
+按任务书“连接中断即停报、重试不超过 3 次”，第三次失败后停止本项。没有向板上
+推送文件，也没有启动 R113 进程；因目标不可见，板上收尾核验本身为
+`NOT_AVAILABLE`。原始记录见 `raw/015_*` 至 `raw/019_*`。
+
+### 3.2 未取得的结论
+
+- R111 四种等待形态在 armv7l 保留/解除规格的每格 5 次矩阵：
+  `NOT_AVAILABLE`。
+- R112 旧调用方有邻近调用、quiet、`-fno-exceptions` 的 armv7l 每格 5 次矩阵：
+  `NOT_AVAILABLE`。
+- GCC、Clang 以及 R98 `angle` 实际产物的 `.ARM.exidx` 核查和
+  `EXIDX_CANTUNWIND` 运行行为：因本项已按连接规则停止，`NOT_AVAILABLE`。
+- armv7l 是否与 x86_64 一致、`.cantunwind` 推测是否成立：均不能从本轮证据判断，
+  不以 QEMU 或 x86_64 结果补全。
+
+## 4. 双版本与重新链接的旧对象
+
+### 4.1 实验库实现
+
+本实验从 R69 x86_64 libc++ 构建目录的全部 54 个 `cxx_shared` 对象重新链接两套
+完整 `libc++.so.1`：
+
+- 单版本旧库使用原 54 个对象，全部符号归入测试节点 `LLVM_22`；
+- 双版本库使用其余 53 个对象，并以本轮重编的条件变量对象替换原对象；普通
+  `condition_variable::wait` 同时导出旧
+  `@LLVM_22` 和新默认 `@@LLVM_23`。
+
+测试节点名只用于本实验。旧 wrapper 为 non-throwing，新 wrapper 可展开；两者执行
+相同的底层等待体并输出实际入口标记。私有成员没有通过修改头文件暴露：代码以
+`is_standard_layout` 和大小相等两个 `static_assert` 验证
+`condition_variable` 只有一个 native condition-variable 状态，再从对象地址取得
+首成员地址。完整实现见 `code/item3_dual_condition_variable.cpp`，版本脚本见
+`code/item3_single_old.map`、`code/item3_dual.map`；动态符号表确认两个版本均存在。
+
+### 4.2 四种绑定实测
+
+每格 5 次，运行时均由 `ldd` 确认加载本轮双版本 `libc++.so.1`。`readelf -V/-Ws`
+确认具体等待引用记录的节点，wrapper 自身的标记再次确认实际入口。
+
+| 情形 | 等待引用 | 实际入口 | 行为 | 结果 |
+|---|---|---|---|---|
+| 旧对象先链接单版本旧库形成旧 ELF，再加载双版本库 | `LLVM_22` | old | 进入终止处理器 | 5/5 |
+| 用旧头编译的 `old_quiet.o` 直接重新链接双版本库 | `LLVM_23` | new | canceled join；旧 quiet 帧清理为 0，mutex 保持锁定，竞争者 `ETIMEDOUT` | 5/5 |
+| 用新头编译的对象链接双版本库 | `LLVM_23` | new | 帧清理及解锁各 1，竞争者取得 mutex | 5/5 |
+| 用新头重编对象，但先链接单版本旧库，再加载双版本库 | `LLVM_22` | old | 进入终止处理器 | 5/5 |
+
+矩阵在 `tables/item3_dual_version.tsv`，符号版本在 `raw/023_*`，运行结果在
+`raw/024_*`，实际加载路径在 `raw/033_*`。
+
+### 4.3 判定与保护边界
+
+评审关于重新链接旧 `.o`/`.a` 的论断**成立**：对象文件中的普通未定义引用不带
+版本；重新链接双版本库时，链接器把它记录为新默认节点。双版本实际保护的是已经
+在最终 ELF 中记录旧节点的引用，不是所有曾经用旧头编译的目标文件。
+
+部署顺序论断也**成立**：即使用新头重新编译，如果链接阶段看到的仍是单版本旧库，
+最终 ELF 会记录旧节点，后来加载双版本库时仍进入旧 wrapper。本结论是本轮 GNU
+ELF/x86_64 工具链实测，不外推到未测链接器或架构。
+
+## 5. 四处文字核查
+
+# R39：R36 与 R38 结果分歧定位诊断
+
+## 结论
+
+结论为 **SETUP_DIFFERENCE**。
+
+R36 与 R38 实际加载的实验版 `libc++abi.so.1` 逐字节相同，SHA256 均为 `21a7bae558296c19ac3e9762c26ac6bd3dc0e218a7f7be245ec3fb4b8b1cb598`，`cmp` 退出 0（`commands/006_experiment_identity_comparison.log:3-15`）。分歧来自测试件的动态符号可见性：
+
+- R36 测试件把 `_ZTIN10__cxxabiv115__forced_unwindE` 与 `_ZTSN10__cxxabiv115__forced_unwindE` 作为 `WEAK DEFAULT` 符号放入 `.dynsym`；运行时，实验版 libc++abi 对这两个符号的引用均绑定到 R36 主程序（`commands/007_typeinfo_static_symbols.log:3-9`；`commands/023_board_binding_observations.log:1658-1670`）。结果是 `forced-handler` 命中，然后在重抛路径退出 134（同日志 `2074-2132`）。
+- R38 原测试件虽在普通符号表中含有同名 `WEAK DEFAULT` 定义，但 `.dynsym` 零命中；实验版 libc++abi 因而绑定到自身定义（`commands/007_typeinfo_static_symbols.log:10-12`；`commands/023_board_binding_observations.log:3960-3974`）。LSDA 使用的测试件 typeinfo 与 personality 使用的共享库 typeinfo 未统一，运行结果落入 `catch-all` 并由 glibc 报 `FATAL: exception not rethrown`，退出 134（同日志 `4465-4482`）。
+- 决定性控制保持 R38 的原对象文件、静态 `libc++.a`、实验 libc++abi 与全部库不变，只在链接时增加 `--export-dynamic`（完整命令见 `commands/041_relink_export_dynamic_control.log:3-11`）。控制件的两个 typeinfo 符号进入 `.dynsym`（同日志 `50-55`）；板上加载器随即把 libc++abi 的两处引用绑定到控制件，运行从 `catch-all` 改为 `forced-handler`，之后与 R36 一样在重抛阶段退出 134（`commands/045_board_export_control_observation.log:1827-1839,2327-2391`）。
+
+因此，R38 的“映射未生效”不是 ARM 映射随机失效；它是测试件没有导出 typeinfo、导致运行时类型身份未统一的实验搭建差异。消除该差异后，armv7l 的实测形态回到 R36：**映射生效、forced handler 命中、卡在重抛**。本任务不实现重抛修法。
+
+## 1. 两次实验对象身份
+
+完整身份表见 `object_identity.tsv`，完整链接命令原文已复制到 `code/r36/evidence/028_compile_armv7l_probes.log` 与 `code/r38/evidence/022_compile_strict_probes_with_ehabi_field_map.log`。
+
+| 项目 | R36 | R38 | 是否相同 |
+|---|---|---|---|
+| 实验 libc++abi | `tmp/R36/build-armv7l/lib/libc++abi.so.1.0` | `tmp/R38/probes-armv7l/patched/libc++abi.so.1.0` | 是，SHA 相同且 `cmp=0` |
+| 测试件 | `s1_libcxxabi`，SHA `664c650c…` | `s1_libcxx_strict`，SHA `933bb068…` | 否 |
+| 测试源码 | 无标准库依赖的自定义 `RealException` 变体 | R34-B 原始 `std::runtime_error` 变体 | 否 |
+| libc++ 链接 | 没有链接 `libc++.so` 或 `libc++.a` | 静态链接 `libc++.a` | 否 |
+| DT_NEEDED libc++ | 无 | 无（静态） | 表面相同、成因不同 |
+| DT_NEEDED libc++abi | 有 | 有 | 是 |
+
+R36 的完整命令明确使用 `-nostdlib++` 后只链接 `-lc++abi`，没有 libc++ 实现库（`progress/R36/commands/028_compile_armv7l_probes.log:2`）。R38 的完整命令在 `-nostdlib++` 后显式传入 `libc++.a`（`progress/R38/commands/022_compile_strict_probes_with_ehabi_field_map.log:2,12`）。两者 DT_NEEDED 原文见 `commands/006_experiment_identity_comparison.log:16-90`。
+
+R36 实验库的 CMake 配置为 armv7l、`RelWithDebInfo`、`LIBCXXABI_USE_LLVM_UNWINDER=OFF`、shared ON、static OFF，完整配置位于 `code/r36/build/CMakeCache.patched-armv7l.txt`。R38 复用了这份实验库；`code/r38/build/CMakeCache.unpatched-armv7l.txt` 仅对应 R38 的未打补丁对照库，不是 R38 patched 运行所用库。
+
+## 2. typeinfo 唯一性与运行时解析
+
+静态符号与运行时绑定的全量结构化结果分别见 `typeinfo_symbols.tsv` 和 `runtime_binding.tsv`。
+
+嫌疑中“静态 `libc++.a` 自身又携带一份 forced-unwind typeinfo”未被实测支持：对该归档执行 `nm -A -C` 为零命中（`commands/007_typeinfo_static_symbols.log:27-28`）。实际问题是测试目标自身由 catch 类型产生了一份 typeinfo：
+
+- R38 测试件中的定义只在 `.symtab`，运行时不能参与共享库的全局符号解析；libc++abi 保留自身定义。进程内存在两个未被动态合一的有效地址来源，`can_catch` 未匹配。
+- R36 测试件中的定义位于 `.dynsym`；ELF 全局符号抢占使 libc++abi 的引用解析到主程序定义，personality 与 LSDA 使用同一运行时定义，`can_catch` 匹配。
+
+这里的“唯一”按 **运行时类型身份是否被解析为同一定义** 计，不是仅按磁盘文件内是否出现同名字符串计。R38 原件不唯一；R36 与 `--export-dynamic` 控制件均被动态链接器统一到主程序定义。
+
+## 3. 改变链接形态的对照
+
+逐格结果见 `linkage_comparison.tsv`。
+
+### 动态 libc++ 尝试
+
+按任务要求尝试构造动态 libc++ 等价测试件，但该格未获得业务行为结果：
+
+1. 直接使用冻结 RPM `libc++-22.1.8-1.armv7l` 时，发布库要求 `LLVM_22` 版本节点，而实验 libc++abi 未使用发布版版本脚本；链接退出 1（`commands/027_relink_dynamic_control.log`）。
+2. 用 R38 同一 `libc++.a` 仅重链为测试用动态 `libc++.so.1` 后，等价测试件成功生成，DT_NEEDED 同时含 `libc++.so.1` 与同一实验 `libc++abi.so.1`（`commands/033_relink_dynamic_generated_v2.log:7-100`）。运行时 typeinfo 已绑定到主程序，但临时共享库含板上加载器不接受的 ARM relocation `0x03`，在进入 `main` 前退出 127；cancel、handler 与重抛均为 `NOT_OBSERVED`（`commands/038_board_dynamic_binding_observation.log:2175-2190,2270-2272`）。
+
+因此“动态 libc++ 格”的行为结论为 `NOT_OBSERVED`，没有拿装载前绑定替代业务行为。
+
+### 单变量动态导出控制
+
+为隔离决定性变量，另做 `--export-dynamic` 控制。它与 R38 原件共享同一个对象 SHA `84bd7366…`、同一个静态 libc++ SHA `f15e1c7b…` 和同一实验 libc++abi；唯一申报变化为链接器选项 `--export-dynamic`。该格取得完整 cancel 行为，证明“符号动态可见性 → 运行时 typeinfo 统一 → forced handler 命中”的因果链。
+
+## 4. personality 直接断点
+
+状态：`NOT_REQUIRED_AFTER_DECISIVE_CONTROL`。
+
+第 2、3 步已用同板 `LD_DEBUG=bindings,symbols` 和单变量控制闭合成因；没有为观测修改 libc++abi，也没有新增第四处改动。按任务的条件式要求，没有继续引入调试器附加变量。
+
+## 5. 资源门禁、载体异常与证据有效性
+
+独立门禁脚本为 `tools/resource_gate.sh`，已先通过 `bash -n` 和干跑（`commands/002_script_syntax.log`、`commands/003_resource_gate_dry_run.log`）。每次重链均由上层脚本显式读取退出码，非零路径打印 `RED_STOP_RESOURCE` 并退出；三次实际门禁均 PASS：`commands/025_resource_gate_before_relink.log`、`028_resource_gate_before_generated_dynamic_relink.log`、`031_resource_gate_before_generated_dynamic_relink_v2.log`、`039_resource_gate_before_export_dynamic_control.log`。所有链接命令均为 `nice -n 15 ionice -c 3`，并申报并行度 2；本任务未重建 libc++abi。
+
+传输阶段发现 SDB 宿主退出码不传播远端命令失败。本任务修正为每条远端命令打印并解析 `REMOTE_COMMAND_EXIT_CODE`，并剥离 SDB 的 CRLF。此前失败、无效或仅部分有效的尝试均保留在 `attempts_and_validity.tsv`，未用于结论。
+
+## 6. 未排除变量与边界
+
+- 板上 `libgcc_s` 为 `14.2.0-1.14.armv7l`，R34-B 宿主为 `14.2.0-1.13.x86_64`；本任务没有比较不同架构实现对重抛失败的贡献。该变量不影响本任务已闭合的“映射是否命中”分歧。
+- 动态 libc++ 行为格因临时共享库 relocation 不兼容而未观测，不能据此判断正式动态 libc++ 制品的 cancel 行为。
+- 本任务结论只定位 R36/R38 的映射分歧，不扩展为 S1 修法结论，也不评价方案。
+
+## 7. 板上清理
+
+部署目录 `/var/tmp/r39_s1_20260814` 已删除，精确目录不存在断言退出 0；通过 `/proc/*/exe` 检查，无任何进程从该目录执行（`commands/047_final_board_cleanup.log:4-17`；结构化表见 `cleanup.tsv`）。未安装 RPM，未修改系统库、配置或服务。
+
+## 8. 代码交付
+
+`code/` 包含：
+
+- R36/R38 的全部相关测试源码、编译链接命令原文与运行身份原文；
+- 实验 libc++abi 三处改动的完整 diff 与被改文件完整内容；
+- R36 patched 与 R38 unpatched-control 的完整 CMakeCache；
+- 本任务所有门禁、部署、运行、清理与重链脚本；
+- `CODE_INDEX.tsv` 中逐文件来源与 SHA256。
+
+材料仅供人工审阅；本报告不据此实现修法。
+5:本项由静态清单核对和已构建产物的符号核对组成，不实施迁移。
+12:  Boost.Filesystem 30、Boost.Iostreams 3、Boost.Program Options 6、Boost.Test
+21:  provider 复核 30 条旧边，30/30 至少保留一个同 mangled name 符号交集；其中
+22:  15 条旧符号集合全部保留，15 条只保留部分。该检查证明仍存在可绑定的旧符号
+31:  `cba302177b41c81ba76f139c067be97edd9e0449c2398afb8093fa40df7c9177`。
+56:| `key-manager-0.1.90-1.src.rpm` | 15 | Boost.Test | `PHASE2` | `NOT_OBSERVED` |
+88:## 适配后的旧符号交集
+91:记录的每条旧精确 C++ 符号集合，与真实 libc++ Boost 候选 DSO的动态定义符号逐个
+94:| 旧边分类 | 至少一个同名符号仍存在 | 无旧符号交集 | aarch64 边数 |
+98:| 合计 | 30 | 0 | 30 |
+100:30 条中 15 条的旧记录符号全部仍存在，15 条只保留部分；495 个去重前逐边旧符号
+101:记录中，448 个在新 provider 仍有相同 mangled name。完整逐边值和保留符号见
+104:这组结果只回答符号交集：
+116:精确符号复核时并非都可得；逐边新旧符号连接只标为 aarch64，不向另两架构外推。
+124:风险形态由两部分组成：保留同 mangled name 的边仍可能跨 ABI 传递对象；部分
+134:- 也可以在 consumer 准备完成前仍让产品镜像引用旧 Boost 构建；是否允许同时保留
+143:不存在于这 90 条输入集合中。机械核对的 provider binary 计数为 30+3+6+42+9，
+148:而自动从 consumer 源码中删除，但其精确符号交集和运行库组合会发生上述变化。
+153:  `2614e6af44bba799dc3ff6afe98dd81a0e5a201d030b5cc9d9df392cf769db23`。
+155:  精确命中迁移计划，以及 30 条 aarch64 边完成候选符号连接。
+158:  随后以五个已知包名和 DSO 名直接访问完成核查。失败尝试原样保留。
