@@ -1,0 +1,17 @@
+# 11 包源码适配状态：11/11 已推送
+
+static 资产单列，不等于其替代构建与运行时验证已完成。其余十包状态与既有记录不变。
+
+| package | branch | adaptation_commit | validation | current_status |
+| --- | --- | --- | --- | --- |
+| abseil-cpp | sandbox/lhmax2025/libcxx-migration | 7a4f04dad6d30ba09c406837cdd23ad779a69210 | 三架构×libc++/GCC 六格完整通过 | 已完成并推送 |
+| boost | sandbox/lhmax2025/libcxx-migration | 4168e873584ae50a12733262026c007dce18ec89 | 三架构×libc++/GCC 六格完整通过；全部子包一致 | 已完成并推送 |
+| icu | sandbox/lhmax2025/libcxx-migration | dcbb3fb476b4d57c4c7e5770f1ed55d43f6f6330 | 三架构×libc++/GCC 六格完整通过 | 已完成并推送 |
+| jsoncpp | sandbox/lhmax2025/libcxx-migration | 9cbab147f44097d5b8da2b3ef38f75376a282d01 | 三架构×libc++/GCC 六格完整通过 | 已完成并推送 |
+| libsigc++ | sandbox/lhmax2025/libcxx-migration | 4f2f592d2f88eb6a3a949cec8970a4cd5d40165b | 三架构×libc++/GCC 六格完整通过；libc++ 以编译命令和 std::__1 痕迹确认 | 已完成并推送 |
+| pcre | sandbox/lhmax2025/libcxx-migration | 09a5bfc9a96c4235628ce800db3b95bf28ef2f23 | 三架构×libc++/GCC 六格完整通过 | 已完成并推送 |
+| taglib | sandbox/lhmax2025/libcxx-migration | 8b552bdf27c913a93bca664c41c3fafb214962a1 | 三架构×libc++/GCC 六格完整通过 | 已完成并推送 |
+| tensorflow2 | sandbox/lhmax2025/libcxx-migration | 6d76139029ca4162249667f0db65a73387a94cfe | libc++ 三格及 aarch64/x86_64 GCC 两格通过；armv7l GCC 与未改基线同点同因失败，按相对基线无回归判据通过 | 已完成并推送 |
+| llvm | sandbox/lhmax2025/libcxx-ehabi-backport | f203923a1508c9344f5fc6b17bd8822f011655c4 | 三架构 libc++、MLGO 执行、GCC、非 libc++ 同环境对照十二格通过 | 已完成并推送 |
+| bcc-tools | sandbox/lhmax2025/libcxx-migration | 5bd0654e24bb231035ea684d278f674aa95a2cd2 | aarch64/x86_64 的 libc++/GCC 四格通过，沿用；本轮armv7l libc++/GCC完整构建及各五次核查通过 | 已完成并推送 |
+| bpftrace | sandbox/lhmax2025/libcxx-migration | f895f8c0373d224847fc7d3ecbeaac3bf926a1a1 | armv7l/aarch64 × libc++/GCC 源码四格完整通过；static 未重编、内嵌标准库 NOT_OBSERVED，按本轮人工批准单列；x86_64 不在 ExclusiveArch | 已完成并推送（源码适配）；static 资产替代另列待处理 |
