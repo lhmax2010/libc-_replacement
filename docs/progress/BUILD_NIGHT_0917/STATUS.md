@@ -5,9 +5,11 @@
 | W1 libcxx 静态库 | COMPLETE_TARGET_BUILDS | 944 秒 | runtime-*.build.log、specs 副本 | x86_64 优先；原源码和构建根只读挂载 |
 | W2 libclang.a | COMPLETE_TARGET_BUILDS | 4601 秒 | libclang-*.build.log | Clang 官方 standalone 入口，复用已安装 LLVM；x86_64 静态目标 1059 步 |
 | W3 bpftrace-static | PARTIAL | 1561 秒 | bpftrace-*.build.log | 依赖 W1/W2 已就绪；候选不推包仓 |
-| W4 21.1.1 归档来源 | NOT_STARTED | 0 | 待补 | 编译器身份须独立核查 |
+| W4 21.1.1 归档来源 | PARTIAL_ORIGIN | 477 秒 | 原归档 .comment、Git 历史 | 已观察 GCC 14.2.0 编译注记 |
 
 项目分支 codex/r5-ehabi-diagnosis；候选仅 tmp/NIGHT_0917/。
+总状态 PARTIAL：W1/W2 完成目标构建；W3 已得候选但功能/RPM 验证未闭合；
+W4 引入记录和 GCC 身份已证实，配方到原资产的哈希链与其它消费者全集仍未闭合。
 内存限制 ulimit -v 16148878 KiB（每进程虚拟地址空间）；单任务 -j1、nice19、ionice3。
 构建监控脚本按 500 个 Ninja 目标探测 I/O，超时暂停进程组 10 分钟，最多三次；阶段硬截止时间写入 events。
 小时进度见 HOURLY_STATUS.md（含每格启动记录）；开发板离线，不连接、不等待。

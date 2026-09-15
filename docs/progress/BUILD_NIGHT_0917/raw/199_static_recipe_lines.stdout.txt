@@ -1,0 +1,187 @@
+   145	export CFLAGS=${RELCFLAGS}
+   146	RELCXXFLAGS=$(echo $CXXFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\|dwarf-[[:digit:]]\)\?* *g')
+   147	export CXXFLAGS=${RELCXXFLAGS}
+   148	RELFFLAGS=$(echo $FFLAGS | sed -e 's*\(^\|[[:space:]]\)-g\([[:digit:]]\+\|gdb\)|dwarf-[[:digit:]]\\?* *g')
+   149	export FFLAGS=${RELFFLAGS}
+   150	%endif
+   151	
+   152	cp %{SOURCE1001} .
+   153	%{?asan:%gcc_unforce_options}
+   154	
+   155	mkdir -p build
+   156	cd build
+   157	cmake \
+   158	    --trace-expand \
+   159	    -G Ninja \
+   160	    -DTIZEN=1 \
+   161	    -DCMAKE_C_COMPILER=%__cc \
+   162	    -DCMAKE_CXX_COMPILER=%__cxx \
+   163	    -DLLVM_HOST_TRIPLE=%{_host} \
+   164	    -DCMAKE_ASM_FLAGS="$CFLAGS" \
+   165	    -DCMAKE_BUILD_TYPE=Release \
+   166	    -DLLVM_ENABLE_ASSERTIONS=No \
+   167	    -DLLVM_ENABLE_RTTI=ON \
+   168	    -DLLVM_TARGETS_TO_BUILD='X86;ARM;AArch64;BPF;RISCV' \
+   169	%if %{defined _toolchain}
+   170	%if !%{toolchain_is clang}
+   171	    -DLLVM_BUILD_LLVM_DYLIB=1 \
+   172	%else
+   173	    -DLLVM_LINK_LLVM_DYLIB=1 \
+   174	%endif
+   175	%else
+   176	    -DLLVM_BUILD_LLVM_DYLIB=1 \
+   177	%endif
+   178	    -DLLVM_BUILD_STATIC=ON \
+   179	    -DLIBCLANG_BUILD_STATIC=ON \
+   180	    -DLLVM_ENABLE_PROJECTS="clang;lldb;clang-tools-extra;lld" \
+   181	    -DLLVM_BUILD_EXAMPLES=OFF \
+   182	    -DLLVM_INCLUDE_EXAMPLES=OFF \
+   183	    -DLLVM_BUILD_TESTS=OFF \
+   184	    -DLLVM_INCLUDE_TESTS=OFF \
+   185	    -DLLVM_ENABLE_DOXYGEN=OFF \
+   186	    -DLLVM_BUILD_DOCS=OFF \
+   187	    -DLLVM_INCLUDE_DOCS=OFF \
+   188	    -DLLVM_OPTIMIZED_TABLEGEN=ON \
+   189	    -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+   190	    -DLLVM_LIBDIR_SUFFIX=`echo %{_lib} | sed s/lib//g` \
+   191	    -DLLVM_BINUTILS_INCDIR=/usr/include \
+   192	    -DLLVM_PARALLEL_COMPILE_JOBS=6 \
+   193	    -DLLVM_PARALLEL_LINK_JOBS=6 \
+   194	    ../llvm
+   195	
+   196	cmake --build .
+   197	
+   198	%install
+   199	cd build
+   200	cmake -DCMAKE_INSTALL_PREFIX=%{buildroot}/usr -P cmake_install.cmake
+   201	ln -sf %{_prefix}/bin/clang++ %{buildroot}%{_prefix}/bin/clang++-%{llvm_version}
+   202	
+   203	ln -sf clang %{buildroot}%{_prefix}/bin/%{_host}-clang
+   204	ln -sf clang++ %{buildroot}%{_prefix}/bin/%{_host}-clang++
+   205	# Use host triple by default via <lang>.cfg
+   206	cat >> %{buildroot}/%{_prefix}/bin/clang.cfg << EOF
+   207	-target %{_host}
+   208	EOF
+   209	ln -sf clang.cfg %{buildroot}/%{_prefix}/bin/clang++.cfg
+   210	
+   211	# copy lldb for sdk
+   212	mkdir -p %{buildroot}%{sdk_bin_dir}
+   213	mkdir -p %{buildroot}%{sdk_lib_dir}
+   214	
+   215	mv %{buildroot}%{_prefix}/bin/lldb %{buildroot}%{sdk_bin_dir}
+   216	mv %{buildroot}%{_prefix}/bin/lldb-argdumper %{buildroot}%{sdk_bin_dir}
+   217	mv %{buildroot}%{_prefix}/bin/lldb-server %{buildroot}%{sdk_bin_dir}
+   218	
+   219	ln -sf %{sdk_bin_dir}/lldb %{buildroot}%{_prefix}/bin/
+   220	
+   221	cp -P %{buildroot}%{_libdir}/liblldb.so* %{buildroot}%{sdk_lib_dir}/
+   222	
+   223	# Install the clang python bits
+   224	mkdir -p %{buildroot}%{python3_sitelib}
+   225	cp -a ../clang/bindings/python/clang %{buildroot}%{python3_sitelib}/
+   226	
+   227	rm -rf %{buildroot}%{_libdir}/debug/*
+   228	rm -rf %{buildroot}/usr/lib/libear/*
+   229	rm -rf %{buildroot}/usr/lib/libscanbuild/*
+   230	
+    55	endif()
+    56	target_compile_definitions(ast PUBLIC SYSTEM_INCLUDE_PATHS="${SYSTEM_INCLUDE_PATHS}")
+    57	
+    58	if(STATIC_LINKING)
+    59	  include(Util)
+    60	
+    61	  set(llvm_lib_names
+    62	      bpfcodegen
+    63	      coverage
+    64	      frontenddriver
+    65	      frontendhlsl
+    66	      frontendopenmp
+    67	      ipo
+    68	      irreader
+    69	      lto
+    70	      mcjit
+    71	      option
+    72	      orcjit
+    73	      ${LLVM_TARGETS_TO_BUILD})
+    74	
+    75	  llvm_map_components_to_libnames(llvm_libs ${llvm_lib_names})
+    76	
+    77	  # It's extremely unclear why the clang static libraries export link
+    78	  # dependencies on the llvm and clang shared libraries. Regardless, we need
+    79	  # this hack to remove them.
+    80	  unlink_transitive_dependency("${CLANG_EXPORTED_TARGETS}" "LLVM")
+    81	  unlink_transitive_dependency("${CLANG_EXPORTED_TARGETS}" "$<LINK_ONLY:clang-cpp>")
+    82	
+    83	  if(LIBCLANG_STATIC_PATH)
+    84	    get_filename_component(LIBCLANG_STATIC_ABS_PATH "${CMAKE_SOURCE_DIR}/${LIBCLANG_STATIC_PATH}" ABSOLUTE)
+    85	    message(STATUS "Using custom libclang absolute path: ${LIBCLANG_STATIC_ABS_PATH}")
+    86	    target_link_libraries(ast PUBLIC ${LIBCLANG_STATIC_ABS_PATH} bpf clangIndex clangDriver clangFrontend clangCodeGen)
+    87	  else()
+    88	    target_link_libraries(ast PUBLIC libclang_static clangDriver clangFrontend clangCodeGen)
+    89	  endif()
+    90	  target_link_libraries(ast PUBLIC ${llvm_libs})
+    91	else()
+    92	  if (TARGET LLVM)
+    93	    # llvm_config macro comes from the LLVM toolchain and will auto-resolve component
+    94	    # names to library names. USE_SHARED option will tell llvm_config macro to prefer
+    95	    # shared library / DLL on the system over the static libraries
+    96	    llvm_config(ast USE_SHARED bpfcodegen ipo irreader mcjit orcjit)
+    97	  else()
+    98	    # some build environment(e.g facebookexperimental/ExtendedAndroidTools) doesn't
+    99	    # have libLLVM.so, drop `USE_SHARED` to avoid forcing link to `-lLLVM`.
+   100	    llvm_config(ast bpfcodegen ipo irreader mcjit orcjit)
+commit 46df8cd0d7cb564af6e1e482f3c48d04dba3079b
+Author:     Hoegeun Kwon <hoegeun.kwon@samsung.com>
+AuthorDate: Wed Dec 17 18:11:00 2025 +0900
+Commit:     Hoegeun Kwon <hoegeun.kwon@samsung.com>
+CommitDate: Tue Dec 23 14:52:21 2025 +0900
+
+    packaging: test static build for llvm and clang
+    
+    Change-Id: I26bdde60d6591c06277ffcf4a3bed483e45f3d0c
+    Signed-off-by: Hoegeun Kwon <hoegeun.kwon@samsung.com>
+
+commit 1135e2ec22671cde1c20e90e4053ad9ae222b5e1
+Author:     Hoegeun Kwon <hoegeun.kwon@samsung.com>
+AuthorDate: Fri Dec 19 16:49:53 2025 +0900
+Commit:     Dongkyun Son <dongkyun.s@samsung.com>
+CommitDate: Tue Dec 23 09:10:38 2025 +0900
+
+    packaging: Enable llvm rtti
+    
+    Enable llvm rtti build option.
+    
+    Change-Id: I0ca719f9eb9a8c93ce83f5ecf0a3164311823049
+    Signed-off-by: Hoegeun Kwon <hoegeun.kwon@samsung.com>
+
+commit a971cbb05335fe7af216aabf29b7dba08b7f1c9f
+Author:     Dongkyun Son <dongkyun.s@samsung.com>
+AuthorDate: Tue Nov 25 19:08:38 2025 +0900
+Commit:     Dongkyun Son <dongkyun.s@samsung.com>
+CommitDate: Thu Dec 4 17:40:05 2025 +0900
+
+    packaging: fix build issue with Tizen-Base' prjconf
+    
+    Change-Id: I6fdd722775ca49be68a107d17e4608a2b1c0d84c
+    Signed-off-by: Dongkyun Son <dongkyun.s@samsung.com>
+
+commit 5afd5507a6ffbc4295f58873c7b9b5d83dc3f1c7
+Author:     Dongkyun Son <dongkyun.s@samsung.com>
+AuthorDate: Tue Dec 2 13:58:26 2025 +0900
+Commit:     Dongkyun Son <dongkyun.s@samsung.com>
+CommitDate: Tue Dec 2 14:14:34 2025 +0900
+
+    packaging: optimize memory usage at build time
+    
+    Change-Id: I8fdffc7298b8d190f58087006beecf1a41c7eba0
+    Signed-off-by: Dongkyun Son <dongkyun.s@samsung.com>
+
+commit 5c3dedccdac3328b62da8371c61cb81eb0072f39
+Author:     Vadim Solomin <v.solomin@partner.samsung.com>
+AuthorDate: Fri Sep 19 17:10:14 2025 +0300
+Commit:     Dongkyun Son <dongkyun.s@samsung.com>
+CommitDate: Thu Oct 23 06:49:07 2025 +0000
+
+    packaging: enable building lld
+    
+    Change-Id: I6bfd4ba5ccffaa782868746c932cbb09a29bbc97
