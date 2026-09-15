@@ -1,0 +1,423 @@
+--- a/tmp/P12/build.py
++++ b/tmp/P12/build.py
+@@ -7,7 +7,7 @@
+ (OUT/'raw').mkdir(parents=True,exist_ok=True)
+ OLD=pathlib.Path(os.environ.get('P12_PLATFORM_WORKSPACE','/home/toolchain/development/libc++_replacement'))
+ REC=ROOT/'docs/progress/API_0911/record.py'
+-BUILD=TMP/'build';BUILD.mkdir(exist_ok=True)
++BUILD=pathlib.Path(os.environ.get('P12_BUILD_DIR',str(TMP/'build')));BUILD.mkdir(exist_ok=True)
+ SRC=TMP/'src';SDK=ROOT/'tmp/API_0911/W1_CONT'
+ LIBCXX=ROOT/'tmp/IMPL_0908/build-native'
+ PROVIDER=ROOT/'tmp/API_0911/W1/chromium_image/lib/libchromium-impl.so'
+@@ -39,6 +39,10 @@
+ def compile(tag,source,flavor,extra=()):
+     obj=BUILD/(tag+'.o')
+     run('build_'+tag,[CC,*flags[flavor],*common,*extra,'-c',source,'-o',obj])
++    if os.environ.get('P13_PIN_ABI')=='1':
++        runtimes=[SDK/'closure_ewk/libstdc++.so.6'] if flavor=='gnu' else [LIBCXX/'lib/libc++.so.1',LIBCXX/'lib/libc++abi.so.1']
++        record=OUT/(tag+'_binding.json')
++        run('pin_'+tag,[sys.executable,TMP/'pin_runtime.py','--side',flavor,'--object',obj,*[v for r in runtimes for v in ['--runtime',r]],'--record',record])
+     return obj
+ def shared(tag,objects,export,extra=()):
+     out=BUILD/(tag+'.so')
+@@ -62,7 +66,7 @@
+         # Production-direction code builds, but no corresponding real provider
+         # is available. Do not execute it against a GNU artifact.
+         provider=PROVIDER if kind=='reverse' else pathlib.Path('/usr/share/chromium-efl/lib/libchromium-impl.so')
+-        b=compile('ewk_back_'+kind,SRC/'ewk_back.cpp',back,['-DP12_PROVIDER_PATH="'+str(provider)+'"'])
++        b=compile('ewk_back_'+kind,SRC/'ewk_back.cpp',back,['-DP12_PROVIDER_PATH="'+str(provider)+'"',*(['-DP13_BACKEND_TESTING'] if os.environ.get('P13_TESTING')=='1' else [])])
+         f=compile('ewk_front_'+kind,SRC/'ewk_front.cpp',front,['-DP12_TESTING'])
+         shared('ewk_adaptor_'+kind,[f,b],SRC/'ewk.exports',
+             ['-Wl,-soname,libewk-cookie-adaptor.so.1'])
+--- a/tmp/P12/p13_driver.py
++++ b/tmp/P12/p13_driver.py
+@@ -0,0 +1,50 @@
++#!/usr/bin/env python3
++"""P13 小目标驱动；完整 argv/输出/退出码交给既有 recorder。"""
++import hashlib,json,os,pathlib,subprocess,sys,time
++ROOT=pathlib.Path(__file__).resolve().parents[2]
++stage=os.environ.get('P13_STAGE','W1');out=ROOT/'docs/progress/P13_0917'/stage
++os.environ['P12_OUT_DIR']=str(out)
++os.environ['P12_BUILD_DIR']=str(ROOT/'tmp/P12/build_P13')
++os.environ['P12_WORKSPACE_ROOT']=str(ROOT)
++import build as b
++def run_case(tag,exe,args=(),library_path=None,debug=False):
++ stem=b.OUT/'raw'/tag;assert not pathlib.Path(str(stem)+'.command.txt').exists()
++ cmd=['nice','-n','19','ionice','-c','3','prlimit','--core=0','--as=4294967296','--','timeout','40',str(b.SDK/'closure_ewk/ld-linux-x86-64.so.2'),'--library-path',library_path or str(b.SDK/'closure_ewk')+':'+str(b.LIBCXX/'lib')+':'+str(b.BUILD),str(exe),*map(str,args)]
++ if debug:cmd=['env','LD_DEBUG=bindings',*cmd]
++ subprocess.run([sys.executable,str(b.REC),str(stem),*cmd])
++ result=dict(raw=tag,exit=int(pathlib.Path(str(stem)+'.exitcode').read_text()),stdout=pathlib.Path(str(stem)+'.stdout').read_text(),stderr=pathlib.Path(str(stem)+'.stderr').read_text())
++ return result
++if __name__=='__main__':
++ action=sys.argv[1]
++ if action=='catch_only':
++  b.cookies()
++  b.run('allocation_catch_only_build',[b.CC,*b.flags['gnu'],*b.common,b.SRC/'allocation_contract.cpp',b.BUILD/'ewk_back_reverse.o',*b.link,'-o',b.BUILD/'allocation_catch_only'])
++  rows=[run_case('catch_only_'+str(n),b.BUILD/'allocation_catch_only')for n in range(1,6)]
++  (b.OUT/'CATCH_ONLY.json').write_text(json.dumps(rows,indent=2)+'\n')
++  print([(r['exit'],r['stdout'])for r in rows])
++ if action=='pinned':
++  os.environ['P13_PIN_ABI']='1'
++  b.common+=['-Wa,-mrelax-relocations=no']
++  b.link+=['-fuse-ld=/usr/bin/ld.gold']
++  b.cookies();b.forwarder()
++  for side in ['mixed','gnu_only']:
++   link=b.link if side=='mixed' else ['-nostdlib++',str(b.SDK/'closure_ewk/libstdc++.so.6'),'-ldl','-pthread']
++   b.run('allocation_pinned_'+side,[b.CC,*b.flags['gnu'],*b.common,b.SRC/'allocation_contract.cpp',b.BUILD/'ewk_back_reverse.o',*link,'-o',b.BUILD/('allocation_pinned_'+side)])
++  rows=[]
++  for side in ['mixed','gnu_only']:
++   for n in range(1,6):
++    row=run_case('pinned_'+side+'_'+str(n),b.BUILD/('allocation_pinned_'+side));rows.append(dict(side=side,**row))
++    assert row['exit']==0 and 'ACTUAL_RETURN=-12' in row['stdout'],row
++  (b.OUT/'PINNED_ALLOCATION.json').write_text(json.dumps(rows,indent=2)+'\n')
++ if action=='w1_faults':
++  os.environ['P13_PIN_ABI']='1';os.environ['P13_TESTING']='1'
++  b.common+=['-Wa,-mrelax-relocations=no'];b.link+=['-fuse-ld=/usr/bin/ld.gold']
++  b.cookies();b.forwarder()
++  b.run('build_p13_error_app',[b.CC,*b.flags['cxx'],*b.common,b.SRC/'p13_error_app.cpp',*b.link,'-o',b.BUILD/'p13_error_app'])
++  rows=[]
++  for mode in ['separate','embedded']:
++   for kind,phase in [(1,p)for p in range(11)]+[(10,-1)]:
++    for n in range(1,6):
++     row=run_case('w1_'+mode+'_'+str(kind)+'_'+str(phase)+'_'+str(n),b.BUILD/'p13_error_app',[b.BUILD/('forwarder_'+mode+'.so'),b.PROVIDER,kind,phase,12]);rows.append(dict(mode=mode,kind=kind,phase=phase,repeat=n,**row))
++     (b.OUT/'W1_ERRORS.json').write_text(json.dumps(rows,indent=2)+'\n')
++     assert row['exit']==0 and 'OUTPUT_UNCHANGED=PASS' in row['stdout'],row
+--- a/tmp/P12/p13_seal.py
++++ b/tmp/P12/p13_seal.py
+@@ -0,0 +1,20 @@
++#!/usr/bin/env python3
++import difflib,hashlib,json,pathlib,shutil,sys
++import p13_driver as d
++b=d.b;dest=b.OUT/'code';dest.mkdir(exist_ok=True)
++shutil.copytree(b.SRC,dest/'src',dirs_exist_ok=True)
++scripts=['build.py','pin_runtime.py','p13_driver.py','p13_seal.py','run_ewk.py','run_boundary.py','run_units.py','run_vectors.py','allocation_check.py','allocation_control.py','package_build.py']
++scripts += [p.name for p in b.TMP.glob('p13_*.py') if p.name not in scripts]
++for name in scripts:shutil.copyfile(b.TMP/name,dest/name)
++manifest={str(p.relative_to(b.OUT)):hashlib.sha256(p.read_bytes()).hexdigest()for p in sorted(dest.rglob('*'))if p.is_file()}
++(b.OUT/'SNAPSHOT_SHA256.json').write_text(json.dumps(manifest,indent=2)+'\n')
++before=b.ROOT/'docs/progress/P13_0917/W1/before';patch=[]
++for p in sorted(dest.rglob('*')):
++ if not p.is_file():continue
++ relative=p.relative_to(dest);old=before/relative
++ previous=old.read_text() if old.is_file() else ''
++ patch.extend(difflib.unified_diff(previous.splitlines(True),p.read_text().splitlines(True),fromfile='a/tmp/P12/'+str(relative),tofile='b/tmp/P12/'+str(relative)))
++(b.OUT/'ADAPTOR_CHANGES.patch').write_text(''.join(patch))
++inputs=[b.PROVIDER,b.LIBCXX/'lib/libc++.so.1',b.LIBCXX/'lib/libc++abi.so.1',b.SDK/'closure_ewk/libstdc++.so.6',pathlib.Path('/usr/bin/ld.gold')]
++(b.OUT/'INPUT_SHA256.json').write_text(json.dumps({str(p):hashlib.sha256(p.read_bytes()).hexdigest()for p in inputs},indent=2)+'\n')
++print('STAGE',d.stage,'SNAPSHOT_FILES',len(manifest),'NO_RUNTIME_REBUILD')
+--- a/tmp/P12/package_build.py
++++ b/tmp/P12/package_build.py
+@@ -0,0 +1,40 @@
++#!/usr/bin/env python3
++"""候选打包入口。配置必须由产品工具链提供；不猜测迁移后 ABI/路径。"""
++import argparse,hashlib,json,os,pathlib,resource,shutil,subprocess,time
++p=argparse.ArgumentParser();p.add_argument('config');p.add_argument('output');p.add_argument('--mode',choices=['separate','embedded'],required=True);a=p.parse_args()
++c=json.loads(pathlib.Path(a.config).read_text());out=pathlib.Path(a.output).resolve();out.mkdir(parents=True,exist_ok=False)
++src=pathlib.Path(__file__).resolve().parent/'src'
++required=['compiler','gnu_flags','libcxx_flags','includes','link_flags','provider_path','provider_abi_evidence','consumer_abi_evidence','direction']
++assert all(c.get(k) for k in required),'Missing explicit product ABI/toolchain configuration'
++assert c['direction'] in ['production','reverse-mechanism']
++assert pathlib.Path(c['provider_path']).is_absolute()
++assert shutil.disk_usage(out).free>=1024**3,'Less than 1 GiB free for small target; stop'
++mem_kib=int(next(s.split()[1] for s in pathlib.Path('/proc/meminfo').read_text().splitlines() if s.startswith('MemTotal:')))
++cap=min(4*1024**3,mem_kib*1024//2)
++def limited():resource.setrlimit(resource.RLIMIT_AS,(cap,cap));os.nice(19)
++steps=[]
++def run(args):
++ n=len(steps)+1;cmd=['ionice','-c','3',*map(str,args)];base=out/('%03d'%n)
++ base.with_suffix('.command.json').write_text(json.dumps(cmd)+'\n')
++ t=time.time()
++ with base.with_suffix('.stdout').open('wb') as stdout,base.with_suffix('.stderr').open('wb') as stderr:
++  r=subprocess.run(cmd,stdout=stdout,stderr=stderr,preexec_fn=limited)
++ base.with_suffix('.exitcode').write_text(str(r.returncode)+'\n')
++ steps.append({'command':cmd,'exit':r.returncode,'seconds':time.time()-t})
++ assert r.returncode==0,'Build failed; inspect '+str(base)
++common=['-std=c++17','-O2','-fPIC','-fvisibility=hidden','-fexceptions','-D_GNU_SOURCE','-I'+str(src),'-include',str(src/'abi_guard.h'),*c['includes']]
++front='gnu' if c['direction']=='production' else 'libcxx';back='libcxx' if front=='gnu' else 'gnu'
++for part,side in [('front',front),('back',back)]:
++ flags=c[side+'_flags'];assert isinstance(flags,list)
++ defines=['-DP12_BUILD_GNU' if side=='gnu' else '-DP12_BUILD_LIBCXX']
++ if part=='front' and a.mode=='embedded':defines+=['-DP12_EMBEDDED']
++ if part=='back':defines+=['-DP12_PROVIDER_PATH="'+c['provider_path']+'"']
++ run([c['compiler'],*flags,*common,*defines,'-c',src/('ewk_'+part+'.cpp'),'-o',out/(part+'.o')])
++if a.mode=='separate':
++ run([c['compiler'],'-shared',out/'front.o',out/'back.o',*c['link_flags'],'-Wl,-z,defs,-z,relro,-z,now','-Wl,-soname,libewk-cookie-adaptor.so.1','-Wl,--version-script='+str(src/'ewk_release.exports'),'-o',out/'libewk-cookie-adaptor.so.1'])
++ inputs=[str(out/'libewk-cookie-adaptor.so.1')]
++else:inputs=[str(out/'front.o'),str(out/'back.o')]
++# GN accepts linker inputs as absolute paths; the source patch additionally
++# records them as build inputs. Runtime flags must match the product ABI.
++(out/'gn.args').write_text('ewk_cookie_adaptor_enabled=true\newk_cookie_adaptor_link_inputs='+json.dumps(inputs)+'\newk_cookie_adaptor_runtime_flags='+json.dumps(c['link_flags'])+'\n')
++(out/'manifest.json').write_text(json.dumps({'mode':a.mode,'config':c,'memory_max_bytes':cap,'parallelism':1,'steps':steps,'sha256':{f.name:hashlib.sha256(f.read_bytes()).hexdigest()for f in out.iterdir()if f.suffix=='.o' or f.name.endswith('.so.1')}},indent=2)+'\n')
+--- a/tmp/P12/pin_runtime.py
++++ b/tmp/P12/pin_runtime.py
+@@ -0,0 +1,34 @@
++#!/usr/bin/env python3
++"""给 adaptor 单个 TU 的未定义引用绑定当前运行库真实版本。
++
++这是固定 ELF 产物配置的构建步骤，不读写运行库，不靠加载顺序。
++同时隔离 TU 内定义的 weak/COMDAT 辅助符号，避免两套 personality
++的 DW.ref 和 __clang_call_terminate 在同 DSO 合并。
++"""
++import argparse,hashlib,json,pathlib,subprocess
++p=argparse.ArgumentParser();p.add_argument('--side',choices=['gnu','cxx'],required=True);p.add_argument('--object',required=True);p.add_argument('--runtime',action='append',required=True);p.add_argument('--record',required=True);a=p.parse_args()
++obj=pathlib.Path(a.object);before=hashlib.sha256(obj.read_bytes()).hexdigest();versions={}
++for library in a.runtime:
++ text=subprocess.check_output(['readelf','--dyn-syms','--wide',library],text=True)
++ for line in text.splitlines():
++  fields=line.split()
++  if len(fields)<8 or fields[6]=='UND' or '@@' not in fields[7]:continue
++  name,version=fields[7].split('@@',1)
++  if name in versions:assert versions[name]==version,(name,versions[name],version)
++  versions[name]=version
++symbols=subprocess.check_output(['nm','--format=posix',str(obj)],text=True)
++changes={}
++for line in symbols.splitlines():
++ fields=line.split()
++ if len(fields)<2:continue
++ name,kind=fields[:2]
++ if kind in ['U','w','v'] and name in versions:
++  changes[name]=name+'@'+versions[name]
++ elif kind in ['W','V']:
++  changes[name]=name+'.p13_'+a.side
++assert '__gxx_personality_v0' in changes or '__gxx_personality_v0' not in symbols
++cmd=['objcopy',*[arg for old,new in sorted(changes.items()) for arg in ['--redefine-sym',old+'='+new]],str(obj)]
++r=subprocess.run(cmd);assert r.returncode==0
++record={'side':a.side,'object':str(obj),'before_sha256':before,'after_sha256':hashlib.sha256(obj.read_bytes()).hexdigest(),'runtime_sha256':{x:hashlib.sha256(pathlib.Path(x).read_bytes()).hexdigest()for x in a.runtime},'mapping':changes,'command':cmd,'exit':r.returncode}
++pathlib.Path(a.record).write_text(json.dumps(record,indent=2)+'\n')
++print(json.dumps(record,indent=2))
+--- a/tmp/P12/run_vectors.py
++++ b/tmp/P12/run_vectors.py
+@@ -0,0 +1,28 @@
++#!/usr/bin/env python3
++"""构造的数据层接收器，不冒充真实浏览器回调。每格五次、逐字节断言。"""
++import json,os,pathlib,re,subprocess,sys
++import build as b
++prefix=os.environ.get('P12_RUN_TAG','')
++rows=[]
++for side,entry,provider,expected in [
++    ('gnu','vector_provider_gnu','gnu',8),('cxx','vector_provider_cxx','cxx',8),
++    ('gnu','vector_gnu_to_cxx','cxx',8),('cxx','vector_cxx_to_gnu','gnu',8),
++    ('gnu','vector_gnu_to_cxx_bad','cxx',2)]:
++    for n in range(1,6):
++        tag=prefix+'vector_run_'+entry+'_'+str(n)
++        stem=b.OUT/'raw'/tag
++        assert not pathlib.Path(str(stem)+'.command.txt').exists(),tag
++        command=['prlimit','--core=0','--','timeout','40',str(b.SDK/'closure_ewk/ld-linux-x86-64.so.2'),
++          '--library-path',str(b.SDK/'closure_ewk')+':'+str(b.LIBCXX/'lib')+':'+str(b.BUILD),
++          str(b.BUILD/('vector_app_'+side)),str(b.BUILD/(entry+'.so')),str(b.BUILD/('vector_provider_'+provider+'.so'))]
++        subprocess.run([sys.executable,str(b.REC),str(stem),'nice','-n','15','ionice','-c','3',*command])
++        rc=int(pathlib.Path(str(stem)+'.exitcode').read_text());out=pathlib.Path(str(stem)+'.stdout').read_text()
++        summary=re.findall(r'SUMMARY EXACT=(\d+)/8 DESTROYED=(\d+)/8',out)
++        assert summary==[(str(expected),'8')],(tag,rc,summary)
++        assert rc==(0 if expected==8 else 28)
++        assert 'MAP_ASSERT gnu=1 cxx=1 entry=1 provider=1' in out
++        rows.append({'entry':entry,'consumer':side,'receiver':provider,'repeat':n,'exit':rc,
++                     'scenarios':8,'exact':expected,'destroyed':8,'environment':'x86_64 native',
++                     'receiver_kind':'constructed data-layer only','raw':tag})
++        (b.OUT/(prefix+'VECTOR_RESULTS.json')).write_text(json.dumps(rows,indent=2)+'\n')
++print('VECTOR_PROGRAM_RUNS',len(rows))
+--- a/tmp/P12/src/ewk.exports
++++ b/tmp/P12/src/ewk.exports
+@@ -1,4 +1,4 @@
+ {
+-  global: ewk_parse_cookie; p12_ewk_parse_cookie; p12_test_fail_field;
++  global: ewk_parse_cookie; p12_ewk_parse_cookie; p12_test_fail_field; p13_test_*;
+   local: *;
+ };
+--- a/tmp/P12/src/ewk_back.cpp
++++ b/tmp/P12/src/ewk_back.cpp
+@@ -5,6 +5,12 @@
+ #include <limits>
+ #include <new>
+ #include <stdexcept>
++#ifdef P13_BACKEND_TESTING
++#include "p13_backend_test.h"
++#else
++#define P13_SCOPE ((void)0)
++#define P13_POINT(i) ((void)0)
++#endif
+ #ifndef P12_PROVIDER_PATH
+ #define P12_PROVIDER_PATH "/usr/share/chromium-efl/lib/libchromium-impl.so"
+ #endif
+@@ -36,27 +42,38 @@
+     int error = ready(); if (error) return -error;
+     using Fn = Eina_Bool (*)(const std::string&, EWKCookieContents&);
+     auto real = reinterpret_cast<Fn>(provider.symbol);
++    P13_SCOPE;
++    P13_POINT(0);
+     std::string text(input.data ? input.data : "", input.size);
++    P13_POINT(1);
+     EWKCookieContents output{};
+     std::string* fields[] = {&output.domain, &output.name, &output.path, &output.value};
+     // Source :39-48: optional attributes overwrite only when present.
+-    for (unsigned i = 0; i < 4; ++i)
++    for (unsigned i = 0; i < 4; ++i) {
+       fields[i]->assign(initial->fields[i].data ? initial->fields[i].data : "", initial->fields[i].size);
++      P13_POINT(2+i);
++    }
+     // Source :32: pass all bytes, not strlen/transcoding; embedded NUL and
+     // non-UTF-8 interpretation belongs to the real net::ParsedCookie.
+     // Source :59 strtol may set ERANGE; do not silently erase provider errno.
+     errno = initial->caller_errno;
+     bool accepted = real(text, output);
++    P13_POINT(6);
+     result->provider_errno = errno;
+     if (!accepted) return 0;
+     for (unsigned i = 0; i < 4; ++i) {
+       int status = emit(ctx, i, fields[i]->data(), fields[i]->size());
+       if (status) return -status;
++      P13_POINT(7+i);
+     }
+     result->expiry = output.expiry_date_utc;
+     return 1;
+   } catch (const std::bad_alloc&) { return -ENOMEM; }
+     catch (const std::length_error&) { return -EOVERFLOW; }
+-  // No catch-all: never swallow foreign/forced unwind. Other provider
+-  // exceptions remain outside the approved contract; no safety claim.
++    catch (const std::invalid_argument&) { return -EINVAL; }
++    catch (const std::exception&) { return -EIO; }
++    catch (...) { return -EIO; }
++  // Synchronous exception contract only. No allocation/logging/what() inside
++  // handlers. Cancellation and a second exception escaping a destructor
++  // during unwinding are outside this interface contract.
+ }
+--- a/tmp/P12/src/ewk_front.cpp
++++ b/tmp/P12/src/ewk_front.cpp
+@@ -20,6 +20,9 @@
+     return 0;
+   } catch (const std::bad_alloc&) { return ENOMEM; }
+     catch (const std::length_error&) { return EOVERFLOW; }
++    catch (const std::invalid_argument&) { return EINVAL; }
++    catch (const std::exception&) { return EIO; }
++    catch (...) { return EIO; }
+ }
+ P12_EXPORT Eina_Bool p12_ewk_parse_cookie(const std::string& input, EWKCookieContents& output) {
+   // ewk_cookie_parser.cc:32-34 rejects before writes; :36-48 preserves absent
+@@ -48,6 +51,9 @@
+     }
+   } catch (const std::bad_alloc&) { rc = -ENOMEM; }
+     catch (const std::length_error&) { rc = -EOVERFLOW; }
++    catch (const std::invalid_argument&) { rc = -EINVAL; }
++    catch (const std::exception&) { rc = -EIO; }
++    catch (...) { rc = -EIO; }
+   errno = rc < 0 ? -rc : result.provider_errno;
+ #ifdef P12_TESTING
+   std::fprintf(stderr, "P12_ADAPTOR_ENTRY result=%d errno=%d string_size=%zu\n", rc, errno, sizeof(std::string));
+--- a/tmp/P12/src/forwarder.exports
++++ b/tmp/P12/src/forwarder.exports
+@@ -1,4 +1,4 @@
+ {
+- global: ewk_*; efl_webprocess_main; WRTMain; WRTServiceMain; ChromeMain; p12_test_fail_field;
++ global: ewk_*; efl_webprocess_main; WRTMain; WRTServiceMain; ChromeMain; p12_test_fail_field; p13_test_*;
+  local: *;
+ };
+--- a/tmp/P12/src/p13_backend_test.h
++++ b/tmp/P12/src/p13_backend_test.h
+@@ -0,0 +1,31 @@
++#pragma once
++// Test-only synchronous fault injection. Never compiled into package payload.
++#include <new>
++#include <stdexcept>
++namespace p13_test {
++thread_local int kind=0,at=-1,created=0,destroyed=0,last=-1,nested=0;
++struct Scope { Scope(){++created;} ~Scope(){++destroyed;} };
++struct Custom { int value; };
++struct ThrowOnExit { bool contain; ~ThrowOnExit() noexcept(false) {
++  if(contain){try{throw Custom{271};}catch(...){++nested;}}
++  else throw Custom{314};
++} };
++inline void point(int phase){
++ last=phase;if(phase!=at)return;
++ switch(kind){
++  case 1:throw std::bad_alloc();
++  case 2:{std::string x;x.reserve(x.max_size()+1);break;}
++  case 3:throw std::invalid_argument("P13 injected invalid argument; not observed parser path");
++  case 4:throw Custom{314};
++  case 5:throw std::runtime_error("P13 injected standard exception");
++  case 6:{ThrowOnExit guard{true};throw std::bad_alloc();}
++  case 7:{ThrowOnExit guard{false};throw std::bad_alloc();}
++  case 8:{ThrowOnExit guard{false};break;}
++  case 9:try{throw Custom{11};}catch(...){throw std::invalid_argument("replacement exception");}
++ }
++}
++}
++P12_EXPORT void p13_test_configure(int kind,int phase){p13_test::kind=kind;p13_test::at=phase;p13_test::created=0;p13_test::destroyed=0;p13_test::last=-1;p13_test::nested=0;}
++P12_EXPORT void p13_test_counts(int*created,int*destroyed,int*last,int*nested){if(created)*created=p13_test::created;if(destroyed)*destroyed=p13_test::destroyed;if(last)*last=p13_test::last;if(nested)*nested=p13_test::nested;}
++#define P13_SCOPE p13_test::Scope p13_scope
++#define P13_POINT(i) p13_test::point(i)
+--- a/tmp/P12/src/p13_error_app.cpp
++++ b/tmp/P12/src/p13_error_app.cpp
+@@ -0,0 +1,46 @@
++#include <ewk_cookie_parser.h>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <cerrno>
++#include <dlfcn.h>
++#include <sys/resource.h>
++static EWKCookieContents initial(){EWKCookieContents o{};o.domain=std::string(128,'d');o.name=std::string(128,'n');o.path=std::string(128,'p');o.value=std::string(128,'v');o.expiry_date_utc=999;return o;}
++static bool equal(const EWKCookieContents&a,const EWKCookieContents&b){return a.domain==b.domain&&a.name==b.name&&a.path==b.path&&a.value==b.value&&a.expiry_date_utc==b.expiry_date_utc;}
++int main(int argc,char**argv){
++ if(argc!=6)return 20;setvbuf(stdout,nullptr,_IONBF,0);
++ if(!dlopen("libc++.so.1",RTLD_NOW|RTLD_GLOBAL)||!dlopen("libstdc++.so.6",RTLD_NOW|RTLD_GLOBAL))return 21;
++ void*h=dlopen(argv[1],RTLD_NOW|RTLD_LOCAL);if(!h||!dlopen(argv[2],RTLD_NOW|RTLD_LOCAL))return 22;
++ auto call=reinterpret_cast<Eina_Bool(*)(const std::string&,EWKCookieContents&)>(dlsym(h,"ewk_parse_cookie"));
++ auto configure=reinterpret_cast<void(*)(int,int)>(dlsym(h,"p13_test_configure"));
++ auto counts=reinterpret_cast<void(*)(int*,int*,int*,int*)>(dlsym(h,"p13_test_counts"));
++ if(!call||!configure||!counts)return 23;
++ Dl_info route{};if(!dladdr(reinterpret_cast<void*>(call),&route)||strcmp(route.dli_fname,argv[1]))return 24;
++ auto warm=initial();if(!call("sid=abc; Domain=warm; Path=/warm",warm))return 25;
++ FILE*f=fopen("/proc/self/maps","r");if(!f)return 26;char line[4096];bool g=false,c=false,e=false,p=false;
++ while(fgets(line,sizeof line,f)){fputs(line,stdout);g|=strstr(line,"/libstdc++.so.")!=nullptr;c|=strstr(line,"/libc++.so.")!=nullptr;e|=strstr(line,argv[1])!=nullptr;p|=strstr(line,argv[2])!=nullptr;}fclose(f);
++ printf("MAP_ASSERT gnu=%d cxx=%d entry=%d provider=%d\n",g,c,e,p);if(!g||!c||!e||!p)return 27;
++ int kind=atoi(argv[3]),phase=atoi(argv[4]),expected=atoi(argv[5]);
++ auto out=initial();auto before=out;const char*storage[4]={out.domain.data(),out.name.data(),out.path.data(),out.value.data()};
++ std::string input="sid=abc; Domain=new; Path=/new";
++ rlimit old{};
++ if(kind==10){
++  // A genuinely allocated, readable input; pressure forces the backend copy
++  // to fail, instead of using an invalid oversized borrowed pointer.
++  input.assign(64*1024*1024,'x');
++  f=fopen("/proc/self/status","r");if(!f)return 28;unsigned long vm=0;
++  while(fgets(line,sizeof line,f))if(sscanf(line,"VmSize: %lu kB",&vm)==1)break;fclose(f);
++  if(!vm||getrlimit(RLIMIT_AS,&old))return 29;
++  rlimit cap{vm*1024+1024*1024,old.rlim_max};if(cap.rlim_cur>cap.rlim_max||setrlimit(RLIMIT_AS,&cap))return 30;
++  configure(0,-1);
++ }else configure(kind,phase);
++ errno=0;bool accepted=call(input,out);int error=errno;
++ if(kind==10&&setrlimit(RLIMIT_AS,&old))return 31;
++ int created=0,destroyed=0,last=0,nested=0;counts(&created,&destroyed,&last,&nested);
++ bool unchanged=equal(out,before)&&out.domain.data()==storage[0]&&out.name.data()==storage[1]&&out.path.data()==storage[2]&&out.value.data()==storage[3];
++ printf("ERROR kind=%d phase=%d accepted=%d errno=%d expected=%d unchanged=%d created=%d destroyed=%d last=%d nested=%d\n",kind,phase,accepted,error,expected,unchanged,created,destroyed,last,nested);
++ if(accepted||error!=expected||!unchanged||created!=1||destroyed!=1)return 32;
++ if(kind==6&&nested!=1)return 33;
++ configure(0,-1);if(!call("recovered=yes",out)||out.name!="recovered"||out.value!="yes"||out.expiry_date_utc!=0)return 34;
++ puts("RECOVERY=PASS OUTPUT_UNCHANGED=PASS CLEANUP_SCOPES=1/1");return 0;
++}
+--- a/tmp/P12/src/vector_back.cpp
++++ b/tmp/P12/src/vector_back.cpp
+@@ -34,4 +34,7 @@
+     return reinterpret_cast<Sink>(provider.symbol)(instance,local);
+   } catch(const std::bad_alloc&){return -ENOMEM;}
+     catch(const std::length_error&){return -EOVERFLOW;}
++    catch(const std::invalid_argument&){return -EINVAL;}
++    catch(const std::exception&){return -EIO;}
++    catch(...){return -EIO;}
+ }
+--- a/tmp/P12/src/vector_front.cpp
++++ b/tmp/P12/src/vector_front.cpp
+@@ -1,5 +1,13 @@
+ #include "bridge.h"
+ #include <vector>
++#include <cerrno>
++#include <new>
++#include <stdexcept>
+ P12_EXPORT int p12_send_reply(int32_t instance, const std::vector<uint8_t>& bytes) {
+-  return p12_vector_bytes(instance, bytes.data(), bytes.size());
++  try { return p12_vector_bytes(instance, bytes.data(), bytes.size()); }
++  catch(const std::bad_alloc&){return -ENOMEM;}
++  catch(const std::length_error&){return -EOVERFLOW;}
++  catch(const std::invalid_argument&){return -EINVAL;}
++  catch(const std::exception&){return -EIO;}
++  catch(...){return -EIO;}
+ }
