@@ -10,7 +10,7 @@ names = subprocess.check_output(['git', 'diff', '--cached', '--name-only', '-z']
 names = [n for n in names if n]
 assert names
 allowed_roots = ['experiment1/', 'experiment3/', 'doc_revision/', 'continuation_delivery/']
-allowed_files = ['REPORT.md', 'STATUS.md', 'QUESTIONS.md', 'REVIEW_DISPOSITION.md', 'SHA256SUMS',
+allowed_files = ['REPORT.md', 'STATUS.md', 'QUESTIONS.md', 'REVIEW_DISPOSITION.md', 'SHA256SUMS', 'CONTINUATION_DELIVERY.md',
                  'adaptor_proposal_for_review.md', 'adaptor_proposal_for_review_en.md']
 for name in names:
     if name in ['adaptor_proposal_for_review.md', 'adaptor_proposal_for_review_en.md']:
