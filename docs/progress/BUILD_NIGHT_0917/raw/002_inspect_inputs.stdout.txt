@@ -1,0 +1,448 @@
+2d23367d74afbf2bb1e9e4013fce072b3a154109
+ M packaging/llvm.spec
+%define llvm_major 22
+%define llvm_version 22.1.8
+
+Name:           libcxx-runtimes
+Version:        22.1.8
+Release:        1
+ExclusiveArch:  armv7l aarch64 x86_64
+Summary:        LLVM libc++ and libc++abi runtimes
+Group:          Development/Toolchain
+License:        Apache-2.0 WITH LLVM-exception
+URL:            https://llvm.org/
+Source0:        llvm-%{version}.tar.gz
+Source1:        libcxx-llvm22.map
+Source2:        libcxx-runtimes.manifest
+Source3:        SOURCE_PROVENANCE
+
+BuildRequires:  clang = %{version}
+BuildRequires:  cmake
+BuildRequires:  ninja
+BuildRequires:  python3
+BuildRequires:  glibc-devel
+BuildRequires:  libgcc
+
+%description
+Source package for the LLVM libc++ standard library and libc++abi runtime.
+The libraries use libgcc_s as the unwinder and export only default-version
+LLVM_22 symbols.
+
+%package -n libc++
+Summary:        LLVM C++ standard library runtime
+Requires:       libc++abi = %{version}-%{release}
+
+%description -n libc++
+Shared LLVM libc++ runtime, built against libc++abi and libgcc_s.
+
+%package -n libc++-devel
+Summary:        LLVM C++ standard library headers and development files
+Requires:       libc++ = %{version}-%{release}
+Requires:       libc++abi-devel = %{version}-%{release}
+
+%description -n libc++-devel
+Headers, ABI linker script, module metadata, and development files for LLVM
+libc++.
+
+%package -n libc++abi
+Summary:        LLVM C++ ABI runtime
+
+%description -n libc++abi
+Shared LLVM libc++abi runtime using libgcc_s rather than LLVM libunwind.
+
+%package -n libc++abi-devel
+Summary:        LLVM C++ ABI development files
+Requires:       libc++abi = %{version}-%{release}
+
+%description -n libc++abi-devel
+Linker name for LLVM libc++abi.  Its public headers are installed in the
+common c++/v1 tree shipped by libc++-devel.
+
+%prep
+%setup -q -n llvm-%{version}
+cp %{SOURCE2} .
+cp %{SOURCE3} .
+
+%build
+%ifarch aarch64
+CFLAGS="$(printf '%%s\n' "$CFLAGS" | sed 's/-mtune=cortex-a57\.cortex-a53/-mtune=cortex-a53/g')"
+CXXFLAGS="$(printf '%%s\n' "$CXXFLAGS" | sed 's/-mtune=cortex-a57\.cortex-a53/-mtune=cortex-a53/g')"
+export CFLAGS CXXFLAGS
+%endif
+
+mkdir -p build
+cd build
+
+cmake -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=%{_host}-clang \
+  -DCMAKE_CXX_COMPILER=%{_host}-clang++ \
+  -DCMAKE_ASM_COMPILER=%{_host}-clang \
+  -DCMAKE_C_COMPILER_TARGET=%{_host} \
+  -DCMAKE_CXX_COMPILER_TARGET=%{_host} \
+  -DCMAKE_ASM_COMPILER_TARGET=%{_host} \
+  -DCMAKE_C_FLAGS="$CFLAGS --rtlib=libgcc" \
+  -DCMAKE_CXX_FLAGS="$CXXFLAGS --rtlib=libgcc" \
+  -DCMAKE_ASM_FLAGS="$CFLAGS" \
+  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--version-script=%{SOURCE1} -Wl,-z,now --rtlib=libgcc" \
+  -DCMAKE_EXE_LINKER_FLAGS="--rtlib=libgcc" \
+  -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+  -DCMAKE_INSTALL_LIBDIR=%{_lib} \
+  -DLIBCXX_INSTALL_LIBRARY_DIR=%{_lib} \
+  -DLIBCXXABI_INSTALL_LIBRARY_DIR=%{_lib} \
+  -DLLVM_ENABLE_RUNTIMES="libcxxabi;libcxx" \
+  -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+  -DLLVM_INCLUDE_TESTS=OFF \
+  -DLIBCXX_ENABLE_SHARED=ON \
+  -DLIBCXX_ENABLE_STATIC=OFF \
+  -DLIBCXX_INSTALL_SHARED_LIBRARY=ON \
+  -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF \
+  -DLIBCXX_CXX_ABI=libcxxabi \
+  -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF \
+  -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=ON \
+  -DLIBCXX_USE_COMPILER_RT=OFF \
+  -DLIBCXXABI_ENABLE_SHARED=ON \
+  -DLIBCXXABI_ENABLE_STATIC=OFF \
+  -DLIBCXXABI_INSTALL_SHARED_LIBRARY=ON \
+  -DLIBCXXABI_INSTALL_STATIC_LIBRARY=OFF \
+  -DLIBCXXABI_USE_COMPILER_RT=OFF \
+  -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
+  -DLIBCXXABI_ENABLE_STATIC_UNWINDER=OFF \
+  -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=OFF \
+  -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=OFF \
+  -DLIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS=ON \
+  -DLIBCXX_INCLUDE_TESTS=OFF \
+  -DLIBCXXABI_INCLUDE_TESTS=OFF \
+  -DLIBCXX_INCLUDE_BENCHMARKS=OFF \
+  ../runtimes
+
+cmake --build . --target cxxabi cxx cxx_experimental %{?_smp_mflags}
+
+%install
+cd build
+DESTDIR=%{buildroot} cmake --install .
+
+install -d %{buildroot}%{_datadir}/doc/%{name}
+install -m 0644 ../SOURCE_PROVENANCE \
+  %{buildroot}%{_datadir}/doc/%{name}/SOURCE_PROVENANCE
+
+%files -n libc++
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%license libcxx/LICENSE.TXT
+%{_libdir}/libc++.so.1*
+
+%files -n libc++-devel
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%{_includedir}/c++/v1
+%{_libdir}/libc++.so
+%{_libdir}/libc++experimental.a
+%{_libdir}/libc++.modules.json
+%{_datadir}/libc++/v1
+%{_datadir}/doc/%{name}/SOURCE_PROVENANCE
+
+%files -n libc++abi
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%license libcxxabi/LICENSE.TXT
+%{_libdir}/libc++abi.so.1*
+
+%files -n libc++abi-devel
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%{_libdir}/libc++abi.so
+
+%changelog
+* Tue Aug 04 2026 Toolchain ABI Team <toolchain@example.invalid> 22.1.8-1
+- Migrate to the verbatim platform llvm-22.1.8 source tarball and LLVM_22 symbol node.
+- Preserve the adjudicated 21.1.1 multi-architecture packaging decisions.
+
+* Sat Jul 25 2026 Toolchain ABI Team <toolchain@example.invalid> 21.1.1-2
+- Build armv7l, aarch64, and x86_64 repository-candidate runtimes.
+
+* Thu Jul 23 2026 Toolchain ABI Team <toolchain@example.invalid> 21.1.1-1
+- Initial armv7l PoC packaging with LLVM_21 default symbol versions.#!/usr/bin/env bash
+set -euo pipefail
+export PATH=/bin:/usr/bin:/sbin:/usr/sbin
+export CMAKE_BUILD_PARALLEL_LEVEL=1
+workspace=/home/toolchain/development/libc++_replacement
+package=$1
+arch=$2
+mode=$3
+release=$4
+case "$package:$arch" in
+  bcc-tools:armv7l|bpftrace:armv7l|bpftrace:aarch64) ;;
+  *) echo 'cell outside requested scope' >&2; exit 2;;
+esac
+case "$mode" in libcxx|gcc) ;; *) exit 2;; esac
+build_root="$workspace/tmp/GBS-ROOT/BUILD-W2C-${package}-${arch}-${mode}"
+if [ -e "$build_root" ]; then
+  echo "Build root already exists; explicit resume decision required: $build_root" >&2
+  exit 2
+fi
+extra=()
+if [ "$mode" = gcc ]; then extra+=(--define '_toolchain_override gcc'); fi
+cd "$workspace/codes/R104/$package"
+exec python3 -u "$workspace/progress/BUILD_W2C_0915/govern_resume.py" \
+  --unit "build-w2c-${package}-${arch}-${mode}" -- \
+  gbs -c "$workspace/progress/BUILD_W2C_0915/gbs_${mode}.conf" \
+  build -A "$arch" -B "$build_root" -C --fail-fast --threads 1 \
+  --define '_smp_mflags -j1' --define 'jobs 1' --release "$release" \
+  --style git --include-all --packaging-dir packaging --spec "$package.spec" \
+  "${extra[@]}"
+"""Run one build in a memory-limited scope and monitor completed targets/I/O."""
+import argparse
+import atexit
+import datetime
+import json
+import os
+import re
+import shlex
+import signal
+import subprocess
+import time
+from pathlib import Path
+
+ROOT = Path('/home/toolchain/development/libc++_replacement')
+OUT = ROOT / 'progress/BUILD_W2C_0915'
+p = argparse.ArgumentParser()
+p.add_argument('--unit', required=True)
+p.add_argument('--stdin-file')
+p.add_argument('--inner-sentinel', action='store_true')
+p.add_argument('--max-ninja-total', type=int)
+p.add_argument('--abort-cache-reset', action='store_true')
+p.add_argument('command', nargs=argparse.REMAINDER)
+a = p.parse_args()
+command = a.command[1:] if a.command[:1] == ['--'] else a.command
+assert command
+mem_kib = int(re.search(r'MemTotal:\s+(\d+)', Path('/proc/meminfo').read_text()).group(1))
+cap = mem_kib * 1024 // 2
+deadline = datetime.datetime.fromisoformat('2026-09-16T03:08:00+08:00').timestamp()
+log_path = OUT / (a.unit + '.build.log')
+events = (OUT / (a.unit + '.events.jsonl')).open('a', buffering=1)
+def note(event, **kw):
+    record = dict(time=datetime.datetime.now().astimezone().isoformat(), event=event, **kw)
+    events.write(json.dumps(record, ensure_ascii=False) + '\n')
+    print(json.dumps(record, ensure_ascii=False), flush=True)
+def ctl(*args):
+    cmd = ['systemctl', '--user', *args]
+    r = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+    note('control', command=shlex.join(cmd), exitcode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+    if r.returncode:
+        raise RuntimeError('scope control failed')
+    return r.stdout.strip()
+unit = a.unit + '.scope'
+run = ['systemd-run', '--user', '--scope', '--unit=' + a.unit,
+       '-p', f'MemoryMax={cap}', 'nice', '-n', '19', 'ionice', '-c', '3', *command]
+note('start', command=shlex.join(run), requested_memory_bytes=cap, memory_total_kib=mem_kib,
+     stdin=a.stdin_file, deadline_unix=deadline)
+stdin = open(a.stdin_file, 'rb') if a.stdin_file else subprocess.DEVNULL
+log_stream = log_path.open('wb', buffering=0)
+build = subprocess.Popen(run, stdin=stdin, stdout=log_stream, stderr=subprocess.STDOUT)
+def emergency_cleanup():
+    if build.poll() is None:
+        if cg is not None and cg.exists():
+            for f in cg.rglob('cgroup.procs'):
+                for value in f.read_text().split():
+                    try:
+                        if (Path('/proc') / value).stat().st_uid == os.getuid():
+                            os.kill(int(value), signal.SIGTERM)
+                    except (ProcessLookupError, FileNotFoundError, PermissionError):
+                        pass
+        for args in (('kill', '--signal=SIGTERM', unit), ('thaw', unit)):
+            try:
+                r = subprocess.run(['systemctl', '--user', *args], capture_output=True,
+                                   text=True, timeout=15)
+                note('cleanup_control', command=list(args), exitcode=r.returncode,
+                     stderr=r.stderr)
+            except Exception as exc:
+                note('cleanup_error', error=str(exc))
+atexit.register(emergency_cleanup)
+cg = None
+for _ in range(30):
+    if build.poll() is not None:
+        break
+    r = subprocess.run(['systemctl', '--user', 'show', unit, '-p', 'ControlGroup', '--value'],
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    if r.stdout.strip():
+        cg = Path('/sys/fs/cgroup') / r.stdout.strip().lstrip('/')
+        break
+    time.sleep(1)
+if cg is None:
+    build.wait()
+    text = log_path.read_text(errors='replace')
+    values = re.findall(r'W2C_INNER_EXIT=(\d+)', text)
+    result = build.returncode or (int(values[-1]) if values else 90)
+    note('finished_before_scope_observation', outer_exitcode=build.returncode,
+         result=result, memory_verified=False)
+    raise SystemExit(result)
+actual_cap = int((cg / 'memory.max').read_text())
+assert 0 < actual_cap <= cap
+note('memory_verified', cgroup=str(cg), memory_max=actual_cap)
+def snapshot():
+    records = []
+    if not cg.exists():
+        return
+    for f in cg.rglob('cgroup.procs'):
+        for value in f.read_text().split():
+            try:
+                pid = int(value)
+                proc = Path('/proc') / value
+                records.append(dict(pid=pid, name=(proc/'comm').read_text().strip(),
+                                    nice=os.getpriority(os.PRIO_PROCESS, pid),
+                                    cgroup=(proc/'cgroup').read_text().strip()))
+            except (FileNotFoundError, ProcessLookupError):
+                pass
+    note('scope_processes', processes=records,
+         memory_current=(cg/'memory.current').read_text().strip())
+def freeze():
+    ctl('freeze', unit)
+    for _ in range(20):
+        if (cg/'cgroup.freeze').read_text().strip() == '1':
+            break
+        time.sleep(0.1)
+    assert (cg/'cgroup.freeze').read_text().strip() == '1'
+    note('pause_requested', freezer=(cg/'cgroup.events').read_text())
+def thaw():
+    ctl('thaw', unit)
+    assert (cg/'cgroup.freeze').read_text().strip() == '0'
+    note('resumed')
+def stop(reason):
+    note('stopping', reason=reason)
+    if cg.exists():
+        # Queue termination before thaw so paused tasks cannot resume normal work.
+        for f in cg.rglob('cgroup.procs'):
+            for value in f.read_text().split():
+                try:
+                    if (Path('/proc') / value).stat().st_uid == os.getuid():
+                        os.kill(int(value), signal.SIGTERM)
+                except (ProcessLookupError, FileNotFoundError, PermissionError):
+                    pass
+        if (cg/'cgroup.freeze').read_text().strip() == '1':
+            thaw()
+    until = time.monotonic() + 60
+    while build.poll() is None and time.monotonic() < until:
+        time.sleep(1)
+    if build.poll() is None:
+        ctl('kill', '--signal=SIGKILL', unit)
+    raise RuntimeError(reason)
+probe_counter = 0
+probe = None
+def probe_once():
+    global probe, probe_counter
+    if probe is not None and probe.poll() is None:
+        note('probe_still_in_io_wait')
+        return False
+    probe_counter += 1
+    file = OUT / f'{a.unit}.io_{probe_counter:02d}.log'
+    cmd = ['nice', '-n', '19', 'ionice', '-c', '3', 'python3', str(OUT/'io_probe.py')]
+    with file.open('wb') as stream:
+        probe = subprocess.Popen(cmd, stdout=stream, stderr=subprocess.STDOUT)
+    note('probe_start', command=shlex.join(cmd), log=str(file))
+    until = time.monotonic() + 30
+BUILD-W1-0908-llvm-aarch64
+BUILD-W1-0908-llvm-armv7l
+BUILD-W1-0908-llvm-x86_64
+BUILD-W1-AOT
+BUILD-W1B-llvm-aarch64
+BUILD-W1B-llvm-x86_64
+BUILD-W1BC-llvm-x86_64-baseline
+BUILD-W2-bcc
+BUILD-W2-bcc-baseonly
+BUILD-W2-bcc-x86-gcc
+BUILD-W2-bcc-x86-libcxx
+BUILD-W2B-llvm-armv7l
+BUILD-W2C-bcc-tools-armv7l-gcc
+BUILD-W2C-bcc-tools-armv7l-libcxx
+BUILD-W2C-bpftrace-aarch64-gcc
+BUILD-W2C-bpftrace-aarch64-libcxx
+BUILD-W2C-bpftrace-armv7l-gcc
+BUILD-W2C-bpftrace-armv7l-libcxx
+DIAG-20260731
+LIBCXX-2218-aarch64-20260804
+LIBCXX-2218-aarch64-20260804-r2
+LIBCXX-2218-aarch64-20260806-c2
+LIBCXX-2218-armv7l-20260804
+LIBCXX-2218-armv7l-20260804-r2
+LIBCXX-2218-armv7l-20260805-r3
+LIBCXX-2218-armv7l-20260805-r3b
+LIBCXX-2218-armv7l-20260806-c2
+LIBCXX-2218-preflight-20260805-std
+LIBCXX-2218-preflight-20260805-std-r2
+LIBCXX-2218-preflight-20260806-c2
+LIBCXX-2218-x86_64-20260804
+LIBCXX-2218-x86_64-20260806-c2
+LIBCXX-R91-x86_64
+LIBCXX-R91-x86_64-retry1
+R104-abseil-armv7l-gcc
+R104-abseil-armv7l-libcxx
+R104-llvm-armv7l-libcxx
+R104-matrix-aarch64-libcxx
+R104-matrix-armv7l-libcxx
+R104-matrix-x86_64-libcxx
+R104-tensorflow2-armv7l-libcxx
+R105-boost-aarch64
+R105-boost-armv7l
+R105-boost-x86_64
+R105-tensorflow2-aarch64
+R105-tensorflow2-aarch64-gccactual
+R105-tensorflow2-armv7l-gccactual
+R105-tensorflow2-x86_64
+R105-tensorflow2-x86_64-gccactual
+R108-tensorflow2-armv7l-gccbaseline
+R29-consumer-default-x86_64-20260812-01
+R29-consumer-default-x86_64-20260812-02
+R29-consumer-default-x86_64-20260812-03
+R29-consumer-default-x86_64-20260812-04
+R29-consumer-default-x86_64-20260812-05
+R29-consumer-default-x86_64-20260812-06
+R29-consumer-libcxx-x86_64-20260812-01
+R29-consumer-libcxx-x86_64-20260812-02
+R29-consumer-libcxx-x86_64-20260812-03
+R29-flatbuffers-x86_64-20260812-01
+R29-flatbuffers-x86_64-20260812-02
+R29-flatbuffers-x86_64-20260812-03
+R29-flatbuffers-x86_64-20260812-04
+R29-lottie-x86_64-20260812-01
+R29-lottie-x86_64-20260812-02
+R29-pcre-x86_64-20260812-02
+R29-pcre-x86_64-20260812-03
+R29-pcre-x86_64-20260812-04
+R30-baseline-libcynara-armv7l-20260812-01
+R30-baseline-libcynara-armv7l-20260812-02
+R30-baseline-libcynara-armv7l-20260812-04
+R30-baseline-libcynara-armv7l-20260812-05
+R30-baseline-security-armv7l-20260812-01
+R30-baseline-security-armv7l-20260812-02
+R30-final-security-libcxx-aarch64-20260812-01
+R30-final-security-libcxx-armv7l-20260812-01
+R30-final-security-libcxx-x86_64-20260812-01
+R30-patched-libcynara-default-armv7l-20260812-01
+R30-patched-libcynara-libcxx-aarch64-20260812-01
+R30-patched-libcynara-libcxx-armv7l-20260812-01
+R30-patched-libcynara-libcxx-x86_64-20260812-01
+R30-patched-libcynara-libcxx-x86_64-20260812-02
+R30-patched-libcynara-libcxx-x86_64-20260812-03
+R30-patched-security-default-armv7l-20260812-01
+R30-patched-security-libcxx-x86_64-20260812-01
+R30-semantic-default-armv7l-20260812-01
+R30-semantic-libcxx-armv7l-20260812-01
+R30-semantic-libcxx-x86_64-20260812-01
+R30-semantic-revised-libcxx-armv7l-20260812-01
+R30-semantic-revised-libcxx-x86_64-20260812-01
+R31-matrix-libcxx-x86_64-20260812-01
+R31-matrix-libstdcxx-x86_64-20260812-01
+R32-candidates-libcxx-x86_64-20260813-01
+R32-candidates-libcxx-x86_64-20260813-02
+R32-candidates-libstdcxx-x86_64-20260813-01
+R94-direct-clang-armv7l
+R94-no-override-armv7l
+R94-with-override-armv7l
+R96-aarch64-gcc-env
+R96-aarch64-gcc-normalized
+R96-aarch64-llvm-final
+R96-armv7l-gcc-env
+R96-armv7l-llvm-env
+T7-BUILDCONF-EXTRACT-20260731
+T8-RPMSPEC-20260731

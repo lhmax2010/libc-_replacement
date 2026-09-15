@@ -1,0 +1,108 @@
+usage: gbs chroot [-h] [-r] buildroot
+
+    Examples:
+      $ gbs chroot /var/tmp/mybuildroot
+      $ gbs chroot --root /var/tmp/mybuildroot
+
+    Note: The default location of build root located at:
+    ~/GBS-ROOT/local/scratch.{arch}.*, which will be different
+    if -B option specified while running gbs build
+    
+
+positional arguments:
+  buildroot   path to build root
+
+options:
+  -h, --help  show this help message and exit
+  -r, --root  chroot as root instead of abuild by default
+/usr/bin/bwrap
+uid=1000(toolchain) gid=1000(toolchain) groups=1000(toolchain),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev),100(users),114(lpadmin),995(input)
+[general]
+profile = profile.tizen_base_standard
+buildroot = /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-default
+
+[profile.tizen_base_standard]
+repos = repo.local-llvm, repo.local-bcc, repo.base-standard, repo.libcxx-devel-support
+buildconf = /home/toolchain/development/libc++_replacement/codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/project_config
+
+[repo.local-llvm]
+url = /home/toolchain/development/libc++_replacement/tmp/BUILD_W2C_0915/llvm-local-repo/
+
+[repo.local-bcc]
+url = /home/toolchain/development/libc++_replacement/tmp/BUILD_W2C_0915/bcc-libcxx-repo/
+
+[repo.base-standard]
+url = https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/
+
+[repo.libcxx-devel-support]
+url = /home/toolchain/development/libc++_replacement/tmp/BUILD_W2_0912/gcc-support-repo/
+"""Run one build in a memory-limited scope and monitor completed targets/I/O."""
+import argparse
+import atexit
+import datetime
+import json
+import os
+import re
+import shlex
+import signal
+import subprocess
+import time
+from pathlib import Path
+
+ROOT = Path('/home/toolchain/development/libc++_replacement')
+OUT = ROOT / 'progress/BUILD_W2C_0915'
+p = argparse.ArgumentParser()
+p.add_argument('--unit', required=True)
+p.add_argument('--stdin-file')
+p.add_argument('--inner-sentinel', action='store_true')
+p.add_argument('--max-ninja-total', type=int)
+p.add_argument('--abort-cache-reset', action='store_true')
+p.add_argument('command', nargs=argparse.REMAINDER)
+a = p.parse_args()
+command = a.command[1:] if a.command[:1] == ['--'] else a.command
+assert command
+mem_kib = int(re.search(r'MemTotal:\s+(\d+)', Path('/proc/meminfo').read_text()).group(1))
+cap = mem_kib * 1024 // 2
+deadline = datetime.datetime.fromisoformat('2026-09-16T03:51:49+08:00').timestamp()
+log_path = OUT / (a.unit + '.build.log')
+events = (OUT / (a.unit + '.events.jsonl')).open('a', buffering=1)
+def note(event, **kw):
+    record = dict(time=datetime.datetime.now().astimezone().isoformat(), event=event, **kw)
+    events.write(json.dumps(record, ensure_ascii=False) + '\n')
+    print(json.dumps(record, ensure_ascii=False), flush=True)
+def ctl(*args):
+    cmd = ['systemctl', '--user', *args]
+    r = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+    note('control', command=shlex.join(cmd), exitcode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+    if r.returncode:
+        raise RuntimeError('scope control failed')
+    return r.stdout.strip()
+unit = a.unit + '.scope'
+run = ['systemd-run', '--user', '--scope', '--unit=' + a.unit,
+       '-p', f'MemoryMax={cap}', 'nice', '-n', '19', 'ionice', '-c', '3', *command]
+note('start', command=shlex.join(run), requested_memory_bytes=cap, memory_total_kib=mem_kib,
+     stdin=a.stdin_file, deadline_unix=deadline)
+stdin = open(a.stdin_file, 'rb') if a.stdin_file else subprocess.DEVNULL
+log_stream = log_path.open('wb', buffering=0)
+build = subprocess.Popen(run, stdin=stdin, stdout=log_stream, stderr=subprocess.STDOUT)
+def emergency_cleanup():
+    if build.poll() is None:
+        if cg is not None and cg.exists():
+            for f in cg.rglob('cgroup.procs'):
+                for value in f.read_text().split():
+                    try:
+                        if (Path('/proc') / value).stat().st_uid == os.getuid():
+                            os.kill(int(value), signal.SIGTERM)
+                    except (ProcessLookupError, FileNotFoundError, PermissionError):
+                        pass
+        for args in (('kill', '--signal=SIGTERM', unit), ('thaw', unit)):
+            try:
+                r = subprocess.run(['systemctl', '--user', *args], capture_output=True,
+                                   text=True, timeout=15)
+                note('cleanup_control', command=list(args), exitcode=r.returncode,
+                     stderr=r.stderr)
+            except Exception as exc:
+                note('cleanup_error', error=str(exc))
+atexit.register(emergency_cleanup)
+cg = None
+for _ in range(30):
