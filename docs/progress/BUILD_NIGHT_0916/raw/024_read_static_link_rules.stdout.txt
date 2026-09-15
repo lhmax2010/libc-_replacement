@@ -1,0 +1,593 @@
+     1	cmake_minimum_required(VERSION 3.14)
+     2	project(bpftrace)
+     3	
+     4	cmake_policy(SET CMP0057 NEW)
+     5	
+     6	# bpftrace version number components.
+     7	set(bpftrace_VERSION_MAJOR 0)
+     8	set(bpftrace_VERSION_MINOR 24)
+     9	set(bpftrace_VERSION_PATCH 2)
+    10	
+    11	include(GNUInstallDirs)
+    12	
+    13	set(WARNINGS_AS_ERRORS OFF CACHE BOOL "Build with -Werror")
+    14	set(HARDENED_STDLIB OFF CACHE BOOL "Enable hardened definitions for standard library (for development use only)")
+    15	set(STATIC_LINKING OFF CACHE BOOL "Build bpftrace as a statically linked executable")
+    16	
+    17	set(BUILD_ASAN OFF CACHE BOOL "Build bpftrace with -fsanitize=address")
+    18	set(ENABLE_MAN ON CACHE BOOL "Build man pages")
+    19	set(BUILD_TESTING ON CACHE BOOL "Build test suite")
+    20	set(ENABLE_SYSTEMD OFF CACHE BOOL "Enable systemd integration")
+    21	set(KERNEL_HEADERS_DIR "" CACHE PATH "Hard-code kernel headers directory")
+    22	set(SYSTEM_INCLUDE_PATHS "auto" CACHE STRING "Hard-code system include paths (colon separated, the default value \"auto\" queries clang at runtime)")
+    23	set(LIBCLANG_STATIC_PATH "" CACHE PATH "Path to static libclang.a library (for STATIC_LINKING)")
+    24	
+    25	set(ENABLE_SKB_OUTPUT ON CACHE BOOL "Enable skb_output, will include libpcap")
+    26	
+    27	set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+    28	
+    29	set (CMAKE_CXX_STANDARD 20)
+    30	set (CMAKE_CXX_STANDARD_REQUIRED ON)
+    31	set (CMAKE_CXX_EXTENSIONS OFF)
+    32	
+    33	add_compile_options("-Wall")
+    34	add_compile_options("-Wextra")
+    35	add_compile_options("-Werror=missing-field-initializers")
+    36	add_compile_options("-Werror=undef")
+    37	add_compile_options("-Wpointer-arith")
+    38	add_compile_options("-Wcast-align")
+    39	add_compile_options("-Wwrite-strings")
+    40	add_compile_options("-Wcast-qual")
+    41	#add_compile_options("-Wconversion")
+    42	add_compile_options("-Wunreachable-code")
+    43	#add_compile_options("-Wformat=2")
+    44	add_compile_options("-Wdisabled-optimization")
+    45	
+    46	if(HARDENED_STDLIB)
+    47	  add_compile_definitions("-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG")
+    48	  add_compile_definitions("-D_GLIBCXX_ASSERTIONS")
+    49	  if("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
+    50	    # _FORTIFY_SOURCE requires at least -O1
+    51	    add_compile_definitions("-D_FORTIFY_SOURCE=3")
+    52	  endif()
+    53	endif()
+    54	
+    55	if (WARNINGS_AS_ERRORS)
+    56	  add_compile_options("-Werror")
+    57	endif()
+    58	
+    59	# Clang compiler produces narrowing errors when calling BPF_LD_MAP_FD in the bcc library
+    60	# Turning off them before bcc library fixes this
+    61	if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+    62	  add_compile_options("-Wno-narrowing")
+    63	endif()
+    64	
+    65	include_directories(${CMAKE_SOURCE_DIR}/src)
+    66	include_directories(${CMAKE_BINARY_DIR}/src)
+    67	include_directories(${CMAKE_BINARY_DIR})
+    68	
+    69	# Ninja buffers output so gcc/clang think it's not an interactive session.
+    70	# Colors are useful for compiler errors so force the color
+    71	if("${CMAKE_GENERATOR}" STREQUAL "Ninja")
+    72	  if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+    73	    add_compile_options(-fdiagnostics-color=always)
+    74	  elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+    75	    add_compile_options(-fcolor-diagnostics)
+    76	  endif()
+    77	endif()
+    78	
+    79	include(CTest)
+    80	
+    81	if(STATIC_LINKING)
+    82	  set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+    83	  set(CMAKE_LINK_SEARCH_START_STATIC TRUE)
+    84	  set(CMAKE_LINK_SEARCH_END_STATIC TRUE)
+    85	endif(STATIC_LINKING)
+    86	
+    87	set_property( GLOBAL PROPERTY FIND_LIBRARY_USE_LIB64_PATHS TRUE )
+    88	
+    89	include_directories(SYSTEM ${KERNEL_INCLUDE_DIRS})
+    90	
+    91	find_package(ZLIB REQUIRED)
+    92	include_directories(SYSTEM ${ZLIB_INCLUDE_DIRS})
+    93	
+    94	find_package(LibBcc REQUIRED)
+    95	include_directories(SYSTEM ${LIBBCC_INCLUDE_DIRS})
+    96	
+    97	find_package(LibBpf REQUIRED)
+    98	include_directories(SYSTEM ${LIBBPF_INCLUDE_DIRS})
+    99	if("${LIBBPF_VERSION_MAJOR}.${LIBBPF_VERSION_MINOR}" VERSION_LESS 1.5)
+   100	  message(SEND_ERROR "bpftrace requires libbpf 1.5 or greater")
+   101	endif()
+   102	
+   103	find_package(LibElf REQUIRED)
+   104	include_directories(SYSTEM ${LIBELF_INCLUDE_DIRS})
+   105	
+   106	find_package(LibCereal REQUIRED)
+   107	include_directories(SYSTEM ${LIBCEREAL_INCLUDE_DIRS})
+   108	
+   109	find_package(BISON REQUIRED)
+   110	find_package(FLEX REQUIRED)
+   111	# `parser_class_name` is deprecated and generates warnings in bison >= 3.3.
+   112	# But `api.parser.class` is not supported in bison < 3.3. So we must inject
+   113	# the %define based on the bison version here.
+   114	# The counterexamples option is supported starting from bison v3.7.
+   115	if(${BISON_VERSION} VERSION_GREATER_EQUAL 3.7)
+   116	  set(BISON_FLAGS "-Dapi.parser.class={Parser} -Wcounterexamples")
+   117	elseif(${BISON_VERSION} VERSION_GREATER_EQUAL 3.3)
+   118	  set(BISON_FLAGS "-Dapi.parser.class={Parser}")
+   119	else()
+   120	  set(BISON_FLAGS "-Dparser_class_name={Parser}")
+   121	endif()
+   122	bison_target(bison_parser src/parser.yy ${CMAKE_BINARY_DIR}/parser.tab.cc COMPILE_FLAGS ${BISON_FLAGS} VERBOSE)
+   123	flex_target(flex_lexer src/lexer.l ${CMAKE_BINARY_DIR}/lex.yy.cc)
+   124	add_flex_bison_dependency(flex_lexer bison_parser)
+   125	add_library(parser STATIC ${BISON_bison_parser_OUTPUTS} ${FLEX_flex_lexer_OUTPUTS})
+   126	target_compile_options(parser PRIVATE "-w")
+   127	target_include_directories(parser PRIVATE src src/ast)
+   128	
+   129	include(CheckSymbolExists)
+   130	set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+   131	check_symbol_exists(name_to_handle_at "sys/types.h;sys/stat.h;fcntl.h" HAVE_NAME_TO_HANDLE_AT)
+   132	set(CMAKE_REQUIRED_DEFINITIONS)
+   133	
+   134	find_package(LibBfd)
+   135	find_package(LibOpcodes)
+   136	find_package(LibDw)
+   137	
+   138	if(ENABLE_SKB_OUTPUT)
+   139	  find_package(LibPcap)
+   140	endif()
+   141	
+   142	if(ENABLE_SYSTEMD)
+   143	  find_package(PkgConfig)
+   144	  pkg_check_modules(libsystemd REQUIRED IMPORTED_TARGET libsystemd)
+   145	endif()
+   146	
+   147	find_package(LibBlazesym)
+   148	
+   149	if(POLICY CMP0075)
+   150	  cmake_policy(SET CMP0075 NEW)
+   151	endif()
+   152	
+   153	if(${LIBBFD_FOUND} AND ${LIBOPCODES_FOUND})
+   154	  set(HAVE_BFD_DISASM TRUE)
+   155	endif()
+   156	
+   157	# Some users have multiple versions of llvm installed and would like to specify
+   158	# a specific llvm version.
+   159	if(${LLVM_REQUESTED_VERSION})
+   160	  find_package(LLVM ${LLVM_REQUESTED_VERSION} REQUIRED)
+   161	else()
+   162	  find_package(LLVM REQUIRED)
+   163	endif()
+   164	
+   165	set(MIN_LLVM_MAJOR 16)
+   166	if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+   167	  # We assume bpftrace is not being packaged when CMAKE_BUILD_TYPE=Debug.
+   168	  # So allow building with any LLVM version. This is purely for developers.
+   169	  # Packagers are highly discouraged from shipping bpftrace with untested LLVM
+   170	  # releases.
+   171	  set(MAX_LLVM_MAJOR 999)
+   172	else()
+   173	  set(MAX_LLVM_MAJOR 22)
+   174	endif()
+   175	
+   176	if((${LLVM_VERSION_MAJOR} VERSION_LESS ${MIN_LLVM_MAJOR}) OR (${LLVM_VERSION_MAJOR} VERSION_GREATER ${MAX_LLVM_MAJOR}))
+   177	  message(SEND_ERROR "Unsupported LLVM version found via ${LLVM_INCLUDE_DIRS}: ${LLVM_VERSION_MAJOR}")
+   178	  message(SEND_ERROR "Only versions between ${MIN_LLVM_MAJOR} and ${MAX_LLVM_MAJOR} are supported")
+   179	  message(SEND_ERROR "Specify an LLVM major version using LLVM_REQUESTED_VERSION=<major version>")
+   180	endif()
+   181	
+   182	message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}: ${LLVM_CMAKE_DIR}")
+   183	include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
+   184	add_definitions(${LLVM_DEFINITIONS})
+   185	
+   186	string(REGEX REPLACE "-rc[0-9]+" "" CLANG_VERSION ${LLVM_PACKAGE_VERSION})
+   187	
+   188	find_package(Clang ${CLANG_VERSION} REQUIRED)
+   189	include_directories(SYSTEM ${CLANG_INCLUDE_DIRS})
+   190	
+   191	# BPFtrace compile definitions
+   192	
+   193	set(BPFTRACE_FLAGS)
+   194	
+   195	if(HAVE_NAME_TO_HANDLE_AT)
+   196	  set(BPFTRACE_FLAGS "${BPFTRACE_FLAGS}" HAVE_NAME_TO_HANDLE_AT=1)
+   197	endif(HAVE_NAME_TO_HANDLE_AT)
+   198	
+   199	if(HAVE_BFD_DISASM)
+   200	  set(BPFTRACE_FLAGS "${BPFTRACE_FLAGS}" HAVE_BFD_DISASM)
+   201	  if(LIBBFD_DISASM_FOUR_ARGS_SIGNATURE)
+   202	    set(BPFTRACE_FLAGS "${BPFTRACE_FLAGS}" LIBBFD_DISASM_FOUR_ARGS_SIGNATURE)
+   203	  endif(LIBBFD_DISASM_FOUR_ARGS_SIGNATURE)
+   204	  if(LIBBFD_INIT_DISASM_INFO_FOUR_ARGS_SIGNATURE)
+   205	    set(BPFTRACE_FLAGS "${BPFTRACE_FLAGS}" LIBBFD_INIT_DISASM_INFO_FOUR_ARGS_SIGNATURE)
+    48	  lockdown.cpp
+    49	  tracepoint_format_parser.cpp
+    50	)
+    51	# So it's not "liblibbpftrace"
+    52	set_target_properties(libbpftrace PROPERTIES PREFIX "")
+    53	
+    54	add_executable(bpftrace
+    55	  main.cpp
+    56	  benchmark.cpp
+    57	)
+    58	
+    59	# TODO: Honor `STATIC_LINKING` properly.
+    60	if(LIBBLAZESYM_FOUND)
+    61	  target_include_directories(runtime PRIVATE ${LIBBLAZESYM_INCLUDE_DIRS})
+    62	  target_link_libraries(runtime ${LIBBLAZESYM_LIBRARIES})
+    63	endif()
+    64	
+    65	install(TARGETS bpftrace DESTINATION ${CMAKE_INSTALL_BINDIR})
+    66	target_compile_definitions(bpftrace PRIVATE ${BPFTRACE_FLAGS})
+    67	target_link_libraries(bpftrace libbpftrace)
+    68	
+    69	# compile definitions
+    70	
+    71	# This is run on every build to ensure the version string is always up-to-date
+    72	add_custom_target(version_h
+    73	  COMMAND ${CMAKE_COMMAND}
+    74	    -DVERSION_H_IN=${CMAKE_CURRENT_SOURCE_DIR}/version.h.in
+    75	    -DVERSION_H=${CMAKE_BINARY_DIR}/version.h
+    76	    -Dbpftrace_VERSION_MAJOR=${bpftrace_VERSION_MAJOR}
+    77	    -Dbpftrace_VERSION_MINOR=${bpftrace_VERSION_MINOR}
+    78	    -Dbpftrace_VERSION_PATCH=${bpftrace_VERSION_PATCH}
+    79	    -Dbpftrace_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+    80	    -P ${CMAKE_SOURCE_DIR}/cmake/Version.cmake
+    81	)
+    82	add_dependencies(runtime version_h)
+    83	add_dependencies(bpftrace version_h)
+    84	add_dependencies(libbpftrace version_h)
+    85	
+    86	target_compile_definitions(required_resources PRIVATE ${BPFTRACE_FLAGS})
+    87	target_compile_definitions(runtime PRIVATE ${BPFTRACE_FLAGS})
+    88	target_include_directories(libbpftrace PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+    89	target_compile_definitions(libbpftrace PRIVATE ${BPFTRACE_FLAGS})
+    90	
+    91	# Linking
+    92	if(STATIC_LINKING)
+    93	  target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")
+    94	endif(STATIC_LINKING)
+    95	
+    96	
+    97	target_link_libraries(runtime debugfs output tracefs util)
+    98	target_link_libraries(runtime ${LIBBPF_LIBRARIES} ${ZLIB_LIBRARIES})
+    99	target_link_libraries(libbpftrace parser runtime aot ast arch util cxxdemangler_llvm)
+   100	
+   101	if(LIBPCAP_FOUND)
+   102	  target_link_libraries(libbpftrace ${LIBPCAP_LIBRARIES})
+   103	endif(LIBPCAP_FOUND)
+   104	
+   105	if(HAVE_BFD_DISASM)
+   106	  if(STATIC_LINKING OR LIBBFD_STATIC)
+   107	    add_library(LIBBFD STATIC IMPORTED)
+   108	    set_property(TARGET LIBBFD PROPERTY IMPORTED_LOCATION ${LIBBFD_LIBRARIES})
+   109	    target_link_libraries(runtime LIBBFD)
+   110	    add_library(LIBOPCODES STATIC IMPORTED)
+   111	    set_property(TARGET LIBOPCODES PROPERTY IMPORTED_LOCATION ${LIBOPCODES_LIBRARIES})
+   112	    target_link_libraries(runtime LIBOPCODES)
+   113	    add_library(LIBIBERTY STATIC IMPORTED)
+   114	    set_property(TARGET LIBIBERTY PROPERTY IMPORTED_LOCATION ${LIBIBERTY_LIBRARIES})
+   115	    target_link_libraries(runtime LIBIBERTY)
+   116	
+   117	    add_library(LIBZSTD STATIC IMPORTED)
+   118	    if (LIBZSTD_LIBRARIES)
+   119	      set_property(TARGET LIBZSTD PROPERTY IMPORTED_LOCATION ${LIBZSTD_LIBRARIES})
+   120	      target_link_libraries(runtime LIBZSTD)
+   121	    endif(LIBZSTD_LIBRARIES)
+   122	
+   123	    add_library(LIBSFRAME STATIC IMPORTED)
+   124	    if (LIBSFRAME_LIBRARIES)
+   125	      set_property(TARGET LIBSFRAME PROPERTY IMPORTED_LOCATION ${LIBSFRAME_LIBRARIES})
+   126	      target_link_libraries(runtime LIBSFRAME)
+   127	    endif(LIBSFRAME_LIBRARIES)
+   128	  else()
+   129	    target_link_libraries(runtime ${LIBBFD_LIBRARIES})
+   130	    target_link_libraries(runtime ${LIBOPCODES_LIBRARIES})
+   131	  endif(STATIC_LINKING OR LIBBFD_STATIC)
+   132	endif(HAVE_BFD_DISASM)
+   133	
+   134	# Link to bcc libraries (without LLVM) if possible
+   135	if(LIBBCC_BPF_CONTAINS_RUNTIME)
+   136	  target_link_libraries(runtime ${LIBBCC_BPF_LIBRARIES})
+   137	else()
+   138	  target_link_libraries(runtime ${LIBBCC_LIBRARIES})
+   139	endif()
+   140	
+   141	if(STATIC_LINKING)
+   142	  # These are not part of the static libbcc so have to be added separate
+   143	  target_link_libraries(runtime ${LIBBCC_BPF_LIBRARIES})
+   144	  target_link_libraries(runtime ${LIBBPF_LIBRARIES})
+   145	  target_link_libraries(runtime ${LIBBCC_LOADER_LIBRARY_STATIC})
+   146	
+   147	  find_package(LibLzma)
+   148	  add_library(LIBLZMA STATIC IMPORTED)
+   149	  set_property(TARGET LIBLZMA PROPERTY IMPORTED_LOCATION ${LIBLZMA_LIBRARIES})
+   150	  target_link_libraries(runtime LIBLZMA)
+   151	
+   152	  add_library(LIBELF STATIC IMPORTED)
+   153	  set_property(TARGET LIBELF PROPERTY IMPORTED_LOCATION ${LIBELF_LIBRARIES})
+   154	  target_link_libraries(runtime LIBELF)
+   155	else()
+   156	  target_link_libraries(runtime ${LIBELF_LIBRARIES})
+   157	endif(STATIC_LINKING)
+   158	
+   159	if (LIBDW_FOUND)
+   160	  if(STATIC_LINKING)
+   161	    find_package(LibBz2)
+   162	    find_package(LibEbl)
+   163	
+   164	    add_library(LIBBZ2 STATIC IMPORTED)
+   165	    set_property(TARGET LIBBZ2 PROPERTY IMPORTED_LOCATION ${LIBBZ2_LIBRARIES})
+   166	
+   167	    add_library(LIBDW STATIC IMPORTED)
+   168	    set_property(TARGET LIBDW PROPERTY IMPORTED_LOCATION ${LIBDW_LIBRARIES})
+   169	
+   170	    set(LIBDW_LIBS LIBBZ2 LIBELF LIBLZMA)
+   171	
+   172	    if (${LIBEBL_FOUND})
+   173	      # libebl is not necessary on some systems (e.g. Alpine)
+   174	      add_library(LIBEBL STATIC IMPORTED)
+   175	      set_property(TARGET LIBEBL PROPERTY IMPORTED_LOCATION ${LIBEBL_LIBRARIES})
+   176	      set(LIBDW_LIBS ${LIBDW_LIBS} LIBEBL)
+   177	    endif()
+   178	
+   179	    target_link_libraries(LIBDW INTERFACE ${LIBDW_LIBS})
+   180	
+   181	    target_link_libraries(runtime LIBDW)
+   182	  else()
+   183	    target_link_libraries(runtime ${LIBDW_LIBRARIES})
+   184	  endif()
+   185	endif()
+   186	
+   187	# Support for std::filesystem
+   188	# GCC version <9 and Clang (all versions) require -lstdc++fs
+   189	if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR ${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS "9")
+   190	  target_link_libraries(runtime "stdc++fs")
+   191	  target_link_libraries(libbpftrace "stdc++fs")
+   192	endif()
+   193	
+   194	if (BUILD_ASAN)
+   195	  target_compile_options(bpftrace PUBLIC "-fsanitize=address")
+   196	  target_link_options(bpftrace PUBLIC "-fsanitize=address")
+   197	endif()
+   198	
+   199	if (STATIC_LINKING)
+   200	  if(ANDROID)
+   201	    target_link_libraries(libbpftrace "-Wl,-Bdynamic" "-ldl" "-lm" "-lz")
+   202	    target_link_libraries(runtime "-Wl,-Bdynamic" "-ldl" "-lm" "-lz")
+   203	  else()
+   204	    target_link_libraries(libbpftrace "-Wl,-Bdynamic" "-lrt" "-lpthread" "-ldl" "-lm")
+   205	    target_link_libraries(libbpftrace "-Wl,-Bstatic" "-lz")
+   206	    target_link_libraries(runtime "-Wl,-Bdynamic" "-lrt" "-lpthread" "-ldl" "-lm")
+   207	    target_link_libraries(runtime "-Wl,-Bstatic" "-lz")
+   208	  endif()
+   209	endif()
+   210	
+   211	if (ENABLE_SYSTEMD)
+   212	  target_link_libraries(runtime PkgConfig::libsystemd)
+   213	endif()
+   214	
+   215	unset(BPFTRACE)
+   216	
+   217	add_subdirectory(aot)
+   218	add_subdirectory(arch)
+     1	# - Try to find libbcc
+     2	# Once done this will define
+     3	#
+     4	#  LIBBCC_FOUND - system has libbcc
+     5	#  LIBBCC_INCLUDE_DIRS - the libbcc include directory
+     6	#  LIBBCC_LIBRARIES - Link these to use libbcc
+     7	#  LIBBCC_DEFINITIONS - Compiler switches required for using libbcc
+     8	#  LIBBCC_BPF_LIBRARIES - libbcc runtime library
+     9	#  LIBBCC_LOADER_LIBRARY_STATIC - libbcc helper static library (for static compilation)
+    10	#  LIBBCC_BPF_CONTAINS_RUNTIME - whether libbcc_bpf.so has been expanded to contain everything !llvm & !clang
+    11	#
+    12	# Note that the shared libbcc binary has libbpf and bcc_loader already compiled in but
+    13	# the static doesn't. So when creating a static build those have to be included too.
+    14	
+    15	if (LIBBCC_LIBRARIES AND LIBBCC_INCLUDE_DIRS)
+    16	  set (LibBcc_FIND_QUIETLY TRUE)
+    17	endif (LIBBCC_LIBRARIES AND LIBBCC_INCLUDE_DIRS)
+    18	
+    19	find_path (LIBBCC_INCLUDE_DIRS
+    20	  NAMES
+    21	    bcc/libbpf.h
+    22	  PATHS
+    23	    ENV CPATH
+    24	)
+    25	
+    26	find_library (LIBBCC_LIBRARIES
+    27	  NAMES
+    28	    bcc
+    29	  PATHS
+    30	    ENV LIBRARY_PATH
+    31	    ENV LD_LIBRARY_PATH
+    32	)
+    33	
+    34	find_library (LIBBCC_BPF_LIBRARIES
+    35	  NAMES
+    36	    bcc_bpf
+    37	  PATHS
+    38	    ENV LIBRARY_PATH
+    39	    ENV LD_LIBRARY_PATH)
+    40	
+    41	find_library (LIBBCC_LOADER_LIBRARY_STATIC
+    42	  NAMES
+    43	    bcc-loader-static
+    44	  PATHS
+    45	    ENV LIBRARY_PATH
+    46	    ENV LD_LIBRARY_PATH)
+    47	set(LIBBCC_ERROR_MESSAGE "Please install the bcc library package, which is required. Depending on your distro, it may be called bpfcclib or bcclib (Ubuntu), bcc-devel (Fedora), or something else. If unavailable, install bcc from source (github.com/iovisor/bcc).")
+    48	
+    49	include (FindPackageHandleStandardArgs)
+    50	
+    51	# handle the QUIETLY and REQUIRED arguments and set LIBBCC_FOUND to TRUE if all listed variables are TRUE
+    52	FIND_PACKAGE_HANDLE_STANDARD_ARGS(LibBcc ${LIBBCC_ERROR_MESSAGE}
+    53	  LIBBCC_LIBRARIES
+    54	  LIBBCC_INCLUDE_DIRS)
+    55	
+    56	# Check bpf_attach_kprobe signature
+    57	if(${LIBBCC_FOUND})
+    58	if(STATIC_LINKING)
+    59	  # libbcc.a is not statically linked with libbpf.a, libelf.a, libz.a, and liblzma.a.
+    60	  # If we do a static bpftrace build, we must link them in.
+    61	  find_package(LibBpf)
+    62	  find_package(LibElf)
+    63	  find_package(LibLzma)
+    64	
+    65	  if(ANDROID)
+    66	    # libz is part of the Android NDK; link against it dynamically
+    67	    SET(CMAKE_REQUIRED_LIBRARIES ${LIBBCC_BPF_LIBRARIES} ${LIBBPF_LIBRARIES} ${LIBELF_LIBRARIES} ${LIBLZMA_LIBRARIES})
+    68	    SET(CMAKE_REQUIRED_LINK_OPTIONS "-lz")
+    69	  else()
+    70	    find_package(LibZ)
+    71	    SET(CMAKE_REQUIRED_LIBRARIES ${LIBBCC_BPF_LIBRARIES} ${LIBBPF_LIBRARIES} ${LIBELF_LIBRARIES} ${LIBLZMA_LIBRARIES} ${LIBZ_LIBRARIES})
+    72	  endif()
+    73	else()
+    74	  SET(CMAKE_REQUIRED_LIBRARIES ${LIBBCC_LIBRARIES} ${LIBBPF_LIBRARIES})
+    75	endif()
+    76	
+    77	INCLUDE(CheckCXXSourceCompiles)
+    78	SET(CMAKE_REQUIRED_INCLUDES ${LIBBCC_INCLUDE_DIRS})
+    79	SET(CMAKE_REQUIRED_LIBRARIES ${LIBBCC_BPF_LIBRARIES})
+    80	include(CheckSymbolExists)
+    81	check_symbol_exists(bcc_usdt_foreach ${LIBBCC_INCLUDE_DIRS}/bcc/bcc_usdt.h LIBBCC_BPF_CONTAINS_RUNTIME)
+    82	SET(CMAKE_REQUIRED_LIBRARIES)
+    83	SET(CMAKE_REQUIRED_INCLUDES)
+    84	endif(${LIBBCC_FOUND})
+   490	%{_prefix}/bin/llvm-windres
+   491	%{_prefix}/bin/llvm-xray
+   492	%{_prefix}/bin/offload-arch
+   493	%{_prefix}/bin/opt
+   494	%{_prefix}/bin/run-clang-tidy
+   495	%{_prefix}/bin/sancov
+   496	%{_prefix}/bin/sanstats
+   497	%{_prefix}/bin/scan-build
+   498	%{_prefix}/bin/scan-build-py
+   499	%{_prefix}/bin/scan-view
+   500	%{_prefix}/bin/verify-uselistorder
+   501	%{_prefix}/bin/diagtool
+   502	%{_prefix}/bin/dsymutil
+   503	%{_prefix}/bin/hmaptool
+   504	%{_prefix}/bin/lldb-dap
+   505	%{_prefix}/bin/lldb-instr
+   506	%{_prefix}/bin/llvm-addr2line
+   507	%{_prefix}/bin/llvm-cfi-verify
+   508	%{_prefix}/bin/llvm-cxxmap
+   509	%{_prefix}/bin/llvm-exegesis
+   510	%{_prefix}/bin/llvm-ifs
+   511	%{_prefix}/bin/llvm-install-name-tool
+   512	%{_prefix}/bin/llvm-jitlink
+   513	%{_prefix}/bin/llvm-lipo
+   514	%{_prefix}/bin/llvm-mca
+   515	%{_prefix}/bin/llvm-objcopy
+   516	%{_prefix}/bin/llvm-rc
+   517	%{_prefix}/bin/llvm-reduce
+   518	%{_prefix}/bin/llvm-strip
+   519	%{_prefix}/bin/llvm-undname
+   520	%{_prefix}/bin/pp-trace
+   521	%{_prefix}/bin/reduce-chunk-list
+   522	%{_prefix}/bin/llvm-cas
+   523	%{_prefix}/bin/llvm-ir2vec
+   524	%{_prefix}/bin/llvm-offload-binary
+   525	%{_prefix}/bin/llvm-offload-wrapper
+   526	%{_prefix}/bin/yaml2macho-core
+   527	
+   528	%files devel
+   529	%manifest %{name}.manifest
+   530	%defattr(-,root,root,-)
+   531	%{_prefix}/include/lld/*
+   532	%{_prefix}/include/llvm/*
+   533	%{_prefix}/include/llvm-c/*
+   534	%{_prefix}/share/*
+   535	%{_libdir}/cmake/lld/*
+   536	%{_libdir}/cmake/llvm/*
+   537	%{_libdir}/libLTO*.so*
+   538	%{_libdir}/LLVMgold.so
+   539	%{_libdir}/libRemarks.so*
+   540	%{_prefix}/bin/amdgpu-arch
+   541	%{_prefix}/bin/nvptx-arch
+   542	
+   543	%files static-devel
+   544	%manifest %{name}.manifest
+   545	%defattr(-,root,root,-)
+   546	%{_libdir}/lib*.a
+   547	
+   548	%files -n libllvm
+   549	%manifest %{name}.manifest
+   550	%defattr(-,root,root,-)
+   551	%{_libdir}/libLLVM*.so*
+   552	
+   553	%files -n clang
+   554	%manifest %{name}.manifest
+   555	%defattr(-,root,root,-)
+   556	%{_prefix}/bin/clang
+   557	%{_prefix}/bin/clang++
+   558	%{_prefix}/bin/%{_host}-clang
+   559	%{_prefix}/bin/%{_host}-clang++
+   560	%{_prefix}/bin/clang-%{llvm_version}
+   561	%{_prefix}/bin/clang++-%{llvm_version}
+   562	%{_prefix}/bin/clang-apply-replacements
+   563	%{_prefix}/bin/clang-change-namespace
+    85	  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--version-script=%{SOURCE1} -Wl,-z,now --rtlib=libgcc" \
+    86	  -DCMAKE_EXE_LINKER_FLAGS="--rtlib=libgcc" \
+    87	  -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+    88	  -DCMAKE_INSTALL_LIBDIR=%{_lib} \
+    89	  -DLIBCXX_INSTALL_LIBRARY_DIR=%{_lib} \
+    90	  -DLIBCXXABI_INSTALL_LIBRARY_DIR=%{_lib} \
+    91	  -DLLVM_ENABLE_RUNTIMES="libcxxabi;libcxx" \
+    92	  -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+    93	  -DLLVM_INCLUDE_TESTS=OFF \
+    94	  -DLIBCXX_ENABLE_SHARED=ON \
+    95	  -DLIBCXX_ENABLE_STATIC=OFF \
+    96	  -DLIBCXX_INSTALL_SHARED_LIBRARY=ON \
+    97	  -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF \
+    98	  -DLIBCXX_CXX_ABI=libcxxabi \
+    99	  -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF \
+   100	  -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=ON \
+   101	  -DLIBCXX_USE_COMPILER_RT=OFF \
+   102	  -DLIBCXXABI_ENABLE_SHARED=ON \
+   103	  -DLIBCXXABI_ENABLE_STATIC=OFF \
+   104	  -DLIBCXXABI_INSTALL_SHARED_LIBRARY=ON \
+   105	  -DLIBCXXABI_INSTALL_STATIC_LIBRARY=OFF \
+   106	  -DLIBCXXABI_USE_COMPILER_RT=OFF \
+   107	  -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
+   108	  -DLIBCXXABI_ENABLE_STATIC_UNWINDER=OFF \
+   109	  -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=OFF \
+   110	  -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=OFF \
+   111	  -DLIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS=ON \
+   112	  -DLIBCXX_INCLUDE_TESTS=OFF \
+   125	  %{buildroot}%{_datadir}/doc/%{name}/SOURCE_PROVENANCE
+   126	
+   127	%files -n libc++
+   128	%manifest %{name}.manifest
+   129	%defattr(-,root,root,-)
+   130	%license libcxx/LICENSE.TXT
+   131	%{_libdir}/libc++.so.1*
+   132	
+   133	%files -n libc++-devel
+   134	%manifest %{name}.manifest
+   135	%defattr(-,root,root,-)
+   136	%{_includedir}/c++/v1
+   137	%{_libdir}/libc++.so
+   138	%{_libdir}/libc++experimental.a
+   139	%{_libdir}/libc++.modules.json
+   140	%{_datadir}/libc++/v1
+   141	%{_datadir}/doc/%{name}/SOURCE_PROVENANCE
+   142	
+   143	%files -n libc++abi
+   144	%manifest %{name}.manifest
+   145	%defattr(-,root,root,-)
+   146	%license libcxxabi/LICENSE.TXT
+   147	%{_libdir}/libc++abi.so.1*
+   148	
+   149	%files -n libc++abi-devel
+   150	%manifest %{name}.manifest
+   151	%defattr(-,root,root,-)
+   152	%{_libdir}/libc++abi.so
+   153	
+   154	%changelog
+   155	* Tue Aug 04 2026 Toolchain ABI Team <toolchain@example.invalid> 22.1.8-1

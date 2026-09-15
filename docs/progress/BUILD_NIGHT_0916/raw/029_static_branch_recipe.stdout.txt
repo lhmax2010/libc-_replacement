@@ -1,0 +1,161 @@
+Name:           bpftrace
+Version:        0.24.2
+Release:        1
+Summary:        High-level tracing language for Linux eBPF
+License:        Apache-2.0
+
+Source0:        %{name}-%{version}.tar.gz
+Source1001:     %{name}.manifest
+Source1002:     prebuilt.tar.gz
+
+ExclusiveArch:  armv7l aarch64
+
+BuildRequires:  gcc-c++
+BuildRequires:  bison
+BuildRequires:  flex
+BuildRequires:  cmake
+BuildRequires:  pkgconfig(libelf)
+BuildRequires:  zlib-devel
+BuildRequires:  zlib-devel-static
+BuildRequires:  llvm-devel
+BuildRequires:  llvm-static-devel
+BuildRequires:  clang-devel
+BuildRequires:  bcc-tools-devel
+BuildRequires:  bcc-tools-static
+BuildRequires:  libbpf-devel
+BuildRequires:  libbpf-static
+BuildRequires:  liblzma-static
+BuildRequires:  glibc-devel-static
+# for xxd command
+BuildRequires:  vim
+BuildRequires:  cereal-devel
+BuildRequires:  tar
+BuildRequires:  libomp
+
+%description
+BPFtrace is a high-level tracing language for Linux enhanced Berkeley Packet
+Filter (eBPF) available in recent Linux kernels (4.x). BPFtrace uses LLVM as a
+backend to compile scripts to BPF-bytecode and makes use of BCC for
+interacting with the Linux BPF system, as well as existing Linux tracing
+capabilities: kernel dynamic tracing (kprobes), user-level dynamic tracing
+(uprobes), and tracepoints. The BPFtrace language is inspired by awk and C,
+and predecessor tracers such as DTrace and SystemTap
+
+%package static
+Summary: High-level tracing language for Linux eBPF (static binary)
+
+%description static
+BPFtrace is a high-level tracing language for Linux enhanced Berkeley Packet
+Filter (eBPF) available in recent Linux kernels (4.x). BPFtrace uses LLVM as a
+backend to compile scripts to BPF-bytecode and makes use of BCC for
+interacting with the Linux BPF system, as well as existing Linux tracing
+capabilities: kernel dynamic tracing (kprobes), user-level dynamic tracing
+(uprobes), and tracepoints. The BPFtrace language is inspired by awk and C,
+and predecessor tracers such as DTrace and SystemTap
+
+This package is the bpftrace static binary.
+
+%prep
+%setup -q
+cp %{SOURCE1001} .
+tar xzvf %{SOURCE1002}
+
+%build
+%{?asan:/usr/bin/gcc-unforce-options}
+%{?ubsan:/usr/bin/gcc-unforce-options}
+
+mkdir build
+pushd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -DBUILD_TESTING=OFF -DSTATIC_LINKING=ON \
+         -DCMAKE_SKIP_RPATH:BOOL=ON -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix} \
+         -DLIBCLANG_STATIC_PATH:PATH=prebuilt%{_libdir}/libclang.a \
+         -DFORCE_STATIC_LIBBPF=ON
+%make_build
+popd
+
+%install
+pushd build
+%make_install
+popd
+
+# Remove libbpf.so dependency from bpftrace binary by using patchelf to force static linking
+if [ -f $RPM_BUILD_ROOT%{_bindir}/bpftrace ]; then
+  # Check if binary has libbpf.so dependency
+  if ldd $RPM_BUILD_ROOT%{_bindir}/bpftrace 2>/dev/null | grep -q "libbpf.so"; then
+    echo "Warning: bpftrace still has libbpf.so dependency, attempting to fix..."
+    # Use chrpath to remove RPATH if present
+    chrpath -d $RPM_BUILD_ROOT%{_bindir}/bpftrace 2>/dev/null || true
+  fi
+fi
+
+%files static
+%manifest %{name}.manifest
+%license LICENSE
+%{_bindir}/%{name}*
+%{_datadir}/*
+ CMakeLists.txt                            |  21 +++++++++-
+ packaging/bpftrace.spec                   |  66 ++++++++++++------------------
+ packaging/prebuilt-static-bpftrace.tar.gz | Bin 102216246 -> 0 bytes
+ packaging/prebuilt.tar.gz                 | Bin 0 -> 1100239 bytes
+ src/CMakeLists.txt                        |  16 +++++++-
+ src/ast/passes/clang_build.cpp            |   4 --
+ 6 files changed, 60 insertions(+), 47 deletions(-)
+    86	
+    87	cmake -DCMAKE_INSTALL_PREFIX=/usr -DINSTALL_CPP_EXAMPLES=%{install_cpp_examples} ${LLVM_SHARED_FLAG} -DREVISION="%{version}" -DCMAKE_USE_LIBBPF_PACKAGE:BOOL=TRUE .
+    88	make %{?jobs:-j%jobs}
+    89	
+    90	%install
+    91	make install DESTDIR=%{buildroot}
+    92	
+    93	%if %{without examples}
+    94	rm -rf %{buildroot}%{_datadir}/bcc
+    95	%endif
+    96	
+    97	%clean
+    98	rm -rf %{buildroot}
+    99	
+   100	%post -p /sbin/ldconfig
+   101	
+   102	%postun -p /sbin/ldconfig
+   103	
+   104	%files
+   105	%{_libdir}/libbcc_bpf.so*
+   106	%{_libdir}/libbcc.so.*
+   107	%{_prefix}/lib/python*/site-packages/bcc*
+   108	
+   109	%files devel
+   110	%{_includedir}/*
+   111	%{_libdir}/libbcc.so
+   112	%{_libdir}/pkgconfig/libbcc.pc
+   113	
+   114	%files static
+   115	%{_libdir}/libbcc.a
+   116	%{_libdir}/libbcc-loader-static.a
+   117	%{_libdir}/libbcc_bpf.a
+   118	
+   119	%if %{with examples}
+   120	%files examples
+   121	%{_datadir}/bcc/*
+/usr/include/bcc
+/usr/include/bcc/BPF.h
+/usr/include/bcc/BPFTable.h
+/usr/include/bcc/bcc_common.h
+/usr/include/bcc/bcc_elf.h
+/usr/include/bcc/bcc_exception.h
+/usr/include/bcc/bcc_proc.h
+/usr/include/bcc/bcc_syms.h
+/usr/include/bcc/bcc_usdt.h
+/usr/include/bcc/bcc_version.h
+/usr/include/bcc/bpf_module.h
+/usr/include/bcc/compat
+/usr/include/bcc/compat/linux
+/usr/include/bcc/file_desc.h
+/usr/include/bcc/libbpf.h
+/usr/include/bcc/perf_reader.h
+/usr/include/bcc/table_desc.h
+/usr/include/bcc/table_storage.h
+/usr/lib64/libbcc.so
+/usr/lib64/pkgconfig/libbcc.pc
+progress/BUILD_NIGHT_0916/aarch64_LLVMExports.cmake:81:  INTERFACE_LINK_LIBRARIES "rt;dl;m;ZLIB::ZLIB;LLVMDemangle"
+progress/BUILD_NIGHT_0916/aarch64_LLVMExports.cmake:833:  INTERFACE_LINK_LIBRARIES "LibXml2::LibXml2;LLVMSupport"
+progress/BUILD_NIGHT_0916/aarch64_LLVMConfig.cmake:205:  find_package(LibXml2)
