@@ -4,7 +4,7 @@
 | --- | --- | --- | --- | --- |
 | W1 libcxx 静态库 | COMPLETE_TARGET_BUILDS | 944 秒 | runtime-*.build.log、specs 副本 | x86_64 优先；原源码和构建根只读挂载 |
 | W2 libclang.a | COMPLETE_TARGET_BUILDS | 4601 秒 | libclang-*.build.log | Clang 官方 standalone 入口，复用已安装 LLVM；x86_64 静态目标 1059 步 |
-| W3 bpftrace-static | NOT_STARTED | 0 | 待补 | 依赖 W1/W2；候选不推包仓 |
+| W3 bpftrace-static | PARTIAL | 1561 秒 | bpftrace-*.build.log | 依赖 W1/W2 已就绪；候选不推包仓 |
 | W4 21.1.1 归档来源 | NOT_STARTED | 0 | 待补 | 编译器身份须独立核查 |
 
 项目分支 codex/r5-ehabi-diagnosis；候选仅 tmp/NIGHT_0917/。
@@ -43,3 +43,15 @@ libcxx-runtimes 原 spec 强制 Clang，与 _toolchain=gcc 的平台选择无关
 - libclang-x86_64-libcxx-build.events.jsonl: finished, 1059/1059, exitcode=0.
 - libclang-x86_64-gcc-build.events.jsonl: finished, 1060/1060, exitcode=0.
 - libclang-aarch64-libcxx-build.events.jsonl: running, 708/1059, exitcode=NOT_OBSERVED.
+
+### 进度记录 2026-09-16T00:20:37.250960+08:00
+
+- libclang-x86_64-libcxx-build.events.jsonl: finished, 1059/1059, exitcode=0.
+- libclang-x86_64-gcc-build.events.jsonl: finished, 1060/1060, exitcode=0.
+- libclang-aarch64-libcxx-build.events.jsonl: finished, 1059/1059, exitcode=0.
+
+### 进度记录 2026-09-16T00:36:20.988510+08:00
+
+- libclang-x86_64-libcxx-build.events.jsonl: finished, 1059/1059, exitcode=0.
+- libclang-x86_64-gcc-build.events.jsonl: finished, 1060/1060, exitcode=0.
+- libclang-aarch64-libcxx-build.events.jsonl: finished, 1059/1059, exitcode=0.

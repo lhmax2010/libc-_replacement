@@ -29,7 +29,7 @@ def probe():
         except subprocess.TimeoutExpired:
             os.killpg(test.pid,signal.SIGTERM); note('io_timeout',pid=test.pid); return False
     note('io_result',exitcode=rc); return rc==0
-reader=log.open(errors='replace'); target=0; next_check=500; last=0; heartbeat=0
+reader=log.open(errors='replace'); target=0; next_check=0; last=0; heartbeat=0
 try:
     while proc.poll() is None:
         if time.time()>=a.deadline: stop('stage deadline')
