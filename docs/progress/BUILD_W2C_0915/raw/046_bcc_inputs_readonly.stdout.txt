@@ -1,0 +1,155 @@
+[general]
+profile = profile.tizen_base_standard
+buildroot = /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2-default
+
+[profile.tizen_base_standard]
+repos = repo.local-llvm, repo.base-standard
+buildconf = /home/toolchain/development/libc++_replacement/codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/project_config
+
+[repo.local-llvm]
+url = /home/toolchain/development/libc++_replacement/tmp/BUILD_W2_0912/llvm-local-repo/
+
+[repo.base-standard]
+url = https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/
+[general]
+profile = profile.tizen_base_standard
+buildroot = /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2-default
+
+[profile.tizen_base_standard]
+repos = repo.base-standard, repo.libcxx-devel-support
+buildconf = /home/toolchain/development/libc++_replacement/codes/qb/TIZEN/Tizen/Tizen-Base-Toolchain/project_config
+
+[repo.base-standard]
+url = https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/
+
+[repo.libcxx-devel-support]
+url = /home/toolchain/development/libc++_replacement/tmp/BUILD_W2_0912/gcc-support-repo/
+aarch64
+armv7l
+repodata
+x86_64
+aarch64
+repodata
+x86_64
+%bcond_with examples
+
+%if %{defined _toolchain}
+%if %{toolchain_is clang}
+%define build_with_libcxx 1
+%endif
+%endif
+
+Name: bcc-tools
+Version: 0.35.0
+Release: 0
+Summary: Tools for BPF-based Linux IO analysis, networking, monitoring
+License: Apache-2.0
+Vendor: None (open source)
+Group: Development/Compilers
+URL: https://github.com/iovisor/bcc
+Source0: %{name}-%{version}.tar.gz
+Requires: /sbin/ldconfig
+BuildRequires: gcc >= 3.4
+BuildRequires: cmake python3
+BuildRequires: python3-setuptools
+BuildRequires: bison flex llvm-devel clang-devel libelf-devel
+BuildRequires: llvm-static-devel
+BuildRequires: pkgconfig(zlib)
+BuildRequires: pkgconfig(libbpf)
+BuildRequires: zip
+BuildRequires:  libomp
+%if 0%{?build_with_libcxx}
+BuildRequires:  libc++-devel
+BuildRequires:  libc++abi-devel
+%endif
+
+%description
+BCC is a toolkit for creating efficient kernel tracing and manipulation
+programs, and includes several useful tools and examples. It makes use
+of extended BPF (Berkeley Packet Filters), formally known as eBPF, a new
+feature that was first added to Linux 3.15. Much of what BCC uses
+requires Linux 4.1 and above.
+
+%package devel
+Summary: Developer package for BCC
+Requires: %{name} = %{version}-%{release}
+
+%description devel
+bcc tools - devel
+This package provides development libraries.
+
+%package static
+Summary: Static library for bcc development
+Requires: %{name}-devel = %{version}-%{release}
+
+%description static
+bcc tools - static
+This package provides development libraries.
+
+%if %{with examples}
+%package examples
+Summary: Example codes for BCC
+License: Apache-2.0
+
+%description examples
+This package provides example codes and documents.
+%endif
+
+%prep
+%setup -q -n bcc-tools-%{version}
+
+%build
+%if 0%{?build_with_libcxx}
+export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+%endif
+
+#DREVISION - number which will be put at back of the package name if repo isn't available
+LLVM_VERSION_MAJOR=$(llvm-config --version | cut -d. -f1)
+LLVM_SHARED_FLAG=
+if [ "${LLVM_VERSION_MAJOR}" -ge 22 ]; then
+    LLVM_SHARED_FLAG="-DENABLE_LLVM_SHARED=ON"
+fi
+
+%if %{with examples}
+%global install_cpp_examples ON
+%else
+%global install_cpp_examples OFF
+%endif
+
+cmake -DCMAKE_INSTALL_PREFIX=/usr -DINSTALL_CPP_EXAMPLES=%{install_cpp_examples} ${LLVM_SHARED_FLAG} -DREVISION="%{version}" -DCMAKE_USE_LIBBPF_PACKAGE:BOOL=TRUE .
+make %{?jobs:-j%jobs}
+
+%install
+make install DESTDIR=%{buildroot}
+
+%if %{without examples}
+rm -rf %{buildroot}%{_datadir}/bcc
+%endif
+
+%clean
+rm -rf %{buildroot}
+
+%post -p /sbin/ldconfig
+
+%postun -p /sbin/ldconfig
+
+%files
+%{_libdir}/libbcc_bpf.so*
+%{_libdir}/libbcc.so.*
+%{_prefix}/lib/python*/site-packages/bcc*
+
+%files devel
+%{_includedir}/*
+%{_libdir}/libbcc.so
+%{_libdir}/pkgconfig/libbcc.pc
+
+%files static
+%{_libdir}/libbcc.a
+%{_libdir}/libbcc-loader-static.a
+%{_libdir}/libbcc_bpf.a
+
+%if %{with examples}
+%files examples
+%{_datadir}/bcc/*
+%endif

@@ -1,0 +1,135 @@
+# 人工确认后的低资源续跑
+
+## 输入、授权与时间
+
+人工已允许在恢复后的 armv7l 构建树继续必要重编。上一轮 PATH 引发
+缓存重置的失误及证据完整保留在 REPORT.md，不删除、不改写成环境故障。
+
+本轮重新计时：2026-09-15 15:51:49 +08；截止 2026-09-16 03:51:49 +08。
+medium 门禁退出 0，load1=1.94，MemAvailable=9526832 KiB，磁盘可用
+320896336 KiB（raw/042–043）。
+
+## 启动前实测门禁
+
+在原构建树实际重跑导出 spec 的完整 CMake 配置参数，而非只阅读旧缓存。
+raw/045 和 build-w2c-confirm-config.build.log 保存原始输出与退出码。
+
+```text
+FIXED_PATH=/bin:/usr/bin:/sbin:/usr/sbin
+CMAKE_CXX_COMPILER:UNINITIALIZED=/bin/armv7l-tizen-linux-gnueabi-clang++
+clang version 22.1.8
+set(CMAKE_CXX_COMPILER_ID "Clang")
+set(CMAKE_CXX_COMPILER_VERSION "22.1.8")
+LLVM_ENABLE_LIBCXX:BOOL=ON
+COMPILER_AND_LIBCXX_CONFIG_CHECK=PASS
+```
+
+实际执行编译器 --version，并从 CMake 生成的 Ninja 命令中核对
+IVUsers.cpp 的编译行包含 `-stdlib=libc++`。完整行保留于配置日志。
+配置过程与内层退出码均为 0。`llvm_confirm_config.sh` 和 `llvm_resume.sh`
+都显式设置 `PATH=/bin:/usr/bin:/sbin:/usr/sbin`，不继承 shell 的 PATH。
+
+## 资源与监控
+
+使用 govern_resume.py，构建 jobs=1、nice=19、ionice class=3。
+MemoryMax 请求16536451072字节，实际 memory.max=16536449024字节，
+为总物理内存50%按页取整。raw/050 实际检查 scope 内各进程，均为
+nice19和I/O idle，内存限额生效；不只是命令行上写了选项。
+
+每500目标探测、30秒超时、冻结后等10分钟、最多3次暂停的逻辑保持不变。
+监控器增加的 CMake 缓存重置立即停止门禁保持启用。
+构建开始前脚本 SHA256 见 raw/044、047；初始 Ninja 日志快照为
+ninja_log_before_confirmed_resume.tsv。
+
+## 状态（进行中）
+
+LLVM armv7l 正在续建。bcc-tools armv7l 两格及 bpftrace 四格尚未开始。
+没有新包提交或包推送；已闭合的其他架构格不重跑。
+
+## 重编量与时间的统计口径
+
+将原801个实际完成目标的日志标签与本次完成标签逐项比对，而非采用
+dry-run 的7146推断实际工作量。对匹配的编译对象读取 Ninja 记录的
+任务开始/结束时间，给出重编任务耗时合计。
+该耗时不是“如果没有发生失误”的精确反事实墙钟差额；生成/链接目标、
+配置恢复和I/O暂停分别说明，不能混入一个假精确值。
+
+统计脚本：measure_rework.py；最终值待本次构建结束后生成。
+
+## 新增待确认事项（不阻断 LLVM/bcc-tools）
+
+bpftrace 的 Source1002 为预编译二进制 tar，spec 安装为 bpftrace-static，
+该子包 %post 还会复制覆盖 /usr/bin/bpftrace。编译参数不会重编这份资产。
+已询问本轮四格是否只覆盖源码构建的两个程序、将预编译子包单列未验证，
+或要求该子包也完成标准库核查才允许推送。当前只确认了 spec 机制，
+未据此推断这份预编译资产实际使用哪套标准库；证据见 raw/067。
+# 低资源续跑状态
+
+首轮开工：2026-09-15 15:08 +08；首轮已因缓存问题停下并交审。
+人工确认后重新开工：2026-09-15 15:51:49 +08；新截止：2026-09-16 03:51:49 +08。
+
+当前状态：进行中。人工已允许必要重编，实际 CMake/Clang/libc++ 检查通过，
+LLVM armv7l 正在构建；无新增包通过格，无包提交或包推送。
+续跑证据见 CONTINUATION_REPORT.md。以下保留首轮问题说明，不能视为问题未发生。
+
+## 资源控制
+
+- medium 门禁退出 0（raw/001）。构建 jobs=1、nice=19、ionice=3。
+- systemd 用户 scope 的 MemoryMax 请求值为总内存的一半：
+  16,536,451,072 字节；内核按页取整实际执行 16,536,449,024 字节。
+  已检查 GBS、chroot/QEMU、rpmbuild 后代位于同一 scope。
+- 每 500 个目标读写探测一次；超过 30 秒冻结整个构建 scope，等待
+  600 秒后复测；三次暂停后仍不通过则停止并保存断点。
+- freezer 用独立短任务校准，冻结时 cgroup.events 显示 frozen=1，
+  恢复后正常退出。systemctl 的 --no-block freeze 触发客户端断言，
+  已改为不带该参数；错误原文保留，不视为构建判据失败。
+
+## 续跑技术故障（必须保留在最终报告）
+
+原断点预检：801/7147 已完成，ninja -n 剩余 6346。
+直接 rpmbuild --noprep --noclean 保留构建树，但首次启动的 PATH
+使 CMake 将原 /bin 编译器路径换成 /usr/bin 路径，触发缓存重置。
+重置后 LLVM_ENABLE_LIBCXX=OFF、项目集合为空、构建类型为 Release，
+与目标不符；发现后立即冻结并停止该次构建。该次输出不得计入验证。
+已核查 scope inactive；日志保留 raw/011–017。
+
+已用原 /bin 编译器路径及导出 spec 的完整参数恢复构建配置，
+未删除原构建树。恢复后配置值自检通过，但 Ninja 预演为 7146 个
+待处理目标，不再是原来的 6346；详见 REPORT.md。未启动恢复后的编译。
+配置恢复脚本首试因 set -u 遇到原 RPM 脚本中的未定义 PKG_CONFIG_PATH
+而退出；改为与原脚本一致的 set -e，记录 raw/018–019。
+
+## 包门禁
+
+- bcc-tools：沿用 aarch64/x86_64 四格 PASS；armv7l 两格未开始。
+- bpftrace：前置尚未闭合，未实施；本轮按人工确认仅需 armv7l/aarch64
+  四格，x86_64 不在 ExclusiveArch 中，不列失败格。
+- 未连接或占用开发板。
+ M .gitignore
+ M docs/progress/R111/raw/053_archive_delivery_verification.stdout.txt
+ M docs/progress/R114/raw/048_archive_submission_evidence.stdout.txt
+?? README_UNPACK.md
+?? docs/hq/
+?? docs/plan/
+?? docs/progress/R111/raw/053_archive_delivery_verification.exitcode
+?? docs/progress/R111/raw/054_push_archived_verification.command.txt
+?? docs/progress/R111/raw/054_push_archived_verification.exitcode
+?? docs/progress/R111/raw/054_push_archived_verification.stderr.txt
+?? docs/progress/R111/raw/054_push_archived_verification.stdout.txt
+?? docs/progress/R111/raw/055_final_remote_verification.command.txt
+?? docs/progress/R111/raw/055_final_remote_verification.exitcode
+?? docs/progress/R111/raw/055_final_remote_verification.stderr.txt
+?? docs/progress/R111/raw/055_final_remote_verification.stdout.txt
+?? docs/progress/R114/raw/048_archive_submission_evidence.exitcode
+?? docs/progress/R114/raw/049_push_submission_evidence.command.txt
+?? docs/progress/R114/raw/049_push_submission_evidence.exitcode
+?? docs/progress/R114/raw/049_push_submission_evidence.stderr.txt
+?? docs/progress/R114/raw/049_push_submission_evidence.stdout.txt
+?? docs/progress/R114/raw/050_final_remote_verification.command.txt
+?? docs/progress/R114/raw/050_final_remote_verification.exitcode
+?? docs/progress/R114/raw/050_final_remote_verification.stderr.txt
+?? docs/progress/R114/raw/050_final_remote_verification.stdout.txt
+?? docs/progress/R115/
+?? tools/__pycache__/
+?? tools/tests/__pycache__/
+codex/r5-ehabi-diagnosis
