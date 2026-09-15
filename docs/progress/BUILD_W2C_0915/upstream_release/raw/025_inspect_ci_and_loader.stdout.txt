@@ -1,0 +1,236 @@
+     1	{
+     2	  description = "High-level tracing language for Linux";
+     3	
+     4	  inputs = {
+     5	    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+     6	    flake-utils.url = "github:numtide/flake-utils";
+     7	    nix-appimage = {
+     8	      # We're maintaining a fork b/c upstream is missing support for unstable
+     9	      # and has also dropped the following feature we depend on:
+    10	      #   https://github.com/ralismark/nix-appimage/pull/9
+    11	      #
+    12	      # Also b/c appimage-runtime (which nix-appimage depends on) has a bug
+    13	      # that's being fixed in:
+    14	      #   https://github.com/AppImageCrafters/appimage-runtime/pull/14
+    15	      url = "github:danobi/nix-appimage/74e44691812b4f220e84fd89895931ff4f904a03";
+    16	      # Avoid multiple copies of the same dependency
+    17	      inputs.nixpkgs.follows = "nixpkgs";
+    18	      inputs.flake-utils.follows = "flake-utils";
+    19	    };
+    20	    naersk = {
+    21	      url = "github:nix-community/naersk";
+    22	      # See above
+    23	      inputs.nixpkgs.follows = "nixpkgs";
+    24	    };
+    25	    blazesym = {
+    26	      url = "github:libbpf/blazesym";
+    27	      flake = false;
+    28	    };
+    29	  };
+    30	
+    31	  outputs = { self, nixpkgs, flake-utils, nix-appimage, naersk, blazesym, ... }:
+    32	    # This flake only supports 64-bit linux systems.
+    33	    # Note bpftrace support aarch32 but for simplicity we'll omit it for now.
+    34	    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ]
+    35	      (system:
+    36	        let
+    37	          pkgs = import nixpkgs { inherit system; };
+    38	
+    39	          # The default LLVM version is the latest supported release
+    40	          defaultLlvmVersion = 21;
+    41	
+    42	          # Override to specify the libbpf build we want. Note that we need to
+    43	          # capture a specific fix for linking which is not yet present in a
+    44	          # release. Once this fix is present in a release, then this should be
+    45	          # updated to the relevant version and we need to update the version
+    46	          # constraint in `CMakeLists.txt`.
+    47	          libbpfVersion = "5e3306e89a44cab09693ce4bfe50bfc0cb595941";
+    48	          libbpf = pkgs.libbpf.overrideAttrs {
+    49	            version = libbpfVersion;
+    50	            src = pkgs.fetchFromGitHub {
+    51	              owner = "libbpf";
+    52	              repo = "libbpf";
+    53	              rev = "${libbpfVersion}";
+    54	              # Nix uses the hash to do lookups in its cache as well as check that the
+    55	              # download from the internet hasn't changed. Therefore, it's necessary to
+    56	              # update the hash every time you update the source. Failure to update the
+    57	              # hash in a cached environment (warm development host and CI) will cause
+    58	              # nix to use the old source and then fail at some point in the future when
+    59	              # the stale cached content is evicted.
+    60	              #
+   130	          # Define lambda that returns a derivation for a kernel given kernel version and SHA as input
+   131	          mkKernel = kernelVersion: sha256:
+   132	            with pkgs;
+   133	            stdenv.mkDerivation rec {
+   134	              name = "kernel";
+   135	              version = kernelVersion;
+   136	              src = builtins.fetchurl {
+   137	                url = "https://github.com/bpftrace/kernels/releases/download/assets/linux-v${kernelVersion}.tar.zst";
+   138	                sha256 = sha256;
+   139	              };
+   140	              # Remove all other phases b/c we already have a prebuilt binary
+   141	              phases = [ "installPhase" ];
+   142	              installPhase = ''
+   143	                mkdir -p $out
+   144	                tar xvf $src --strip-components=1 -C $out
+   145	              '';
+   146	              nativeBuildInputs = [ gnutar zstd ];
+   147	            };
+   148	
+   149	          # Define lambda that returns a derivation for bpftrace given llvm version as input
+   150	          mkBpftrace =
+   151	            llvmVersion:
+   152	              pkgs.stdenv.mkDerivation {
+   153	                name = "bpftrace";
+   154	
+   155	                src = self;
+   156	
+   157	                nativeBuildInputs = [
+   158	                  pkgs.bison
+   159	                  pkgs.bpftools
+   160	                  pkgs."llvmPackages_${toString llvmVersion}".clang
+   161	                  pkgs.cmake
+   162	                  pkgs.flex
+   163	                  pkgs.gcc
+   164	                  pkgs.ninja
+   165	                  pkgs.pkg-config
+   166	                ];
+   167	
+   168	                buildInputs = [
+   169	                  bcc
+   170	                  blazesym_c
+   171	                  libbpf
+   172	                  pkgs.asciidoctor
+   173	                  pkgs.cereal
+   174	                  pkgs.elfutils
+   175	                  pkgs.gtest
+   176	                  pkgs.libbfd
+   177	                  pkgs.libelf
+   178	                  pkgs.libffi
+   179	                  pkgs.libopcodes
+   180	                  pkgs.libpcap
+   181	                  pkgs.systemdLibs
+   182	                  pkgs.libsystemtap
+   183	                  pkgs."llvmPackages_${toString llvmVersion}".libclang
+   184	                  pkgs."llvmPackages_${toString llvmVersion}".llvm
+   185	                  pkgs.pahole
+   186	                  pkgs.xxd
+   187	                  pkgs.zlib
+   188	                ];
+   189	
+   190	                # Release flags
+   265	                hardeningDisable = [ "all" ];
+   266	            };
+   267	
+   268	        in
+   269	        {
+   270	          # Set formatter for `nix fmt` command
+   271	          formatter = pkgs.nixpkgs-fmt;
+   272	
+   273	          # Define package set
+   274	          packages = rec {
+   275	            default = self.packages.${system}."bpftrace-llvm${toString defaultLlvmVersion}";
+   276	
+   277	            # Support matrix of llvm versions
+   278	            bpftrace-llvm21 = mkBpftrace 21;
+   279	            bpftrace-llvm20 = mkBpftrace 20;
+   280	            bpftrace-llvm19 = mkBpftrace 19;
+   281	            bpftrace-llvm18 = mkBpftrace 18;
+   282	            bpftrace-llvm17 = mkBpftrace 17;
+   283	            bpftrace-llvm16 = mkBpftrace 16;
+   284	
+   285	            # Self-contained static binary with all dependencies
+   286	            appimage = nix-appimage.mkappimage.${system} {
+   287	              drv = default;
+   288	              entrypoint = pkgs.lib.getExe default;
+   289	              name = default.name;
+   290	
+   291	              # Exclude the following groups to reduce appimage size:
+   292	              #
+   293	              # *.a: Static archives are not necessary at runtime
+   294	              # *.h: Header files are not necessary at runtime (some ARM headers for clang are large)
+   295	              # *.py, *.pyc, *.whl: bpftrace does not use python at runtime
+   296	              # libLLVM-11.so: Appimage uses the latest llvm we support, so not llvm11
+   297	              #
+   298	              # The basic process to identify large and useless files is to:
+   299	              #
+   300	              # ```
+   301	              # $ nix build .#appimage
+   302	              # $ ./result --appimage-mount
+   303	              # $ cd /tmp/.mount_resultXXXX    # in new terminal
+   304	              # $ fd -S +1m -l
+   305	              # ```
+   306	              exclude = [
+   307	                "... *.a"
+   308	                "... *.h"
+   309	                "... *.py"
+   310	                "... *.pyc"
+   311	                "... *.whl"
+   312	                "... libLLVM-11.so"
+   313	              ];
+   314	            };
+   315	
+     1	#!/bin/bash
+     2	#
+     3	# This script creates builds the official release artifacts.
+     4	#
+     5	# Usage examples:
+     6	#         ./scripts/create-assets.sh
+     7	#         OUT=../out-dir ./scripts/create-assets.sh
+     8	#
+     9	
+    10	ZSTDFLAGS="-19"
+    11	
+    12	function err() {
+    13	  echo >&2 "$(tput setaf 1)ERROR: $*$(tput sgr0)"
+    14	  exit 1
+    15	}
+    16	function info() {
+    17	  echo "$(tput bold)$*$(tput sgr0)"
+    18	}
+    19	
+    20	[[ -d tools ]] || err "'tools' directory not found, run script from bpftrace root dir"
+    21	[[ -d man ]] || err "'man' directory not found, run script from bpftrace root dir"
+    22	command -v zstd >/dev/null 2>&1 || err "zstd command not found, required for release"
+    23	command -v asciidoctor >/dev/null 2>&1 || err "asciidoctor not found, required for manpage"
+    24	
+    25	# Take value from environment if set, otherwise use a tempdir
+    26	: ${OUT:=$(mktemp -d)} || err "Failed to create temp dir"
+    27	TMP="${OUT}/tmp"
+    28	
+    29	echo "Using '$OUT' as assert dir"
+    30	
+    31	set -e
+    32	
+    33	info "Creating tools archive"
+    34	
+    35	# bit of copying to avoid confusing tar flags not great but works
+    36	mkdir -p "$TMP/bin"
+    37	
+    38	cp tools/*.bt "$TMP/bin"
+    39	chmod +x "$TMP/bin/"*.bt
+    40	tar --xz -cf "$OUT/tools.tar.xz" -C "$TMP/bin" "."
+    41	
+    42	info "Creating man archive"
+    43	mkdir -p "$TMP/share/man/man8"
+    44	cp man/man8/*.8 "$TMP/share//man/man8/"
+    45	gzip -n "$TMP/share/man/man8/"*
+    46	asciidoctor man/adoc/bpftrace.adoc  -b manpage -o - | gzip -n - > "$TMP/share/man/man8/bpftrace.8.gz"
+    47	tar --xz -cf "$OUT/man.tar.xz" -C "$TMP/share" man
+    48	
+    49	info "Building bpftrace appimage"
+    50	nix build .#appimage
+    51	
+    52	info "Creating bundle"
+    53	cp ./result "$OUT/bpftrace"
+    54	cp ./result "$TMP/bin/bpftrace"
+    55	tar -cf "$OUT/binary_tools_man-bundle.tar" -C "$TMP" bin share
+    56	zstd $ZSTDFLAGS -q -k "$OUT/binary_tools_man-bundle.tar"
+    57	xz "$OUT/binary_tools_man-bundle.tar"
+    58	
+    59	echo "All assets created in $OUT"
+    60	[[ -d "$TMP" ]] && rm -rf "$TMP"
+-rwxr-xr-x 1 root root  202816 Sep 13 06:17 tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-gcc/local/BUILD-ROOTS/scratch.aarch64.0/usr/lib64/ld-linux-aarch64.so.1
+-rwxr-xr-x 1 root root 1585304 Sep 13 06:17 tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-gcc/local/BUILD-ROOTS/scratch.aarch64.0/usr/lib64/libc.so.6
+-rwxr-xr-x 1 root root  591912 Sep 13 06:17 tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-gcc/local/BUILD-ROOTS/scratch.aarch64.0/usr/lib64/libm.so.6
+2026-09-15T21:18:01+08:00

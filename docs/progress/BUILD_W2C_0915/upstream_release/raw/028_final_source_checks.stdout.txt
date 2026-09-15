@@ -1,0 +1,88 @@
+bpftrace v0.24.2
+bpftrace v0.24.2
+3785365b768e29a2f6a31a54b5f1843b3fc64d974ecc7dd588197644d3514123  codes/R104/bpftrace/packaging/prebuilt-static-bpftrace.tar.gz
+f471f98b0d48dd769de286fbeaa8d7292230fbf316c95b06e03e2b631a86cdd3  codes/R104/bpftrace/packaging/bpftrace.spec
+f471f98b0d48dd769de286fbeaa8d7292230fbf316c95b06e03e2b631a86cdd3  progress/BUILD_W2C_0915/bpftrace_candidate.spec
+ M packaging/bpftrace.spec
+30e51cd665360f85b665308dc13ba27df0c5f739
+codex/r5-ehabi-diagnosis
+453026341c05e8c2e697ae9843b74e490ba99ccd
+     1	#!/bin/bash
+     2	#
+     3	# This script is the entrypoint for the static build.
+     4	#
+     5	# To make CI errors easier to reproduce locally, please limit
+     6	# this script to using only git, docker, and coreutils.
+     7	
+     8	set -eux
+     9	
+    10	IMAGE=bpftrace-static
+    11	cd $(git rev-parse --show-toplevel)
+    12	
+    13	# Build the base image
+    14	docker build -t "$IMAGE" -f docker/Dockerfile.static docker/
+    15	
+    16	# Perform bpftrace static build
+    17	docker run -v $(pwd):$(pwd) -w $(pwd) -i "$IMAGE" <<'EOF'
+    18	set -eux
+    19	BUILD_DIR=build-static
+    20	cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -DBUILD_TESTING=OFF -DSTATIC_LINKING=ON
+    21	make -C "$BUILD_DIR" -j$(nproc)
+    22	
+    23	# Basic smoke test
+    24	./"$BUILD_DIR"/src/bpftrace --help
+    25	
+    26	# Validate that it's a mostly static binary except for libc
+    27	EXPECTED="/lib/ld-musl-x86_64.so.1\nlibc.musl-x86_64.so.1"
+    28	GOT=$(ldd "$BUILD_DIR"/src/bpftrace | awk '{print $1}')
+    29	if ! diff <(echo -e "$EXPECTED") <(echo "$GOT"); then
+    30	  set +x
+    31	  >&2 echo "bpftrace incorrectly linked"
+    32	  exit 1
+    33	fi
+    34	EOF
+    70	
+    71	# This is run on every build to ensure the version string is always up-to-date
+    72	add_custom_target(version_h
+    73	  COMMAND ${CMAKE_COMMAND}
+    74	    -DVERSION_H_IN=${CMAKE_CURRENT_SOURCE_DIR}/version.h.in
+    75	    -DVERSION_H=${CMAKE_BINARY_DIR}/version.h
+    76	    -Dbpftrace_VERSION_MAJOR=${bpftrace_VERSION_MAJOR}
+    77	    -Dbpftrace_VERSION_MINOR=${bpftrace_VERSION_MINOR}
+    78	    -Dbpftrace_VERSION_PATCH=${bpftrace_VERSION_PATCH}
+    79	    -Dbpftrace_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+    80	    -P ${CMAKE_SOURCE_DIR}/cmake/Version.cmake
+    81	)
+    82	add_dependencies(runtime version_h)
+    83	add_dependencies(bpftrace version_h)
+    84	add_dependencies(libbpftrace version_h)
+    85	
+    86	target_compile_definitions(required_resources PRIVATE ${BPFTRACE_FLAGS})
+    87	target_compile_definitions(runtime PRIVATE ${BPFTRACE_FLAGS})
+    88	target_include_directories(libbpftrace PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+    89	target_compile_definitions(libbpftrace PRIVATE ${BPFTRACE_FLAGS})
+    90	
+    91	# Linking
+    92	if(STATIC_LINKING)
+    93	  target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")
+    94	endif(STATIC_LINKING)
+    95	
+    96	
+    97	target_link_libraries(runtime debugfs output tracefs util)
+    98	target_link_libraries(runtime ${LIBBPF_LIBRARIES} ${ZLIB_LIBRARIES})
+    99	target_link_libraries(libbpftrace parser runtime aot ast arch util cxxdemangler_llvm)
+   100	
+   101	if(LIBPCAP_FOUND)
+   102	  target_link_libraries(libbpftrace ${LIBPCAP_LIBRARIES})
+   103	endif(LIBPCAP_FOUND)
+   104	
+   105	if(HAVE_BFD_DISASM)
+   106	  if(STATIC_LINKING OR LIBBFD_STATIC)
+   107	    add_library(LIBBFD STATIC IMPORTED)
+   108	    set_property(TARGET LIBBFD PROPERTY IMPORTED_LOCATION ${LIBBFD_LIBRARIES})
+
+String dump of section '.comment':
+  [     0]  GCC: (GNU) 14.3.0
+
+5.3M	progress/BUILD_W2C_0915/upstream_release
+2026-09-15T21:19:17+08:00
