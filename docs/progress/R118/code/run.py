@@ -60,6 +60,7 @@ def main():
   if a.only and source.stem!=a.only:continue
   for lib in ['gnu','cxx']:
    flags,links,build,gnu_lib=configuration(a.arch,lib);exe=dest/(source.stem+'_'+lib)
+   if source.stem.startswith('cxx23_'):flags=['-std=c++23' if x=='-std=c++17' else x for x in flags]
    tag=f'{a.type}_{a.arch}_{source.stem}_{lib}'
    rc,out,raw=record(tag+'_build',['nice','-n','19','ionice','-c','3',CC,*flags,source,*links,'-ldl','-pthread','-o',exe])
    row=dict(test=source.stem,arch=a.arch,library=lib,source=str(source.relative_to(ROOT)),source_sha256=digest(source),build_exit=rc,build_raw=raw,runs=[])

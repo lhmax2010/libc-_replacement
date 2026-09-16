@@ -2,13 +2,13 @@
 
 ### 概要
 
-**PARTIAL。** C++17，x86_64 原生与 armv7l 物理板；两库身份、构建配置与 string 阶段相同。基本实例为 `vector<int>`，另独立覆盖 `vector<bool>` 与 `vector<string>`。不能由一种实例外推任意元素/分配器。
+**PARTIAL。** 基础为 C++17，另有表 C 的两项 C++23 补测；x86_64 原生与 armv7l 物理板。两库身份、构建配置与 string 阶段相同。基本实例为 `vector<int>`，另独立覆盖 `vector<bool>` 与 `vector<string>`。不能由一种实例外推任意元素/分配器。
 
 | 差异类别 | 本表项目数（不是差异总数） | 影响开发者 | 需改代码 |
 | --- | ---: | --- | --- |
 | 布局 | 3 | bool 特化不同；普通实例相同不代表混用受支持 | 跨库传对象时需处理 |
 | 行为 | 6 | 本轮多数语义相同，异常文字不同 | 不依赖诊断文字、增长策略 |
-| 接口 | 3 | 两类实现扩展单侧可用；bool.data 两侧均不可用 | 用扩展时要改 |
+| 接口 | 5 | 扩展单侧可用；部分 C++23 接口实现进度不同 | 用这些接口时可能要改 |
 | 跨 DSO | 2 组（1 组真实实测，1 组未观测） | 实际回调仍缺口 | 不能宣布支持 |
 
 完整数值见 [VALUES](VALUES.md)；[原生矩阵](x86_64_matrix.json)、[物理板矩阵](armv7l_matrix.json)。所有可运行格 5 次，具体内容断言；源码/命令/输出与 SHA 随附。平台源只读，未重编真实 provider。
@@ -43,8 +43,12 @@
 | debug/vector / __gnu_debug::vector | 编译，5 次 size=2、values=2,5 | 无此头，编译失败 | [gnu_extension](../code/vector/gnu_extension.cpp) | 两架构一致 | GNU 调试扩展，不是标准 vector 接口承诺 |
 | vector::__invariants | 无成员，编译失败 | 编译，5 次 invariants=1、size=2 | [libcxx_extension](../code/vector/libcxx_extension.cpp) | 两架构一致 | 不依赖实现内部式名称 |
 | vector<bool>::data | 编译失败 | 编译失败 | [bool_data_extension](../code/vector/bool_data_extension.cpp) | 两侧都失败；普通 vector<int>.data 是正向控制 | **不是单侧缺接口的差异** |
+| C++23 from_range 构造 | 无匹配构造，编译失败 | 编译运行 5 次 size=3、values=2,5,9 | [from_range](../code/vector/cxx23_from_range_extension.cpp) | 两架构，-std=c++23 | 标准接口实现覆盖差异，不是 LLVM 扩展 |
+| C++23 append_range | 无成员，编译失败 | 编译运行 5 次 size=3、values=2,5,9 | [append_range](../code/vector/cxx23_append_range_extension.cpp) | 两架构 | 本例可考虑以 insert(end,begin,end) 表达；复杂 range 需另核 |
 
 范围骨架相关行见 `R117_entities.tsv` / `R117_members.tsv`。未把“单侧解析命中”直接升级为缺 API；未逐重载穷尽接口差集。
+
+补测源码：LLVM vector.h:230、487；GNU stl_vector.h 对应类型未提供这两个接口。源码检索及同一程序的双侧编译分别保存，GNU 其他普通构造与 LLVM 新接口成功作为控制，不仅凭关键词零命中。
 
 ### D. 跨 DSO
 

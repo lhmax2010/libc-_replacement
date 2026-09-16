@@ -2,6 +2,85 @@
 
 每段为该格第 1 次；全部五次在对应 JSON 与 raw 中。MAP 地址仅从此比对附录剔除，原始输出完整保留。
 
+## armv7l / gnu / cxx23_append_range_extension
+
+编译退出码：1；[原始命令](../raw/string_armv7l_cxx23_append_range_extension_gnu_build.command.txt)
+
+## armv7l / cxx / cxx23_append_range_extension
+
+编译退出码：0；[原始命令](../raw/string_armv7l_cxx23_append_range_extension_cxx_build.command.txt)
+
+```text
+LIB=libc++ VERSION=220108 ABI=1
+CPLUSPLUS=202302 POINTER_BYTES=4
+appended size=3 hex=616263
+
+```
+
+重复次数：5；数值重复一致：True。
+
+## armv7l / gnu / cxx23_common
+
+编译退出码：0；[原始命令](../raw/string_armv7l_cxx23_common_gnu_build.command.txt)
+
+```text
+LIB=libstdc++ VERSION=14 DATE=20240801 CXX11_ABI=1
+CPLUSPLUS=202302 POINTER_BYTES=4
+contains_b=1 contains_z=0
+overwrite size=4 hex=74657374
+
+```
+
+重复次数：5；数值重复一致：True。
+
+## armv7l / cxx / cxx23_common
+
+编译退出码：0；[原始命令](../raw/string_armv7l_cxx23_common_cxx_build.command.txt)
+
+```text
+LIB=libc++ VERSION=220108 ABI=1
+CPLUSPLUS=202302 POINTER_BYTES=4
+contains_b=1 contains_z=0
+overwrite size=4 hex=74657374
+
+```
+
+重复次数：5；数值重复一致：True。
+
+## armv7l / gnu / cxx23_from_range_extension
+
+编译退出码：1；[原始命令](../raw/string_armv7l_cxx23_from_range_extension_gnu_build.command.txt)
+
+## armv7l / cxx / cxx23_from_range_extension
+
+编译退出码：0；[原始命令](../raw/string_armv7l_cxx23_from_range_extension_cxx_build.command.txt)
+
+```text
+LIB=libc++ VERSION=220108 ABI=1
+CPLUSPLUS=202302 POINTER_BYTES=4
+range size=3 hex=616263
+
+```
+
+重复次数：5；数值重复一致：True。
+
+## armv7l / gnu / gnu_overwrite_extension
+
+编译退出码：0；[原始命令](../raw/string_armv7l_gnu_overwrite_extension_gnu_build.command.txt)
+
+```text
+LIB=libstdc++ VERSION=14 DATE=20240801 CXX11_ABI=1
+CPLUSPLUS=201703 POINTER_BYTES=4
+overwrite size=3 hex=616263
+
+```
+
+重复次数：5；数值重复一致：True。
+
+## armv7l / cxx / gnu_overwrite_extension
+
+编译退出码：1；[原始命令](../raw/string_armv7l_gnu_overwrite_extension_cxx_build.command.txt)
+
 ## armv7l / gnu / libcxx_extension
 
 编译退出码：1；[原始命令](../raw/string_armv7l_libcxx_extension_gnu_build.command.txt)
@@ -405,6 +484,80 @@ n=40 capacity=47 allocations=1 inline=0 data_offset=-1
 ## armv7l / cxx / member_extension
 
 编译退出码：1；[原始命令](../raw/string_armv7l_member_extension_cxx_build.command.txt)
+
+## x86_64 / gnu / cxx23_append_range_extension
+
+编译退出码：1；[原始命令](../raw/string_x86_64_cxx23_append_range_extension_gnu_build.command.txt)
+
+## x86_64 / cxx / cxx23_append_range_extension
+
+编译退出码：0；[原始命令](../raw/string_x86_64_cxx23_append_range_extension_cxx_build.command.txt)
+
+```text
+LIB=libc++ VERSION=220108 ABI=1
+CPLUSPLUS=202302 POINTER_BYTES=8
+appended size=3 hex=616263
+```
+
+重复次数：5；数值重复一致：True。
+
+## x86_64 / gnu / cxx23_common
+
+编译退出码：0；[原始命令](../raw/string_x86_64_cxx23_common_gnu_build.command.txt)
+
+```text
+LIB=libstdc++ VERSION=14 DATE=20240801 CXX11_ABI=1
+CPLUSPLUS=202302 POINTER_BYTES=8
+contains_b=1 contains_z=0
+overwrite size=4 hex=74657374
+```
+
+重复次数：5；数值重复一致：True。
+
+## x86_64 / cxx / cxx23_common
+
+编译退出码：0；[原始命令](../raw/string_x86_64_cxx23_common_cxx_build.command.txt)
+
+```text
+LIB=libc++ VERSION=220108 ABI=1
+CPLUSPLUS=202302 POINTER_BYTES=8
+contains_b=1 contains_z=0
+overwrite size=4 hex=74657374
+```
+
+重复次数：5；数值重复一致：True。
+
+## x86_64 / gnu / cxx23_from_range_extension
+
+编译退出码：1；[原始命令](../raw/string_x86_64_cxx23_from_range_extension_gnu_build.command.txt)
+
+## x86_64 / cxx / cxx23_from_range_extension
+
+编译退出码：0；[原始命令](../raw/string_x86_64_cxx23_from_range_extension_cxx_build.command.txt)
+
+```text
+LIB=libc++ VERSION=220108 ABI=1
+CPLUSPLUS=202302 POINTER_BYTES=8
+range size=3 hex=616263
+```
+
+重复次数：5；数值重复一致：True。
+
+## x86_64 / gnu / gnu_overwrite_extension
+
+编译退出码：0；[原始命令](../raw/string_x86_64_gnu_overwrite_extension_gnu_build.command.txt)
+
+```text
+LIB=libstdc++ VERSION=14 DATE=20240801 CXX11_ABI=1
+CPLUSPLUS=201703 POINTER_BYTES=8
+overwrite size=3 hex=616263
+```
+
+重复次数：5；数值重复一致：True。
+
+## x86_64 / cxx / gnu_overwrite_extension
+
+编译退出码：1；[原始命令](../raw/string_x86_64_gnu_overwrite_extension_cxx_build.command.txt)
 
 ## x86_64 / gnu / libcxx_extension
 

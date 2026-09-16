@@ -2,13 +2,13 @@
 
 ### 概要
 
-**PARTIAL：两架构基础矩阵已实测；不能称“完整验证”。** 架构为 x86_64 原生与 armv7l 物理板；C++17，Clang 22 同一前端分别使用 GCC 14.2 头文件/运行库或平台 libc++ 22.1.8 实施版。GNU 使用 CXX11_ABI=1，未测旧字符串模式。平台 libc++ 不是未经修改的上游发行库，`raw/011_header_diff.stdout` 保存头文件与只读源码的差异（强制展开相关处理）；不把平台版本结果外推到所有构建。
+**PARTIAL：两架构基础矩阵已实测；不能称“完整验证”。** 架构为 x86_64 原生与 armv7l 物理板；基础为 C++17，另有表 C 明列的 C++23 接口补测。Clang 22.1.8 同一前端分别使用 GCC 14.2 头文件/运行库或平台 libc++ 22.1.8 实施版。GNU 使用 CXX11_ABI=1，未测旧字符串模式。平台 libc++ 不是未经修改的上游发行库，`../raw/011_header_diff.stdout` 保存头文件与只读源码的差异（强制展开相关处理）；不把平台版本结果外推到所有构建。
 
 | 差异类别 | 本表项目数（不是差异总数） | 影响开发者 | 需改代码 |
 | --- | ---: | --- | --- |
 | 布局 | 3 | 对象跨库直接传递受影响 | 有这种传递时需要处理 |
 | 行为 | 8 | 精确容量、hash、compare 数值、诊断文本依赖受影响 | 依赖这些细节时要改 |
-| 接口 | 3 | 扩展不通用 | 用扩展的代码要改 |
+| 接口 | 7 | 扩展不通用，部分 C++23 接口实现进度不同 | 用这些接口的代码可能要改 |
 | 跨 DSO | 3 个接口组，2 个源码包族 | 自然链接失败与同名入口崩溃须区分 | 不能靠只换运行库修正 |
 
 完整输入、数值与五次结果见 [VALUES](VALUES.md)、[x86_64](x86_64_matrix.json)、[armv7l](armv7l_matrix.json)。每个可运行格 5 次，断言语义与具体内容；差异值不要求在两库间相等。完整命令、输出、退出码在 `../raw/`；库身份见 [identities](identities.json)，源码快照与 SHA 见 [sources](sources.json)。
@@ -47,8 +47,12 @@
 | ext/vstring.h / __gnu_cxx::__vstring | 编译及 5 次运行通过，size=9，text=extension | 头文件不存在，编译失败 | [gnu_extension](../code/string/gnu_extension.cpp) | 两架构均实际编译；GNU 控制排除程序本身错误 | 这是 GNU 扩展类型，不是 std::string 的另一个标准成员 |
 | string::__invariants() | 无成员，编译失败 | 编译且 5 次返回 invariants=1、size=9 | [libcxx_extension](../code/string/libcxx_extension.cpp) | 两架构结果见独立 extension JSON | 实现内部式名称，不作为可移植接口依赖 |
 | __resize_default_init 假设 | 编译失败 | 编译失败 | [member_extension](../code/string/member_extension.cpp) | 两侧都失败，**不计差异** | 不凭印象列非标准成员；保留失败发现过程 |
+| C++23 from_range 构造 | 编译失败：有 from_range_t，但无匹配构造 | 编译且 5 次得到 `abc` | [from_range](../code/string/cxx23_from_range_extension.cpp) | 两架构，明确 -std=c++23 | **标准接口实现覆盖差异，不是 LLVM 扩展**；本批 array 可用迭代器对构造 |
+| C++23 append_range | 无成员，编译失败 | 编译且 5 次得到 `abc` | [append_range](../code/string/cxx23_append_range_extension.cpp) | 两架构 | array 场景可使用既有 append 迭代器对接口 |
+| C++23 contains / resize_and_overwrite | 编译运行，contains 为 1/0，改写结果 `test` | 同左 | [common](../code/string/cxx23_common.cpp) | 两架构每格 5 次 | 两侧都提供的控制，不计缺接口差异 |
+| C++17 __resize_and_overwrite | 编译运行，5 次 `abc` | 无成员，编译失败 | [GNU overwrite](../code/string/gnu_overwrite_extension.cpp) | 两架构；GNU 源码 1168–1171 明标非标准 | 不在可移植 C++17 代码中依赖此内部式扩展 |
 
-范围骨架的类型/成员抽取分别在 `R117_entities.tsv`、`R117_members.tsv`；单侧解析命中不是接口缺失证明。本轮没有逐重载、逐语言版本穷尽所有候选，C++20/23/26 条件接口仍属未覆盖。
+范围骨架的类型/成员抽取分别在 `R117_entities.tsv`、`R117_members.tsv`；单侧解析命中不是接口缺失证明。补测原始定位见 `../raw/091_standard_interface_candidates.stdout`（LLVM from_range:1186、append_range:1465；GNU contains:3515、resize_and_overwrite:1164）。本轮没有逐重载、逐语言版本穷尽所有候选，除上表列出的接口外，C++20/23/26 条件接口仍有缺项。
 
 ### D. 跨 DSO
 
@@ -65,6 +69,8 @@
 ### 开发者须知
 
 普通字符串内容操作的样本保持一致，不需要因为换库就重写所有字符串代码。要改的是对内部细节的依赖：用 `compare()<0` 而不是比较它是否等于 -1；别把库的 hash 值持久保存成跨设备标识；别依赖固定容量或异常消息。
+
+新接口也要看实现进度。即使都使用 C++23，本批 GNU 库也编不过 string 的 from_range 和 append_range 样本。简单数组输入可以改用已有的迭代器对接口；更复杂的范围需要单独核验，不能直接把所有范围类型都当成这种数组。
 
 最危险的是把字符串对象直接交给由另一套库编译的组件。同样叫 string，内部位置和大小却不同；函数名字能对上也不代表对象能读对。组件双方应使用匹配的对象约定，或把边界改成字符指针与长度，并在各自一侧构造、释放对象。带零字节的内容必须保留长度，不能仅靠 strlen。
 

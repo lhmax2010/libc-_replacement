@@ -2,6 +2,40 @@
 
 每段为该格第 1 次；全部五次在对应 JSON 与 raw 中。MAP 地址仅从此比对附录剔除，原始输出完整保留。
 
+## armv7l / gnu / cxx23_append_range_extension
+
+编译退出码：1；[原始命令](../raw/vector_armv7l_cxx23_append_range_extension_gnu_build.command.txt)
+
+## armv7l / cxx / cxx23_append_range_extension
+
+编译退出码：0；[原始命令](../raw/vector_armv7l_cxx23_append_range_extension_cxx_build.command.txt)
+
+```text
+LIB=libc++ VERSION=220108 ABI=1
+CPLUSPLUS=202302 POINTER_BYTES=4
+size=3 values=2,5,9
+
+```
+
+重复次数：5；数值重复一致：True。
+
+## armv7l / gnu / cxx23_from_range_extension
+
+编译退出码：1；[原始命令](../raw/vector_armv7l_cxx23_from_range_extension_gnu_build.command.txt)
+
+## armv7l / cxx / cxx23_from_range_extension
+
+编译退出码：0；[原始命令](../raw/vector_armv7l_cxx23_from_range_extension_cxx_build.command.txt)
+
+```text
+LIB=libc++ VERSION=220108 ABI=1
+CPLUSPLUS=202302 POINTER_BYTES=4
+size=3 values=2,5,9
+
+```
+
+重复次数：5；数值重复一致：True。
+
 ## armv7l / gnu / endpoints
 
 编译退出码：0；[原始命令](../raw/vector_armv7l_endpoints_gnu_build.command.txt)
@@ -310,6 +344,38 @@ LIB=libc++ VERSION=220108 ABI=1
 CPLUSPLUS=201703 POINTER_BYTES=4
 invariants=1 size=2
 
+```
+
+重复次数：5；数值重复一致：True。
+
+## x86_64 / gnu / cxx23_append_range_extension
+
+编译退出码：1；[原始命令](../raw/vector_x86_64_cxx23_append_range_extension_gnu_build.command.txt)
+
+## x86_64 / cxx / cxx23_append_range_extension
+
+编译退出码：0；[原始命令](../raw/vector_x86_64_cxx23_append_range_extension_cxx_build.command.txt)
+
+```text
+LIB=libc++ VERSION=220108 ABI=1
+CPLUSPLUS=202302 POINTER_BYTES=8
+size=3 values=2,5,9
+```
+
+重复次数：5；数值重复一致：True。
+
+## x86_64 / gnu / cxx23_from_range_extension
+
+编译退出码：1；[原始命令](../raw/vector_x86_64_cxx23_from_range_extension_gnu_build.command.txt)
+
+## x86_64 / cxx / cxx23_from_range_extension
+
+编译退出码：0；[原始命令](../raw/vector_x86_64_cxx23_from_range_extension_cxx_build.command.txt)
+
+```text
+LIB=libc++ VERSION=220108 ABI=1
+CPLUSPLUS=202302 POINTER_BYTES=8
+size=3 values=2,5,9
 ```
 
 重复次数：5；数值重复一致：True。

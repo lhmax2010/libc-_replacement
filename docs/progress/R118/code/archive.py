@@ -3,7 +3,8 @@
 import pathlib,json,hashlib,gzip,csv,re,sys
 from run import ROOT,OUT,CODE,configuration,digest,save
 typ=sys.argv[1]
-paths={'string':['codes/llvm/libcxx/include/string','codes/llvm/libcxx/include/__string/char_traits.h','codes/llvm/libcxx/include/__functional/hash.h','codes/gcc/libstdc++-v3/include/bits/basic_string.h','codes/gcc/libstdc++-v3/include/bits/basic_string.tcc','codes/gcc/libstdc++-v3/include/bits/char_traits.h'],'vector':['codes/llvm/libcxx/include/__vector/vector.h','codes/llvm/libcxx/include/__vector/vector_bool.h','codes/gcc/libstdc++-v3/include/bits/stl_vector.h','codes/gcc/libstdc++-v3/include/bits/vector.tcc','codes/gcc/libstdc++-v3/include/bits/stl_bvector.h'],'function':['codes/llvm/libcxx/include/__functional/function.h','codes/gcc/libstdc++-v3/include/bits/std_function.h']}[typ]
+paths={'string':['codes/llvm/libcxx/include/string','codes/llvm/libcxx/include/__string/char_traits.h','codes/llvm/libcxx/include/__functional/hash.h','codes/gcc/libstdc++-v3/include/bits/basic_string.h','codes/gcc/libstdc++-v3/include/bits/basic_string.tcc','codes/gcc/libstdc++-v3/include/bits/char_traits.h','codes/gcc/libstdc++-v3/include/ext/vstring.h'],'vector':['codes/llvm/libcxx/include/__vector/vector.h','codes/llvm/libcxx/include/__vector/vector_bool.h','codes/gcc/libstdc++-v3/include/bits/stl_vector.h','codes/gcc/libstdc++-v3/include/bits/vector.tcc','codes/gcc/libstdc++-v3/include/bits/stl_bvector.h','codes/gcc/libstdc++-v3/include/debug/vector'],'function':['codes/llvm/libcxx/include/__functional/function.h','codes/gcc/libstdc++-v3/include/bits/std_function.h']}[typ]
+paths += {'string':['codes/gcc/libstdc++-v3/libsupc++/hash_bytes.cc'], 'vector':[], 'function':['codes/llvm/libcxx/src/functional.cpp','codes/gcc/libstdc++-v3/src/c++11/functional.cc']}[typ]
 sources=[]
 for name in paths:
  p=ROOT/name;dest=OUT/typ/'source'/pathlib.Path(name).name
