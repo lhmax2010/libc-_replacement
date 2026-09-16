@@ -1,0 +1,96 @@
+  }
+
+  const SourceManager &SM;
+  APISet &API;
+  Preprocessor &PP;
+};
+
+class APIMacroCallback : public MacroCallback {
+public:
+  APIMacroCallback(const SourceManager &SM, APISet &API, Preprocessor &PP,
+                   LocationFileChecker &LCF)
+      : MacroCallback(SM, API, PP), LCF(LCF) {}
+
+  bool shouldMacroBeIncluded(const SourceLocation &MacroLoc,
+                             StringRef ModuleName) override {
+    // Do not include macros from external files
+    return LCF(MacroLoc);
+  }
+
+private:
+  LocationFileChecker &LCF;
+};
+
+std::unique_ptr<llvm::raw_pwrite_stream>
+createAdditionalSymbolGraphFile(CompilerInstance &CI, Twine BaseName) {
+  auto OutputDirectory = CI.getFrontendOpts().SymbolGraphOutputDir;
+
+  SmallString<256> FileName;
+  llvm::sys::path::append(FileName, OutputDirectory,
+                          BaseName + ".symbols.json");
+  return CI.createOutputFile(
+      FileName, /*Binary*/ false, /*RemoveFileOnSignal*/ false,
+      /*UseTemporary*/ true, /*CreateMissingDirectories*/ true);
+}
+
+} // namespace
+
+void ExtractAPIActionBase::ImplEndSourceFileAction(CompilerInstance &CI) {
+  SymbolGraphSerializerOption SerializationOptions;
+  SerializationOptions.Compact = !CI.getFrontendOpts().EmitPrettySymbolGraphs;
+  SerializationOptions.EmitSymbolLabelsForTesting =
+      CI.getFrontendOpts().EmitSymbolGraphSymbolLabelsForTesting;
+
+  if (CI.getFrontendOpts().EmitExtensionSymbolGraphs) {
+    auto ConstructOutputFile = [&CI](Twine BaseName) {
+      return createAdditionalSymbolGraphFile(CI, BaseName);
+    };
+
+    SymbolGraphSerializer::serializeWithExtensionGraphs(
+        *OS, *API, IgnoresList, ConstructOutputFile, SerializationOptions);
+  } else {
+    SymbolGraphSerializer::serializeMainSymbolGraph(*OS, *API, IgnoresList,
+                                                    SerializationOptions);
+  }
+
+  // Flush the stream and close the main output stream.
+  OS.reset();
+}
+
+std::unique_ptr<ASTConsumer>
+ExtractAPIAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
+  auto ProductName = CI.getFrontendOpts().ProductName;
+
+  if (CI.getFrontendOpts().SymbolGraphOutputDir.empty())
+    OS = CI.createDefaultOutputFile(/*Binary*/ false, InFile,
+                                    /*Extension*/ "symbols.json",
+                                    /*RemoveFileOnSignal*/ false,
+                                    /*CreateMissingDirectories*/ true);
+  else
+    OS = createAdditionalSymbolGraphFile(CI, ProductName);
+
+  if (!OS)
+    return nullptr;
+
+  // Now that we have enough information about the language options and the
+  // target triple, let's create the APISet before anyone uses it.
+  API = std::make_unique<APISet>(
+      CI.getTarget().getTriple(),
+      CI.getFrontendOpts().Inputs.back().getKind().getLanguage(), ProductName);
+
+  auto LCF = std::make_unique<LocationFileChecker>(CI, KnownInputFiles);
+
+  CI.getPreprocessor().addPPCallbacks(std::make_unique<APIMacroCallback>(
+      CI.getSourceManager(), *API, CI.getPreprocessor(), *LCF));
+
+  // Do not include location in anonymous decls.
+  PrintingPolicy Policy = CI.getASTContext().getPrintingPolicy();
+  Policy.AnonymousTagLocations = false;
+  CI.getASTContext().setPrintingPolicy(Policy);
+
+  if (!CI.getFrontendOpts().ExtractAPIIgnoresFileList.empty()) {
+    llvm::handleAllErrors(
+        APIIgnoresList::create(CI.getFrontendOpts().ExtractAPIIgnoresFileList,
+                               CI.getFileManager())
+            .moveInto(IgnoresList),
+        [&CI](const IgnoresFileNotFound &Err) {

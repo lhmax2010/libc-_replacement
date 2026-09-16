@@ -1,0 +1,107 @@
+-rw-rw-r-- 1 toolchain toolchain 49468 Aug 28 15:47 /home/toolchain/development/libc++_replacement/docs/hq/libcxx_issues_report_20260827.md
+1:# libc++ 迁移中已发现的兼容性问题
+10:## 写在前面
+24:| 问题一、问题二 | 机制、根因、影响面、修复、两种架构上的验证 —— **均有实测支撑** |
+25:| 问题三 | 机制有调用栈直接佐证，站点已逐一枚举，影响面已测量 —— **尚未处置** |
+26:| 问题四 | 已逐处定性 |
+27:| 问题五 | 其中一处（`shrink_to_fit`）**已实测** —— 两种架构 × 两套标准库各运行 20 次，两套库的结束方式在 armv7l 上不同；另一处（输出流的哨兵对象析构）**只有源码依据，未做动态验证** |
+28:| 问题六 | 所述情形在 32 位 ARM 上有调试记录佐证；**该模式在产品中的使用情况尚未检索** |
+29:| 问题七所列各项 | 已逐项识别并记录；**其实际影响范围尚待逐项确认** |
+34:## 问题一：线程取消会被 `catch (...)` 吞掉，导致进程终止
+36:### 先说明一个背景机制
+46:### 问题是什么
+64:### 两套标准库为何不同
+111:### 复现步骤
+169:# libstdc++
+172:# libc++
+187:### 根因
+191:### 影响面
+208:### 状态
+214:## 问题二：libc++ 标准库自身的内部代码没有防护
+216:### 问题是什么
+218:问题一说的是应用代码。但我们随后发现了更大的一块：**libc++ 自己的实现内部，也大量存在「捕获所有异常」的写法**，而 libstdc++ 在同样位置是有识别子句的。
+253:### 复现步骤
+288:我们同时验证了：**只做问题一的修复对这三个场景毫无作用**，因为那只是提供了「可识别的类型」，而 libc++ 的内部代码里根本没有使用它的地方。
+290:### 影响面
+296:与问题一的 10 个包相比，**范围大得多**。需要说明的是，这两个数来自源码特征扫描，是候选上界，实际受影响的包数只会更少。
+298:### 一个关键点
+302:### 状态
+308:## 问题三：libc++ 的 `noexcept` 标注使线程取消变成进程终止
+312:### 问题是什么
+346:### 两家的政策正好相反
+358:### 复现步骤
+406:### 根因：调用栈直接可见
+422:### 为什么 libstdc++ 不会
+431:### 我们把同类位置全部枚举了
+449:### 影响面
+455:### 触发需要同时满足的条件
+464:### 业界如何处理
+477:### 状态
+492:## 问题四：libstdc++ 有防护但 libc++ 没有对应位置的 8 处
+509:### 我们的处理方式
+517:**E7：并入问题三一起看。**
+519:libc++ 里对应的位置是 `condition_variable_any` 的一个内部辅助结构，它的析构函数被标注为不会抛异常，而析构过程中会调用使用方提供的加锁操作——**这正是问题三所说的那种情形**，只是入口不同。
+521:因此我们不把它当作单独一项，而是并入问题三，随那 5 处一起跟进。
+525:## 问题五：有两处防护补上也不会生效（两套库皆然）
+534:这与问题三是同一个机制——**不抛异常的标注挡在了前面**，只不过这两处在 libstdc++ 上也一样，所以不构成迁移带来的变化。（两套库结束进程的**方式**在 armv7l 上略有不同，详见下文实测。）
+536:### 如何自行确认
+623:# libstdc++
+626:# libc++
+652:### 我们的处理方式
+654:仍按与 libstdc++ 一致的形态实现了这两处防护。它们今天不会被走到，但一旦将来这两个「不抛异常」标注发生变化（问题三提到的 GCC 先例，正是移除了这类标注），防护就会开始生效。
+656:## 问题六：在一种特定情形下，取消流程不会经过任何防护
+662:### 我们观察到的
+668:### 这个观察的边界
+680:### 为什么仍然值得报告
+686:## 问题七：已识别、但影响范围尚待确认的其他差异
+688:### 这一节是什么
+702:### 哪些值得优先看
+716:### 全部 25 项
+718:其中 **D-01 已在前面详述** —— 它就是问题一与问题二所说的那一项：识别类型缺失、异常处理例程中缺少对应的映射、以及标准库内部缺少防护。这一项也是我们最早撞上、并且已经解决的那个。
+722:### 运行时与异常处理相关
+730:### 与 glibc 的耦合
+736:**这一类的优先级最高**——问题一与问题三都出自「libc++ 与 glibc 的组合」，而 libc++ 的主要使用平台未必使用 glibc。
+738:### 二进制接口与符号
+750:### 第三方与预编译组件
+761:### 构建与工具链
+769:### 平台与运行环境
+774:| D-22 | armv7l 的异常展开路径与 64 位完全独立 —— **问题一的一处缺陷正是只在 armv7l 上出现**，因此这一项已有实例 |
+780:## 我们的解决方案
+782:针对问题一与问题二，方案分三个部分。
+784:### 第一部分：修复运行时的两处缺陷
+822:### 第二部分：补齐缺失的识别类型
+830:### 第三部分：为 libc++ 自身补上防护
+845:### 贯穿方案的一条原则
+853:## 对产品的影响
+855:### 已经消除的
+857:问题一与问题二所述的崩溃，在应用了上述方案后不再发生。我们在 x86_64 与 armv7l 两种架构上验证了：线程取消、线程主动退出、真实异常不被误判、非终止的外来异常行为不变、多线程同时终止、终止与异常并发、重复终止等场景，均与 libstdc++ 表现一致。
+859:### 仍然存在的
+861:**问题三所述的 5 处，加上问题四并入的 1 处（E7），共 6 处。** 触发需要同时满足四个条件，且在源码扫描范围内我们没有找到能够闭合证明其会发生的包。但**外部组件发起的终止是扫描的盲区**，因此不能断言它不会发生。
+867:### 尚未验证的
+871:- 问题七所列各项的实际影响范围。
+875:## 附：关于复现用例
+docs/progress/R74/raw/051_sdb_devices.stderr
+docs/progress/R74/raw/003_agents_files.txt
+docs/progress/R74/raw/081_r66_25_items.txt
+docs/progress/R74/raw/029_compile_script_bash_n.stdout
+docs/progress/R74/raw/035_libcxx_binary_ldd.stdout
+docs/progress/R74/raw/088_fetch_script_bash_n.stderr
+docs/progress/R74/raw/056_arm_driver_ps.txt
+docs/progress/R74/raw/079_r68_counts.txt
+docs/progress/R74/raw/arm_build/problem3.libstdcxx.link.log
+docs/progress/R74/raw/arm_build/sha256.txt
+docs/progress/R74/raw/arm_build/matrix.tsv
+docs/progress/R74/raw/arm_build/problem3.libcxx.compile.log
+docs/progress/R74/raw/arm_build/problem2.libcxx.link.log
+docs/progress/R74/raw/arm_build/problem1.libcxx.link.log
+docs/progress/R74/raw/arm_build/problem1.libcxx.compile.log
+docs/progress/R74/raw/arm_build/problem3.libcxx.link.log
+docs/progress/R74/raw/arm_build/problem2.libstdcxx.link.log
+docs/progress/R74/raw/arm_build/problem1.libstdcxx.compile.log
+docs/progress/R74/raw/arm_build/problem2.libstdcxx.compile.log
+docs/progress/R74/raw/arm_build/problem3.libstdcxx.compile.log
+docs/progress/R74/raw/arm_build/file_identity.txt
+docs/progress/R74/raw/arm_build/problem2.libcxx.compile.log
+docs/progress/R74/raw/arm_build/problem1.libstdcxx.link.log
+docs/progress/R74/raw/057_board_cleanup_manifest.stderr
+docs/progress/R74/raw/012_latest_report_checks.txt

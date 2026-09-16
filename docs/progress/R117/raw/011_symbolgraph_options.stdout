@@ -1,0 +1,70 @@
+231:  bool shouldDeclBeIncluded(const Decl *D) const {
+253:class WrappingExtractAPIConsumer : public ASTConsumer {
+255:  WrappingExtractAPIConsumer(ASTContext &Context, APISet &API)
+395:ExtractAPIAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
+502:WrappingExtractAPIAction::CreateASTConsumer(CompilerInstance &CI,
+504:  auto OtherConsumer = WrapperFrontendAction::CreateASTConsumer(CI, InFile);
+508:  CreatedASTConsumer = true;
+540:  auto WrappingConsumer =
+541:      std::make_unique<WrappingExtractAPIConsumer>(CI.getASTContext(), *API);
+544:  Consumers.push_back(std::move(WrappingConsumer));
+549:void WrappingExtractAPIAction::EndSourceFileAction() {
+551:  WrapperFrontendAction::EndSourceFileAction();
+553:  if (CreatedASTConsumer) {
+  --emit-extension-symbol-graphs
+  -emit-symbol-graph      Generate Extract API information as a side effect of compilation.
+  --extract-api-ignores=<value>
+  -extract-api            Extract API information
+  --symbol-graph-dir=<value>
+  if (!OtherConsumer)
+    return nullptr;
+
+  CreatedASTConsumer = true;
+
+  ProductName = CI.getFrontendOpts().ProductName;
+  auto InputFilename = llvm::sys::path::filename(InFile);
+  OS = createAdditionalSymbolGraphFile(CI, InputFilename);
+
+  // Now that we have enough information about the language options and the
+  // target triple, let's create the APISet before anyone uses it.
+  API = std::make_unique<APISet>(
+      CI.getTarget().getTriple(),
+      CI.getFrontendOpts().Inputs.back().getKind().getLanguage(), ProductName);
+
+  CI.getPreprocessor().addPPCallbacks(std::make_unique<MacroCallback>(
+      CI.getSourceManager(), *API, CI.getPreprocessor()));
+
+  // Do not include location in anonymous decls.
+  PrintingPolicy Policy = CI.getASTContext().getPrintingPolicy();
+  Policy.AnonymousTagLocations = false;
+  CI.getASTContext().setPrintingPolicy(Policy);
+
+  if (!CI.getFrontendOpts().ExtractAPIIgnoresFileList.empty()) {
+    llvm::handleAllErrors(
+        APIIgnoresList::create(CI.getFrontendOpts().ExtractAPIIgnoresFileList,
+                               CI.getFileManager())
+            .moveInto(IgnoresList),
+        [&CI](const IgnoresFileNotFound &Err) {
+          CI.getDiagnostics().Report(
+              diag::err_extract_api_ignores_file_not_found)
+              << Err.Path;
+        });
+  }
+
+  auto WrappingConsumer =
+      std::make_unique<WrappingExtractAPIConsumer>(CI.getASTContext(), *API);
+  std::vector<std::unique_ptr<ASTConsumer>> Consumers;
+  Consumers.push_back(std::move(OtherConsumer));
+  Consumers.push_back(std::move(WrappingConsumer));
+
+  return std::make_unique<MultiplexConsumer>(std::move(Consumers));
+}
+
+void WrappingExtractAPIAction::EndSourceFileAction() {
+  // Invoke wrapped action's method.
+  WrapperFrontendAction::EndSourceFileAction();
+
+  if (CreatedASTConsumer) {
+    ImplEndSourceFileAction(getCompilerInstance());
+  }
+}

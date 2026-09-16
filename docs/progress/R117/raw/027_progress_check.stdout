@@ -1,0 +1,106 @@
+    "hit_files": 2,
+    "token_hits": 7,
+    "using_namespace_files": 1,
+    "errors": 0,
+    "status": "SCANNED_SELECTED_EXTENSIONS"
+  },
+  {
+    "source_rpm": "elfutils-0.189-1.15.src.rpm",
+    "extraction_status": "EXTRACTED_OK",
+    "root": "/home/toolchain/development/libc++_replacement/tmp/corpus/extracted/elfutils-0.189-1.15.src.rpm",
+    "eligible_files": 730,
+    "read_files": 730,
+    "bytes": 4479816,
+    "hit_files": 2,
+    "token_hits": 7,
+    "using_namespace_files": 1,
+    "errors": 0,
+    "status": "SCANNED_SELECTED_EXTENSIONS"
+  }
+]
+ 533564       04:49  0.0 10888 /home/toolchain/.pyenv/versions/3.10.12/bin/python3 docs/progress/API_0911/record.py docs/progress/R117/raw/017_platform_scan bash tmp/R117/limit.sh python3 tmp/R117/scan_platform.py
+ 533620       04:49 34.0 89404 python3 tmp/R117/scan_platform.py
+ 535296       03:03  0.0 10892 /home/toolchain/.pyenv/versions/3.10.12/bin/python3 docs/progress/API_0911/record.py docs/progress/R117/raw/019_headers bash tmp/R117/limit.sh python3 -u tmp/R117/index_headers.py
+ 535368       03:03 85.5 161080 python3 -u tmp/R117/index_headers.py
+elfutils-0.189-1.13.src.rpm	0	SCANNED	0
+elfutils-0.189-1.15.src.rpm	0	SCANNED	0
+emulator-kernel-6.18.2.tizen-0.src.rpm	0	SCANNED	0
+emuld-0.11.3-0.src.rpm	1	SCANNED	0
+enlightenment-0.20.0-tz11_2.26.0.src.rpm	1	SCANNED	0
+esd-1.1.5-1.src.rpm	1	SCANNED	0
+---
+
+## 问题四：libstdc++ 有防护但 libc++ 没有对应位置的 8 处
+
+在比对两套库的防护位置时，有 8 处在 libc++ 中找不到对应的地方。逐处说明如下：
+
+| 编号 | libstdc++ 位置 | 是什么 | libc++ 的情况 |
+|---|---|---|---|
+| E1 | `include/experimental/executor:1734` | 实验性执行器的 `use_future` 完成处理 | **libc++ 22.1.8 不提供这个实验性扩展** |
+| E2 | `include/experimental/executor:1794` | 同上，执行器的 dispatch 路径 | 同上 |
+| E3 | `include/experimental/executor:1812` | 同上，执行器的 post 路径 | 同上 |
+| E4 | `include/experimental/executor:1830` | 同上，执行器的 defer 路径 | 同上 |
+| E5 | `include/ext/vstring.tcc:605` | GNU 自有字符串扩展的流提取 | **libc++ 不提供这个 GNU 扩展** |
+| E6 | `include/ext/vstring.tcc:681` | 同上的 `getline` | 同上 |
+| E7 | `include/std/condition_variable:268` | `condition_variable_any` 的作用域解锁守卫：活动异常期间重新加锁，重加锁若遇强制展开则放行 | **libc++ 有结构等价的位置**，但其析构函数是 `noexcept`，且直接调用用户提供的加锁操作 |
+| E8 | `include/tr2/dynamic_bitset.tcc:255` | TR2 动态位集扩展的流提取 | **libc++ 不提供这个扩展** |
+
+**结论**：8 处中有 7 处（E1–E6、E8）是 libstdc++ 独有的扩展功能，libc++ 根本不提供这些设施，因此「没有对应位置」是字面意义上的，不是遗漏。**只有 E7 在 libc++ 中有结构等价的位置。**
+
+### 我们的处理方式
+
+**那 7 处：不做处理。**
+
+这些是 libstdc++ 的自有扩展，不属于标准。代码如果用了它们，迁移到 libc++ 时**在编译阶段就会报错**——因为设施本身不存在，而不是「能编过但行为不对」。也就是说，这类问题不会藏到运行时才暴露，而是迁移时立刻可见，届时由使用方改用标准设施即可。
+
+平台上是否有软件包在使用这三类扩展（实验性执行器、GNU 字符串扩展、TR2 位集），我们尚未专门统计——但由于它们在迁移时会直接编译失败，不存在遗漏到运行时的风险，因此我们把它留给迁移过程自然暴露。
+
+**E7：并入问题三一起看。**
+
+libc++ 里对应的位置是 `condition_variable_any` 的一个内部辅助结构，它的析构函数被标注为不会抛异常，而析构过程中会调用使用方提供的加锁操作——**这正是问题三所说的那种情形**，只是入口不同。
+
+因此我们不把它当作单独一项，而是并入问题三，随那 5 处一起跟进。
+
+---
+
+## 问题五：有两处防护补上也不会生效（两套库皆然）
+
+这一项**不是两套库的差异**——libstdc++ 在对应位置同样带有这个标注，同样无法完成干净的取消。我们把它列出来，是因为它解释了一个容易让人困惑的现象：**有些位置即使写了防护，线程取消时也永远走不到那里。**
+
+| 位置 | 原因 |
+|---|---|
+| `basic_string::shrink_to_fit` | 该函数标注为不抛异常。线程取消穿过这个边界时，按语言规定当场终止进程，根本到不了函数内部的防护 |
+| `basic_ostream<char>::sentry::~sentry()` | 析构函数隐式带有同样的标注，同理 |
+
+这与问题三是同一个机制——**不抛异常的标注挡在了前面**，只不过这两处在 libstdc++ 上也一样，所以不构成迁移带来的变化。（两套库结束进程的**方式**在 armv7l 上略有不同，详见下文实测。）
+
+## 问题六：在一种特定情形下，取消流程不会经过任何防护
+
+前面几项讨论的都是默认的终止模式——取消请求送到线程后，会等到线程执行到一个「取消点」才真正生效。
+
+还有另一种模式（异步取消）：取消请求可以在**任意一条指令处**生效，不必等到取消点。
+
+### 我们观察到的
+
+在 armv7l 上，我们用一个特意构造的场景做过观测：线程停在一个**不含任何取消点的忙等循环**中，此时对它发起异步取消。调试器记录显示——取消流程**确实启动了**，但**全程没有调用 C++ 的异常处理例程**，因此写在那里的防护代码一次都没有执行；线程最终经由底层的收尾路径退出。
+
+同一场景改用默认模式（在循环中放一个取消点）后，异常处理例程被正常调用，防护按预期生效。
+
+### 这个观察的边界
+
+需要说清楚我们**没有**验证的部分：
+
+- 只在 **armv7l** 上做过调试器级的确认，其他架构未做同样的观测；
+- 只覆盖了**一种落点**——异步取消打断一个不含取消点的忙等循环。异步取消可以落在任意指令处，不同落点的行为可能不同；
+- **两套标准库的对照做到了什么程度，需要分开说**：
+  - **运行结果的对照做过**——同一场景下 libstdc++ 与 libc++ **表现一致，都没能完成干净的取消**；
+  - **但「为什么会这样」只在 libc++ 一侧用调试器确认过**。libstdc++ 那一侧我们只看到结果相同，没有验证它内部是否也是「异常处理例程未被调用」这同一个原因。
+
+因此准确的说法是：**在上述特定情形下，两套标准库都没能完成干净的取消；其中 libc++ 一侧已确认原因是防护未被执行**。至于异步取消模式是否普遍如此，我们目前没有依据下结论。
+
+### 为什么仍然值得报告
+
+因为它指向一个实际的可能性：**如果产品中有组件使用异步取消模式，本方案的防护未必对它有效**。这一点无论最终结论如何，都值得在产品侧知晓。
+
+**我们会检索异步取消模式在产品中的实际使用情况**，并在需要时补做其他架构与落点的观测。
+
