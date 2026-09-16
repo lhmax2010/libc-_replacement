@@ -1,0 +1,361 @@
+     1	/**
+     2	 * @file  ewk_cookie_parser
+     3	 * @brief EWK Cookie Parser
+     4	 *
+     5	 * This class exposes the Chromium cookie parser. It allows
+     6	 * for ewk components to handle cookie-alike structures without
+     7	 * re-inventing the wheel.
+     8	 *
+     9	 * Copyright 2020 by Samsung Electronics, Inc.,
+    10	 *
+    11	 * This software is the confidential and proprietary information
+    12	 * of Samsung Electronics, Inc. ("Confidential Information").  You
+    13	 * shall not disclose such Confidential Information and shall use
+    14	 * it only in accordance with the terms of the license agreement
+    15	 * you entered into with Samsung.
+    16	 */
+    17	
+    18	#include "ewk_cookie_parser.h"
+    19	
+    20	#include <ctime>
+    21	#include <string>
+    22	#include "net/cookies/cookie_util.h"
+    23	#include "net/cookies/parsed_cookie.h"
+    24	#include "private/ewk_private.h"
+    25	
+    26	#ifdef __cplusplus
+    27	extern "C" {
+    28	#endif
+    29	
+    30	EXPORT_API Eina_Bool ewk_parse_cookie(const std::string& cookie_str,
+    31	                                      EWKCookieContents& cookie) {
+    32	  net::ParsedCookie new_cookie(cookie_str);
+    33	  if (!new_cookie.IsValid() || new_cookie.IsHttpOnly() || new_cookie.IsSecure())
+    34	    return EINA_FALSE;
+    35	
+    36	  cookie.name = new_cookie.Name();
+    37	  cookie.value = new_cookie.Value();
+    38	
+    39	  // Handle optional domain value
+    40	  auto domain = new_cookie.Domain();
+    41	  if (domain.has_value()) {
+    42	    cookie.domain = domain.value();
+    43	  }
+    44	
+    45	  // Handle optional path value
+    46	  auto path = new_cookie.Path();
+    47	  if (path.has_value()) {
+    48	    cookie.path = path.value();
+    49	  }
+    50	
+    51	  // Take "max-age" over "Expires" as expires is depreciated, so only supported
+    52	  // for backwards compatibility. With the assumption that if you are using both
+    53	  // then "Expires" is there to support old browsers. (see HTTP - spec).
+    54	  auto max_age = new_cookie.MaxAge();
+    55	  if (max_age.has_value()) {
+    56	    // Convert string to integer without using exceptions
+    57	    std::string max_age_str(max_age.value());
+    58	    char* end_ptr;
+    59	    long max_age_val = std::strtol(max_age_str.c_str(), &end_ptr, 10);
+    60	
+    61	    // Check if conversion was successful (entire string was consumed)
+    62	    if (end_ptr != max_age_str.c_str() && *end_ptr == '\0' &&
+    63	        max_age_val >= 0) {
+    64	      cookie.expiry_date_utc = time(nullptr) + static_cast<time_t>(max_age_val);
+    65	    } else {
+    66	      // If conversion fails, treat as session cookie
+    67	      cookie.expiry_date_utc = 0;
+    68	    }
+    69	  } else {
+    70	    auto expires = new_cookie.Expires();
+    71	    if (expires.has_value()) {
+    72	      base::Time expiration_time =
+    73	          net::cookie_util::ParseCookieExpirationTime(expires.value());
+    74	      cookie.expiry_date_utc = expiration_time.ToTimeT();
+    75	    } else {
+    76	      // This is a session cookie. Set expiry time to 0
+    77	      cookie.expiry_date_utc = 0;
+    78	    }
+    79	  }
+    80	  return EINA_TRUE;
+    81	}
+    82	
+    83	#ifdef __cplusplus
+    84	}
+    85	#endif
+     1	// Copyright 2012 The Chromium Authors
+     2	// Use of this source code is governed by a BSD-style license that can be
+     3	// found in the LICENSE file.
+     4	
+     5	// Portions of this code based on Mozilla:
+     6	//   (netwerk/cookie/src/nsCookieService.cpp)
+     7	/* ***** BEGIN LICENSE BLOCK *****
+     8	 * Version: MPL 1.1/GPL 2.0/LGPL 2.1
+     9	 *
+    10	 * The contents of this file are subject to the Mozilla Public License Version
+    11	 * 1.1 (the "License"); you may not use this file except in compliance with
+    12	 * the License. You may obtain a copy of the License at
+    13	 * http://www.mozilla.org/MPL/
+    14	 *
+    15	 * Software distributed under the License is distributed on an "AS IS" basis,
+    16	 * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+    17	 * for the specific language governing rights and limitations under the
+    18	 * License.
+    19	 *
+    20	 * The Original Code is mozilla.org code.
+    21	 *
+    22	 * The Initial Developer of the Original Code is
+    23	 * Netscape Communications Corporation.
+    24	 * Portions created by the Initial Developer are Copyright (C) 2003
+    25	 * the Initial Developer. All Rights Reserved.
+    26	 *
+    27	 * Contributor(s):
+    28	 *   Daniel Witte (dwitte@stanford.edu)
+    29	 *   Michiel van Leeuwen (mvl@exedo.nl)
+    30	 *
+    31	 * Alternatively, the contents of this file may be used under the terms of
+    32	 * either the GNU General Public License Version 2 or later (the "GPL"), or
+    33	 * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+    34	 * in which case the provisions of the GPL or the LGPL are applicable instead
+    35	 * of those above. If you wish to allow use of your version of this file only
+    36	 * under the terms of either the GPL or the LGPL, and not to allow others to
+    37	 * use your version of this file under the terms of the MPL, indicate your
+    38	 * decision by deleting the provisions above and replace them with the notice
+    39	 * and other provisions required by the GPL or the LGPL. If you do not delete
+    40	 * the provisions above, a recipient may use your version of this file under
+    41	 * the terms of any one of the MPL, the GPL or the LGPL.
+    42	 *
+    43	 * ***** END LICENSE BLOCK ***** */
+    44	
+    45	#include "net/cookies/parsed_cookie.h"
+    46	
+    47	#include <string>
+    48	#include <string_view>
+    49	#include <utility>
+    50	
+    51	#include "base/metrics/histogram_macros.h"
+    52	#include "base/numerics/checked_math.h"
+    53	#include "base/strings/string_util.h"
+    54	#include "net/base/features.h"
+    55	#include "net/cookies/cookie_constants.h"
+    56	#include "net/cookies/cookie_inclusion_status.h"
+    57	#include "net/http/http_util.h"
+    58	
+    59	namespace {
+    60	
+    61	constexpr std::string_view kPathTokenName = "path";
+    62	constexpr std::string_view kDomainTokenName = "domain";
+    63	constexpr std::string_view kExpiresTokenName = "expires";
+    64	constexpr std::string_view kMaxAgeTokenName = "max-age";
+    65	constexpr std::string_view kSecureTokenName = "secure";
+    66	constexpr std::string_view kHttpOnlyTokenName = "httponly";
+    67	constexpr std::string_view kSameSiteTokenName = "samesite";
+    68	constexpr std::string_view kPriorityTokenName = "priority";
+    69	constexpr std::string_view kPartitionedTokenName = "partitioned";
+    70	
+    71	constexpr char kTerminatorRawString[] = "\n\r\0";
+    72	constexpr std::string_view kTerminator(kTerminatorRawString,
+    73	                                       sizeof(kTerminatorRawString) - 1);
+    74	constexpr std::string_view kWhitespace = " \t";
+    75	constexpr char kValueSeparator = ';';
+    76	constexpr std::string_view kTokenSeparator = ";=";
+    77	
+    78	// Returns true if |c| occurs in |chars|
+    79	// TODO(erikwright): maybe make this take an iterator, could check for end also?
+    80	inline bool CharIsA(const char c, std::string_view chars) {
+    81	  return chars.find(c) != std::string_view::npos;
+    82	}
+    83	
+    84	// Seek the iterator to the first occurrence of |character|.
+    85	// Returns true if it hits the end, false otherwise.
+    86	inline bool SeekToCharacter(std::string_view::iterator* it,
+    87	                            const std::string_view::iterator& end,
+    88	                            const char character) {
+    89	  for (; *it != end && **it != character; ++(*it)) {
+    90	  }
+    91	  return *it == end;
+    92	}
+    93	
+    94	// Seek the iterator to the first occurrence of a character in |chars|.
+    95	// Returns true if it hit the end, false otherwise.
+    96	inline bool SeekTo(std::string_view::iterator* it,
+    97	                   const std::string_view::iterator& end,
+    98	                   std::string_view chars) {
+    99	  for (; *it != end && !CharIsA(**it, chars); ++(*it)) {
+   100	  }
+   101	  return *it == end;
+   102	}
+   103	// Seek the iterator to the first occurrence of a character not in |chars|.
+   104	// Returns true if it hit the end, false otherwise.
+   105	inline bool SeekPast(std::string_view::iterator* it,
+   106	                     const std::string_view::iterator& end,
+   107	                     std::string_view chars) {
+   108	  for (; *it != end && CharIsA(**it, chars); ++(*it)) {
+   109	  }
+   110	  return *it == end;
+   111	}
+   112	inline bool SeekBackPast(std::string_view::iterator* it,
+   113	                         const std::string_view::iterator& end,
+   114	                         std::string_view chars) {
+   115	  for (; *it != end && CharIsA(**it, chars); --(*it)) {
+   116	  }
+   117	  return *it == end;
+   118	}
+   119	
+   120	// Returns the string piece within `value` that is a valid cookie value.
+   121	std::string_view ValidStringPieceForValue(std::string_view value) {
+   122	  std::string_view::iterator it = value.begin();
+   123	  std::string_view::iterator end =
+   124	      net::ParsedCookie::FindFirstTerminator(value);
+   125	  std::string_view::iterator value_start;
+   126	  std::string_view::iterator value_end;
+   127	
+   128	  net::ParsedCookie::ParseValue(&it, end, &value_start, &value_end);
+   129	
+   130	  return std::string_view(value_start, value_end);
+   131	}
+   132	
+   133	}  // namespace
+   134	
+   135	namespace net {
+   136	
+   137	ParsedCookie::ParsedCookie(std::string_view cookie_line,
+   138	                           CookieInclusionStatus* status_out) {
+   139	  // Put a pointer on the stack so the rest of the function can assign to it if
+   140	  // the default nullptr is passed in.
+   141	  CookieInclusionStatus blank_status;
+   142	  if (status_out == nullptr) {
+   143	    status_out = &blank_status;
+   144	  }
+   145	  *status_out = CookieInclusionStatus();
+   146	
+   147	  ParseTokenValuePairs(cookie_line, *status_out);
+   148	  if (IsValid()) {
+   149	    SetupAttributes();
+   150	  } else {
+   151	    // Status should indicate exclusion if the resulting ParsedCookie is
+   152	    // invalid.
+   153	    CHECK(!status_out->IsInclude());
+   154	  }
+   155	}
+   156	
+   157	ParsedCookie::~ParsedCookie() = default;
+   158	
+   159	bool ParsedCookie::IsValid() const {
+   160	  return !pairs_.empty();
+   161	}
+   162	
+   163	std::pair<CookieSameSite, CookieSameSiteString> ParsedCookie::SameSite() const {
+   164	  if (same_site_index_ != 0) {
+   165	    return StringToCookieSameSite(pairs_[same_site_index_].second);
+   166	  }
+   167	  return {CookieSameSite::UNSPECIFIED, CookieSameSiteString::kUnspecified};
+   168	}
+   169	
+   170	CookiePriority ParsedCookie::Priority() const {
+   171	  return (priority_index_ == 0)
+   172	             ? COOKIE_PRIORITY_DEFAULT
+   173	             : StringToCookiePriority(pairs_[priority_index_].second);
+   174	}
+   175	
+   176	bool ParsedCookie::SetName(std::string_view name) {
+   177	  const std::string_view value =
+   178	      pairs_.empty() ? std::string_view() : pairs_[0].second;
+   179	
+   180	  // Ensure there are no invalid characters in `name`. This should be done
+   181	  // before calling ParseTokenString because we want terminating characters
+   182	  // ('\r', '\n', and '\0') and '=' in `name` to cause a rejection instead of
+   183	  // truncation.
+   184	  // TODO(crbug.com/40191620) Once we change logic more broadly to reject
+   185	  // cookies containing these characters, we should be able to simplify this
+   186	  // logic since IsValidCookieNameValuePair() also calls IsValidCookieName().
+   187	  // Also, this check will currently fail if `name` has a tab character in the
+   188	  // leading or trailing whitespace, which is inconsistent with what happens
+   189	  // when parsing a cookie line in the constructor (but the old logic for
+   190	  // SetName() behaved this way as well).
+   191	  if (!IsValidCookieName(name)) {
+   192	    return false;
+   193	  }
+   194	
+   195	  // Use the same whitespace trimming code as the constructor.
+   196	  const std::string_view parsed_name = ParseTokenString(name);
+   197	
+   198	  if (!IsValidCookieNameValuePair(parsed_name, value)) {
+   199	    return false;
+   200	  }
+   201	
+   202	  if (pairs_.empty())
+   203	    pairs_.emplace_back("", "");
+   204	  pairs_[0].first = parsed_name;
+   205	
+   206	  return true;
+   207	}
+   208	
+   209	bool ParsedCookie::SetValue(std::string_view value) {
+   210	  const std::string_view name =
+// Test instrumentation only: count the current thread's malloc-family calls
+// during a bounded window. No dlsym, allocation, or C++ inside these wrappers.
+// Fixed Linux/glibc fixture; NOT part of the production adaptor or its route.
+#include "p13_alloc_report.h"
+#include <stdint.h>
+#include <string.h>
+#include <errno.h>
+extern void* __libc_malloc(size_t);
+extern void* __libc_calloc(size_t,size_t);
+extern void* __libc_realloc(void*,size_t);
+extern void __libc_free(void*);
+typedef struct Entry { void* pointer;size_t size; } Entry;
+static __thread Entry entries[4096] __attribute__((tls_model("initial-exec")));
+static __thread P13AllocReport report __attribute__((tls_model("initial-exec")));
+static __thread int enabled __attribute__((tls_model("initial-exec")));
+static __thread size_t fail_nth,attempts,failed;
+static int inject_failure(void){if(enabled&&++attempts==fail_nth){++failed;errno=ENOMEM;return 1;}return 0;}
+static void add(void*p,size_t n){
+ if(!enabled||!p)return;
+ for(size_t i=0;i<4096;++i)if(!entries[i].pointer){entries[i]=(Entry){p,n};++report.allocations;++report.live;report.bytes+=n;return;}
+ ++report.overflow;
+}
+static void remove_entry(void*p){
+ if(!p||!report.live)return;
+ for(size_t i=0;i<4096;++i)if(entries[i].pointer==p){++report.frees;--report.live;report.bytes-=entries[i].size;entries[i]=(Entry){0,0};return;}
+}
+void*malloc(size_t n){if(inject_failure())return 0;void*p=__libc_malloc(n);add(p,n);return p;}
+void*calloc(size_t n,size_t size){if(inject_failure())return 0;void*p=__libc_calloc(n,size);if(p)add(p,n*size);return p;}
+void*realloc(void*p,size_t n){if(n&&inject_failure())return 0;void*q=__libc_realloc(p,n);if(q||n==0){remove_entry(p);add(q,n);}return q;}
+void free(void*p){remove_entry(p);__libc_free(p);}
+void p13_alloc_begin(void){enabled=0;attempts=0;failed=0;fail_nth=0;memset(entries,0,sizeof entries);memset(&report,0,sizeof report);enabled=1;}
+void p13_alloc_end(P13AllocReport*out){enabled=0;fail_nth=0;if(out)*out=report;}
+void p13_alloc_fail_on(size_t nth){fail_nth=nth;}
+size_t p13_alloc_failed(void){return failed;}
+void p13_alloc_fail_after(size_t offset){fail_nth=attempts+offset;}
+#!/usr/bin/env python3
+"""真实 GNU EWK；libc++ 应用→转发层→adaptor→GNU，为生产反方向。"""
+import json,os,pathlib,re,subprocess,sys
+import build as b
+prefix=os.environ.get('P12_RUN_TAG','')
+for side in ['gnu','cxx']:
+    b.run('build_ewk_app_'+side,[b.CC,*b.flags[side],*b.common,b.SRC/'ewk_app.cpp',*b.link,'-o',b.BUILD/('ewk_app_'+side)])
+rows=[]
+for side,mode in [('gnu','control'),('cxx','separate'),('cxx','embedded'),('cxx','control')]:
+    for n in range(1,6):
+        tag=prefix+'ewk_run_'+side+'_'+mode+'_'+str(n);stem=b.OUT/'raw'/tag
+        assert not pathlib.Path(str(stem)+'.command.txt').exists(),tag
+        command=['prlimit','--core=0','--as=4294967296','--','timeout','40',str(b.SDK/'closure_ewk/ld-linux-x86-64.so.2'),
+          '--library-path',str(b.SDK/'closure_ewk')+':'+str(b.LIBCXX/'lib')+':'+str(b.BUILD),
+          str(b.BUILD/('ewk_app_'+side)),str(b.BUILD/('forwarder_'+mode+'.so')),str(b.PROVIDER)]
+        subprocess.run([sys.executable,str(b.REC),str(stem),'nice','-n','19','ionice','-c','3',*command])
+        rc=int(pathlib.Path(str(stem)+'.exitcode').read_text());out=pathlib.Path(str(stem)+'.stdout').read_text()
+        err=pathlib.Path(str(stem)+'.stderr').read_text()
+        negative=side=='cxx' and mode=='control'
+        if not negative:
+            assert rc==0 and 'SUMMARY EXACT=12/12 DESTROYED=12/12' in out,(tag,rc,err[-800:])
+        else:assert rc!=0,(tag,'negative control unexpectedly passed; inspect values')
+        assert 'MAP_ASSERT cxx=1 gnu=1 entry=1 provider=1' in out
+        assert 'FORWARDER_ENTRY='+str(b.BUILD/('forwarder_'+mode+'.so')) in out
+        if mode!='control':assert err.count('P12_ADAPTOR_ENTRY')==13,err
+        rows.append({'consumer':side,'mode':mode,'repeat':n,'exit':rc,'environment':'x86_64 native',
+                     'provider':'real GNU chromium-efl','production_direction':False,
+                     'scenarios_passed':12 if not negative else None,'destroyed':12 if not negative else None,
+                     'raw':tag})
+        (b.OUT/(prefix+'EWK_RESULTS.json')).write_text(json.dumps(rows,indent=2)+'\n')
+print('EWK_PROGRAM_RUNS',len(rows))

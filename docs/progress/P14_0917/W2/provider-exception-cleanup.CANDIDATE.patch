@@ -1,0 +1,73 @@
+diff --git a/net/BUILD.gn b/net/BUILD.gn
+index 969ed46e..bea26ba8 100644
+--- a/net/BUILD.gn
++++ b/net/BUILD.gn
+@@ -1865,6 +1865,24 @@ component("net") {
+       "//sql",
+     ]
+   }
++  if (is_tizen) {
++    sources -= [ "cookies/parsed_cookie.cc" ]
++    deps += [ ":cookie_parser_exception_cleanup" ]
++    allow_circular_includes_from += [ ":cookie_parser_exception_cleanup" ]
++  }
++}
++
++# Candidate: keep exception cleanup local to the cookie parser TU on Tizen.
++# ParsedCookie already owns pairs_ with RAII; a throwing GNU allocator must
++# not bypass member and local string cleanup during construction.
++if (is_tizen) {
++  source_set("cookie_parser_exception_cleanup") {
++    visibility = [ ":net" ]
++    sources = [ "cookies/parsed_cookie.cc" ]
++    deps = [ ":net_deps" ]
++    configs -= [ "//build/config/compiler:no_exceptions" ]
++    configs += [ "//build/config/compiler:exceptions" ]
++  }
+ }
+ 
+ # net_export.h has its own build target so that code (eg
+@@ -1879,6 +1897,7 @@ source_set("net_export_header") {
+ source_set("net_deps") {
+   visibility = [
+     ":net",
++    ":cookie_parser_exception_cleanup",
+     "//crypto",
+     "//net/dns",
+     "//net/dns:dns_client",
+diff --git a/tizen_src/ewk/efl_integration/BUILD.gn b/tizen_src/ewk/efl_integration/BUILD.gn
+index d1fdd1e6..44f32d64 100644
+--- a/tizen_src/ewk/efl_integration/BUILD.gn
++++ b/tizen_src/ewk/efl_integration/BUILD.gn
+@@ -854,6 +854,31 @@ shared_library("chromium-ewk") {
+     # Reduce linker memory consumption, so it will fit in 32bit address space.
+     ldflags += [ "-Wl,--no-keep-memory" ]
+   }
++  if (is_tizen) {
++    sources -= [ "public/ewk_cookie_parser.cc" ]
++    deps += [ ":cookie_parser_exception_cleanup" ]
++  }
++}
++
++# Candidate: preserve cleanup of the completed ParsedCookie when copying its
++# values to EWKCookieContents throws. No public signature or parse rule changes.
++if (is_tizen) {
++  source_set("cookie_parser_exception_cleanup") {
++    visibility = [ ":chromium-ewk" ]
++    sources = [
++      "private/ewk_private.h",
++      "public/ewk_cookie_parser.cc",
++      "public/ewk_cookie_parser.h",
++    ]
++    include_dirs = [ ".", "public" ]
++    deps = [ "//base", "//net" ]
++    configs -= [ "//build/config/compiler:no_exceptions" ]
++    configs += [
++      "//build/config/compiler:exceptions",
++      "//tizen_src/build/config:ecore",
++      "//tizen_src/build/config:evas",
++    ]
++  }
+ }
+ 
+ executable("efl_webprocess") {
