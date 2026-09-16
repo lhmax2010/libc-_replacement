@@ -1,0 +1,562 @@
+FILE /home/toolchain/development/libc++_replacement/tmp/corpus/extracted/lightweight-web-engine-1.4.0-1.src.rpm/unpacked/lightweight-web-engine-1.4.0.tar.gz/lightweight-web-engine-1.4.0/src/public/delegate/LWEWebContainerDelegate.cpp SHA256 36cd626d5f72e69e8f934051143cc1f6211f5645ed718afc1562da03311665b9
+600: 
+601:         webView->renderer()->registerRenderingFinishedCallback(
+602:             [newWebContainer, flushCb,
+603:              mappedTbmSurface](const Starfish::RenderResult& renderResult) {
+604:                 flushCb(newWebContainer, renderResult.didPaintingOrCompositing);
+605: #ifdef STARFISH_FLUTTER
+606:                 // Unmap the TBM surface after rendering is complete.
+607:                 // This ensures the surface is unmapped before Destroy() is
+608:                 // called.
+609:                 if (*mappedTbmSurface != nullptr) {
+610:                     tbm_surface_unmap((tbm_surface_h)*mappedTbmSurface);
+611:                     *mappedTbmSurface = nullptr;
+612:                 }
+613: #endif
+614:             });
+615:     });
+616:     return newWebContainer;
+617: }
+618: 
+619: WebContainer* WebContainer::CreateGLWithPlatformImage(
+620:     const WebContainerArguments& args, const RendererGLConfiguration& config,
+621:     const OnPrepareImage& prepareImageCb, const OnFlush& flushCb)
+622: {
+623:     WebContainer* newWebContainer = nullptr;
+624:     ThreadedCallHelper::Instance()->PostTaskToLWEMainThreadSync([&]() -> void {
+625:         Starfish::WebView* webView = createStarfishWebViewInstance(
+626:             args.width, args.height, args.devicePixelRatio,
+627:             args.defaultFontName, args.locale, args.timezoneID);
+628: 
+629:         newWebContainer = new (NoGC) WebContainerImpl(webView);
+630: 
+631:         webView->renderer()->registerOnMakeCurrent(
+632:             [config, newWebContainer](Starfish::Renderer* renderer) {
+633:                 config.onMakeCurrent(newWebContainer);
+634:             });
+635: 
+636:         webView->renderer()->registerOnSwapBuffers(
+637:             [config, newWebContainer](Starfish::Renderer* renderer,
+638:                                       bool mayNeedsSync) {
+639:                 config.onSwapBuffers(newWebContainer, mayNeedsSync);
+640:             });
+641: 
+642:         if (config.onCreateSharedContext) {
+643:             webView->renderer()->registerOnCreateSharedContext(
+644:                 [config,
+645:                  newWebContainer](Starfish::Renderer* renderer) -> uintptr_t {
+646:                     return config.onCreateSharedContext(newWebContainer);
+647:                 });
+648:         }
+649:         if (config.onDestroyContext) {
+650:             webView->renderer()->registerOnDestroyContext(
+651:                 [config, newWebContainer](Starfish::Renderer* renderer,
+652:                                           uintptr_t context) -> bool {
+653:                     return config.onDestroyContext(newWebContainer, context);
+654:                 });
+655:         }
+656:         if (config.onClearCurrentContext) {
+657:             webView->renderer()->registerOnClearCurrentContext(
+658:                 [config,
+659:                  newWebContainer](Starfish::Renderer* renderer) -> bool {
+660:                     return config.onClearCurrentContext(newWebContainer);
+661:                 });
+662:         }
+663:         if (config.onMakeCurrentWithContext) {
+664:             webView->renderer()->registerOnMakeCurrentWithContext(
+665:                 [config, newWebContainer](Starfish::Renderer* renderer,
+666:                                           uintptr_t context) -> bool {
+667:                     return config.onMakeCurrentWithContext(newWebContainer,
+668:                                                            context);
+669:                 });
+670:         }
+671:         if (config.onGetProcAddress) {
+672:             webView->renderer()->registerOnGetProcAddress(
+673:                 [config, newWebContainer](Starfish::Renderer* renderer,
+674:                                           const char* name) -> void* {
+675:                     return config.onGetProcAddress(newWebContainer, name);
+676:                 });
+677:         }
+678:         if (config.onIsSupportedExtension) {
+679:             webView->renderer()->registerOnIsSupportedExtension(
+680:                 [config, newWebContainer](Starfish::Renderer* renderer,
+681:                                           const char* extension) -> bool {
+682:                     return config.onIsSupportedExtension(newWebContainer,
+683:                                                          extension);
+684:                 });
+685:         }
+686:         webView->renderer()->registerRenderingPrepareCallback(
+687:             [prepareImageCb](void) -> Starfish::RenderInfo {
+688:                 WebContainer::ExternalImageInfo tmp = prepareImageCb();
+689:                 Starfish::RenderInfo result;
+690:                 result.updatedBufferAddress = tmp.imageAddress;
+691:                 result.bufferStride = 0;
+692:                 return result;
+693:             });
+694: 
+695:         webView->renderer()->registerSurfaceFlushedCallback(
+696:             [newWebContainer, flushCb](bool needsFlush) {
+697:                 flushCb(newWebContainer, needsFlush);
+698:             });
+699:     });
+700:     return newWebContainer;
+701: }
+702: 
+703: WebContainer* WebContainer::CreateHeadless(unsigned width, unsigned height,
+704:                                            float devicePixelRatio,
+705:                                            const char* defaultFontName,
+706:                                            const char* locale,
+707:                                            const char* timezoneID)
+708: {
+709:     Starfish::WebView* webView = createStarfishWebViewInstance(
+710:         width, height, devicePixelRatio, defaultFontName, locale, timezoneID);
+711:     WebContainer* newWebContainer = new (NoGC) WebContainerImpl(webView);
+712: 
+713:     return newWebContainer;
+714: }
+715: 
+716: void WebContainerImpl::ResizeTo(size_t width, size_t height)
+717: {
+718:     ThreadedCallHelper::Instance()->PostTaskToLWEMainThreadSync([&]() -> void {
+719:         m_webView->renderer()->resizeTo((int)width, (int)height);
+720:     });
+721: }
+722: 
+723: WebContainerImpl::WebContainerImpl(Starfish::WebView* webView)
+724:     : m_webView(webView)
+725: {
+726: }
+727: 
+728: void WebContainerImpl::AddIdleCallback(void (*callback)(void*), void* data)
+729: {
+730:     ThreadedCallHelper::Instance()->PostTaskToLWEMainThreadSync([&]() -> void {
+731:         struct Data : public gc {
+732:             void (*callback)(void*);
+733:             void* data;
+734:         };
+735: 
+736:         Data* d = new Data();
+737:         d->callback = callback;
+738:         d->data = data;
+739:         m_webView->messageLoop()->addIdler(
+740:             nullptr,
+741:             [](size_t, void* data) {
+742:                 Data* d = (Data*)data;
+743:                 d->callback(d->data);
+744:             },
+745:             d);
+746:     });
+747: }
+748: 
+749: size_t WebContainerImpl::AddTimeout(void (*callback)(void*), void* data,
+750:                                     size_t timeoutInMS)
+751: {
+752:     size_t ret = 0;
+753:     ThreadedCallHelper::Instance()->PostTaskToLWEMainThreadSync([&]() -> void {
+754:         struct Data : public gc {
+755:             void (*callback)(void*);
+FILE /home/toolchain/development/libc++_replacement/tmp/corpus/extracted/lightweight-web-engine-1.4.0-1.src.rpm/unpacked/lightweight-web-engine-1.4.0.tar.gz/lightweight-web-engine-1.4.0/src/public/delegate/LWEWebContainerDelegate.cpp SHA256 36cd626d5f72e69e8f934051143cc1f6211f5645ed718afc1562da03311665b9
+950:             Starfish::String* objectName = Starfish::String::fromUTF8(
+951:                 exposedObjectName.data(), exposedObjectName.size());
+952:             Starfish::String* functionName = Starfish::String::fromUTF8(
+953:                 jsFunctionName.data(), jsFunctionName.size());
+954: 
+955:             m_webView->addJavaScriptNativeInterface(
+956:                 objectName, functionName,
+957:                 new Starfish::JavaScriptNativeHandler(m_webView, functionName,
+958:                                                       cb),
+959:                 nativeCallbackFunction);
+960: 
+961:             if (m_webView->mainBrowsingContext()) {
+962:                 Starfish::registerJavaScriptNativeInterface(
+963:                     m_webView->mainBrowsingContext()
+964:                         ->window()
+965:                         ->scriptBindingInstance(),
+966:                     objectName, functionName,
+967:                     new Starfish::JavaScriptNativeHandler(m_webView,
+968:                                                           functionName, cb),
+969:                     nativeCallbackFunction);
+970:             }
+971:         });
+972: }
+973: 
+974: std::string WebContainerImpl::EvaluateJavaScript(const std::string& script)
+975: {
+976:     std::string ret;
+977:     ThreadedCallHelper::Instance()->PostTaskToLWEMainThreadSync([&]() -> void {
+978:         ret = m_webView
+979:                   ->evaluateJavaScript(
+980:                       Starfish::String::fromUTF8(script.data(), script.size()))
+981:                   ->toUTF8NonGCString();
+982:     });
+983:     return ret;
+984: }
+985: 
+986: void WebContainerImpl::EvaluateJavaScript(
+987:     const std::string& script, std::function<void(const std::string&)> cb)
+988: {
+989:     struct Params {
+990:         Starfish::WebView* webview;
+991:         std::string script;
+992:         std::function<void(const std::string&)> cb;
+993:     };
+994:     Params* p = new Params;
+995:     p->webview = m_webView;
+996:     p->script = script;
+997:     p->cb = cb;
+998: 
+999:     if (Starfish::isMainThread()) {
+1000:         p->webview->messageLoop()->addIdler(
+1001:             m_webView->mainBrowsingContext()
+1002:                 ? p->webview->mainBrowsingContext()->window()
+1003:                 : nullptr,
+1004:             [](size_t handle, void* data) {
+1005:                 STARFISH_ASSERT(data != nullptr);
+1006:                 Params* p = (Params*)data;
+1007:                 p->webview->evaluateJavaScript(
+1008:                     Starfish::String::fromUTF8(p->script.data(),
+1009:                                                p->script.size()),
+1010:                     p->cb);
+1011:                 delete p;
+1012:             },
+1013:             p);
+1014:     } else {
+1015:         p->webview->messageLoop()->addIdlerWithNoGCRootingInOtherThread(
+1016:             m_webView->mainBrowsingContext()
+1017:                 ? p->webview->mainBrowsingContext()->window()
+1018:                 : nullptr,
+1019:             [](size_t handle, void* data) {
+1020:                 STARFISH_ASSERT(data != nullptr);
+1021:                 Params* p = (Params*)data;
+1022: 
+1023:                 p->webview->evaluateJavaScript(
+1024:                     Starfish::String::fromUTF8(p->script.data(),
+1025:                                                p->script.size()),
+1026:                     p->cb);
+1027:                 delete p;
+1028:             },
+1029:             p);
+1030:     }
+1031: }
+1032: 
+1033: void WebContainerImpl::ClearHistory()
+1034: {
+1035:     ThreadedCallHelper::Instance()->PostTaskToLWEMainThreadAsync(
+1036:         m_webView->messageLoop(),
+1037:         [=]() -> void { m_webView->historyManager()->clear(); });
+1038: }
+1039: 
+1040: void WebContainerImpl::Destroy()
+FILE /home/toolchain/development/libc++_replacement/tmp/corpus/extracted/lightweight-web-engine-1.4.0-1.src.rpm/unpacked/lightweight-web-engine-1.4.0.tar.gz/lightweight-web-engine-1.4.0/src/public/delegate/LWEWebContainerDelegate.cpp SHA256 36cd626d5f72e69e8f934051143cc1f6211f5645ed718afc1562da03311665b9
+1180:     ThreadedCallHelper::Instance()->PostTaskToLWEMainThreadAsync(
+1181:         m_webView->messageLoop(), [=]() -> void {
+1182:             m_webView->registerPublicWebViewHandler(
+1183:                 Starfish::OnReceivedError, [this, cb](void* param) -> void {
+1184:                     struct Param {
+1185:                         Starfish::RequestErrorType errorCode;
+1186:                         Starfish::String* url;
+1187:                     };
+1188:                     Param* p = (Param*)param;
+1189:                     ResourceError* error = ResourceError::Create(
+1190:                         convertErrorCode(p->errorCode),
+1191:                         convertErrorDescriton(p->errorCode),
+1192:                         p->url->toUTF8NonGCString());
+1193:                     cb(this, error);
+1194:                     delete error;
+1195:                 });
+1196:         });
+1197: }
+1198: 
+1199: void WebContainerImpl::RegisterOnPageParsedHandler(
+1200:     std::function<void(WebContainer*, const std::string&)> cb)
+1201: {
+1202:     ThreadedCallHelper::Instance()->PostTaskToLWEMainThreadAsync(
+1203:         m_webView->messageLoop(), [=]() -> void {
+1204:             m_webView->registerPublicWebViewHandler(
+1205:                 Starfish::OnPageParsed, [this, cb](void* param) -> void {
+1206:                     struct Param {
+1207:                         Starfish::String* url;
+1208:                     };
+1209:                     Param* p = (Param*)param;
+1210:                     cb(this, p->url->toUTF8NonGCString());
+1211:                 });
+1212:         });
+1213: }
+1214: 
+1215: void WebContainerImpl::RegisterOnPageLoadedHandler(
+1216:     std::function<void(WebContainer*, const std::string&)> cb)
+1217: {
+1218:     ThreadedCallHelper::Instance()->PostTaskToLWEMainThreadAsync(
+1219:         m_webView->messageLoop(), [=]() -> void {
+1220:             m_webView->registerPublicWebViewHandler(
+1221:                 Starfish::OnPageLoaded, [this, cb](void* param) -> void {
+1222:                     struct Param {
+1223:                         Starfish::String* url;
+1224:                     };
+1225:                     Param* p = (Param*)param;
+1226:                     cb(this, p->url->toUTF8NonGCString());
+1227:                 });
+1228:         });
+1229: }
+1230: 
+1231: void WebContainerImpl::RegisterOnPageStartedHandler(
+1232:     const std::function<void(WebContainer*, const std::string&)>& cb)
+1233: {
+1234:     ThreadedCallHelper::Instance()->PostTaskToLWEMainThreadAsync(
+1235:         m_webView->messageLoop(), [=]() -> void {
+1236:             m_webView->registerPublicWebViewHandler(
+1237:                 Starfish::OnPageStarted, [this, cb](void* param) -> void {
+1238:                     struct Param {
+1239:                         Starfish::String* url;
+1240:                     };
+1241:                     Param* p = (Param*)param;
+1242:                     cb(this, p->url->toUTF8NonGCString());
+1243:                 });
+1244:         });
+1245: }
+1246: 
+1247: void WebContainerImpl::RegisterOnLoadResourceHandler(
+1248:     const std::function<void(WebContainer*, const std::string&)>& cb)
+1249: {
+1250:     ThreadedCallHelper::Instance()->PostTaskToLWEMainThreadAsync(
+FILE /home/toolchain/development/libc++_replacement/tmp/corpus/extracted/lightweight-web-engine-1.4.0-1.src.rpm/unpacked/lightweight-web-engine-1.4.0.tar.gz/lightweight-web-engine-1.4.0/inc/PlatformIntegrationData.h SHA256 1a18d695fa725fc61b7d9978e40f25b63db26ce254bcad0dcccc90347d29b54e
+1: #ifndef __PlatformIntegrationData__
+2: #define __PlatformIntegrationData__
+3: 
+4: namespace LWE {
+5: // This table has same chars with
+6: // ASCII printable char(32-126)
+7: enum KeyValue {
+8:     UnidentifiedKey,
+9:     AltLeftKey,
+10:     AltRightKey,
+11:     ControlLeftKey,
+12:     ControlRightKey,
+13:     CapsLockKey,
+14:     FnKey,
+15:     FnLockKey,
+16:     HyperKey,
+17:     MetaKey,
+18:     NumLockKey,
+19:     ScrollLockKey,
+20:     ShiftLeftKey,
+21:     ShiftRightKey,
+22:     SuperKey,
+23:     SymbolKey,
+24:     SymbolLockKey,
+25:     EnterKey,
+26:     TabKey,
+27:     ArrowDownKey,
+28:     ArrowUpKey,
+29:     ArrowLeftKey,
+30:     ArrowRightKey,
+31:     EndKey,
+32:     HomeKey,
+33:     PageDownKey,
+34:     PageUpKey,
+35:     BackspaceKey,
+36:     DeleteKey,
+37:     InsertKey,
+38:     ContextMenuKey,
+39:     EscapeKey,
+40:     SpaceKey = 32,
+41:     ExclamationMarkKey = 33,
+42:     DoubleQuoteMarkKey = 34,
+43:     SharpMarkKey = 35,
+44:     DollarMarkKey = 36,
+45:     PercentMarkKey = 37,
+46:     AmpersandMarkKey = 38,
+47:     SingleQuoteMarkKey = 39,
+48:     LeftParenthesisMarkKey = 40,
+49:     RightParenthesisMarkKey = 41,
+50:     AsteriskMarkKey = 42,
+51:     PlusMarkKey = 43,
+52:     CommaMarkKey = 44,
+53:     MinusMarkKey = 45,
+54:     PeriodKey = 46,
+55:     SlashKey = 47,
+56:     Digit0Key = 48,
+57:     Digit1Key,
+58:     Digit2Key,
+59:     Digit3Key,
+60:     Digit4Key,
+61:     Digit5Key,
+62:     Digit6Key,
+63:     Digit7Key,
+64:     Digit8Key,
+65:     Digit9Key,
+66:     ColonMarkKey = 58,
+67:     SemiColonMarkKey = 59,
+68:     LessThanMarkKey = 60,
+69:     EqualitySignKey = 61,
+70:     GreaterThanSignKey = 62,
+71:     QuestionMarkKey = 63,
+72:     AtMarkKey = 64,
+73:     AKey = 65,
+74:     BKey,
+75:     CKey,
+76:     DKey,
+77:     EKey,
+78:     FKey,
+79:     GKey,
+80:     HKey,
+81:     IKey,
+82:     JKey,
+83:     KKey,
+84:     LKey,
+85:     MKey,
+86:     NKey,
+87:     OKey,
+88:     PKey,
+89:     QKey,
+90:     RKey,
+91:     SKey,
+92:     TKey,
+93:     UKey,
+94:     VKey,
+95:     WKey,
+96:     XKey,
+97:     YKey,
+98:     ZKey,
+99:     LeftSquareBracketKey = 91,
+100:     BackslashKey = 92,
+101:     RightSquareBracketKey = 93,
+102:     CaretMarkKey = 94,
+103:     UnderScoreMarkKey = 95,
+104:     AccentMarkKey = 96,
+105:     LowerAKey = 97,
+106:     LowerBKey,
+107:     LowerCKey,
+108:     LowerDKey,
+109:     LowerEKey,
+110:     LowerFKey,
+111:     LowerGKey,
+112:     LowerHKey,
+113:     LowerIKey,
+114:     LowerJKey,
+115:     LowerKKey,
+116:     LowerLKey,
+117:     LowerMKey,
+118:     LowerNKey,
+119:     LowerOKey,
+120:     LowerPKey,
+121:     LowerQKey,
+122:     LowerRKey,
+123:     LowerSKey,
+124:     LowerTKey,
+125:     LowerUKey,
+126:     LowerVKey,
+127:     LowerWKey,
+128:     LowerXKey,
+129:     LowerYKey,
+130:     LowerZKey,
+131:     LeftCurlyBracketMarkKey = 123,
+132:     VerticalBarMarkKey = 124,
+133:     RightCurlyBracketMarkKey = 125,
+134:     TildeMarkKey = 126,
+135:     F1Key,
+136:     F2Key,
+137:     F3Key,
+138:     F4Key,
+139:     F5Key,
+140:     F6Key,
+141:     F7Key,
+142:     F8Key,
+143:     F9Key,
+144:     F10Key,
+145:     F11Key,
+146:     F12Key,
+147:     F13Key,
+148:     F14Key,
+149:     F15Key,
+150:     F16Key,
+151:     F17Key,
+152:     F18Key,
+153:     F19Key,
+154:     F20Key,
+155:     TVPreviousChannel,
+156:     TVChannelDownKey,
+157:     TVChannelUpKey,
+158:     TVVolumeUpKey,
+159:     TVVolumeDownKey,
+160:     TVMuteKey,
+161:     TVChannelList,
+162:     TVChannelGuide,
+163:     TVSimpleMenu,
+164:     TVReturnKey,
+165:     TVExitKey,
+166:     TVInfoKey,
+167:     TVRedKey,
+168:     TVGreenKey,
+169:     TVYellowKey,
+170:     TVBlueKey,
+171:     TVEManual,
+172:     TVExtraApp,
+173:     TVSearch,
+174:     TVPictureSize,
+175:     TVSleep,
+176:     TVCaption,
+177:     TVMore,
+178:     TVBTVoice,
+179:     TVColor,
+180:     TVPlayBack,
+181:     TVMenuKey,
+182:     MediaFastForwardKey,
+183:     MediaPauseKey,
+184:     MediaPlayKey,
+185:     MediaPlayPauseKey,
+186:     MediaRecordKey,
+187:     MediaRewindKey,
+188:     MediaStopKey,
+189:     MediaTrackNextKey,
+190:     MediaTrackPreviousKey,
+191:     TVKey,
+192:     TV3DModeKey,
+193:     TVAntennaCableKey,
+194:     TVAudioDescriptionKey,
+195:     TVAudioDescriptionMixDownKey,
+196:     TVAudioDescriptionMixUpKey,
+197:     TVContentsMenuKey,
+198:     TVDataServiceKey,
+199:     TVInputKey,
+200:     TVInputComponent1Key,
+201:     TVInputComponent2Key,
+202:     TVInputComposite1Key,
+203:     TVInputComposite2Key,
+204:     TVInputHDMI1Key,
+205:     TVInputHDMI2Key,
+206:     TVInputHDMI3Key,
+207:     TVInputHDMI4Key,
+208:     TVInputVGA1Key,
+209:     TVMediaContextKey,
+210:     TVNetworkKey,
+211:     TVNumberEntryKey,
+212:     TVPowerKey,
+213:     TVRadioServiceKey,
+214:     TVSatelliteKey,
+215:     TVSatelliteBSKey,
+216:     TVSatelliteCSKey,
+217:     TVSatelliteToggleKey,
+218:     TVTerrestrialAnalogKey,
+219:     TVTerrestrialDigitalKey,
+220:     TVTimerKey,
+221:     TVHomeKey,
+222:     MediaAppsKey,
+223:     MediaAudioTrackKey,
+224:     MediaLastKey,
+225:     MediaSkipBackwardKey,
+226:     MediaSkipForwardKey,
+227:     MediaStepBackwardKey,
+228:     MediaStepForwardKey,
+229:     MediaTopMenuKey,
+230:     BrowserBackKey,
+231:     BrowserFavoritesKey,
+232:     BrowserForwardKey,
+233:     BrowserHomeKey,
+234:     BrowserRefreshKey,
+235:     BrowserSearchKey,
+236:     BrowserStopKey,
+237: };
+238: 
+239: enum MouseButtonValue {
+240:     NoButton = 0,
