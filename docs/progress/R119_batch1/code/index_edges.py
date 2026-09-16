@@ -1,0 +1,36 @@
+"""既有真实符号交集只作定位输入；每个候选保留原符号和原表行。"""
+from common import *
+import csv,re,collections
+csv.field_size_limit(20_000_000)
+with (OUT/'W1/BATCH_100.tsv').open()as f:names=[r['entity']for r in csv.DictReader(f,delimiter='\t')]
+patterns={n:re.compile(re.escape(n)+r'(?![A-Za-z_0-9])')for n in names}
+aliases={'std::string':r'std::basic_string<char,','std::wstring':r'std::basic_string<wchar_t,','std::istream':r'std::basic_istream<char,','std::ostream':r'std::basic_ostream<char,','std::ifstream':r'std::basic_ifstream<char,','std::ofstream':r'std::basic_ofstream<char,','std::stringstream':r'std::basic_stringstream<char,','std::ostringstream':r'std::basic_ostringstream<char,','std::istringstream':r'std::basic_istringstream<char,','std::streambuf':r'std::basic_streambuf<char,','std::ios':r'std::basic_ios<char,'}
+aliases['std::string_view']='std::basic_string_view<char,'
+def entities(s):
+    s=s.replace('std::__cxx11::','std::').replace('std::__1::','std::').replace('std::filesystem::__cxx11::','std::filesystem::')
+    return [n for n,p in patterns.items() if p.search(s) or (n in aliases and aliases[n]in s)]
+assert {'std::string','std::basic_string'}.issubset(entities('f(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)'))
+assert 'std::map' not in entities('f(std::mapper&)')
+source_names={}
+with (ROOT/'docs/progress/P7_0909/inputs/source_package_records.tsv').open()as f:
+    for r in csv.DictReader(f,delimiter='\t'):source_names[r['location']]=r['name']
+allrows=[]; counts=collections.Counter()
+for file in sorted((ROOT/'docs/progress/R26/tables/split').glob('semantic_evidence_symbols.part*.tsv')):
+    with file.open()as f:
+        for line,r in enumerate(csv.DictReader(f,delimiter='\t'),2):
+            ens=entities(r['demangled_symbol'])
+            if not ens:continue
+            for e in ens:
+                provider=r['provider_source_rpm'];consumer=r['consumer_source_rpm']
+                runtime=source_names.get(provider,'').startswith(('gcc','llvm'))
+                row=dict(entity=e,consumer_source=source_names.get(consumer,'NOT_OBSERVED'),consumer_sourcerpm=consumer,provider_source=source_names.get(provider,'NOT_OBSERVED'),provider_sourcerpm=provider,runtime_provider=runtime,raw_symbol=r['raw_symbol'],demangled=r['demangled_symbol'],source_table=str(file.relative_to(ROOT)),source_line=line)
+                allrows.append(row);counts[(e,runtime)]+=1
+save(OUT/'W1/EDGE_SEARCH_COUNTS.json',[dict(entity=n,runtime_rows=counts[(n,True)],component_rows=counts[(n,False)])for n in names])
+import gzip
+with gzip.open(OUT/'W1/symbol_candidate_edges.tsv.gz','wt',newline='')as f:
+    w=csv.DictWriter(f,fieldnames=list(allrows[0]),delimiter='\t',lineterminator='\n');w.writeheader();w.writerows(allrows)
+samples={n:[] for n in names}
+for r in allrows:
+    if not r['runtime_provider'] and len(samples[r['entity']])<15:samples[r['entity']].append(r)
+save(OUT/'W1/SYMBOL_REVIEW_QUEUE.json',samples)
+for n in names:print(n,'component',counts[(n,False)],'runtime',counts[(n,True)])
