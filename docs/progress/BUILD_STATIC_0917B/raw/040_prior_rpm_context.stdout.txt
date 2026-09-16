@@ -1,0 +1,284 @@
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLVM_TARGETS_TO_BUILD='RISCV;BPF' \
+%endif
+    -DCLANG_ENABLE_ARCMT=OFF \
+    -DLLVM_BUILD_LLVM_DYLIB=ON \
+    -DCLANG_BUILD_CLANG_DYLIB=ON \
+%if %{defined _toolchain}
+    -DLLVM_LINK_LLVM_DYLIB=ON \
+    -DCLANG_LINK_CLANG_DYLIB=ON \
+%endif
+    -DLLVM_ENABLE_PROJECTS="clang;lldb;clang-tools-extra;lld;compiler-rt;openmp" \
+    -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF \
+    -DLLVM_BUILD_EXAMPLES=OFF \
+    -DLLVM_INCLUDE_EXAMPLES=OFF \
+    -DLLVM_BUILD_TESTS=OFF \
+    -DLLVM_INCLUDE_TESTS=OFF \
+    -DLLVM_ENABLE_DOXYGEN=OFF \
+    -DLLVM_BUILD_DOCS=OFF \
+    -DLLVM_INCLUDE_DOCS=OFF \
+    -DLLVM_OPTIMIZED_TABLEGEN=ON \
+    -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+    -DLLVM_LIBDIR_SUFFIX=`echo %{_lib} | sed s/lib//g` \
+    -DCLANG_RESOURCE_DIR="../%{_lib}/clang/%{llvm_version}" \
+    -DLLVM_BINUTILS_INCDIR=/usr/include \
+    -DLLVM_PARALLEL_COMPILE_JOBS=6 \
+    -DLLVM_PARALLEL_LINK_JOBS=2 \
+%if %{with mlgo}
+%ifarch armv7l aarch64 x86_64
+    -DTENSORFLOW_AOT_PATH="${MLGO_AOT_DIR}/mlgo_sysroot" \
+    -DLLVM_MLGO_EXPORT_TF_XLA_RUNTIME=OFF \
+    -DLLVM_MLGO_EMBED_TF_XLA_RUNTIME_OBJECTS="${MLGO_RUNTIME_OBJECTS}" \
+    -DLLVM_OVERRIDE_MODEL_HEADER_INLINERSIZEMODEL="${MLGO_AOT_DIR}/InlinerSizeModel.h" \
+    -DLLVM_OVERRIDE_MODEL_OBJECT_INLINERSIZEMODEL="${MLGO_AOT_DIR}/InlinerSizeModel.o" \
+    -DLLVM_OVERRIDE_MODEL_HEADER_REGALLOCEVICTMODEL="${MLGO_AOT_DIR}/RegAllocEvictModel.h" \
+    -DLLVM_OVERRIDE_MODEL_OBJECT_REGALLOCEVICTMODEL="${MLGO_AOT_DIR}/RegAllocEvictModel.o" \
+%else
+    -DLLVM_INLINER_MODEL_PATH=none \
+    -DLLVM_RAEVICT_MODEL_PATH=none \
+%endif
+%else
+    -DLLVM_INLINER_MODEL_PATH=none \
+    -DLLVM_RAEVICT_MODEL_PATH=none \
+%endif
+    ../llvm
+
+%if 0%{mlgo_verify_configure_only}
+  # ---- configure-only probe: guard against §0 traps; check sentinels, GBS exit code non-0 is expected ----
+  # Note: %%build does not guarantee set -e, so each assertion explicitly uses '|| { ...; exit 1; }'
+  # Assertion 0: MLGO_BUILD_DIR is correct (fail immediately with clear error if wrong)
+  test -f CMakeCache.txt || \
+    { echo "FATAL: MLGO_BUILD_DIR wrong (CMakeCache.txt not found in $(pwd))"; exit 1; }
+%if %{with mlgo}
+  # Assertion 1: override actually took effect (COPYONLY artifacts exist from configure stage)
+  test -f lib/Analysis/InlinerSizeModel.h || \
+    { echo "FATAL: Missing InlinerSizeModel.h (override not effective, likely trap 1: silent fallback to none)"; exit 1; }
+  test -f lib/Analysis/InlinerSizeModel.o || \
+    { echo "FATAL: Missing InlinerSizeModel.o (override not effective)"; exit 1; }
+  test -f lib/CodeGen/RegAllocEvictModel.h || \
+    { echo "FATAL: Missing RegAllocEvictModel.h(regalloc override not effective)"; exit 1; }
+  test -f lib/CodeGen/RegAllocEvictModel.o || \
+    { echo "FATAL: Missing RegAllocEvictModel.o(regalloc override not effective)"; exit 1; }
+  for mlgo_runtime_object in ${MLGO_REQUIRED_RUNTIME_OBJECTS}; do
+    test -f "${MLGO_AOT_DIR}/xla_runtime_objects/${mlgo_runtime_object}" || \
+        { echo "FATAL: missing MLGO runtime object: ${mlgo_runtime_object}"; exit 1; }
+  done
+  # Assertion 1b: bundled objects must match the target arch.
+%ifarch armv7l
+  MLGO_EXPECT_MACHINE="ARM"
+%endif
+%ifarch aarch64
+  MLGO_EXPECT_MACHINE="AArch64"
+%endif
+%ifarch x86_64
+  MLGO_EXPECT_MACHINE="X86-64"
+%endif
+  for mlgo_obj in lib/Analysis/InlinerSizeModel.o lib/CodeGen/RegAllocEvictModel.o; do
+    readelf -h "${mlgo_obj}" | grep -q "Machine:.*${MLGO_EXPECT_MACHINE}" || \
+      { echo "FATAL: ${mlgo_obj} arch mismatch (expected ${MLGO_EXPECT_MACHINE})"; exit 1; }
+  done
+  for mlgo_runtime_object in ${MLGO_REQUIRED_RUNTIME_OBJECTS}; do
+    mlgo_obj="${MLGO_AOT_DIR}/xla_runtime_objects/${mlgo_runtime_object}"
+    readelf -h "${mlgo_obj}" | grep -q "Machine:.*${MLGO_EXPECT_MACHINE}" || \
+      { echo "FATAL: ${mlgo_obj} arch mismatch (expected ${MLGO_EXPECT_MACHINE})"; exit 1; }
+  done
+  # Assertion 2: did not fall into autogenerate mock. Use && short-circuit: file missing => FATAL, don't let '! grep' pass
+  test -f CMakeCache.txt && \
+    ! grep -qE 'LLVM_INLINER_MODEL_PATH(:[^=]+)?=autogenerate' CMakeCache.txt || \
+    { echo "FATAL: Fell into autogenerate mock or CMakeCache missing (trap 2)"; exit 1; }
+  test -f CMakeCache.txt && \
+    ! grep -qE 'LLVM_RAEVICT_MODEL_PATH(:[^=]+)?=autogenerate' CMakeCache.txt || \
+    { echo "FATAL: regalloc fell into autogenerate mock"; exit 1; }
+  # Assertion 3: MLGO runtime is embedded and tf_xla_runtime is not exported.
+  grep -q '^LLVM_MLGO_EXPORT_TF_XLA_RUNTIME:BOOL=OFF$' "${MLGO_BUILD_DIR}/CMakeCache.txt" || \
+    { echo "FATAL: MLGO TensorFlow runtime export is not disabled"; exit 1; }
+  for mlgo_runtime_object in ${MLGO_REQUIRED_RUNTIME_OBJECTS}; do
+    grep -q "xla_runtime_objects/${mlgo_runtime_object}" "${MLGO_BUILD_DIR}/CMakeCache.txt" || \
+      { echo "FATAL: MLGO runtime object is not embedded: ${mlgo_runtime_object}"; exit 1; }
+  done
+  cmake --build . --target tf_xla_runtime || \
+    { echo "FATAL: tf_xla_runtime build failed"; exit 1; }
+  MLGO_PROBE_ROOT="$PWD/mlgo_probe_root"
+  rm -rf "${MLGO_PROBE_ROOT}"
+  mkdir -p "${MLGO_PROBE_ROOT}"
+  DESTDIR="${MLGO_PROBE_ROOT}" cmake --install . \
+    --prefix /usr --component tf_xla_runtime --verbose
+  ! find "${MLGO_PROBE_ROOT}" -name libtf_xla_runtime.a | grep -q . || \
+    { echo "FATAL: tf_xla_runtime archive should not be installed"; exit 1; }
+%endif
+  echo MLGO_VERIFY_CONFIGURE_PASS
+  exit 86
+%endif
+
+# Full build using ninja (already in build/ directory after cd build)
+ninja -j %{mlgo_build_jobs}
+
+%install
+%{_libdir}/libRemarks.so*
+%{_prefix}/bin/amdgpu-arch
+%{_prefix}/bin/nvptx-arch
+
+%files static-devel
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%{_libdir}/lib*.a
+
+%files -n libllvm
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%{_libdir}/libLLVM*.so*
+
+%files -n clang
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%{_prefix}/bin/clang
+%{_prefix}/bin/clang++
+%{_prefix}/bin/%{_host}-clang
+%{_prefix}/bin/%{_host}-clang++
+%{_prefix}/bin/clang-%{llvm_version}
+%{_prefix}/bin/clang++-%{llvm_version}
+%{_prefix}/bin/clang-apply-replacements
+%{_prefix}/bin/clang-change-namespace
+%{_prefix}/bin/clang-check
+%{_prefix}/bin/clang-cl
+%{_prefix}/bin/clang-cpp
+%{_prefix}/bin/clang-doc
+%{_prefix}/bin/clang-extdef-mapping
+%{_prefix}/bin/clang-move
+%{_prefix}/bin/clang-refactor
+%{_prefix}/bin/clang-scan-deps
+%{_prefix}/bin/clang-format
+%{_prefix}/bin/clang-include-cleaner
+%{_prefix}/bin/clang-include-fixer
+%{_prefix}/bin/clang-offload-bundler
+%{_prefix}/bin/clang-query
+%{_prefix}/bin/clang-sycl-linker
+%{_prefix}/bin/clang-reorder-fields
+%{_prefix}/bin/clang-tidy
+%{_prefix}/bin/clang-installapi
+%{_prefix}/bin/clang-nvlink-wrapper
+%{_prefix}/bin/clangd
+%{_prefix}/bin/git-clang-format
+%{_prefix}/bin/find-all-symbols
+%{_prefix}/bin/modularize
+%{_libdir}/clang/%{llvm_version}/include/*
+%{_libdir}/libclang*.so*
+%{_libdir}/cmake/clang/*
+%{_prefix}/libexec/analyze-c++
+%{_prefix}/libexec/analyze-cc
+%{_prefix}/libexec/c++-analyzer
+%{_prefix}/libexec/ccc-analyzer
+%{_prefix}/libexec/intercept-c++
+%{_prefix}/libexec/intercept-cc
+%{_prefix}/bin/clang.cfg
+%{_prefix}/bin/clang++.cfg
+
+%files -n clang-devel
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%{_prefix}/bin/clang-tblgen
+%{_prefix}/include/clang/*
+%{_prefix}/include/clang-c/*
+%{_prefix}/include/clang-tidy/*
+
+%files -n lldb
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%{sdk_bin_dir}/lldb
+%{_prefix}/bin/lldb
+%{sdk_bin_dir}/lldb-argdumper
+%{sdk_bin_dir}/lldb-server
+%{sdk_lib_dir}/liblldb*.so*
+%{_prefix}/bin/lldb-mcp
+
+%files -n lldb-devel
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%{_prefix}/include/lldb/*
+%{_libdir}/liblldb*.so*
+%{_prefix}/bin/lldb-tblgen
+
+%files -n compiler-rt
+%manifest %{name}.manifest
+# 静态库与 bpftrace-static 夜间交接
+
+总状态 **PARTIAL**：已经生成两架构 libc++ 静态 bpftrace 候选，尚未证明功能等价，
+不作为可以替换发布资产的结论。只提交项目证据，不推 Gerrit 或包仓。
+
+建议阅读顺序：
+
+1. `STATUS.md`：四阶段状态、时间、执行期间的进度与技术性修正。
+2. `W1_REPORT.md`、`W2_REPORT.md`：新静态运行时/Clang 库、条件保护与实际验证范围。
+3. `W3_REPORT.md`：两个候选、真实 GCC 回退构建、哈希对照及未闭合项。
+4. `W4_REPORT.md`：旧 libclang 归档的引入提交、GCC 注记与生产配方线索。
+5. `KNOWN_ITEMS.md`、`QUESTIONS.md`：需要保持单列和人工确认的内容。
+
+`candidate_specs/` 是本夜临时 spec、脚本的交付副本；真正候选和二进制位于
+工作区 `tmp/NIGHT_0917/`。原源码仓只读，不把历史脏工作树当本轮修改。
+大型构建根、RPM 与二进制未提交；其精确路径/哈希在各 JSON 中。
+
+`raw/` 记录命令、退出码、起止时间和 stdout/stderr；构建 stdout 另有
+`*.build.log`，实际命令/监控器哈希在 `*.events.jsonl`。
+重跑的日志保存为 `previous-N`；有一次早期配置日志覆盖已单独标为恢复记录。
+最终进程核查的对外记录只保留本任务匹配行，不提交无关进程命令参数；
+首次未过滤的辅助记录隔离在 tmp/NIGHT_0917/private-audit/，未纳入归档。
+`*.executed-vN.py` / `*.executed-vN.sh` 保留旧执行版本，不覆盖历史失败输出。
+
+大型符号/字符串输出和 link map 无损压缩保存。`COMPRESSED_OUTPUTS.tsv` 给出
+压缩前路径、字节数、SHA256 与交付路径；`SHA256SUMS.tsv` 核对实际归档文件。
+例如 `gzip -cd bpftrace-x86_64-symbols.txt.gz` 可复核原 nm 输出，不需要重做构建。
+
+资源：单编译任务、-j1、nice19、ionice3；`ulimit -v 16148878` KiB（每进程
+地址空间限额，为宿主总内存一半，不声称是 cgroup 聚合 RSS 限额）。
+各阶段截止时间按原始开始时间写入监控事件，没有重置或放宽。
+状态表用时为阶段开始至结果汇总时刻；提交/归档另有 raw/ 时间记录。
+目录日期标签沿用任务书；实际执行时间以 raw/ 和事件中的 +08:00 时间戳为准。
+armv7l 板子离线，不连接；aarch64 命令执行为 QEMU 用户态。
+[
+  "bwrap",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R96-aarch64-llvm-final/local/BUILD-ROOTS/scratch.aarch64.0",
+  "/",
+  "--dev",
+  "/dev",
+  "--proc",
+  "/proc",
+  "--tmpfs",
+  "/tmp",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/NIGHT_0917",
+  "/tmp/night",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/BUILD_W1BC_0911/target-fetch",
+  "/tmp/night/source",
+  "--setenv",
+  "PATH",
+  "/bin:/usr/bin:/sbin:/usr/sbin",
+  "--setenv",
+  "CMAKE_BUILD_PARALLEL_LEVEL",
+  "1",
+  "--setenv",
+  "LC_ALL",
+  "C",
+  "--",
+  "rpmbuild",
+  "-bb",
+  "--target",
+  "aarch64",
+  "--define",
+  "_topdir /tmp/night/finish_validation/rpm",
+  "--define",
+  "_smp_mflags -j1",
+  "--define",
+  "_smp_build_ncpus 1",
+  "--define",
+  "mlgo_build_jobs 1",
+  "--define",
+  "_host aarch64-tizen-linux-gnu",
+  "--define",
+  "_toolchain clang",
+  "--define",
+  "toolchain_is() %((echo \"%_toolchain\" | %{__grep} -qE \"%{1}\") && echo 1 || echo 0)",
+  "/tmp/night/finish_validation/rpm/SPECS/libcxx-runtimes.spec"
+]lrwxrwxrwx 1 toolchain toolchain 165 Sep 11 23:55 tmp/BUILD_W2_0912/llvm-local-repo/aarch64/clang-22.1.8-108.2.aarch64.rpm -> /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W1-0908-llvm-aarch64/local/repos/tizen_unified_standard/aarch64/RPMS/clang-22.1.8-108.2.aarch64.rpm
+lrwxrwxrwx 1 toolchain toolchain 167 Sep 11 23:55 tmp/BUILD_W2_0912/llvm-local-repo/aarch64/libllvm-22.1.8-108.2.aarch64.rpm -> /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W1-0908-llvm-aarch64/local/repos/tizen_unified_standard/aarch64/RPMS/libllvm-22.1.8-108.2.aarch64.rpm
