@@ -1,0 +1,79 @@
+tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/cache/92b056697f250e5b095232782601f8c6/clang-accel-x86_64-aarch64-0.4-1.1.aarch64.rpm
+tmp/BUILD_W1B_0909/rpms/x86_64_candidate/clang-22.1.8-111.1.x86_64.rpm
+tmp/BUILD_W1B_0909/rpms/x86_64_candidate/libomp-22.1.8-111.1.x86_64.rpm
+tmp/BUILD_W1B_0909/rpms/x86_64_candidate/libomp-devel-22.1.8-111.1.x86_64.rpm
+tmp/BUILD_W1B_0909/rpms/x86_64_candidate/llvm-22.1.8-111.1.x86_64.rpm
+tmp/BUILD_W1B_0909/rpms/x86_64_candidate/lldb-22.1.8-111.1.x86_64.rpm
+tmp/BUILD_W1B_0909/rpms/x86_64_candidate/libllvm-22.1.8-111.1.x86_64.rpm
+tmp/BUILD_W1B_0909/rpms/x86_64_candidate/clang-devel-22.1.8-111.1.x86_64.rpm
+tmp/BUILD_W1B_0909/rpms/x86_64_candidate/llvm-devel-22.1.8-111.1.x86_64.rpm
+tmp/BUILD_W1B_0909/rpms/x86_64_candidate/lldb-devel-22.1.8-111.1.x86_64.rpm
+tmp/BUILD_W1B_0909/rpms/x86_64_candidate/llvm-static-devel-22.1.8-111.1.x86_64.rpm
+tmp/BUILD_W1_0909/baseline_gcc_rpms/libllvm-22.1.8-2.3.armv7l.rpm
+tmp/BUILD_W1_0909/baseline_gcc_rpms/libllvm-22.1.8-2.3.x86_64.rpm
+tmp/BUILD_W1_0909/baseline_gcc_rpms/libllvm-22.1.8-2.3.aarch64.rpm
+tmp/BUILD_W1_0909/baseline_rpms/libllvm-22.1.8-2.3.armv7l.rpm
+tmp/BUILD_W1_0909/baseline_rpms/libllvm-22.1.8-2.3.x86_64.rpm
+tmp/BUILD_W1_0909/baseline_rpms/libllvm-22.1.8-2.3.aarch64.rpm
+92b056697f250e5b095232782601f8c6
+298
+# 低资源续跑结论：PARTIAL
+
+## 结果与尚待裁决之处
+
+LLVM armv7l libc++输入已完成；bcc-tools六格闭合并已推送。
+bpftrace四格完整构建、源码程序及实际LLVM/BCC提供方检查均通过，
+但包内另有未经重编的预编译static资产。它的内嵌C++标准库未观测，
+推送门禁范围尚待人工确认。因此本轮不提交、不推送bpftrace，
+总状态为10/11已完成并推送，而非11/11。
+
+## 一、恢复前实际检查与资源
+
+原构建树内实际执行CMake配置检查，内外层退出码均0（raw/045）。
+实际输出如下，完整编译命令保存在build-w2c-confirm-config.build.log：
+
+```text
+FIXED_PATH=/bin:/usr/bin:/sbin:/usr/sbin
+CMAKE_CXX_COMPILER:UNINITIALIZED=/bin/armv7l-tizen-linux-gnueabi-clang++
+clang version 22.1.8
+set(CMAKE_CXX_COMPILER_ID "Clang")
+set(CMAKE_CXX_COMPILER_VERSION "22.1.8")
+LLVM_ENABLE_LIBCXX:BOOL=ON
+COMPILER_AND_LIBCXX_CONFIG_CHECK=PASS
+```
+
+生成的实际编译命令含`-stdlib=libc++`。配置、续建脚本均写死
+`PATH=/bin:/usr/bin:/sbin:/usr/sbin`，不依赖交互shell。
+
+全部新增构建保持jobs=1、nice=19、ionice class=3，未放宽门禁。
+systemd用户scope：总内存32297756 KiB，请求MemoryMax为
+16536451072字节，实际memory.max按页取整为16536449024字节。
+已在运行中核查scope后代的实际优先级及限额，见raw/050、097、105、
+131、137、147、152，不仅是脚本声明。
+
+每500目标探测一次；LLVM共执行14次（500至7000），全部通过。
+早期追加三次读写检查约20.45、20.58、18.90秒，均低于30秒，未冻结。
+本轮没有触发10分钟暂停：连续三次暂停后的行为为NOT_OBSERVED；
+独立freezer校准与早期修正记录保留。bcc/bpftrace各次目标数未达到500，
+不虚构其“每500目标”额外探测。
+
+计时从2026-09-15 15:51:49 +08重新开始，最后构建于20:20:24完成，
+构建阶段4小时28分35秒，早于十二小时截止。报告、归档收尾时间另留日志。
+
+## 二、LLVM输入及失误造成的重编
+
+仅重建armv7l；未重建aarch64/x86_64。LLVM构建15:53:38至19:10:03，
+11785秒（3小时16分25秒），Ninja7146/7146，内外层退出0，写出22个RPM。
+12个非调试RPM用于本地输入，SHA256见llvm_armv7l_rpms.tsv。
+最终RPM中的libLLVM.so.22.1依赖libc++.so.1、libc++abi.so.1、libgcc_s.so.1，
+不依赖libstdc++.so.6；动态符号反修饰输出中std::__1为5646行、
+std::__cxx11为0行。这是该ELF动态符号行计数，不是整个资产符号数。
+证据：raw/089–090、llvm_input_verification.json及readelf原文。
+本轮没有重跑已通过的MLGO运行时验证，也没有新推送LLVM。
+
+此前错误由我启动续建时未固定PATH引起：/bin编译器路径被替换为/usr/bin，
+CMake缓存重置后libc++开关关闭、构建配置偏离。发现后停止，恢复并取得
+人工确认后才重跑；错误不能改写为机器故障。历史REPORT.md原样保留。
+
+实测重编统计（raw/085–087，Ninja前后快照与统计脚本均归档）：
+
