@@ -1,6 +1,6 @@
 # 原资产条件性补测：PARTIAL
 
-**2026-09-17 续跑：** 最新检查点见 [13:46 状态与记录器事故说明](resume_0917/checkpoint_1346/STATUS.md)。LLVM aarch64 首轮 7546/7546、完整 rpmbuild 已于 13:37 返回 0；但外层记录器重复启动命令，部分 RPM 被再次写入，现已隔离混合集合并以一次性记录器重写包。尚未把最终交付集标为验收通过。bpftrace 两架构三路径 RPM 与板上验证仍未完成；没有包仓推送。
+**2026-09-17 续跑：** [LLVM aarch64 完整 RPM 与载荷核验已完成](resume_0917/AARCH64_RPM_RESULT.md)：最终完整 rpmbuild 于 14:17 返回 0，12 包摘要检查通过；RPM 内 libclang.a 有 libc++ 符号痕迹，libLLVM 依赖 libc++、不依赖 libstdc++。记录器重复执行事故、隔离与重写包过程完整保留在 [当前状态](resume_0917/STATUS.md) 和 `aarch64_complete_1417/`。bpftrace 两架构三路径 RPM 与板上验证仍未完成；没有包仓推送。
 
 以下正文及 [FINAL_RESULT.md](FINAL_RESULT.md) 是上轮结束记录，保留历史，不代表 09-17 的最新进度。当前固定截止为 09-17 22:48:19 +08，不因技术性重跑顺延。
 
