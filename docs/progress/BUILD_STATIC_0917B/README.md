@@ -1,6 +1,8 @@
 # 原资产条件性补测：PARTIAL
 
-**最新结束状态以 [FINAL_RESULT.md](FINAL_RESULT.md) 为准：构建已在原截止前停止，新增完整日志归档受 I/O 阻塞，尚未全部上传。** 原生工具集核对报告中的历史“正在续建”不是当前状态。
+**2026-09-17 续跑：** 昨日结束状态见 [FINAL_RESULT.md](FINAL_RESULT.md)；今日已通过磁盘、I/O 与资源开工门禁，续跑材料将归入 `resume_0917/`。完整 RPM 与板上验证尚未完成，不把昨日结束状态或今日开工核查写成验收通过。
+
+昨日未上传的增量证据现已补齐 269 个文件，见 `NATIVE_FINAL_MANIFEST.json`。日志文件经过上一轮运行脚本轮转；原检查点提交中的同名构建日志另存为 `llvm-aarch64-native-rpm.archived-at-8e5b4fc1.build.log`，保留其原文，不混成同一次执行。
 
 ## 本轮状态
 
