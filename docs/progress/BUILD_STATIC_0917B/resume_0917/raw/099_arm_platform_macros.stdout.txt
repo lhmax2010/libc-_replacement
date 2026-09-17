@@ -1,0 +1,193 @@
+%define keepstatic 1
+
+# MLGO AOT support for LLVM MLGO (Ahead-of-Time compilation)
+# TODO: switch back to a project_config-controlled macro after MLGO is enabled
+# for all required arches.
+# %%bcond_with mlgo
+%ifarch armv7l aarch64 x86_64
+%bcond_without mlgo
+%endif
+
+%if %{defined _toolchain}
+%define _toolchain_override clang
+%define llvm_release_build 0
+%else
+%define llvm_release_build 1
+%endif
+
+%if %{defined _toolchain}
+%if %{toolchain_is clang}
+%define build_with_libcxx 1
+%endif
+%endif
+
+%define llvm_version 22
+
+%define sdk_install_prefix /home/owner/share/tmp/sdk_tools/lldb
+%define sdk_bin_dir %{sdk_install_prefix}/bin
+%define sdk_lib_dir %{sdk_install_prefix}/%{_lib}
+
+%if 0%{llvm_release_build}
+# Disable debug packages building
+%define debug_package %{nil}
+%define __debug_install_post %{_rpmconfigdir}/find-debuginfo.sh %{?_find_debuginfo_opts} %{?_find_debuginfo_strip_opts} %{?_find_debuginfo_ko_strip_opts} "%{_builddir}/%{?buildsubdir}"\
+	rm -rf "%{buildroot}/usr/lib/debug"\
+	rm -rf "%{buildroot}/usr/src/debug"
+%endif
+
+Name:      llvm
+Summary:   The LLVM Project is a collection of modular and reusable compiler and toolchain technologies
+Version:   22.1.8
+Release:   1
+Group:     Development/Toolchain
+License:   NCSA
+Source0:   %{name}-%{version}.tar.gz
+Source1001: llvm.manifest
+
+# Bundled MLGO AOT assets for the inliner and regalloc models.
+# These override build-time AOT compilation, avoiding the need for TensorFlow
+# Python in GBS.
+Source1002: mlgo_arm_model.tar.gz
+Source1003: mlgo_aarch_model.tar.gz
+Source1004: mlgo_x86_model.tar.gz
+# TensorFlow 2.18 AOT assets rebuilt with libc++ for the toolchain build.
+# The original TensorFlow 2.15/libstdc++ assets remain the default elsewhere.
+Source1005: mlgo_arm_model_libcxx_tf218.tar.gz
+Source1006: mlgo_aarch_model_libcxx_tf218.tar.gz
+Source1007: mlgo_x86_model_libcxx_tf218.tar.gz
+
+%{!?mlgo_build_jobs: %define mlgo_build_jobs 6}
+%{!?mlgo_verify_configure_only: %define mlgo_verify_configure_only 0}
+
+BuildRequires: cmake
+BuildRequires: python3
+BuildRequires: python3-devel
+BuildRequires: patchelf
+BuildRequires: binutils-devel
+BuildRequires: libxml2-devel
+%if 0%{llvm_release_build}
+BuildRequires: sed
+%endif
+BuildRequires: ninja
+%if 0%{?build_with_libcxx}
+BuildRequires: libc++-devel
+BuildRequires: libc++abi-devel
+%endif
+
+
+Requires: libllvm = %{version}-%{release}
+
+%description
+LLVM is a compiler infrastructure designed for compile-time, link-time, runtime,
+and idle-time optimization of programs from arbitrary programming languages.
+LLVM is written in C++ and has been developed since 2000 at the University of
+Illinois and Apple. It currently supports compilation of C and C++ programs,
+using front-ends derived from GCC 4.0.1. A new front-end for the C family of
+languages is in development. The compiler infrastructure
+includes mirror sets of programming tools as well as libraries with equivalent
+functionality.
+
+%package devel
+Summary: Libraries and Header Files for LLVM %{version}
+Requires: %{name} = %{version}
+
+%description devel
+This package contains library and header files needed to develop
+new native programs that use the LLVM infrastructure.
+
+%package static-devel
+Summary: Static libraries for LLVM
+Requires: %{name} = %{version}
+
+%description static-devel
+This package contains static libraries needed to develop new
+native programs that use the LLVM infrastructure.
+
+%package -n libllvm
+Summary: LLVM shared libraries
+
+%description -n libllvm
+Shared libraries for the LLVM compiler infrastructure.
+drwxr-xr-x 2 root root 4096 Sep 15 13:07 tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/usr/lib/rpm/platform/armv7l-linux
+# Per-platform rpm configuration file.
+
+#==============================================================================
+# ---- per-platform macros.
+#
+%_arch			arm
+%_build_arch		arm
+%_vendor		tizen
+%_os			linux
+%_gnu			-gnueabi
+%_target_platform	%{_target_cpu}-%{_vendor}-%{_target_os}
+%optflags		-O2 -g -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=vfpv3 -mfloat-abi=softfp -D__SOFTFP__
+
+%__isa_name		armv7l
+%__isa_bits		32
+%__isa			%{__isa_name}-%{__isa_bits}
+
+%__abi			%{nil}
+
+# The default transaction color. This value is a set of bits to
+# determine file and dependency affinity for this arch.
+#	0	uncolored (i.e. use only arch as install hint)
+#	1	Elf32 permitted
+#	2	Elf64 permitted
+%_transaction_color	0
+
+#==============================================================================
+# ---- configure macros.
+#
+%_prefix		/usr
+%_exec_prefix		/usr
+%_bindir		/usr/bin
+%_sbindir		/usr/sbin
+%_libexecdir		/usr/libexec
+%_datarootdir		%{_prefix}/share
+%_datadir		/usr/share
+%_sysconfdir		/etc
+%_sharedstatedir	/usr/com
+%_localstatedir		/var
+%_lib			lib
+%_libdir		/usr/lib
+%_includedir		/usr/include
+%_oldincludedir		/usr/include
+%_infodir		/usr/share/info
+%_mandir		/usr/share/man
+%_initddir		%{_sysconfdir}/rc.d/init.d
+# Deprecated misspelling, present for backwards compatibility.
+%_initrddir		%{_initddir}
+%_rundir		/run
+
+%_defaultdocdir		%{_datadir}/doc
+
+# Maximum number of CPU's to use when building, 0 for unlimited.
+#%_smp_ncpus_max 0
+%_smp_mflags %([ -z "$RPM_BUILD_NCPUS" ] \\\
+	&& RPM_BUILD_NCPUS="`/usr/bin/getconf _NPROCESSORS_ONLN`"; \\\
+        ncpus_max=%{?_smp_ncpus_max}; \\\
+        if [ -n "$ncpus_max" ] && [ "$ncpus_max" -gt 0 ] && [ "$RPM_BUILD_NCPUS" -gt "$ncpus_max" ]; then RPM_BUILD_NCPUS="$ncpus_max"; fi; \\\
+        if [ "$RPM_BUILD_NCPUS" -gt 1 ]; then echo "-j$RPM_BUILD_NCPUS"; fi)
+
+#==============================================================================
+# ---- Build policy macros.
+#
+#---------------------------------------------------------------------
+#	Expanded at end of %install scriptlet.
+#
+
+%__arch_install_post   %{nil}
+
+%__os_install_post    \
+    %{_rpmconfigdir}/brp-compress \
+    %{_rpmconfigdir}/brp-strip %{__strip} \
+    %{_rpmconfigdir}/brp-strip-static-archive %{__strip} \
+    %{_rpmconfigdir}/brp-strip-comment-note %{__strip} %{__objdump} \
+%{nil}
+
+%__spec_install_post\
+    %{?__debug_package:%{__debug_install_post}}\
+    %{__arch_install_post}\
+    %{__os_install_post}\
+%{nil}
+

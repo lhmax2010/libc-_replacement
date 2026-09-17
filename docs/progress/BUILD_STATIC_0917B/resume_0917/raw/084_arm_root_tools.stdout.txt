@@ -1,0 +1,320 @@
+lrwxrwxrwx 1 root root      7 Sep 13 03:28 tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/armv7l-tizen-linux-gnueabi-clang++ -> clang++
+-rwxr-xr-x 1 root root 182308 Sep 13 03:39 tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/ninja
+-rwxr-xr-x 1 root root  27520 Sep 13 03:42 tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/rpmbuild
+drwxr-xr-x 4 root root 4096 Sep 15 13:07 tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/emul
+%define llvm_major 22
+%define llvm_version 22.1.8
+
+%define build_static_libcxx 0
+%if %{defined _toolchain}
+%if %{toolchain_is clang}
+%define build_static_libcxx 1
+%endif
+%endif
+%if %{build_static_libcxx}
+%define libcxx_static ON
+%else
+%define libcxx_static OFF
+%endif
+
+Name:           libcxx-runtimes
+Version:        22.1.8
+Release:        1
+ExclusiveArch:  armv7l aarch64 x86_64
+Summary:        LLVM libc++ and libc++abi runtimes
+Group:          Development/Toolchain
+License:        Apache-2.0 WITH LLVM-exception
+URL:            https://llvm.org/
+Source0:        llvm-%{version}.tar.gz
+Source1:        libcxx-llvm22.map
+Source2:        libcxx-runtimes.manifest
+Source3:        SOURCE_PROVENANCE
+
+BuildRequires:  clang = %{version}
+BuildRequires:  cmake
+BuildRequires:  ninja
+BuildRequires:  python3
+BuildRequires:  glibc-devel
+BuildRequires:  libgcc
+
+%description
+Source package for the LLVM libc++ standard library and libc++abi runtime.
+The libraries use libgcc_s as the unwinder. Existing interfaces retain LLVM_22;
+condition-variable waits also provide unwind-capable LLVM_22_TIZEN_1 defaults.
+
+%package -n libc++
+Summary:        LLVM C++ standard library runtime
+Requires:       libc++abi = %{version}-%{release}
+
+%description -n libc++
+Shared LLVM libc++ runtime, built against libc++abi and libgcc_s.
+
+%package -n libc++-devel
+Summary:        LLVM C++ standard library headers and development files
+Requires:       libc++ = %{version}-%{release}
+Requires:       libc++abi-devel = %{version}-%{release}
+
+%description -n libc++-devel
+Headers, ABI linker script, module metadata, and development files for LLVM
+libc++.
+
+%package -n libc++abi
+Summary:        LLVM C++ ABI runtime
+
+%description -n libc++abi
+Shared LLVM libc++abi runtime using libgcc_s rather than LLVM libunwind.
+
+%package -n libc++abi-devel
+Summary:        LLVM C++ ABI development files
+Requires:       libc++abi = %{version}-%{release}
+
+%description -n libc++abi-devel
+Linker name for LLVM libc++abi.  Its public headers are installed in the
+common c++/v1 tree shipped by libc++-devel.
+
+%prep
+%setup -q -n llvm-%{version}
+cp %{SOURCE2} .
+cp %{SOURCE3} .
+
+%build
+%ifarch aarch64
+CFLAGS="$(printf '%%s\n' "$CFLAGS" | sed 's/-mtune=cortex-a57\.cortex-a53/-mtune=cortex-a53/g')"
+CXXFLAGS="$(printf '%%s\n' "$CXXFLAGS" | sed 's/-mtune=cortex-a57\.cortex-a53/-mtune=cortex-a53/g')"
+export CFLAGS CXXFLAGS
+%endif
+
+mkdir -p build
+cd build
+
+cmake -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=%{_host}-clang \
+  -DCMAKE_CXX_COMPILER=%{_host}-clang++ \
+  -DCMAKE_ASM_COMPILER=%{_host}-clang \
+  -DCMAKE_C_COMPILER_TARGET=%{_host} \
+  -DCMAKE_CXX_COMPILER_TARGET=%{_host} \
+  -DCMAKE_ASM_COMPILER_TARGET=%{_host} \
+  -DCMAKE_C_FLAGS="$CFLAGS --rtlib=libgcc" \
+  -DCMAKE_CXX_FLAGS="$CXXFLAGS --rtlib=libgcc" \
+  -DCMAKE_ASM_FLAGS="$CFLAGS" \
+  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--version-script=%{SOURCE1} -Wl,-z,now --rtlib=libgcc" \
+  -DCMAKE_EXE_LINKER_FLAGS="--rtlib=libgcc" \
+  -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+  -DCMAKE_INSTALL_LIBDIR=%{_lib} \
+  -DLIBCXX_INSTALL_LIBRARY_DIR=%{_lib} \
+  -DLIBCXXABI_INSTALL_LIBRARY_DIR=%{_lib} \
+  -DLLVM_ENABLE_RUNTIMES="libcxxabi;libcxx" \
+  -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+  -DLLVM_INCLUDE_TESTS=OFF \
+  -DLIBCXX_ENABLE_SHARED=ON \
+  -DLIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS=ON \
+  -DLIBCXX_ENABLE_STATIC=%{libcxx_static} \
+  -DLIBCXX_INSTALL_SHARED_LIBRARY=ON \
+  -DLIBCXX_INSTALL_STATIC_LIBRARY=%{libcxx_static} \
+  -DLIBCXX_CXX_ABI=libcxxabi \
+  -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF \
+  -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=ON \
+  -DLIBCXX_USE_COMPILER_RT=OFF \
+  -DLIBCXXABI_ENABLE_SHARED=ON \
+  -DLIBCXXABI_ENABLE_STATIC=%{libcxx_static} \
+  -DLIBCXXABI_INSTALL_SHARED_LIBRARY=ON \
+  -DLIBCXXABI_INSTALL_STATIC_LIBRARY=%{libcxx_static} \
+  -DLIBCXXABI_USE_COMPILER_RT=OFF \
+  -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
+  -DLIBCXXABI_ENABLE_STATIC_UNWINDER=OFF \
+  -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY=OFF \
+  -DLIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY=OFF \
+  -DLIBCXXABI_ENABLE_NEW_DELETE_DEFINITIONS=ON \
+  -DLIBCXX_INCLUDE_TESTS=OFF \
+  -DLIBCXXABI_INCLUDE_TESTS=OFF \
+  -DLIBCXX_INCLUDE_BENCHMARKS=OFF \
+  ../runtimes
+
+cmake --build . --target cxxabi cxx cxx_experimental %{?_smp_mflags}
+
+%install
+cd build
+DESTDIR=%{buildroot} cmake --install .
+
+install -d %{buildroot}%{_datadir}/doc/%{name}
+install -m 0644 ../SOURCE_PROVENANCE \
+  %{buildroot}%{_datadir}/doc/%{name}/SOURCE_PROVENANCE
+
+%files -n libc++
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%license libcxx/LICENSE.TXT
+%{_libdir}/libc++.so.1*
+
+%files -n libc++-devel
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%{_includedir}/c++/v1
+%{_libdir}/libc++.so
+%{_libdir}/libc++experimental.a
+%if %{build_static_libcxx}
+%{_libdir}/libc++.a
+%endif
+%{_libdir}/libc++.modules.json
+%{_datadir}/libc++/v1
+%{_datadir}/doc/%{name}/SOURCE_PROVENANCE
+
+%files -n libc++abi
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%license libcxxabi/LICENSE.TXT
+%{_libdir}/libc++abi.so.1*
+
+%files -n libc++abi-devel
+%manifest %{name}.manifest
+%defattr(-,root,root,-)
+%{_libdir}/libc++abi.so
+%if %{build_static_libcxx}
+%{_libdir}/libc++abi.a
+%endif
+
+%changelog
+* Tue Aug 04 2026 Toolchain ABI Team <toolchain@example.invalid> 22.1.8-1
+- Migrate to the verbatim platform llvm-22.1.8 source tarball and LLVM_22 symbol node.
+- Preserve the adjudicated 21.1.1 multi-architecture packaging decisions.
+
+* Sat Jul 25 2026 Toolchain ABI Team <toolchain@example.invalid> 21.1.1-2
+- Build armv7l, aarch64, and x86_64 repository-candidate runtimes.
+
+"""Resume the existing RPM build; enforce actual cgroup, serial jobs and I/O gates."""
+import datetime, hashlib, json, os, re, signal, subprocess, threading, time
+from pathlib import Path
+
+ROOT = Path('/home/toolchain/development/libc++_replacement')
+os.chdir(ROOT)
+OUT = ROOT / 'progress/BUILD_STATIC_0917B/resume_0917'
+DEADLINE = datetime.datetime.fromisoformat('2026-09-17T22:48:19+08:00').timestamp()
+SCOPE = 'build-static-0917-resume.scope'
+MEM = int(next(x.split()[1] for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemTotal:'))) * 1024 // 2 // 4096 * 4096
+os.environ['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/toolchain/.local/bin'
+events = (OUT/'events.jsonl').open('a', buffering=1)
+def note(event, **kw):
+    row = dict(time=datetime.datetime.now().astimezone().isoformat(), event=event, **kw)
+    events.write(json.dumps(row)+'\n')
+    print(json.dumps(row), flush=True)
+def query(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    note('command', command=cmd, exitcode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+    if r.returncode: raise RuntimeError('resource query failed')
+    return r.stdout
+def resources(pid):
+    def state():
+        fields=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
+        return fields[0],fields[19]
+    before=state()
+    if before[0]=='Z':
+        note('resource_not_observed_exited',pid=pid,state=before)
+        return None
+    cg = next(x.split(':',2)[2] for x in query(['cat',f'/proc/{pid}/cgroup']).splitlines() if x.startswith('0::'))
+    assert SCOPE in cg
+    value = query(['cat','/sys/fs/cgroup'+cg+'/memory.max']).strip()
+    assert int(value) == MEM
+    io=query(['ionice','-p',str(pid)]).strip()
+    priority=os.getpriority(os.PRIO_PROCESS,pid)
+    after=state()
+    if after[0]=='Z' or before[1]!=after[1]:
+        note('resource_not_observed_exited',pid=pid,before=before,after=after,ionice=io)
+        return None
+    assert io == 'idle'
+    assert priority == 19
+    note('resource_verified',pid=pid,cgroup=cg,memory_max=int(value),nice=19,ionice='idle')
+    return cg
+cg = resources(os.getpid())
+cmd = json.loads((OUT.parent/'native_rpm_serial_command.json').read_text())
+note('start',command=cmd,deadline=DEADLINE,script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+log=OUT/'llvm-aarch64.log'
+if log.exists():
+    backup=OUT/('llvm-aarch64.stopped-'+datetime.datetime.now().strftime('%H%M%S')+'.log')
+    log.rename(backup)
+    note('previous_log_preserved',path=str(backup))
+stream = log.open('xb',buffering=0)
+proc = subprocess.Popen(cmd,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+def send(sig):
+    try: os.killpg(proc.pid,sig)
+    except ProcessLookupError: pass
+def hard_stop():
+    send(signal.SIGTERM); send(signal.SIGCONT)
+    time.sleep(15)
+    if proc.poll() is None: send(signal.SIGKILL)
+timer = threading.Timer(max(0,DEADLINE-time.time()-20),hard_stop)
+timer.daemon=True; timer.start()
+def stop(reason):
+    send(signal.SIGTERM); send(signal.SIGCONT)
+    note('stop',reason=reason)
+    try: proc.wait(timeout=15)
+    except subprocess.TimeoutExpired: send(signal.SIGKILL); proc.wait()
+    raise SystemExit(124)
+def probe():
+    testcmd=['timeout','-k','2s','30s','python3',str(OUT.parent/'io_probe.py')]
+    t=time.monotonic()
+    r=subprocess.run(testcmd,capture_output=True,text=True)
+    note('io_probe',command=testcmd,exitcode=r.returncode,seconds=time.monotonic()-t,stdout=r.stdout,stderr=r.stderr)
+    return r.returncode==0
+reader=(OUT/'llvm-aarch64.log').open(errors='replace')
+verified=set(); target=0; next_probe=500; last=0; hourly=0
+try:
+    while proc.poll() is None:
+        if time.time()>=DEADLINE-20: stop('fourteen-hour deadline')
+        for rawpid in Path('/sys/fs/cgroup'+cg+'/cgroup.procs').read_text().split():
+            pid=int(rawpid)
+            if pid in verified: continue
+            try:
+                args=[x.decode(errors='replace') for x in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0') if x]
+                cwd=os.readlink(f'/proc/{pid}/cwd')
+            except (FileNotFoundError,ProcessLookupError,PermissionError): continue
+            if not args: continue
+            ninja=Path(args[0]).name in ('ninja','ninja.real') or ('qemu-' in args[0] and any(x.endswith('/ninja.real') for x in args))
+            if not ninja or any(x in args for x in ('-t','--version','--help')): continue
+            one='-j1' in args or any(args[i:i+2]==['-j','1'] for i in range(len(args)-1))
+            if not one: stop('observed Ninja not serial')
+            try:
+                checked=resources(pid)
+                if checked is None:
+                    verified.add(pid)
+                    continue
+            except (FileNotFoundError,ProcessLookupError):
+                note('resource_not_observed_exited',pid=pid)
+                continue
+            except RuntimeError:
+                if not Path(f'/proc/{pid}').exists():
+                    note('resource_not_observed_exited',pid=pid)
+                    continue
+                stop('actual Ninja resource query failed')
+            except AssertionError:
+                stop('actual live Ninja resource constraint failed')
+            note('ninja_verified',pid=pid,command=args,cwd=cwd)
+            verified.add(pid)
+        for line in reader.readlines():
+            m=re.search(r'\[(\d+)/(\d+)\]',line)
+            if m: target=max(target,int(m[1]))
+        if target>=next_probe:
+            next_probe=(target//500+1)*500
+            if not probe():
+                send(signal.SIGSTOP); note('paused',completed=target)
+                for attempt in range(1,4):
+                    end=time.time()+600
+                    while time.time()<end:
+                        if time.time()>=DEADLINE-20: stop('deadline during I/O pause')
+                        time.sleep(1)
+                    if probe():
+                        send(signal.SIGCONT); note('resumed',attempt=attempt); break
+                    note('pause_retry_failed',attempt=attempt)
+                else: stop('three consecutive I/O pause retries failed')
+        if time.time()-last>=45:
+            note('running',completed=target); last=time.time()
+        if time.time()-hourly>=3600:
+            with (OUT/'HOURLY_STATUS.md').open('a') as f:
+                f.write(f'\n- {datetime.datetime.now().astimezone().isoformat()}: LLVM aarch64 ongoing, observed progress {target}; no RPM success claimed.\n')
+            hourly=time.time()
+        time.sleep(1)
+    note('finished',exitcode=proc.returncode,completed=target)
+    raise SystemExit(proc.returncode)
+finally:
+    timer.cancel()
+    if proc.poll() is None: hard_stop()
