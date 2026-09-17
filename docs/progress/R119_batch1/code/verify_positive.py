@@ -87,4 +87,10 @@ for s in specs:
     proof['verification_seconds']=time.monotonic()-start
     save(dest/(s['key']+'.json'),proof);results.append({'key':s['key'],'headers':len(proof['header_matches']),'elfs':len(proof['elf_matches']),'includes':len(proof['source_includes'])})
     print(results[-1],flush=True)
-save(dest/'INDEX.json',results)
+# 子集重验不得使既有证明从索引消失。
+index=[]
+for p in sorted(dest.glob('*.json')):
+    obj=json.loads(p.read_text())
+    if not isinstance(obj,dict) or 'spec'not in obj:continue
+    index.append({'key':obj['spec']['key'],'headers':len(obj['header_matches']),'elfs':len(obj['elf_matches']),'includes':len(obj['source_includes'])})
+save(dest/'INDEX.json',index)

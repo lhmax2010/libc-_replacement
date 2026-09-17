@@ -1,11 +1,17 @@
 # LWE 夹具与首批候选定界
 
+最新交付安排：人工已批准仅 `git add`、`git commit`、`git push` 使用普通 I/O 优先级，先提交并推送现有断点。此次不恢复 W1，RESOURCE_STOP 不变。下文“未提交、未推送”“尚待答复”保留为上一次中止时的记录；本次授权、交付边界与记录位置见 [断点交付记录](DELIVERY_RECEIPT.md)。推送成功与否以实际退出码及远端 SHA 核对为准，不在执行前预报成功。
+
 分支 codex/runtime-validation；平台源码只读。W0 先执行，W1 按包族数降序固定 100 行，包族数相同时按 R117 原始 ID 升序，避免选择性挑选。每次定界区分限定覆盖内零命中与不可得；不能将未观测推断为不存在。
 
 | 阶段 | 状态 | 用时 | 产物 |
 | --- | --- | --- | --- |
 | W0 | GNU_CONTROL_FIXED；跨侧矩阵 PARTIAL | 见 W0/SELF_CHECK.json | [报告](W0/REPORT.md) |
-| W1 | IN_PROGRESS；前 25 项复核检查点：13 项 CROSS_PACKAGE，12 项 NOT_OBSERVED；尚非 100 项完成 | 共有扫描时间见 W1/CHECKPOINT.json；人工逐项耗时未记录，不伪造平均 | [前25项检查点](W1/REVIEW_001_025.md)、W1/REVIEW_PROGRESS_100.tsv |
+| W1 | RESOURCE_STOP（资源闸门 20）；原前 25 项 13 项 CROSS_PACKAGE、12 项 NOT_OBSERVED；另闭合第 26 项 atomic，尚非 100 项完成 | 共有扫描时间见 W1/CHECKPOINT.json；人工逐项耗时未记录，不伪造平均 | [中止与断点](W1/RESOURCE_STOP.md)、[前25项检查点](W1/REVIEW_001_025.md) |
+
+本次新增材料的交付状态：**未提交、未推送**。低 I/O 优先级下的 Git 暂存持续等待磁盘，已主动中止（原始记录 `raw/116_*`、`raw/121_*`，暂存进程退出 -15）。既有检查点 `6a5f87c12a16cd3b74b8646ce7b800c8a7f014fd` 已在此前推送；不能将本地新增 atomic 证明和中止记录算入该提交。已询问人工是否允许仅对 Git 操作调整 I/O 优先级，尚待答复。
+
+最后的交付摘要更新同样受 I/O 等待影响，已中止（`raw/125_*` 退出 -15；实际停止记录 `raw/127_*`）。`SHA256.json` 是此前封存视图，**不是包含最后交接修改的完整发布清单**；最终封存与上传均待补齐。扫描、暂存和该摘要更新进程均已退出。
 
 资源闸门 medium 通过；并行度 1、nice 19、ionice idle。尚未连接或占用开发板。两个既有 R115 脏文件保留不动。
 
