@@ -1,0 +1,112 @@
+import csv, datetime, hashlib, json, re, subprocess
+from pathlib import Path
+
+p=Path('progress/BUILD_STATIC_0916B'); t=Path('tmp/NIGHT_0917/finish_validation')
+old=Path('progress/BUILD_NIGHT_0917'); rows=[]
+def run(name,cmd,timeout=90):
+    try:
+        r=subprocess.run(cmd,capture_output=True,text=True,errors='replace',timeout=timeout)
+        row=dict(name=name,command=cmd,exitcode=r.returncode,stdout=r.stdout,stderr=r.stderr)
+    except subprocess.TimeoutExpired as e:
+        row=dict(name=name,command=cmd,exitcode='TIMEOUT',stdout=str(e.stdout),stderr=str(e.stderr))
+    rows.append(row); (p/'w3_commands.json').write_text(json.dumps(rows,indent=2)); print(name,row['exitcode'],flush=True)
+    return row
+c=json.loads((old/'bpftrace-x86_64-commands.json').read_text())['build']; base=c[:c.index('--')]
+inside='/tmp/night/finish_validation'; libs='/tmp/night/builds/runtime-x86_64-libcxx/lib'
+src=t/'condition_cancel_probe.cpp'
+expected=subprocess.check_output(['git','show','2955f679d0be0b7aee96ae49125955940d01467f:docs/progress/R111/code/condition_cancel_probe.cpp'])
+assert src.read_bytes().rstrip()==expected.rstrip()
+(p/'probe_source_identity.json').write_text(json.dumps(dict(revision='2955f679d0be0b7aee96ae49125955940d01467f',source='docs/progress/R111/code/condition_cancel_probe.cpp',source_sha256=hashlib.sha256(expected).hexdigest(),copied_sha256=hashlib.sha256(src.read_bytes()).hexdigest(),only_possible_terminal_newline_difference=True),indent=2))
+common=['x86_64-tizen-linux-gnu-clang++','-std=c++20','-O0','-g','-fno-inline','-stdlib=libc++','-nostdinc++',
+ '-I/tmp/night/builds/runtime-x86_64-libcxx/include/c++/v1',str(inside+'/condition_cancel_probe.cpp'),'-L'+libs,'-pthread','-latomic']
+matrix=[]; summaries=[]
+for mode in ['static','dynamic']:
+    exe=inside+'/cancel-'+mode
+    link=['-Wl,-Map,'+exe+'.map']
+    if mode=='static': link+=['-static-libgcc','-static-libstdc++','-Wl,--start-group',libs+'/libc++.a',libs+'/libc++abi.a','-Wl,--end-group']
+    else: link+=['--rtlib=libgcc','-Wl,-rpath,'+libs,'-lc++abi']
+    r=run(mode+'-compile',base+['--']+common+link+['-o',exe])
+    if r['exitcode']!=0: continue
+    dep=run(mode+'-needed',base+['--','readelf','-d',exe])
+    needed=re.findall(r'Shared library: \[(.*?)\]',dep['stdout'])
+    if mode=='static': assert not any(x in needed for x in ['libc++.so.1','libc++abi.so.1','libgcc_s.so.1','libstdc++.so.6'])
+    else: assert all(x in needed for x in ['libc++.so.1','libc++abi.so.1','libgcc_s.so.1'])
+    run(mode+'-resolved-libraries',base+['--','ldd',exe])
+    summaries.append(dict(mode=mode,needed=needed,sha256=hashlib.sha256((t/('cancel-'+mode)).read_bytes()).hexdigest()))
+    for wait in ['wait','system_clock','steady_clock','custom_clock']:
+        for n in range(1,6):
+            r=run(f'{mode}-{wait}-{n}',base+['--',exe,wait],timeout=20)
+            passed=r['exitcode']==0 and 'event=wait_confirmed' in r['stdout'] and 'event=cleanup' in r['stdout'] and 'cancel_rc=0 join_rc=0 canceled=1 cleanup_count=1' in r['stdout'] and 'event=terminate' not in r['stdout']
+            matrix.append(dict(mode=mode,wait=wait,repetition=n,exitcode=r['exitcode'],assertions_pass=passed))
+(p/'cancel_matrix.json').write_text(json.dumps(matrix,indent=2))
+(p/'cancel_binaries.json').write_text(json.dumps(summaries,indent=2))
+print('Cancellation assertions:',sum(x['assertions_pass'] for x in matrix),'/',len(matrix))
+
+# Link-map evidence, rather than matching symbol names alone, identifies archives.
+for name in ['cancel-static','cancel-dynamic']:
+    f=t/(name+'.map')
+    if not f.exists(): continue
+    hits=[line for line in f.read_text(errors='replace').splitlines() if any(s in line for s in ['libgcc_eh','libgcc_s','libunwind','cxa_personality','__forced_unwind'])]
+    (p/(name+'-map-excerpts.txt')).write_text('\n'.join(hits)+'\n')
+for arch in ['x86_64','aarch64']:
+    binary=Path(f'tmp/NIGHT_0917/builds/bpftrace-{arch}-static/src/bpftrace')
+    command=['nm','-C',str(binary)]
+    r=subprocess.run(command,capture_output=True,text=True,errors='replace')
+    wanted=['_Unwind_ForcedUnwind','__gxx_personality_v0','__gcc_personality_v0','__forced_unwind']
+    hits=[s for s in r.stdout.splitlines() if any(w in s for w in wanted)]
+    (p/f'{arch}-unwinder-symbols.json').write_text(json.dumps(dict(command=command,exitcode=r.returncode,binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),matching_lines=hits,unmatched_queries=[w for w in wanted if not any(w in s for s in hits)]),indent=2))
+    members=list(csv.DictReader((old/f'bpftrace-{arch}-pulled_members.tsv').open(),delimiter='\t'))
+    (p/f'{arch}-unwinder-members.json').write_text(json.dumps([x for x in members if any(s in str(x) for s in ['libgcc_eh','libunwind','cxa_personality','libc++abi.a'])],indent=2))
+import hashlib
+import json
+import subprocess
+import time
+from pathlib import Path
+
+p = Path('progress/BUILD_STATIC_0917B')
+t = Path('tmp/STATIC_0917B').resolve()
+t.mkdir(parents=True, exist_ok=True)
+source = Path('docs/progress/BUILD_STATIC_0917/inputs/condition_cancel_probe.cpp').resolve()
+old = json.loads(Path('progress/BUILD_NIGHT_0917/bpftrace-x86_64-commands.json').read_text())['build']
+base = old[:old.index('--')]
+base[base.index('--bind')] = '--ro-bind'
+base += ['--bind', str(t), '/tmp/static0917b', '--ro-bind', str(source), '/tmp/static0917b/probe.cpp']
+
+def run(name, command, timeout=120):
+    start = time.time()
+    try:
+        r = subprocess.run(command, capture_output=True, text=True, errors='replace', timeout=timeout)
+        row = dict(command=command, exitcode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+    except subprocess.TimeoutExpired:
+        row = dict(command=command, exitcode='TIMEOUT', stdout='', stderr='timeout')
+    row.update(start_epoch=start, seconds=time.time()-start)
+    dest = p / (name+'.json')
+    assert not dest.exists(), dest
+    dest.write_text(json.dumps(row, indent=2))
+    print(name, row['exitcode'], flush=True)
+    return row
+
+if __name__ == '__main__':
+    (p/'w1_probe_input.json').write_text(json.dumps(dict(source=str(source), sha256=hashlib.sha256(source.read_bytes()).hexdigest(), scope='Conditional approximation, not recovered original recipe'), indent=2))
+    run('w1-compiler', base+['--','x86_64-tizen-linux-gnu-clang++','--version'])
+    matrix=[]
+    for mode in ['static-gcc', 'shared-gcc']:
+        exe='/tmp/static0917b/probe-'+mode
+        command=base+['--','x86_64-tizen-linux-gnu-clang++','-std=c++20','-O0','-g','-fno-inline','/tmp/static0917b/probe.cpp','-pthread','-latomic','-stdlib=libstdc++','-static-libstdc++','-static-libgcc' if mode=='static-gcc' else '-shared-libgcc','-Wl,-Map,'+exe+'.map','-o',exe]
+        if run('w1-'+mode+'-compile',command)['exitcode'] != 0:
+            raise SystemExit(1)
+        run('w1-'+mode+'-needed',base+['--','readelf','-d',exe])
+        for wait in ['wait','system_clock','steady_clock','custom_clock']:
+            for n in range(1,6):
+                row=run(f'w1-{mode}-{wait}-{n}',base+['--',exe,wait],20)
+                assertion=(row['exitcode']==0 and 'event=wait_confirmed' in row['stdout'] and 'cancel_rc=0 join_rc=0 canceled=1 cleanup_count=1' in row['stdout'])
+                matrix.append(dict(mode=mode, wait=wait, repetition=n, exitcode=row['exitcode'], cancellation_assertions=assertion))
+    (p/'w1_matrix.json').write_text(json.dumps(matrix,indent=2))
+    for mode in ['static-gcc','shared-gcc']:
+        rows=[r for r in matrix if r['mode']==mode]
+        print(mode, 'runs',len(rows),'passes',sum(r['cancellation_assertions'] for r in rows),'exitcodes',sorted(set(r['exitcode'] for r in rows)),flush=True)
+uid=5001(owner) gid=100(users) groups=29(audio),44(video),100(users),201(display),1901(log),6525(usb_device),10001(priv_externalstorage),10002(priv_externalstorage_appdata),10013(priv_tee_client),10014(priv_peripheralio),10212(priv_platform),10501(priv_camera),10502(priv_mediastorage),10503(priv_recorder),10704(priv_internet),10705(priv_network_get),10711(priv_tethering_admin),10901(priv_email),10903(priv_message_read),11103(priv_mapservice),11201(priv_appdebugging) context="User::Shell"
+Linux localhost 6.12.80-arm-rpi4-v7l #1 SMP Tue Jul 28 02:41:25 UTC 2026 armv7l GNU/Linux
+UID        PID  PPID  C STIME TTY          TIME CMD
+root         2     0  0 Sep16 ?        00:00:00 [kthreadd]
+root         3     2  0 Sep16 ?        00:00:00 [pool_workqueue_release]

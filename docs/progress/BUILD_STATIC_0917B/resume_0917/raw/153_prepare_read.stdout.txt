@@ -1,0 +1,484 @@
+"""Prepare, but do not launch, incremental armv7l full RPM build."""
+import hashlib
+import json
+from pathlib import Path
+
+project = Path.cwd()
+out = project / 'progress/BUILD_STATIC_0917B/resume_0917'
+task = project / 'tmp/STATIC_0917B'
+root = project / 'tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0'
+oldtop = root / 'home/abuild/rpmbuild'
+newtop = task / 'rpm-arm-llvm'
+comparison = json.loads((out / 'source_payload_comparison.json').read_text())
+assert not any(comparison[key] for key in ('only_old', 'only_current', 'different'))
+cache = (oldtop / 'BUILD/llvm-22.1.8/build/CMakeCache.txt').read_text()
+flags = next(line.split('=', 1)[1] for line in cache.splitlines()
+             if line.startswith('CMAKE_CXX_FLAGS:STRING='))
+observed = (out / 'raw/101_arm_complete_macro_inputs.stdout.txt').read_text().strip().split('|')
+assert observed[0] == 'clang' and observed[1] == flags
+assert observed[-3:] == ['-j1', '1', '1']
+assert 'CMAKE_CXX_COMPILER:UNINITIALIZED=armv7l-tizen-linux-gnueabi-clang++' in cache
+for name in ('RPMS', 'SRPMS', 'BUILDROOT', 'TMP'):
+    (newtop / name).mkdir(parents=True, exist_ok=True)
+macrofiles = '/usr/lib/rpm/macros:/usr/lib/rpm/macros.d/macros.*:/usr/lib/rpm/platform/%{_target}/macros:/usr/lib/rpm/fileattrs/*.attr:/usr/lib/rpm/tizen/macros:/etc/rpm/macros.*:/etc/rpm/macros:/etc/rpm/%{_target}/macros:/home/abuild/.rpmmacros'
+cmd = ['bwrap', '--unshare-user', '--uid', '1000', '--gid', '1000',
+       '--ro-bind', str(root), '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp',
+       '--bind', str(oldtop / 'BUILD'), '/home/abuild/rpmbuild/BUILD',
+       '--bind', str(task), '/tmp/task',
+       '--ro-bind', str(root / 'usr/bin/ninja'), '/tmp/ninja.real',
+       '--ro-bind', str(task / 'ninja-serial-arm'), '/usr/bin/ninja',
+       '--setenv', 'PATH', '/bin:/usr/bin:/sbin:/usr/sbin',
+       '--setenv', 'QEMU_RESERVED_VA', '0x100000000',
+       '--setenv', 'CMAKE_BUILD_PARALLEL_LEVEL', '1',
+       '--setenv', 'RPM_BUILD_NCPUS', '1', '--setenv', 'MAKEFLAGS', '-j1',
+       '--setenv', 'LC_ALL', 'C', '--chdir', '/home/abuild/rpmbuild', '--',
+       'rpmbuild', '--rcfile', '/usr/lib/rpm/rpmrc:/home/abuild/.rpmrc',
+       '--macros', macrofiles, '--target', 'armv7l-tizen-linux',
+       '--define', '_topdir /home/abuild/rpmbuild',
+       '--define', '_rpmdir /tmp/task/rpm-arm-llvm/RPMS',
+       '--define', '_srcrpmdir /tmp/task/rpm-arm-llvm/SRPMS',
+       '--define', '_buildrootdir /tmp/task/rpm-arm-llvm/BUILDROOT',
+       '--define', '_tmppath /tmp/task/rpm-arm-llvm/TMP',
+       '--define', '_smp_mflags -j1', '--define', '_smp_build_ncpus 1',
+       '--define', 'jobs 1', '--define', 'mlgo_build_jobs 1',
+       '--define', '_srcdefattr (-,root,root)', '--define', '_build_create_debug 1',
+       '--nosignature', '--noprep', '--noclean', '-bb', '/tmp/task/specs/llvm.spec']
+(out / 'arm_llvm_command.json').write_text(json.dumps(cmd, indent=2))
+record = {'status': 'PREPARED_NOT_STARTED', 'rpm_outputs': str(newtop),
+          'reused_build_tree': str(oldtop / 'BUILD'), 'flags_match_cache': True,
+          'sudo_required': False, 'source_payload_comparison': 'source_payload_comparison.json',
+          'spec_sha256': hashlib.sha256((task / 'specs/llvm.spec').read_bytes()).hexdigest(),
+          'flags': flags, 'macrofiles': macrofiles,
+          'rcfiles': '/usr/lib/rpm/rpmrc:/home/abuild/.rpmrc'}
+(out / 'arm_llvm_preparation.json').write_text(json.dumps(record, indent=2))
+print(json.dumps(record, indent=2))
+"""Resume the existing RPM build; enforce actual cgroup, serial jobs and I/O gates."""
+import datetime, hashlib, json, os, re, signal, subprocess, sys, threading, time
+from pathlib import Path
+
+ROOT = Path('/home/toolchain/development/libc++_replacement')
+os.chdir(ROOT)
+LABEL = sys.argv[1]
+assert re.fullmatch(r'[a-z0-9_-]+', LABEL)
+BASE = ROOT / 'progress/BUILD_STATIC_0917B/resume_0917'
+OUT = BASE / 'cells' / LABEL
+OUT.mkdir(parents=True, exist_ok=False)
+DEADLINE = datetime.datetime.fromisoformat('2026-09-17T22:48:19+08:00').timestamp()
+SCOPE = 'build-static-0917-cell.scope'
+MEM = int(next(x.split()[1] for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemTotal:'))) * 1024 // 2 // 4096 * 4096
+os.environ['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/toolchain/.local/bin'
+events = (OUT/'events.jsonl').open('a', buffering=1)
+def note(event, **kw):
+    row = dict(time=datetime.datetime.now().astimezone().isoformat(), event=event, **kw)
+    events.write(json.dumps(row)+'\n')
+    print(json.dumps(row), flush=True)
+def query(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    note('command', command=cmd, exitcode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+    if r.returncode: raise RuntimeError('resource query failed')
+    return r.stdout
+def resources(pid):
+    def state():
+        fields=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
+        return fields[0],fields[19]
+    before=state()
+    if before[0]=='Z':
+        note('resource_not_observed_exited',pid=pid,state=before)
+        return None
+    cg = next(x.split(':',2)[2] for x in query(['cat',f'/proc/{pid}/cgroup']).splitlines() if x.startswith('0::'))
+    assert SCOPE in cg
+    value = query(['cat','/sys/fs/cgroup'+cg+'/memory.max']).strip()
+    assert int(value) == MEM
+    io=query(['ionice','-p',str(pid)]).strip()
+    priority=os.getpriority(os.PRIO_PROCESS,pid)
+    after=state()
+    if after[0]=='Z' or before[1]!=after[1]:
+        note('resource_not_observed_exited',pid=pid,before=before,after=after,ionice=io)
+        return None
+    assert io == 'idle'
+    assert priority == 19
+    note('resource_verified',pid=pid,cgroup=cg,memory_max=int(value),nice=19,ionice='idle')
+    return cg
+cg = resources(os.getpid())
+cmd = json.loads((BASE/'cell_commands'/f'{LABEL}.json').read_text())
+note('start',command=cmd,deadline=DEADLINE,script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+log=OUT/'build.log'
+if log.exists():
+    backup=OUT/('build.stopped-'+datetime.datetime.now().strftime('%H%M%S')+'.log')
+    log.rename(backup)
+    note('previous_log_preserved',path=str(backup))
+stream = log.open('xb',buffering=0)
+proc = subprocess.Popen(cmd,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+def send(sig):
+    try: os.killpg(proc.pid,sig)
+    except ProcessLookupError: pass
+def hard_stop():
+    send(signal.SIGTERM); send(signal.SIGCONT)
+    time.sleep(15)
+    if proc.poll() is None: send(signal.SIGKILL)
+timer = threading.Timer(max(0,DEADLINE-time.time()-20),hard_stop)
+timer.daemon=True; timer.start()
+def stop(reason):
+    send(signal.SIGTERM); send(signal.SIGCONT)
+    note('stop',reason=reason)
+    try: proc.wait(timeout=15)
+    except subprocess.TimeoutExpired: send(signal.SIGKILL); proc.wait()
+    raise SystemExit(124)
+def probe():
+    testcmd=['timeout','-k','2s','30s','python3',str(BASE.parent/'io_probe.py')]
+    t=time.monotonic()
+    r=subprocess.run(testcmd,capture_output=True,text=True)
+    note('io_probe',command=testcmd,exitcode=r.returncode,seconds=time.monotonic()-t,stdout=r.stdout,stderr=r.stderr)
+    return r.returncode==0
+reader=log.open(errors='replace')
+verified=set(); target=0; next_probe=500; last=0; hourly=0
+last_ninja=0
+try:
+    while proc.poll() is None:
+        if time.time()>=DEADLINE-20: stop('fourteen-hour deadline')
+        for rawpid in Path('/sys/fs/cgroup'+cg+'/cgroup.procs').read_text().split():
+            pid=int(rawpid)
+            if pid in verified: continue
+            try:
+                args=[x.decode(errors='replace') for x in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0') if x]
+                cwd=os.readlink(f'/proc/{pid}/cwd')
+            except (FileNotFoundError,ProcessLookupError,PermissionError): continue
+            if not args: continue
+            ninja=Path(args[0]).name in ('ninja','ninja.real') or ('qemu-' in args[0] and any(x.endswith('/ninja.real') for x in args))
+            make=Path(args[0]).name in ('make','gmake') or ('qemu-' in args[0] and any(Path(x).name in ('make','gmake') for x in args[1:]))
+            if not (ninja or make) or any(x in args for x in ('-t','--version','--help')): continue
+            one='-j1' in args or any(args[i:i+2]==['-j','1'] for i in range(len(args)-1))
+            makeflags=''
+            if make:
+                try:
+                    makeflags=next((x.split(b'=',1)[1].decode(errors='replace') for x in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0') if x.startswith(b'MAKEFLAGS=')), '')
+                except (FileNotFoundError, ProcessLookupError): continue
+                one=one or bool(re.search(r'(?:^|\s)-j\s*1(?:\s|$)',makeflags))
+            if not one: stop('observed build scheduler not serial')
+            try:
+                checked=resources(pid)
+                if checked is None:
+                    verified.add(pid)
+                    continue
+            except (FileNotFoundError,ProcessLookupError):
+                note('resource_not_observed_exited',pid=pid)
+                continue
+            except RuntimeError:
+                if not Path(f'/proc/{pid}').exists():
+                    note('resource_not_observed_exited',pid=pid)
+                    continue
+                stop('actual Ninja resource query failed')
+            except AssertionError:
+                stop('actual live Ninja resource constraint failed')
+            note('build_scheduler_verified',pid=pid,command=args,cwd=cwd,makeflags=makeflags)
+            verified.add(pid)
+        for line in reader.readlines():
+            m=re.search(r'\[(\d+)/(\d+)\]',line)
+            if m:
+                current=int(m[1])
+                target += current-last_ninja if current>=last_ninja else current
+                last_ninja=current
+            elif re.search(r'\[\s*\d+%\]\s+(?:Building|Linking|Generating)',line):
+                target += 1
+        if target>=next_probe:
+            next_probe=(target//500+1)*500
+            if not probe():
+                send(signal.SIGSTOP); note('paused',completed=target)
+                for attempt in range(1,4):
+                    end=time.time()+600
+                    while time.time()<end:
+                        if time.time()>=DEADLINE-20: stop('deadline during I/O pause')
+                        time.sleep(1)
+                    if probe():
+                        send(signal.SIGCONT); note('resumed',attempt=attempt); break
+                    note('pause_retry_failed',attempt=attempt)
+                else: stop('three consecutive I/O pause retries failed')
+        if time.time()-last>=45:
+            note('running',completed=target); last=time.time()
+        if time.time()-hourly>=3600:
+            with (OUT/'HOURLY_STATUS.md').open('a') as f:
+                f.write(f'\n- {datetime.datetime.now().astimezone().isoformat()}: {LABEL} ongoing, observed target announcements {target}; no RPM success claimed.\n')
+            hourly=time.time()
+        time.sleep(1)
+    note('finished',exitcode=proc.returncode,completed=target)
+    raise SystemExit(proc.returncode)
+finally:
+    timer.cancel()
+    if proc.poll() is None: hard_stop()
+COPY_RESUME_REPORT.md
+FINAL_DELIVERY_RECOVERY.md
+HOURLY_STATUS.md
+NATIVE_TOOLCHAIN_REPORT.md
+README.md
+RESUME_CREDENTIAL_CHECK.md
+RESUME_STATUS.md
+STAGED_CHECK.json
+STATUS.md
+TECHNICAL_RECOVERY.md
+__pycache__
+archive_core_final.py
+archive_native.py
+archive_native_final.py
+archive_partial.py
+archive_resume.py
+build_monitor.py
+build_pause_identity.json
+check_native_push.py
+check_spec_paths.executed_049.py
+check_spec_paths.py
+check_staged_delivery.py
+copy_minimal_root.py
+deadline_signal_guard.py
+existing-acceleration-probe-0.json
+existing-acceleration-probe-1.json
+external-io-pause.events.jsonl
+external_io_pause.py
+finalize_archive.py
+inspect_rpm_resume.py
+io_probe.py
+llvm-aarch64-full-rpm-retry.build.log
+llvm-aarch64-full-rpm-retry.events.jsonl
+llvm-aarch64-full-rpm-retry.io.log
+llvm-aarch64-full-rpm.build.log
+llvm-aarch64-full-rpm.events.jsonl
+llvm-aarch64-full-rpm.io.log
+llvm-aarch64-native-rpm.build.log
+llvm-aarch64-native-rpm.events.jsonl
+llvm-aarch64-native-rpm.io.log
+llvm-aarch64-native-rpm.previous-1.build.log
+llvm-aarch64-native-rpm.previous-2.build.log
+llvm_full_rpmbuild_command.executed_100.json
+llvm_full_rpmbuild_command.json
+native-eq-apint-compile.json
+native-eq-apint-disassembly.diff
+native-eq-apint-native-nm.json
+native-eq-apint-native-objdump.json
+native-eq-apint-ninja-cgroup.json
+native-eq-apint-ninja-ionice.json
+native-eq-apint-ninja-memory-max.json
+native-eq-apint-ninja-priority.json
+native-eq-apint-ninja-resource-result.json
+native-eq-apint-nm.diff
+native-eq-apint-original-command.json
+native-eq-apint-original-nm.json
+native-eq-apint-original-objdump.json
+native-eq-apint-result.json
+native-eq-blake3-compile.json
+native-eq-blake3-disassembly.diff
+native-eq-blake3-native-nm.json
+native-eq-blake3-native-objdump.json
+native-eq-blake3-ninja-cgroup.json
+native-eq-blake3-ninja-ionice.json
+native-eq-blake3-ninja-memory-max.json
+native-eq-blake3-ninja-priority.json
+native-eq-blake3-ninja-resource-result.json
+native-eq-blake3-nm.diff
+native-eq-blake3-original-command.json
+native-eq-blake3-original-nm.json
+native-eq-blake3-original-objdump.json
+native-eq-blake3-result.json
+native-eq-demangle-compile.json
+native-eq-demangle-disassembly.diff
+native-eq-demangle-native-nm.json
+native-eq-demangle-native-objdump.json
+native-eq-demangle-ninja-cgroup.json
+native-eq-demangle-ninja-ionice.json
+native-eq-demangle-ninja-memory-max.json
+native-eq-demangle-ninja-priority.json
+native-eq-demangle-ninja-resource-result.json
+native-eq-demangle-nm.diff
+native-eq-demangle-original-command.json
+native-eq-demangle-original-nm.json
+native-eq-demangle-original-objdump.json
+native-eq-demangle-result.json
+native-eq-md5-compile.json
+native-eq-md5-disassembly.diff
+native-eq-md5-native-nm.json
+native-eq-md5-native-objdump.json
+native-eq-md5-ninja-cgroup.json
+native-eq-md5-ninja-ionice.json
+native-eq-md5-ninja-memory-max.json
+native-eq-md5-ninja-priority.json
+native-eq-md5-ninja-resource-result.json
+native-eq-md5-nm.diff
+native-eq-md5-original-command.json
+native-eq-md5-original-nm.json
+native-eq-md5-original-objdump.json
+native-eq-md5-result.json
+native-eq-native-driver.json
+native-eq-native-elf.json
+native-eq-native-version.json
+native-eq-ninja.json
+native-eq-parent-cgroup.json
+native-eq-parent-ionice.json
+native-eq-parent-memory-max.json
+native-eq-parent-priority.json
+native-eq-parent-resource-result.json
+native-eq-qemu-driver.json
+native-eq-qemu-elf.json
+native-eq-qemu-version.json
+native-eq-threading-compile.json
+native-eq-threading-disassembly.diff
+native-eq-threading-native-nm.json
+native-eq-threading-native-objdump.json
+native-eq-threading-ninja-cgroup.json
+native-eq-threading-ninja-ionice.json
+native-eq-threading-ninja-memory-max.json
+native-eq-threading-ninja-priority.json
+native-eq-threading-ninja-resource-result.json
+native-eq-threading-nm.diff
+native-eq-threading-original-command.json
+native-eq-threading-original-nm.json
+native-eq-threading-original-objdump.json
+native-eq-threading-result.json
+native-equivalence-inputs.json
+native-equivalence-summary.json
+native-equivalence-toolchain-identity.json
+native-resume-clang-elf.json
+native-resume-ninja-file.json
+native-resume-rpmbuild-help.json
+native_build_monitor.executed_174.py
+native_build_monitor.py
+native_checkpoint_push.json
+native_equivalence.executed_154.py
+native_equivalence.py
+native_rpm_resume_command.json
+native_rpm_serial_command.json
+ninja-serial.snapshot
+ninja-serial.v2.snapshot
+ninja_wrapper_test.json
+pause_owned_build.py
+pre-native-build-state.json
+prepare_llvm_rpm.executed_099.py
+prepare_llvm_rpm.py
+prepare_native_rpm_resume.py
+prepare_private_root.executed_072.py
+prepare_private_root.executed_079.py
+prepare_private_root.executed_083.py
+prepare_private_root.executed_087.py
+prepare_private_root.executed_090.py
+prepare_private_root.py
+prepare_serial_ninja.py
+private-root-id.json
+private-root-install-test.json
+private-root-packages.json
+private_root_command.executed_072.json
+private_root_command.executed_079.json
+private_root_command.executed_083.json
+private_root_command.executed_087.json
+private_root_command.json
+private_root_rpm_inputs.executed_072.json
+private_root_rpm_inputs.executed_079.json
+private_root_rpm_inputs.executed_083.json
+private_root_rpm_inputs.executed_087.json
+private_root_rpm_inputs.json
+probe_blocked_directory.py
+probe_existing_acceleration.py
+raw
+resume_0917
+rpm_spec_hashes.json
+run_full_llvm.executed_100.py
+run_full_llvm.py
+run_logged.sh
+run_native_rpm_resume.py
+set_build_identity.py
+spec-armv7l-clang-original.json
+spec-retry-aarch64-clang-candidate.json
+spec-retry-aarch64-clang-original.json
+spec-retry-aarch64-gcc-candidate.json
+spec-retry-aarch64-gcc-original.json
+spec-retry-aarch64-undefined-candidate.json
+spec-retry-aarch64-undefined-original.json
+spec-retry-armv7l-clang-candidate.json
+spec-retry-armv7l-clang-original.json
+spec-retry-armv7l-gcc-candidate.json
+spec-retry-armv7l-gcc-original.json
+spec-retry-armv7l-undefined-candidate.json
+spec-retry-armv7l-undefined-original.json
+spec_path_checks.json
+test_serial_ninja.py
+v2-private-root-id.json
+v2-private-root-install-test.json
+v2-private-root-packages.json
+v3-private-root-id.json
+v3-private-root-install-test.json
+v3-private-root-packages.json
+v4-private-root-id.json
+v4-private-root-install-test.json
+v4-private-root-packages.json
+v5-private-root-id.json
+v5-private-root-input-architectures.json
+v5-private-root-install-test.json
+v5-private-root-install.json
+v5-private-root-packages.json
+v6-private-root-clang.json
+v6-private-root-id.json
+v6-private-root-input-architectures.json
+v6-private-root-install-test.json
+v6-private-root-install.json
+v6-private-root-packages.json
+verify_delivery.py
+w1-compiler.json
+w1-shared-gcc-compile.json
+w1-shared-gcc-custom_clock-1.json
+w1-shared-gcc-custom_clock-2.json
+w1-shared-gcc-custom_clock-3.json
+w1-shared-gcc-custom_clock-4.json
+w1-shared-gcc-custom_clock-5.json
+w1-shared-gcc-needed.json
+w1-shared-gcc-steady_clock-1.json
+w1-shared-gcc-steady_clock-2.json
+w1-shared-gcc-steady_clock-3.json
+w1-shared-gcc-steady_clock-4.json
+w1-shared-gcc-steady_clock-5.json
+w1-shared-gcc-system_clock-1.json
+w1-shared-gcc-system_clock-2.json
+w1-shared-gcc-system_clock-3.json
+w1-shared-gcc-system_clock-4.json
+w1-shared-gcc-system_clock-5.json
+w1-shared-gcc-wait-1.json
+w1-shared-gcc-wait-2.json
+w1-shared-gcc-wait-3.json
+w1-shared-gcc-wait-4.json
+w1-shared-gcc-wait-5.json
+w1-static-gcc-compile.json
+w1-static-gcc-custom_clock-1.json
+w1-static-gcc-custom_clock-2.json
+w1-static-gcc-custom_clock-3.json
+w1-static-gcc-custom_clock-4.json
+w1-static-gcc-custom_clock-5.json
+w1-static-gcc-needed.json
+w1-static-gcc-steady_clock-1.json
+w1-static-gcc-steady_clock-2.json
+w1-static-gcc-steady_clock-3.json
+w1-static-gcc-steady_clock-4.json
+w1-static-gcc-steady_clock-5.json
+w1-static-gcc-system_clock-1.json
+w1-static-gcc-system_clock-2.json
+w1-static-gcc-system_clock-3.json
+w1-static-gcc-system_clock-4.json
+w1-static-gcc-system_clock-5.json
+w1-static-gcc-wait-1.json
+w1-static-gcc-wait-2.json
+w1-static-gcc-wait-3.json
+w1-static-gcc-wait-4.json
+w1-static-gcc-wait-5.json
+w1_matrix.json
+w1_probe.py
+w1_probe_input.json
+llvm-root
+llvm-root-minimal
+native-equivalence
+ninja-serial
+ninja-serial-arm
+ninja-wrapper-test
+probe-shared-gcc
+probe-shared-gcc.map
+probe-static-gcc
+probe-static-gcc.map
+probe.cpp
+rpm-aarch64
+rpm-arm-llvm
+source-payload-audit
+specs
+verified-rpm-payload-aarch64
