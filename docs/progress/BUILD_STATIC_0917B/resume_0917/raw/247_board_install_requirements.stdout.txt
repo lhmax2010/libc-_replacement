@@ -1,0 +1,323 @@
+%if %{defined _toolchain}
+%if %{toolchain_is clang}
+%define build_with_libcxx 1
+%endif
+%endif
+
+Name:           bpftrace
+Version:        0.24.2
+Release:        1
+Summary:        High-level tracing language for Linux eBPF
+License:        Apache-2.0
+
+Source0:        %{name}-%{version}.tar.gz
+Source1001:     %{name}.manifest
+Source1002:     prebuilt-static-bpftrace.tar.gz
+
+ExclusiveArch:  armv7l aarch64
+
+BuildRequires:  gcc-c++
+BuildRequires:  bison
+BuildRequires:  flex
+BuildRequires:  cmake
+BuildRequires:  pkgconfig(libelf)
+BuildRequires:  zlib-devel
+BuildRequires:  llvm-devel
+BuildRequires:  llvm-static-devel
+BuildRequires:  clang-devel
+BuildRequires:  bcc-tools-devel
+BuildRequires:  libbpf-devel
+# for xxd command
+BuildRequires:  vim
+BuildRequires:  cereal-devel
+BuildRequires:  tar
+BuildRequires:  libomp
+%if 0%{?build_with_libcxx}
+BuildRequires:  libc++-devel
+BuildRequires:  libc++abi-devel
+BuildRequires:  bcc-tools-static
+BuildRequires:  libbpf-static
+BuildRequires:  liblzma-static
+BuildRequires:  zlib-devel-static
+%endif
+
+%description
+BPFtrace is a high-level tracing language for Linux enhanced Berkeley Packet
+Filter (eBPF) available in recent Linux kernels (4.x). BPFtrace uses LLVM as a
+backend to compile scripts to BPF-bytecode and makes use of BCC for
+interacting with the Linux BPF system, as well as existing Linux tracing
+capabilities: kernel dynamic tracing (kprobes), user-level dynamic tracing
+(uprobes), and tracepoints. The BPFtrace language is inspired by awk and C,
+and predecessor tracers such as DTrace and SystemTap
+
+%package common
+Summary: Common files for bpftrace (scripts, man pages, bash-completion)
+
+%description common
+This package contains architecture-independent files for bpftrace:
+- Example bpftrace scripts (.bt files)
+- Man pages
+- Bash completion
+
+%package static
+Summary: High-level tracing language for Linux eBPF (static binary)
+
+%description static
+BPFtrace is a high-level tracing language for Linux enhanced Berkeley Packet
+Filter (eBPF) available in recent Linux kernels (4.x). BPFtrace uses LLVM as a
+backend to compile scripts to BPF-bytecode and makes use of BCC for
+interacting with the Linux BPF system, as well as existing Linux tracing
+capabilities: kernel dynamic tracing (kprobes), user-level dynamic tracing
+(uprobes), and tracepoints. The BPFtrace language is inspired by awk and C,
+and predecessor tracers such as DTrace and SystemTap
+
+This package is the bpftrace static binary.
+
+%prep
+%setup -q
+cp %{SOURCE1001} .
+tar xzvf %{SOURCE1002}
+%if 0%{?build_with_libcxx}
+# Keep a single shared unwinder for glibc pthread cancellation. The C++
+# libraries remain static; GCC and undefined-toolchain paths stay unchanged.
+test "$(grep -Fc 'target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")' src/CMakeLists.txt)" = 1
+sed -i 's/target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")/target_link_options(bpftrace BEFORE PRIVATE "-shared-libgcc" "-static-libstdc++")/' src/CMakeLists.txt
+%endif
+
+%build
+%if 0%{?build_with_libcxx}
+bpftrace_original_ldflags="${LDFLAGS}"
+export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+%endif
+
+%{?asan:/usr/bin/gcc-unforce-options}
+%{?ubsan:/usr/bin/gcc-unforce-options}
+
+mkdir build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -DBUILD_TESTING=OFF -DSTATIC_LINKING=OFF \
+         -DCMAKE_SKIP_RPATH:BOOL=ON -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix}
+%make_build
+cd ..
+
+%if 0%{?build_with_libcxx}
+# Keep the ordinary shared build unchanged; build the static subpackage separately.
+# CMake treats this option as source-relative, so preserve that form explicitly.
+libclang_static_relpath=$(realpath --relative-to="$PWD" "%{_libdir}/libclang.a")
+LDFLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
+cmake -S . -B build-static -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+      -DSTATIC_LINKING=ON -DCMAKE_SKIP_RPATH:BOOL=ON \
+      -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix} \
+      -DLIBCLANG_STATIC_PATH:STRING="${libclang_static_relpath}" \
+      -DCMAKE_EXE_LINKER_FLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
+      -DCMAKE_CXX_STANDARD_LIBRARIES="-Wl,--start-group %{_libdir}/libc++.a %{_libdir}/libc++abi.a -Wl,--end-group"
+cmake --build build-static --target bpftrace -- %{?_smp_mflags}
+%endif
+
+%install
+cd build
+%make_install
+cd ..
+
+# Install bpftrace static binary
+%if %{defined _toolchain}
+%if %{toolchain_is clang}
+install -m 0755 build-static/src/bpftrace %{buildroot}%{_bindir}/bpftrace-static
+%else
+install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
+%endif
+%else
+install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
+%endif
+
+%post static
+cp -rf %{_bindir}/%{name}-static %{_bindir}/%{name}
+rm -rf %{_bindir}/%{name}-static
+
+%postun static
+rm -rf %{_bindir}/%{name}
+
+%files
+%manifest %{name}.manifest
+%license LICENSE
+%{_bindir}/%{name}
+%{_bindir}/%{name}-aotrt
+
+%files common
+%manifest %{name}.manifest
+%license LICENSE
+%{_datadir}/bpftrace/
+%{_datadir}/man/man8/*.gz
+%{_datadir}/bash-completion/completions/bpftrace
+
+%files static
+%manifest %{name}.manifest
+%license LICENSE
+%{_bindir}/%{name}-static
+[
+  {
+    "mode": "libcxx",
+    "arch": "armv7l",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bcc-tools-armv7l-libcxx/local/repos/tizen_base_standard/armv7l/RPMS/bcc-tools-0.35.0-115.2.armv7l.rpm",
+    "sha256": "573c47e885b13212913e3a1b6ac51986b621b47742d8b14167cac597c5c3e644",
+    "prior_hash_record": "/home/toolchain/development/libc++_replacement/progress/BUILD_W2C_0915/checks/bcc_armv7l_libcxx/check_1/rpm_sha256.txt"
+  },
+  {
+    "mode": "libcxx",
+    "arch": "armv7l",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bcc-tools-armv7l-libcxx/local/repos/tizen_base_standard/armv7l/RPMS/bcc-tools-devel-0.35.0-115.2.armv7l.rpm",
+    "sha256": "a824a009390a6aecf35246cd0ada0939e87e6af813a9b85a719bee2956246b02",
+    "prior_hash_record": "/home/toolchain/development/libc++_replacement/progress/BUILD_W2C_0915/checks/bcc_armv7l_libcxx/check_1/rpm_sha256.txt"
+  },
+  {
+    "mode": "libcxx",
+    "arch": "armv7l",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bcc-tools-armv7l-libcxx/local/repos/tizen_base_standard/armv7l/RPMS/bcc-tools-static-0.35.0-115.2.armv7l.rpm",
+    "sha256": "3346af458514de7d82fc70787a3d53b0688aa9e3583145101ec8b65af042ded6",
+    "prior_hash_record": "/home/toolchain/development/libc++_replacement/progress/BUILD_W2C_0915/checks/bcc_armv7l_libcxx/check_1/rpm_sha256.txt"
+  },
+  {
+    "mode": "libcxx",
+    "arch": "aarch64",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BUILD_W2_0912/bcc-local-repo/aarch64/bcc-tools-0.35.0-112.1.aarch64.rpm",
+    "sha256": "a08df7924fdf111d9d79f801e194088a021b248758a2c8c2e85f74428cc8e0a7",
+    "prior_hash_record": "/home/toolchain/development/libc++_replacement/docs/progress/BUILD_W2_0912/checks/bcc_aarch64_libcxx/preserved_rpm_sha256.txt"
+  },
+  {
+    "mode": "libcxx",
+    "arch": "aarch64",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BUILD_W2_0912/bcc-local-repo/aarch64/bcc-tools-devel-0.35.0-112.1.aarch64.rpm",
+    "sha256": "a53e0404e76e021db7cc1d69e9832c4de7a447a8ecc0ee46d09dfaaa0e076d09",
+    "prior_hash_record": "/home/toolchain/development/libc++_replacement/docs/progress/BUILD_W2_0912/checks/bcc_aarch64_libcxx/preserved_rpm_sha256.txt"
+  },
+  {
+    "mode": "libcxx",
+    "arch": "aarch64",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BUILD_W2_0912/bcc-local-repo/aarch64/bcc-tools-static-0.35.0-112.1.aarch64.rpm",
+    "sha256": "0ed804e7ea2499604c2b59127a4f24a2d98fccf30be98bb7d84c628c21910a82",
+    "prior_hash_record": "/home/toolchain/development/libc++_replacement/docs/progress/BUILD_W2_0912/checks/bcc_aarch64_libcxx/preserved_rpm_sha256.txt"
+  },
+  {
+    "mode": "gcc",
+    "arch": "armv7l",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bcc-tools-armv7l-gcc/local/repos/tizen_base_standard/armv7l/RPMS/bcc-tools-0.35.0-115.3.armv7l.rpm",
+    "sha256": "692209316f328eb9390eb1bd32524b12f4b5c9c11a4279f725784b65a7c127b4",
+    "prior_hash_record": "/home/toolchain/development/libc++_replacement/progress/BUILD_W2C_0915/checks/bcc_armv7l_gcc/check_1/rpm_sha256.txt"
+  },
+  {
+    "mode": "gcc",
+    "arch": "armv7l",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bcc-tools-armv7l-gcc/local/repos/tizen_base_standard/armv7l/RPMS/bcc-tools-devel-0.35.0-115.3.armv7l.rpm",
+    "sha256": "66366e8a04d7b0be62a360fc92f5bfe0a19b042842277ee617537503839f7084",
+    "prior_hash_record": "/home/toolchain/development/libc++_replacement/progress/BUILD_W2C_0915/checks/bcc_armv7l_gcc/check_1/rpm_sha256.txt"
+  },
+  {
+    "mode": "gcc",
+    "arch": "armv7l",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bcc-tools-armv7l-gcc/local/repos/tizen_base_standard/armv7l/RPMS/bcc-tools-static-0.35.0-115.3.armv7l.rpm",
+    "sha256": "d0ebc4be6a5008c56753d08b8aa31ffd6398c4bd050490f7e9a5f1afde57adc0",
+    "prior_hash_record": "/home/toolchain/development/libc++_replacement/progress/BUILD_W2C_0915/checks/bcc_armv7l_gcc/check_1/rpm_sha256.txt"
+  },
+  {
+    "mode": "gcc",
+    "arch": "aarch64",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2-bcc-baseonly/local/repos/tizen_base_standard/aarch64/RPMS/bcc-tools-0.35.0-112.2.aarch64.rpm",
+    "sha256": "1b1d4df7673bd1e0591b18c93a0f5918efa10e9634d12cd8f730a000c01b5f88",
+    "prior_hash_record": "/home/toolchain/development/libc++_replacement/docs/progress/BUILD_W2_0912/checks/bcc_aarch64_gcc/rpm_sha256.txt"
+  },
+  {
+    "mode": "gcc",
+    "arch": "aarch64",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2-bcc-baseonly/local/repos/tizen_base_standard/aarch64/RPMS/bcc-tools-devel-0.35.0-112.2.aarch64.rpm",
+    "sha256": "2f9013d66f1b9a8e8f4bf6447f1d3e063f87e60a305d13116f9ce2d0434ce97b",
+    "prior_hash_record": "/home/toolchain/development/libc++_replacement/docs/progress/BUILD_W2_0912/checks/bcc_aarch64_gcc/rpm_sha256.txt"
+  },
+  {
+    "mode": "gcc",
+    "arch": "aarch64",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2-bcc-baseonly/local/repos/tizen_base_standard/aarch64/RPMS/bcc-tools-static-0.35.0-112.2.aarch64.rpm",
+    "sha256": "2c784473f17148e93e9d39d3e6770851cef0b87d6654f2e1b98cd7756f2d762a",
+    "prior_hash_record": "/home/toolchain/development/libc++_replacement/docs/progress/BUILD_W2_0912/checks/bcc_aarch64_gcc/rpm_sha256.txt"
+  }
+]
+notification	0.12.4-1	armv7l
+gstreamer	1.24.11-38	armv7l
+dali2-extension-vector-animation-renderer-plugin	2.5.26-1	armv7l
+building-blocks-sub2-domain_API-Multimedia-Metadata_Extractor	11.0.0-0	armv7l
+gpg2	2.4.3-0	armv7l
+setup	0.9-1.3	noarch
+building-blocks-sub2-domain_CSAPI-System-SystemSettings	11.0.0-0	armv7l
+libcynara-uid	0.26.0-1	armv7l
+pulseaudio-modules-tizen	15.0.96-0	armv7l
+capi-system-resource-monitor	0.0.1-0	armv7l
+zlib-devel	1.3.1-1.7	armv7l
+building-blocks-sub2-domain_CSAPI-System-PlatformConfig	11.0.0-0	armv7l
+org.tizen.action-framework.service	1.3.13-1	armv7l
+libmm-display-interface	1.0.0-0	armv7l
+building-blocks-sub2-domain_API-Multimedia-Sound_Manager	11.0.0-0	armv7l
+gst-plugins-tizen-camera	1.24.12-47	armv7l
+libxml2-tools	2.15.1-1.6	armv7l
+building-blocks-sub2-domain_Feature-ISU-System_Resourced	11.0.0-0	armv7l
+cion	1.2.26-1	armv7l
+efl	1.25.1-0	armv7l
+building-blocks-sub2-domain_CSAPI-UIX-TtsEngine	11.0.0-0	armv7l
+liblbs-dbus	1.1.2-1	armv7l
+libksba-devel	1.6.7-1	armv7l
+libthai-data	0.1.18-0	armv7l
+push-bin	0.7.0-1	armv7l
+libsessiond	10.6.21-1	armv7l
+gst-plugins-good-cairo	1.24.11-38	armv7l
+hal-api-radio	1.0.1-0	armv7l
+zypper	1.14.38-0	armv7l
+dlog-config-persistent-logs	9.0.2-1	armv7l
+building-blocks-sub2-domain_CSAPI-Applications-ToastMessage	11.0.0-0	armv7l
+efreet	1.25.1-0	armv7l
+building-blocks-sub2-domain_API-Multimedia-Media_Demuxer	11.0.0-0	armv7l
+mused	0.5.1-0	armv7l
+python3-pip	25.3-1.1	noarch
+building-blocks-sub2-domain_CSAPI-Applications-Preference	11.0.0-0	armv7l
+building-blocks-sub2-domain_API-Account-Account_Manager	11.0.0-0	armv7l
+dumpsys	2.0.16-1	armv7l
+nntrainer	0.5.0-0	armv7l
+libmlops-agent	1.8.8-0	armv7l
+libgcc	14.2.0-1.14	armv7l
+amd-mod-boost	1.81.6-1	armv7l
+libcynara-agent	0.26.0-1	armv7l
+nnstreamer-flatbuf	2.7.0-0	armv7l
+building-blocks-sub2-domain_API-System-Runtime_Information	11.0.0-0	armv7l
+iniparser	4.2.6-1.3	armv7l
+pulseaudio-module-bluetooth	15.0-41	armv7l
+libdumpsys-system	2.0.16-1	armv7l
+wgt-manifest-handlers	1.11.1-1	armv7l
+update-control	1.0.6-0	armv7l
+libpng	1.6.44-0	armv7l
+resource-monitor-plugin-network	1.0.0-1	armv7l
+building-blocks-sub2-domain_CSAPI-Content-MIME_Type	11.0.0-0	armv7l
+wgt-backend	0.18.6-1	armv7l
+component-based-tcore	1.6.7-1	armv7l
+abseil-cpp	20250814.1-1.2	armv7l
+tzsh-backend-efl	1.5.8-0	armv7l
+ecore-audio	1.25.1-0	armv7l
+org.tizen.cssetting-autofill	1.1.1-1	armv7l
+capi-network-vine	1.3.5-0	armv7l
+libtzplatform-config	5.0-1	armv7l
+rscmgr-service	0.1-13	armv7l
+libsyscommon-plugin-api-sessiond	0.1.0-0	armv7l
+libf2fs	1.16.0-0	armv7l
+capi-ui-autofill-common	0.11.1-1	armv7l
+libnl3	3.2.22-1.2	armv7l
+building-blocks-sub2-domain_CSAPI-Applications-Alarm	11.0.0-0	armv7l
+capi-network-vpn-setting	0.1.5-1	armv7l
+deviced	10.1.0-1	armv7l
+org.tizen.cssetting-account	1.0.2-1	armv7l
+context-job-scheduler-dummy	4.0.5-1	armv7l
+e-mod-tizen-wm-policy	0.6.10-1	armv7l
+libxslt-tools	1.1.43-1.2	armv7l
+lbs-server	1.3.8-1	armv7l
+building-blocks-sub2-domain_API-Multimedia-Media_Vision_Image	11.0.0-0	armv7l
+update-alternatives	1.22.21-2.2	armv7l
+connman-connman-vpnd	1.42-4	armv7l
+dnsmasq	2.88-1	armv7l
+org.tizen.system-signal-sender	0.2.2-1	armv7l
+building-blocks-sub1-domain_HALAPI-Tdm	11.0.0-0	armv7l
