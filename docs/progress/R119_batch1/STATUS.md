@@ -1,5 +1,15 @@
 # LWE 夹具与首批候选定界
 
+## 2026-09-18 续做（最新状态）
+
+light 闸门通过；磁盘可用约 205 GiB；单文件只读 I/O 探测 0.031203 秒（可能命中缓存）。串行分析使用 nice 19、ionice 3；继承的 RLIMIT_AS 为 9,921,875,558 字节（MemTotal 的 30%，以虚拟地址空间限制保守约束内存）。Git 操作按人工授权使用普通 I/O 优先级。不使用开发板。
+
+前 50 项已逐项复核并记录：18 项 CROSS_PACKAGE，31 项 NOT_OBSERVED，1 项 NOT_OBSERVED_INCLUDE_CHAIN；后 50 项继续处理。**复核记录齐备不等于分类证据全部闭合**。表见 `W1/REVIEW_001_050.tsv`，逐项原因与所缺材料见 `W1/reviewed/`、`code/review_notes_001_025.json`、`code/review_notes_026_050.json`。原 12 项未定仍保留，不以抽样或运行库引用强行转为 INTERNAL_ONLY / CROSS_PACKAGE。
+
+此次操作见 `raw/resume0918/`。旧记录的停止、待授权、未推送描述只代表当时状态；上一断点已推送 `ac4cce5f529637f76f5413e0b97fb60108cefef6`。
+
+## 此前的状态记录
+
 最新交付安排：人工已批准仅 `git add`、`git commit`、`git push` 使用普通 I/O 优先级，先提交并推送现有断点。此次不恢复 W1，RESOURCE_STOP 不变。下文“未提交、未推送”“尚待答复”保留为上一次中止时的记录；本次授权、交付边界与记录位置见 [断点交付记录](DELIVERY_RECEIPT.md)。推送成功与否以实际退出码及远端 SHA 核对为准，不在执行前预报成功。
 
 分支 codex/runtime-validation；平台源码只读。W0 先执行，W1 按包族数降序固定 100 行，包族数相同时按 R117 原始 ID 升序，避免选择性挑选。每次定界区分限定覆盖内零命中与不可得；不能将未观测推断为不存在。
