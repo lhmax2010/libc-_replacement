@@ -14,7 +14,10 @@ for src in order:
     n=src['entity'];rank=int(src['rank']);note=notes.get(n)if rank<=end else None
     status='NOT_OBSERVED_PENDING_REVIEW';provider=consumer=shape=own=exception='NOT_OBSERVED';refs=[];seconds='NOT_OBSERVED'
     if note:
-        status='NOT_OBSERVED';refs=['code/'+next(p.name for p in sorted((OUT/'code').glob('review_notes_*.json'))if n in json.loads(p.read_text()))]
+        status='NOT_OBSERVED';refs=['code/'+next(p.name for p in reversed(sorted((OUT/'code').glob('review_notes_*.json')))if n in json.loads(p.read_text()))]
+        for extra in note.get('extra_evidence',[]):
+            assert (OUT/extra).is_file(), extra
+            refs.append(extra)
         if note.get('proof'):
             p=d/'positive'/(note['proof']+'.json');proof=json.loads(p.read_text());refs.append(str(p.relative_to(OUT)))
             assert proof['elf_matches'] and proof['header_matches'],n

@@ -2,6 +2,8 @@
 
 ## 2026-09-18 续做（最新状态）
 
+最新计数与断点以 [续跑状态](RESUME_STATUS.md) 为准；以下前 50 项文字保留为中间检查点。
+
 light 闸门通过；磁盘可用约 205 GiB；单文件只读 I/O 探测 0.031203 秒（可能命中缓存）。串行分析使用 nice 19、ionice 3；继承的 RLIMIT_AS 为 9,921,875,558 字节（MemTotal 的 30%，以虚拟地址空间限制保守约束内存）。Git 操作按人工授权使用普通 I/O 优先级。不使用开发板。
 
 前 50 项已逐项复核并记录：18 项 CROSS_PACKAGE，31 项 NOT_OBSERVED，1 项 NOT_OBSERVED_INCLUDE_CHAIN；后 50 项继续处理。**复核记录齐备不等于分类证据全部闭合**。表见 `W1/REVIEW_001_050.tsv`，逐项原因与所缺材料见 `W1/reviewed/`、`code/review_notes_001_025.json`、`code/review_notes_026_050.json`。原 12 项未定仍保留，不以抽样或运行库引用强行转为 INTERNAL_ONLY / CROSS_PACKAGE。

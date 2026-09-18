@@ -1,0 +1,100 @@
+memory_basis=[('MemTotal', 33072918528)]
+RLIMIT_AS_bytes=9921875558; parallelism=1; nice=19; ionice=3
+"""扫描实际 devel 安装头，产生候选上下文；不自动把函数体用法判为公开签名。"""
+from common import *
+import csv,gzip,re,collections,time
+start=time.time(); target=OUT/'W1'
+with (target/'BATCH_100.tsv').open()as f: rows=list(csv.DictReader(f,delimiter='\t'))
+names={r['entity'] for r in rows};counts=collections.Counter();stats=collections.Counter();samples=collections.defaultdict(list)
+token=re.compile(r'\bstd\s*::\s*[A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*')
+comments=re.compile(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',re.S)
+def normalize(s):return re.sub(r'\s+','',s).replace('std::__cxx11::','std::').replace('std::__1::','std::')
+def scan(s):
+    code=comments.sub(lambda m:'\n'*m.group().count('\n')+' ',s)
+    for m in token.finditer(code):
+        name=normalize(m.group())
+        while name and name not in names:name=name.rpartition('::')[0]
+        if name:yield name,code.count('\n',0,m.start())+1
+# 正负对照：多行限定名、注释/字符串、类型名作为长限定名的前缀。
+control='// std::vector<int> fake;\nconst char* s="std::map";\nstd ::\n string f();\nstd::vector<int> g();\n'
+observed=list(scan(control));assert observed==[('std::string',3),('std::vector',5)],observed
+save(target/'HEADER_SCAN_CONTROLS.json',dict(input=control,observed=observed,expected=observed))
+pkgs={}
+with (ROOT/'docs/progress/P7_0909/tables/packages.tsv').open()as f:
+    for r in csv.DictReader(f,delimiter='\t'):pkgs[r['checksum']]=r
+fields=['entity','package','sourcerpm','installed_path','cache_path','sha256','line','text','context','private_path','signature_status']
+issues=[]
+with gzip.open(target/'header_occurrences.tsv.gz','wt',newline='')as out:
+    w=csv.DictWriter(out,fieldnames=fields,delimiter='\t',lineterminator='\n');w.writeheader()
+    with gzip.open(ROOT/'docs/progress/P7_0909/tables/headers.tsv.gz','rt')as f:
+        for r in csv.DictReader(f,delimiter='\t'):
+            stats['inventory_headers']+=1
+            meta=pkgs.get(r['rpm_sha256'],{})
+            if meta.get('devel_name')!='YES' or r['scope']!='INCLUDE_TREE':continue
+            stats['devel_include_headers']+=1
+            if r['status']!='PASS':issues.append(dict(path=r['path'],package=r['name'],reason=r['status']));continue
+            # Plain-C headers cannot contain std-qualified type declarations;
+            # unresolved/macro-only headers remain included, not silently dropped.
+            if r['form']=='C_DECLARATION_SHAPE':stats['plain_c_shape_skipped']+=1;continue
+            p=pathlib.Path(r['cache_path'])
+            try:data=p.read_bytes()
+            except OSError as e:issues.append(dict(path=str(p),reason=str(e)));continue
+            sha=__import__('hashlib').sha256(data).hexdigest()
+            if sha!=r['file_sha256']:issues.append(dict(path=str(p),reason='SHA256_CHANGED'));continue
+            stats['read_headers']+=1;s=data.decode(errors='replace');lines=s.splitlines()
+            found=set(scan(s))
+            if found:stats['matched_headers']+=1
+            for name,n in sorted(found):
+                item=dict(entity=name,package=r['name'],sourcerpm=r['sourcerpm'],installed_path=r['path'],cache_path=str(p),sha256=sha,line=n,text=lines[n-1].strip(),context=' | '.join(lines[max(0,n-3):n+3]),private_path=r['private_path'],signature_status='HEADER_OCCURRENCE_REQUIRES_REVIEW')
+                w.writerow(item);counts[name]+=1
+                # retain an auditable diverse set, prefer non-private non-toolchain headers.
+                rank=(r['private_path']=='YES',r['sourcerpm'].startswith(('gcc-','llvm-')),len(item['text'])>400)
+                samples[name].append((rank,item))
+                if len(samples[name])>80:samples[name]=sorted(samples[name],key=lambda x:x[0])[:40]
+            if stats['read_headers']%10000==0:print(dict(stats),flush=True)
+save(target/'HEADER_COVERAGE.json',dict(stats=stats,issues=issues,occurrences=counts,elapsed_seconds=time.time()-start))
+save(target/'HEADER_REVIEW_QUEUE.json',{name:[r for _,r in sorted(items,key=lambda x:x[0])[:30]]for name,items in samples.items()})
+print(dict(stats),dict(counts),len(issues),flush=True)
+"""扩大至冻结 R22 全部候选边，不再限于 R26 的切分边。"""
+from common import *
+import csv,re,gzip,json,collections,shlex
+csv.field_size_limit(20_000_000)
+d=OUT/'W1'; p=OLD/'progress/R22/tables/source_edge_classification.tsv'
+with p.open()as f:src=list(csv.DictReader(f,delimiter='\t'))
+symbols=sorted({s for r in src for s in r['cpp_symbols'].split(';')if s})
+inp=d/'demangle_input.txt';inp.write_text('\n'.join(symbols)+'\n')
+rc,txt,raw=record('expanded_demangle',['bash','-c','c++filt < '+shlex.quote(str(inp))]);assert rc==0
+dm=dict(zip(symbols,txt.splitlines()));assert len(dm)==len(symbols)
+names={}
+with (ROOT/'docs/progress/P7_0909/inputs/source_package_records.tsv').open()as f:
+    for r in csv.DictReader(f,delimiter='\t'):names[r['location']]=r['name']
+with (d/'BATCH_100.tsv').open()as f:entities=[r['entity']for r in csv.DictReader(f,delimiter='\t')]
+alias={'string':'basic_string<char,','wstring':'basic_string<wchar_t,','istream':'basic_istream<char,','ostream':'basic_ostream<char,','ifstream':'basic_ifstream<char,','ofstream':'basic_ofstream<char,','stringstream':'basic_stringstream<char,','ostringstream':'basic_ostringstream<char,','istringstream':'basic_istringstream<char,','streambuf':'basic_streambuf<char,','ios':'basic_ios<char,','string_view':'basic_string_view<char,'}
+patterns={n:re.compile(re.escape(n)+r'(?![A-Za-z_0-9])')for n in entities}
+def match(s):
+    s=s.replace('std::__cxx11::','std::').replace('std::__1::','std::').replace('std::filesystem::__cxx11::','std::filesystem::').replace('std::chrono::_V2::','std::chrono::')
+    return[n for n,q in patterns.items()if q.search(s)or n[5:]in alias and 'std::'+alias[n[5:]]in s]
+assert match('fn(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)')
+assert not match('fn(std::mapper&)')
+biz=collections.defaultdict(list);allrows=[];seen=set()
+for i,r in enumerate(src,2):
+    runtime=names.get(r['provider_source_rpm'])in ['gcc','llvm']
+    for sym in r['cpp_symbols'].split(';'):
+        if not sym:continue
+        text=dm[sym]
+        for n in match(text):
+            row=dict(entity=n,consumer_source=names.get(r['consumer_source_rpm'],'NOT_OBSERVED'),consumer_sourcerpm=r['consumer_source_rpm'],provider_source=names.get(r['provider_source_rpm'],'NOT_OBSERVED'),provider_sourcerpm=r['provider_source_rpm'],runtime_provider=str(runtime),raw_symbol=sym,demangled=text,source_table=str(p),source_line=i)
+            allrows.append(row)
+            if runtime or text.startswith(('std::','typeinfo ','vtable ','VTT ','guard variable ','non-virtual thunk to std::','virtual thunk to std::')):continue
+            key=(n,row['provider_source'],row['consumer_source'],sym)
+            if key not in seen:biz[n].append(row);seen.add(key)
+save(d/'EXPANDED_BUSINESS_QUEUE.json',biz)
+with gzip.open(d/'expanded_symbol_edges.tsv.gz','wt',newline='')as f:
+    w=csv.DictWriter(f,fieldnames=list(allrows[0]),delimiter='\t',lineterminator='\n');w.writeheader();w.writerows(allrows)
+save(d/'EXPANDED_SCOPE.json',{'source':str(p),'sha256':digest(p),'source_edges':len(src),'unique_symbols':len(symbols),'matched_rows':len(allrows),'input_sha256':digest(inp),'demangle_record':raw,'positive_control':'std::__cxx11::basic_string<char,...>','negative_control':'std::mapper','limit':'R22 的 phase_nodes 及唯一解析 DT_NEEDED 边；不包括全部 dlopen / 外部产物，不把未命中等同无消费方'})
+old=json.loads((d/'BUSINESS_SYMBOL_QUEUE.json').read_text())
+for n in entities:
+    added=[r for r in biz[n]if (r['provider_source'],r['consumer_source'],r['raw_symbol'])not in {(e['provider_source'],e['consumer_source'],e['raw_symbol'])for e in old.get(n,[])}]
+    print(n,'business_rows',len(biz[n]),'additional_rows',len(added))
+    if not old.get(n):
+        for r in added[:3]:print(' NEW',r['provider_source'],'->',r['consumer_source'],r['demangled'])

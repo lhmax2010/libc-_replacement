@@ -6,6 +6,8 @@ import json
 import pathlib
 import re
 import sys
+import subprocess
+import shlex
 
 base = pathlib.Path(__file__).resolve().parents[1]
 mode, *args = sys.argv[1:]
@@ -21,6 +23,15 @@ if mode == 'proof':
             print('PROVIDER', e['provider']['path'], e['provider_lines'])
         for inc in obj['source_includes']:
             print('INCLUDE', inc['exit'], *inc['matches'][:10], sep='\n')
+elif mode == 'includes':
+    obj = json.loads((base / 'W1/positive' / (args[0] + '.json')).read_text())
+    for item in obj['source_includes']:
+        cmd = ['rg', '-n', '-uuu', args[1], str(pathlib.Path(item['root']) / 'unpacked')]
+        print('command: ' + shlex.join(cmd), flush=True)
+        result = subprocess.run(cmd)
+        print('exitcode=' + str(result.returncode), flush=True)
+        if result.returncode not in (0, 1):
+            raise SystemExit(result.returncode)
 elif mode == 'context':
     name = args[0]
     pattern = re.compile(args[1]) if len(args) > 1 else None
