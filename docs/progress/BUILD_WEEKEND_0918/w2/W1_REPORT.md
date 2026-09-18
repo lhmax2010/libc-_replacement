@@ -1,0 +1,74 @@
+# W1 完整 RPM 阶段结果：PARTIAL
+
+六格中四格完成构建及载荷/宏核验；aarch64 libc++ 写包成功但载荷门禁失败，armv7l libc++ 在分配的构建窗口内未完成。完整矩阵和 RPM 身份见 `W1_MATRIX.tsv`、`W1_RPM_MANIFEST.json`（raw/408）。
+
+| 架构 | 路径 | 完整构建 | 载荷及宏核验 | 直接证据 |
+| --- | --- | --- | --- | --- |
+| armv7l | libc++ | 未完成，受控停止 | NOT_OBSERVED，0 份 RPM | 355、406、407；ARM_BUILD_CHECKPOINT.json |
+| armv7l | GCC | PASS | PASS；static 与原件一致 | 153、224；296 实际目录补查 |
+| armv7l | 未定义工具链 | PASS | PASS；static 与原件一致 | 276、293 |
+| aarch64 | libc++ | PASS，3 份 RPM | FAIL：额外 libbpf.so.1 | 076、105、137、333 |
+| aarch64 | GCC | PASS | PASS；static 与原件一致 | 226、265；298 补查 |
+| aarch64 | 未定义工具链 | PASS | PASS；static 与原件一致 | 300、350 |
+
+本阶段保存 15 份 bpftrace RPM：四个通过格的 12 份，加上 aarch64 libc++ 门禁失败格的 3 份。不是 15 份都通过。
+
+## ARM 断点及时间处理
+
+W1 固定窗口为 12:28:14–18:28:14。自行作出的时间分配是为归档、核查、提交预留最后 12 分钟，将最后一格构建子窗口设为约 18:16:14；没有延长 W1。控制器按既定停止宽限在 **18:15:54** 发送终止，内部子进程记录 `-15`、外层日志记录器实际退出 `241`；不是补记的推测退出码，也不是新发现的源码失败。
+
+停止时主包进度为 88%，正在编译 `src/ast/passes/resolve_imports.cpp`，static 构建及写包尚未开始。保存了 104 个对象文件的路径、大小、SHA256 和 CMake 配置身份；对象存在不证明每个对象完整。日志控制器的 384 条进度计数不是独立编译单元数。406 的进程检索没有匹配构建残留；该命令退出 1 是 rg 的“无匹配”，不是系统故障。
+
+断点位于 `tmp/WEEKEND_0918/rpm-bpf-armv7l-libcxx/`，没有清理。不能盲目重跑原 `-bb`，因为 `%prep` 和 `mkdir build` 可能替换或冲突于已有目录；后续续建需要明确复用流程，本轮未擅自改写此流程。
+
+## 输入身份和完整性
+
+- aarch64：复用上一轮完整通过的 12 份 LLVM RPM；来源 `tmp/STATIC_0917B/rpm-aarch64/RPMS/aarch64/`。
+- armv7l：复用人工批准的 18 份已核验 LLVM RPM；来源 `tmp/STATIC_0917B/rpm-arm-llvm/RPMS/armv7l/`，明确为 `USABLE_BUT_BUILD_INCOMPLETE`。复制和使用其中的包，不会改变旧整轮退出 1 的事实。
+- armv7l libc++/libc++abi 静态开发输入本轮完整构建 1,833/1,833，四份 RPM 写出并核验（raw/109、136）；两份 `.a` 定义符号中分别有 1,692 / 77 个 `std::__1` 相关符号，`std::__cxx11` 为 0。尚不表示物理板测试通过。
+- 私有根使用 `cp -a` 并逐常规文件 SHA256 核验，同时检查链接目标、类型、模式。两次失败复制和修正方式均保留；受限 `usr/sbin` 采用原根只读挂载，该排除部分不声称做过 SHA256 核验。
+
+## 六格与 RPM 文件的区别
+
+每格实际生成 main、common、static 三份 RPM；“两架构 × 三路径”是六个测试格，不是合计只能有六个文件。`W1_RPM_MANIFEST.json` 给出已记录 RPM 的路径、身份、大小及 SHA256；未完成格不补造文件清单。
+
+GCC 和未定义路径核对的是 **RPM 解包后的 static 二进制** 与原 Source1002 对应架构文件一致，并非要求新旧整个 RPM 的时间戳及头部相同。
+
+| 原文件 | SHA256 |
+| --- | --- |
+| armv7l static | `ade7530b3824dd83eebba837928d3919dcb4cd7708212a8607c3629cb5c55f5b` |
+| aarch64 static | `4d12f98487f70addfeaa1602f91463458a738a4dd437241a70f77ab54680cab1` |
+
+Source1002 的 `3785365b…3514123` 是 tar 文件哈希，不与上述二进制哈希混用。
+
+## 已观测的未闭合项
+
+aarch64 libc++ 完整 `rpmbuild -bb` 退出 0，三份 RPM 已保存。但 static 的直接依赖为：
+
+```text
+libbpf.so.1
+libm.so.6
+libgcc_s.so.1
+libc.so.6
+ld-linux-aarch64.so.1
+```
+
+共享 `libgcc_s.so.1` 符合本轮展开器设计；额外共享 `libbpf.so.1` 不符合其余相关库静态纳入的约束，故载荷门禁失败。它不等于观测到了 libstdc++ 被错误链入。定位及候选修正问题见 `QUESTIONS.md` 第 5 项；未获人工答复，不自行修改接入或降低验收标准。
+
+## “未定义工具链”格的真实执行
+
+单用命令行 `--undefine _toolchain` 的第一次实际 rpmbuild 仍进入 libc++ 依赖分支，退出 1。后续用**仅供测试的入口**先 `%undefine _toolchain`，再 `%include` 原候选 spec，并在包含前后检查实际宏状态；两架构 dry parse 均显示 0。本轮完整未定义格通过该入口实际构建，候选 spec 的内容及 SHA256 不变。具体命令见 raw/269、273–276，不将 `rpmspec` 查询结果当成完整构建通过，也不将这一配置的实测外推为任意外部宏注入情形。
+
+## 检查方法的限制和修正
+
+- RPM 摘要检查验证内容完整性，不声称验证发布者签名。
+- GCC 和未定义格核对真实 verbose 编译/链接命令、展开 BuildRequires、RPM 内全部主包 ELF 依赖及原 static 哈希；已通过格中每格识别到 120 条命令，禁止 libc++ 选项为 0。
+- 原平台安装后检查器未禁用；其两份 app-rootstrap 规则输出 skipped，不能写成所有规则均已执行。
+- 旧附加 HAL helper 的 ARM BUILDROOT 后缀写错，已用 v2 对实际 `.arm` 目录补查。旧退出 0 不作为载荷证据，新检查记录主程序 SHA256。详见 raw/278、282、296。
+- 当前结果是构建和 RPM 载荷证据；真实安装、probe 功能等价及线程取消属于 W3，尚未用这些结果替代。
+
+所有候选仍在 `tmp/WEEKEND_0918/`，未覆盖 Source1002，未推任何包仓。
+
+**当前不能据此替换发布资产。** 除两格未闭合外，物理板安装、功能及取消验证仍待 W3。aarch64 的 libbpf 修正和 ARM 原生工具集切换问题没有得到明确裁决，均未实施；不阻断独立的 W2 补做。
+
+交付预检 raw/402 的 `git check-ignore` 返回 1，表示所列交付路径没有命中忽略规则；正式暂存仍需执行完整性和敏感模式检查，不以这次抽查替代。

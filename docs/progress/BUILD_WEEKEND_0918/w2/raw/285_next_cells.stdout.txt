@@ -1,0 +1,81 @@
+bpf-aarch64-gcc-linkerfixed.json
+bpf-aarch64-gcc-retry.json
+bpf-aarch64-gcc.json
+bpf-aarch64-libcxx-checkers.json
+bpf-aarch64-libcxx-hal.json
+bpf-aarch64-libcxx-pathfixed.json
+bpf-aarch64-libcxx-user.json
+bpf-aarch64-libcxx.json
+bpf-aarch64-undefined-harness.json
+bpf-aarch64-undefined.json
+bpf-armv7l-gcc-linkerfixed.json
+bpf-armv7l-gcc.json
+bpf-armv7l-libcxx.json
+bpf-armv7l-undefined-harness.json
+bpf-armv7l-undefined-linkerfixed.json
+bpf-armv7l-undefined.json
+check-aarch64-gcc.json
+check-aarch64-libcxx.json
+check-aarch64-undefined.json
+check-armv7l-gcc.json
+check-armv7l-libcxx.json
+check-armv7l-undefined.json
+check-runtime-armv7l.json
+copy-aarch64-v2.json
+copy-aarch64-v3.json
+copy-aarch64.json
+copy-armv7l.json
+install-aarch64-v2.json
+install-aarch64-v3.json
+install-aarch64.json
+install-armv7l.json
+io-before-aarch-undefined.json
+io-before-arm-libcxx.json
+io-before-arm-undefined.json
+recheck-aarch-gcc-hal.json
+recheck-arm-gcc-hal.json
+record-aarch64-failure.json
+repair-arm-gcc-linker.json
+runtime-arm-libcxx.json
+"""Archive a completed stage without replacing its original execution records."""
+import datetime,gzip,hashlib,json,re,sys
+from pathlib import Path
+src=Path('progress/BUILD_WEEKEND_0918'); dst=Path('docs/progress/BUILD_WEEKEND_0918')
+label=sys.argv[1]; assert re.fullmatch(r'[a-z0-9_]+',label)
+stage=dst/label; assert not stage.exists()
+stage.mkdir(parents=True)
+rows=[]
+for f in sorted(src.rglob('*')):
+    if not f.is_file() or '__pycache__' in f.parts: continue
+    if 'raw' in f.parts:
+        prefix=f.name.split('.')[0]
+        if not (f.parent/(prefix+'.finished.txt')).exists(): continue
+    data=f.read_bytes()
+    for pattern in (rb'-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----',rb'Authorization:\s*(?:Basic|Bearer)\s+\S+',rb'curl\s+-u\s+[^\s]+:[^\s]+'):
+        assert not re.search(pattern,data),str(f)
+    rel=f.relative_to(src); target=stage/rel
+    compressed=len(data)>524288
+    if compressed: target=target.with_name(target.name+'.gz')
+    target.parent.mkdir(parents=True,exist_ok=True)
+    target.write_bytes(gzip.compress(data,mtime=0) if compressed else data)
+    rows.append({'source':str(f),'delivery':str(target),'sha256_uncompressed':hashlib.sha256(data).hexdigest(),
+                 'bytes_uncompressed':len(data),'gzip':compressed})
+(stage/'MANIFEST.json').write_text(json.dumps({'time':datetime.datetime.now().astimezone().isoformat(),'files':rows},indent=2))
+for name in ('STATUS.md','QUESTIONS.md'):
+    (dst/name).write_bytes((src/name).read_bytes())
+print(label,'archived_files',len(rows))
+"""Post-build checks, with command/exit records and exact checker snapshots."""
+import hashlib,json,shlex,subprocess,sys
+from pathlib import Path
+arch,mode,cell=sys.argv[1:]; out=Path('progress/BUILD_WEEKEND_0918')
+dest=out/f'checks-{arch}-{mode}'; dest.mkdir(exist_ok=False); records=[]
+for script,args in [('verify_bpf_rpms.py',[arch,mode]),('audit_bpf_cell.py',[arch,mode,cell]),('check_actual_hal_v2.py',[arch,mode])]:
+    f=out/script; snapshot=dest/script; snapshot.write_bytes(f.read_bytes())
+    cmd=['python3',str(f),*args]
+    print('COMMAND '+shlex.join(cmd),flush=True)
+    r=subprocess.run(cmd)
+    records.append({'command':shlex.join(cmd),'exitcode':r.returncode,'snapshot_sha256':hashlib.sha256(snapshot.read_bytes()).hexdigest()})
+    (dest/'commands.json').write_text(json.dumps(records,indent=2))
+    print('EXITCODE',r.returncode,flush=True)
+    if r.returncode: raise SystemExit(r.returncode)
+print('BUILD_PAYLOAD_AND_MACRO_CHECKS_PASS_NOT_BOARD_VALIDATED',flush=True)

@@ -1,0 +1,79 @@
+%if 0%{?build_with_libcxx}
+# Keep a single shared unwinder for glibc pthread cancellation. The C++
+# libraries remain static; GCC and undefined-toolchain paths stay unchanged.
+test "$(grep -Fc 'target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")' src/CMakeLists.txt)" = 1
+sed -i 's/target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")/target_link_options(bpftrace BEFORE PRIVATE "-shared-libgcc" "-static-libstdc++")/' src/CMakeLists.txt
+%endif
+
+%build
+%if 0%{?build_with_libcxx}
+bpftrace_original_ldflags="${LDFLAGS}"
+export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+%endif
+
+%{?asan:/usr/bin/gcc-unforce-options}
+%{?ubsan:/usr/bin/gcc-unforce-options}
+
+mkdir build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -DBUILD_TESTING=OFF -DSTATIC_LINKING=OFF \
+         -DCMAKE_SKIP_RPATH:BOOL=ON -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix}
+%make_build
+cd ..
+
+%if 0%{?build_with_libcxx}
+# Keep the ordinary shared build unchanged; build the static subpackage separately.
+# CMake treats this option as source-relative, so preserve that form explicitly.
+ln -s "%{_libdir}/libclang.a" build/libclang-static-input.a
+libclang_static_relpath=build/libclang-static-input.a
+LDFLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
+cmake -S . -B build-static -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+      -DSTATIC_LINKING=ON -DCMAKE_SKIP_RPATH:BOOL=ON \
+      -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix} \
+      -DLIBCLANG_STATIC_PATH:STRING="${libclang_static_relpath}" \
+      -DCMAKE_EXE_LINKER_FLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
+      -DCMAKE_CXX_STANDARD_LIBRARIES="-Wl,--start-group %{_libdir}/libc++.a %{_libdir}/libc++abi.a -Wl,--end-group"
+cmake --build build-static --target bpftrace -- %{?_smp_mflags}
+%endif
+
+%install
+cd build
+%make_install
+cd ..
+
+# Install bpftrace static binary
+%if %{defined _toolchain}
+%if %{toolchain_is clang}
+install -m 0755 build-static/src/bpftrace %{buildroot}%{_bindir}/bpftrace-static
+%else
+install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
+%endif
+%else
+install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
+%endif
+
+%post static
+cp -rf %{_bindir}/%{name}-static %{_bindir}/%{name}
+rm -rf %{_bindir}/%{name}-static
+
+%postun static
+rm -rf %{_bindir}/%{name}
+
+%files
+%manifest %{name}.manifest
+%license LICENSE
+%{_bindir}/%{name}
+%{_bindir}/%{name}-aotrt
+
+%files common
+%manifest %{name}.manifest
+%license LICENSE
+%{_datadir}/bpftrace/
+%{_datadir}/man/man8/*.gz
+%{_datadir}/bash-completion/completions/bpftrace
+
+%files static
+%manifest %{name}.manifest
+%license LICENSE
+%{_bindir}/%{name}-static

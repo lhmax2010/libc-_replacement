@@ -1,0 +1,125 @@
+"""Supplementary platform checks with an existing, payload-bearing BUILDROOT."""
+import hashlib,json,shlex,subprocess,sys
+from pathlib import Path
+p=Path.cwd(); out=p/'progress/BUILD_WEEKEND_0918'; arch,mode=sys.argv[1:]
+assert arch in ('aarch64','armv7l') and mode in ('libcxx','gcc','undefined')
+label=f'bpf-{arch}-{mode}'
+if mode=='undefined': command_file=out/'cell_commands'/f'{label}-harness.json'
+elif arch=='aarch64' and mode=='libcxx': command_file=out/'cell_commands/bpf-aarch64-libcxx-checkers.json'
+elif mode=='gcc': command_file=out/'cell_commands'/f'{label}-linkerfixed.json'
+else: command_file=out/'cell_commands'/f'{label}.json'
+cmd=json.loads(command_file.read_text()); base=cmd[:cmd.index('--')]
+entry=cmd[-1]; assert entry.startswith('/tmp/task/specs/')
+entry_local=p/'tmp/WEEKEND_0918/specs'/Path(entry).name
+roots=[x for x in (p/f'tmp/WEEKEND_0918/rpm-{label}/BUILDROOT').iterdir()
+       if x.is_dir() and (x/'usr/bin/bpftrace').is_file()]
+assert len(roots)==1,('Expected exactly one payload-bearing build root',roots)
+root=roots[0]
+directory=p/f'tmp/WEEKEND_0918/hal-spec-v2-{arch}-{mode}'; directory.mkdir(exist_ok=False)
+spec=directory/'bpftrace.spec'; spec.write_bytes(entry_local.read_bytes())
+base+=['--setenv','HOME','/home/abuild']
+commands=[]
+for checker in ('/etc/hal/rootstrap/hal-rootstrap-checker.sh','/etc/app-rootstrap/app-rootstrap-checker.sh'):
+    args=base+['--',checker,f'/tmp/task/{directory.name}',
+               '/tmp/task/'+str(root.relative_to(p/'tmp/WEEKEND_0918')),arch]
+    r=subprocess.run(args,capture_output=True,text=True)
+    commands.append({'command':shlex.join(args),'exitcode':r.returncode,'stdout':r.stdout,'stderr':r.stderr})
+    print(r.stdout,r.stderr,flush=True)
+    (out/f'hal-candidate-v2-{arch}-{mode}.json').write_text(json.dumps({'commands':commands,
+        'entry_spec':str(entry_local),'entry_spec_sha256':hashlib.sha256(spec.read_bytes()).hexdigest(),
+        'checked_buildroot':str(root),'main_payload_sha256':hashlib.sha256((root/'usr/bin/bpftrace').read_bytes()).hexdigest(),
+        'scope':'Supplementary unchanged platform checkers against an existing payload and the actual entry spec. Checker macro evaluation remains separate from the full build-command macro audit.'},indent=2))
+raise SystemExit(0 if all(x['exitcode']==0 for x in commands) else 1)
+# 疑问与口径说明
+
+1. 六格 = 两架构 × 三路径。每格至少主包和 static 子包，故实际 RPM 文件数不应强行写成六。逐文件列清单。
+2. armv7l LLVM 输入按人工裁决标记 USABLE_BUT_BUILD_INCOMPLETE；W1 不抹去整轮 rpmbuild 退出 1，W2 独立追查与补做。
+3. armv7l 原生工具等价抽查/切换权限仍待回复；未答复前保留 QEMU，不套用 aarch64 的既有许可。
+4. W4 的机制表述将区分已测 glibc/libgcc 组合与所有平台的普遍结论；不能用源码检索或上游 musl 构建选择冒充所有 musl 版本已实测。具体证据在 W4 核对。
+
+5. 13:40：aarch64 libc++ 完整 rpmbuild 已退出 0（076），但 static ELF 的 DT_NEEDED 额外含 `libbpf.so.1`，产物门禁失败（105）。定位到本次输入源码 `src/ast/CMakeLists.txt:86`：`target_link_libraries(ast PUBLIC ${LIBCLANG_STATIC_ABS_PATH} bpf clangIndex clangDriver clangFrontend clangCodeGen)`；其中裸 `bpf` 成为 `-lbpf`，而 FindLibBpf 已找到 `/usr/lib64/libbpf.a`。已询问人工是否允许在 tmp 候选 spec 的 libc++ 条件内仅修正该静态分支为 `${LIBBPF_LIBRARIES}`；未获答复前不实施该修正、不降低静态门禁。armv7l 运行库输入和其他独立格继续。
+
+   这里失败的是“其余相关库静态纳入”的依赖约束；额外的 `libbpf.so.1` 不等于已观测到 libstdc++ 被错误链入。二者不混写。
+[
+  "bwrap",
+  "--unshare-user",
+  "--uid",
+  "1000",
+  "--gid",
+  "1000",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-gcc/local/BUILD-ROOTS/scratch.aarch64.0",
+  "/",
+  "--dev",
+  "/dev",
+  "--proc",
+  "/proc",
+  "--tmpfs",
+  "/tmp",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918",
+  "/tmp/task",
+  "--setenv",
+  "PATH",
+  "/bin:/usr/bin:/sbin:/usr/sbin",
+  "--setenv",
+  "CMAKE_BUILD_PARALLEL_LEVEL",
+  "1",
+  "--setenv",
+  "RPM_BUILD_NCPUS",
+  "1",
+  "--setenv",
+  "MAKEFLAGS",
+  "-j1",
+  "--setenv",
+  "LC_ALL",
+  "C",
+  "--setenv",
+  "QEMU_RESERVED_VA",
+  "0x100000000",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-gcc/local/BUILD-ROOTS/scratch.aarch64.0/home/abuild/rpmbuild/SOURCES",
+  "/tmp/bpf-sources",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-gcc/local/BUILD-ROOTS/scratch.aarch64.0/emul/usr/bin/ld",
+  "/usr/aarch64-tizen-linux-gnu/bin/ld",
+  "--",
+  "rpmbuild",
+  "--rcfile",
+  "/usr/lib/rpm/rpmrc:/home/abuild/.rpmrc",
+  "--macros",
+  "/usr/lib/rpm/macros:/usr/lib/rpm/macros.d/macros.*:/usr/lib/rpm/platform/%{_target}/macros:/usr/lib/rpm/fileattrs/*.attr:/usr/lib/rpm/tizen/macros:/etc/rpm/macros.*:/etc/rpm/macros:/etc/rpm/%{_target}/macros:/home/abuild/.rpmmacros",
+  "--target",
+  "aarch64-tizen-linux",
+  "--define",
+  "_topdir /tmp/task/rpm-bpf-aarch64-undefined",
+  "--define",
+  "_sourcedir /tmp/bpf-sources",
+  "--define",
+  "_tmppath /tmp/task/rpm-bpf-aarch64-undefined/TMP",
+  "--define",
+  "_smp_mflags -j1",
+  "--define",
+  "_smp_build_ncpus 1",
+  "--define",
+  "jobs 1",
+  "--define",
+  "_binary_payload w5T1.xzdio",
+  "--define",
+  "_srcdefattr (-,root,root)",
+  "--undefine",
+  "_toolchain",
+  "--define",
+  "__cc %{_host}-gcc",
+  "--define",
+  "__cxx %{_host}-g++",
+  "--define",
+  "__ar gcc-ar",
+  "--define",
+  "__ranlib gcc-ranlib",
+  "--define",
+  "__optflags_toolchain %{__optflags_toolchain_gcc}",
+  "--noclean",
+  "-bb",
+  "/tmp/task/specs/bpftrace-undefined-harness.spec"
+]

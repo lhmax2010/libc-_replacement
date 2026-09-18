@@ -1,0 +1,27 @@
+"""Prepare an isolated RPM output set, reusing the approved arm LLVM tree."""
+import hashlib,json
+from pathlib import Path
+p=Path.cwd(); out=p/'progress/BUILD_WEEKEND_0918'; task=p/'tmp/WEEKEND_0918'
+original=p/'progress/BUILD_STATIC_0917B/resume_0917/cell_commands/llvm-arm-rpm-serial.json'
+cmd=json.loads(original.read_text())
+cmd=[x.replace(str(p/'tmp/STATIC_0917B'),str(task)) for x in cmd]
+for part in ('RPMS','SRPMS','BUILDROOT','TMP'):
+    (task/'rpm-arm-llvm'/part).mkdir(parents=True,exist_ok=False)
+spec=task/'specs/llvm.spec'; old=p/'tmp/STATIC_0917B/specs/llvm.spec'
+assert spec.read_bytes()==old.read_bytes()
+assert 'rsync' not in spec.read_text()
+assert '_binary_payload w5T1.xzdio' in cmd
+trace=out/'llvm-arm-rpm-failed-syscalls.strace'
+# Only failed file/write/ioctl system calls are recorded; no full successful
+# write buffers or credentials. No sudo, host settings or source edits.
+cmd=['strace','-f','-e','trace=%file,write,ioctl','-e','status=failed','-s','160','-o',str(trace),*cmd]
+(out/'cell_commands/llvm-arm-whole-retry.json').write_text(json.dumps(cmd,indent=2))
+(out/'llvm-arm-retry-inputs.json').write_text(json.dumps({'original_command':str(original),
+    'spec_sha256':hashlib.sha256(spec.read_bytes()).hexdigest(),'output':str(task/'rpm-arm-llvm'),
+    'existing_18_rpms_preserved':True,'full_rpmbuild_bb':True,'prep_reused_from_approved_tree':True,
+    'rsync_in_spec':False,'note':'Previous whole-build cpio ENOSYS and input-copy rsync EPERM are separate observations.'},indent=2))
+print('Prepared complete arm RPM retry; no build yet')
+progress/BUILD_STATIC_0917B/resume_0917/STATUS.md:11:| LLVM armv7l 静态开发 RPM | PARTIAL / 等待裁决 | 15:47:27 完整 rpmbuild 退出 1（cpio write failed / Function not implemented）；18 个已写出 RPM 单独校验通过，含 libclang.a；不将整轮记 PASS，不自动用于后续 |
+progress/BUILD_STATIC_0917B/resume_0917/STATUS.md:83:- raw/202 实际退出 1；监控 finished 时间为 15:47:27。最后错误为 `create archive failed: cpio: write failed - Function not implemented`。18 次 Wrote 后没有完整结束，不能以 18 个文件替代整轮成功。
+progress/BUILD_STATIC_0917B/resume_0917/STATUS.md:100:- rsync --checksum 对旧根 usr/bin/llvm-opt-report 报 `read errors mapping ... Operation not permitted (1)`，两次更新均被其校验拒绝。raw/289 对本轮已核定 PGID 13095 发 TERM，退出 0；raw/281 最终记录器退出 241、监控子进程退出 -15。未把此次中止计为复制成功。
+progress/BUILD_STATIC_0917B/resume_0917/FINAL_RESULT.md:8:| LLVM armv7l | 整轮写包失败；18 个已写出 RPM 单独核查通过 | raw/202=1，cpio write failed / Function not implemented；raw/261=0，verify_armv7l/；不能把两种结果合并成整轮 PASS |

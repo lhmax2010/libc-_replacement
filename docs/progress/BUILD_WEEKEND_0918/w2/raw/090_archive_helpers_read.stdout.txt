@@ -1,0 +1,61 @@
+"""Archive a completed stage without replacing its original execution records."""
+import datetime,gzip,hashlib,json,re,sys
+from pathlib import Path
+src=Path('progress/BUILD_WEEKEND_0918'); dst=Path('docs/progress/BUILD_WEEKEND_0918')
+label=sys.argv[1]; assert re.fullmatch(r'[a-z0-9_]+',label)
+stage=dst/label; assert not stage.exists()
+stage.mkdir(parents=True)
+rows=[]
+for f in sorted(src.rglob('*')):
+    if not f.is_file() or '__pycache__' in f.parts: continue
+    if 'raw' in f.parts:
+        prefix=f.name.split('.')[0]
+        if not (f.parent/(prefix+'.finished.txt')).exists(): continue
+    data=f.read_bytes()
+    for pattern in (rb'-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----',rb'Authorization:\s*(?:Basic|Bearer)\s+\S+',rb'curl\s+-u\s+[^\s]+:[^\s]+'):
+        assert not re.search(pattern,data),str(f)
+    rel=f.relative_to(src); target=stage/rel
+    compressed=len(data)>524288
+    if compressed: target=target.with_name(target.name+'.gz')
+    target.parent.mkdir(parents=True,exist_ok=True)
+    target.write_bytes(gzip.compress(data,mtime=0) if compressed else data)
+    rows.append({'source':str(f),'delivery':str(target),'sha256_uncompressed':hashlib.sha256(data).hexdigest(),
+                 'bytes_uncompressed':len(data),'gzip':compressed})
+(stage/'MANIFEST.json').write_text(json.dumps({'time':datetime.datetime.now().astimezone().isoformat(),'files':rows},indent=2))
+for name in ('STATUS.md','QUESTIONS.md'):
+    (dst/name).write_bytes((src/name).read_bytes())
+print(label,'archived_files',len(rows))
+"""Check exact staged scope and common secret patterns; never read credentials."""
+import gzip,hashlib,json,re,subprocess
+from pathlib import Path
+paths=[x for x in subprocess.check_output(['git','diff','--cached','--name-only','-z']).decode().split('\0') if x]
+assert paths and all(x.startswith('docs/progress/BUILD_WEEKEND_0918/') for x in paths)
+rows=[]
+for name in paths:
+    data=subprocess.check_output(['git','show',':'+name]); assert data==Path(name).read_bytes()
+    decoded=gzip.decompress(data) if name.endswith('.gz') else data
+    for pattern in (rb'-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----',rb'Authorization:\s*(?:Basic|Bearer)\s+\S+',rb'curl\s+-u\s+[^\s]+:[^\s]+'):
+        assert not re.search(pattern,decoded),name
+    rows.append({'path':name,'sha256':hashlib.sha256(data).hexdigest()})
+assert not subprocess.check_output(['git','status','--porcelain','--','password.md','.quickbuild-credentials']).strip()
+result={'status':'PASS','scope':'docs/progress/BUILD_WEEKEND_0918 only','files':rows,
+        'credential_contents_read':False,'exact_secret_string_scan':'NOT_OBSERVED; no credential contents read'}
+Path('progress/BUILD_WEEKEND_0918/STAGED_CHECK.json').write_text(json.dumps(result,indent=2))
+print('PASS staged files',len(rows))
+import datetime, os, shlex, subprocess, sys
+from pathlib import Path
+root=Path('/home/toolchain/development/libc++_replacement')
+os.chdir(root)
+os.environ['PATH']='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/toolchain/.local/bin:/home/toolchain/.vscode/extensions/openai.chatgpt-26.908.40401-linux-x64/bin/linux-x86_64'
+out=root/'progress/BUILD_WEEKEND_0918/raw'; out.mkdir(parents=True,exist_ok=True)
+label,*cmd=sys.argv[1:]
+assert label and '/' not in label and cmd
+p=out/label
+def put(s,v):
+    with Path(str(p)+s).open('x') as f: f.write(v+'\n')
+put('.command.txt',shlex.join(cmd)); put('.started.txt',datetime.datetime.now().astimezone().isoformat())
+with Path(str(p)+'.stdout.txt').open('xb') as so,Path(str(p)+'.stderr.txt').open('xb') as se:
+    rc=subprocess.run(cmd,stdout=so,stderr=se).returncode
+put('.exitcode',str(rc)); put('.finished.txt',datetime.datetime.now().astimezone().isoformat())
+print(label,'exitcode='+str(rc),flush=True)
+sys.exit(rc if rc>=0 else 128-rc)

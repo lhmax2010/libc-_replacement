@@ -1,0 +1,111 @@
+"""Per-task disk, process and bounded I/O gates; never relax limits."""
+import datetime,json,shlex,subprocess,sys,time
+from pathlib import Path
+out=Path('progress/BUILD_WEEKEND_0918'); stage=sys.argv[1]
+assert stage in ('W2','W3','W4')
+now=datetime.datetime.now().astimezone(); clocks=json.loads((out/'deadlines.json').read_text())
+assert stage not in clocks
+deadline=min(now+datetime.timedelta(hours={'W2':6,'W3':6,'W4':3}[stage]),datetime.datetime.fromisoformat(clocks['TOTAL']))
+assert deadline>now
+clocks[stage]=deadline.isoformat(); (out/'deadlines.json').write_text(json.dumps(clocks,indent=2))
+records=[]
+def run(cmd):
+    started=time.monotonic(); r=subprocess.run(cmd,capture_output=True,text=True)
+    row={'command':shlex.join(cmd),'exitcode':r.returncode,'seconds':time.monotonic()-started,'stdout':r.stdout,'stderr':r.stderr}
+    records.append(row); (out/(stage+'-preflight-commands.json')).write_text(json.dumps(records,indent=2))
+    print(row,flush=True); return r
+r=run(['df','-h','.']); assert r.returncode==0
+r=run(['df','-B1','--output=avail','.']); assert r.returncode==0
+available=int(r.stdout.splitlines()[-1].strip())
+if available<20*1024**3: raise SystemExit('STOP_DISK_BELOW_20_GIB')
+r=run(['ps','-eo','pid,ppid,comm,etime']); assert r.returncode==0
+unexpected=[line for line in r.stdout.splitlines()[1:] if line.split()[2] in ('ninja','ninja.real','make','gmake','rpmbuild','clang','clang++','clang-22','cc1','cc1plus') or line.split()[2].startswith('qemu-')]
+assert not unexpected,('UNRESOLVED_BUILD_PROCESSES',unexpected)
+for attempt in range(6):
+    r=run(['bash','tools/resource_gate.sh','--level','medium'])
+    if r.returncode==0: break
+    if r.returncode!=21 or attempt==5:
+        (out/(stage+'-preflight-result.json')).write_text(json.dumps({'status':'RED_STOP_RESOURCE','exitcode':r.returncode,'retries':attempt},indent=2))
+        raise SystemExit(r.returncode)
+    print('Resource gate 21; pause 600 seconds, retry',attempt+1,flush=True)
+    for second in range(600):
+        if datetime.datetime.now().astimezone()>=deadline: raise SystemExit(124)
+        time.sleep(1)
+for attempt in range(4):
+    r=run(['timeout','-k','2s','30s','python3','progress/BUILD_STATIC_0917B/io_probe.py'])
+    if r.returncode==0: break
+    if attempt==3:
+        (out/(stage+'-preflight-result.json')).write_text(json.dumps({'status':'NOT_OBSERVED','reason':'I/O timeout persisted after three ten-minute waits'},indent=2))
+        raise SystemExit(124)
+    print('I/O pause 600 seconds',attempt+1,flush=True)
+    for second in range(600):
+        if datetime.datetime.now().astimezone()>=deadline: raise SystemExit(124)
+        time.sleep(1)
+(out/(stage+'-preflight-result.json')).write_text(json.dumps({'status':'PASS','available_bytes':available,'started':now.isoformat(),'deadline':deadline.isoformat()},indent=2))
+print(stage,'PREFLIGHT_PASS',flush=True)
+"""Archive a completed stage without replacing its original execution records."""
+import datetime,gzip,hashlib,json,re,sys
+from pathlib import Path
+src=Path('progress/BUILD_WEEKEND_0918'); dst=Path('docs/progress/BUILD_WEEKEND_0918')
+label=sys.argv[1]; assert re.fullmatch(r'[a-z0-9_]+',label)
+stage=dst/label; assert not stage.exists()
+stage.mkdir(parents=True)
+rows=[]
+for f in sorted(src.rglob('*')):
+    if not f.is_file() or '__pycache__' in f.parts: continue
+    if 'raw' in f.parts:
+        prefix=f.name.split('.')[0]
+        if not (f.parent/(prefix+'.finished.txt')).exists(): continue
+    data=f.read_bytes()
+    for pattern in (rb'-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----',rb'Authorization:\s*(?:Basic|Bearer)\s+\S+',rb'curl\s+-u\s+[^\s]+:[^\s]+'):
+        assert not re.search(pattern,data),str(f)
+    rel=f.relative_to(src); target=stage/rel
+    compressed=len(data)>524288
+    if compressed: target=target.with_name(target.name+'.gz')
+    target.parent.mkdir(parents=True,exist_ok=True)
+    target.write_bytes(gzip.compress(data,mtime=0) if compressed else data)
+    rows.append({'source':str(f),'delivery':str(target),'sha256_uncompressed':hashlib.sha256(data).hexdigest(),
+                 'bytes_uncompressed':len(data),'gzip':compressed})
+(stage/'MANIFEST.json').write_text(json.dumps({'time':datetime.datetime.now().astimezone().isoformat(),'files':rows},indent=2))
+for name in ('STATUS.md','QUESTIONS.md'):
+    (dst/name).write_bytes((src/name).read_bytes())
+print(label,'archived_files',len(rows))
+"""Recheck eleven published spec revisions; no package tree changes."""
+import ast,csv,hashlib,json,re,shlex,subprocess
+from pathlib import Path
+out=Path('progress/BUILD_WEEKEND_0918'); dest=out/'spec_audit'; dest.mkdir(exist_ok=False)
+source=Path('progress/BUILD_W2C_0915/audit_guard_context.py')
+(dest/'guard_scanner_source.py').write_bytes(source.read_bytes())
+node=next(x for x in ast.parse(source.read_text()).body if isinstance(x,ast.FunctionDef) and x.name=='scan')
+namespace={'re':re}; exec(compile(ast.Module(body=[node],type_ignores=[]),str(source),'exec'),namespace)
+scan=namespace['scan']
+good='%if %{defined _toolchain}\n%if %{toolchain_is clang}\n%define build_with_libcxx 1\n%endif\n%endif\n%if 0%{?build_with_libcxx}\nexport CXXFLAGS="-stdlib=libc++"\n%endif\n'
+assert scan(good)[0][0]['valid'] and scan(good)[1][0]['guarded']
+assert not scan('export CXXFLAGS="-stdlib=libc++"\n')[1][0]['guarded']
+assert not scan('%if 0%{?build_with_libcxx}\n%else\nexport CXXFLAGS="-stdlib=libc++"\n%endif\n')[1][0]['guarded']
+assert not scan('%if %{defined _toolchain}\n%define build_with_libcxx 1\n%endif\n')[0][0]['valid']
+packages=list(csv.DictReader(Path('docs/progress/BUILD_NIGHT_0916/PACKAGE_STATUS.tsv').open(),delimiter='\t'))
+inputs={r['package']:r for r in csv.DictReader(Path('progress/BUILD_W2C_0915/spec_audit_before/inputs.tsv').open(),delimiter='\t')}
+assert len(packages)==11
+commands=[]; rows=[]
+for package in packages:
+    name=package['package']; revision=package['adaptation_commit']
+    repo=Path('tmp/BUILD_W1BC_0911/target-fetch') if name=='llvm' else Path('codes/R104')/name
+    command=['git','-C',str(repo),'show',revision+':'+inputs[name]['spec']]
+    r=subprocess.run(command,capture_output=True)
+    commands.append({'command':shlex.join(command),'exitcode':r.returncode,'stderr':r.stderr.decode()})
+    (out/'spec-audit-commands.json').write_text(json.dumps(commands,indent=2))
+    assert r.returncode==0
+    data=r.stdout; (dest/(name+'.spec')).write_bytes(data)
+    definitions,options=scan(data.decode())
+    valid=len(definitions)==1 and definitions[0]['valid'] and bool(options) and all(x['guarded'] for x in options)
+    rows.append({'package':name,'branch':package['branch'],'revision':revision,'sha256':hashlib.sha256(data).hexdigest(),
+                 'definitions':definitions,'options':options,'literal_gate':'PASS' if valid else 'FAIL',
+                 'prior_validation':package['validation'],'status':package['current_status']})
+    if not valid:
+        (out/'spec-audit-failure.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2))
+        raise RuntimeError('Published spec guard check failed: '+name)
+(out/'spec-audit-result.json').write_text(json.dumps({'status':'PASS','packages':rows,'calibration_cases':4,
+    'scanner_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),
+    'scope':'Literal standard-library option/dependency guards in eleven pinned published specs; not arbitrary external macro injection; historical full builds reused, no claim of eleven new builds.'},ensure_ascii=False,indent=2))
+print('PASS eleven published specs; four calibration cases')

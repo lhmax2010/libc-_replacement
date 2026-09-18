@@ -1,0 +1,104 @@
+1598:get_current_package_specfile() {
+1599-	local sourcedir=$1
+1600-	local result
+1601-
+1602-	# Screen out packages that are not subject to the rootstrap-checker
+1603-	result=$(find "$sourcedir" -name *.spec)
+1604-	if [[ -z "$result" ]]; then
+1605-		return 1
+1606-	fi
+1607-
+1608-	echo "$result"
+1609-}
+1610-
+1611:get_current_package_metadata() {
+1612-	local specfile=$1
+1613-	CURRENT_PACKAGE_NAME=$(rpmspec -q --queryformat "[%{NAME}\n]" "$specfile" | head -n 1)
+1614-	CURRENT_GROUP_NAME=$(rpmspec -q --queryformat "[%{GROUP}\n]" "$specfile" | head -n 1)
+1615-}
+1616-
+1617-get_spec_buildrequires() {
+1618-	local spec_file_path="$1"
+1619-	local build_requires_list=""
+1620-	local dependency_token=""
+1621-
+1622-	while read -r dependency_token; do
+1623-		[[ -z "$dependency_token" ]] && continue
+1624-
+1625-		local package_name="$dependency_token"
+1626-
+1627-		if [[ "$dependency_token" =~ pkgconfig\((.*)\) ]]; then
+1628-			package_name="${BASH_REMATCH[1]}"
+1629-		fi
+1630-
+1631-		local package_group="$UNSPECIFIED"
+1632-		local rpm_group_info=""
+1633-
+1634-		rpm_group_info=$(rpm -qi "$package_name" 2>/dev/null | grep "Group")
+1635-
+1636-		if [[ "$rpm_group_info" =~ ^Group\ *:\ *(.*)$ ]]; then
+1637-			package_group="${BASH_REMATCH[1]}"
+1638-		fi
+1639-
+1640-		build_requires_list+="${dependency_token}@${package_group}${IFS}"
+1641-
+1642-	done <<< $(rpmspec -q --buildrequires "$spec_file_path")
+1643-
+1644-	echo "$build_requires_list"
+1645-}
+1646-
+1647-get_spec_buildconflicts() {
+1648-	local spec_file_path="$1"
+1649-	local build_conflicts_list=""
+1650-	local conflict_item=""
+1651-
+1652-	while read -r conflict_item; do
+1653-		[[ -z "$conflict_item" ]] && continue
+1654-
+1655-		build_conflicts_list+="${conflict_item}@${UNSPECIFIED}${IFS}"
+--
+1717:	SOURCEDIR=$1
+1718-	RPM_BUILD_ROOT=$2
+1719-	BUILD_ARCH=$3
+1720-
+1721-	# 1. Get specfile from current build package
+1722-	if ! CURRENT_PACKAGE_SPECFILE=$(get_current_package_specfile "$SOURCEDIR"); then
+1723-		echo "Cannot locate specfile."
+1724-		exit 0
+1725-	fi
+1726-
+1727-	# 2. Get package name information from acquired specfile step 1.
+1728-	get_current_package_metadata "$CURRENT_PACKAGE_SPECFILE"
+1729-	echo "Package: $CURRENT_PACKAGE_NAME, Group: $CURRENT_GROUP_NAME"
+1730-
+1731-	# 3. Get all config files(all rule yaml files)
+1732-	local config_files_str
+1733-	config_files_str=$(get_all_config_files)
+1734-
+1735-	if [[ -z "$config_files_str" ]]; then
+1736-		echo "No configuration files found in $ROOTSTRAP_DEFAULT_RULES_DIR"
+1737-		exit 0
+1738-	fi
+1739-
+1740-	# 4. Inspect all yaml files based on target criteria
+1741-	local has_error=0
+1742-	local config_file
+1743-	for config_file in $config_files_str; do
+1744-		if ! run_checker_for_config "$config_file"; then
+1745-			has_error=1
+1746-			# If package violates the rule, checker stops immediately.
+1747-			break
+1748-		fi
+1749-	done
+1750-
+1751-	if [[ $has_error == 1 ]]; then
+1752-		echo "FAILURE: Violation detected."
+1753-		exit 1
+1754-	fi
+1755-
+1756-	print_border
+1757-	print_message "SUCCESS: hal-rootstrap-checker done"
+1758-	print_border
+1759-}
+1760-
+1761-main "$@"

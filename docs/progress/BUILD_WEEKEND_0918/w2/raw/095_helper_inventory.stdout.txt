@@ -1,0 +1,82 @@
+"""Verify approved RPM identities, then install build inputs in a private root."""
+import hashlib,json,shlex,subprocess,sys
+from pathlib import Path
+p=Path.cwd(); out=p/'progress/BUILD_WEEKEND_0918'; task=p/'tmp/WEEKEND_0918'
+arch=sys.argv[1]; assert arch in ('armv7l','aarch64')
+assert json.loads((out/f'copy-{arch}-result.json').read_text())['status']=='COPY_AND_PER_FILE_SHA256_PASS'
+base=json.loads((out/f'bpf-private-{arch}-base.json').read_text())
+commands=[]; inputs=[]
+def run(cmd):
+    r=subprocess.run(cmd,capture_output=True,text=True,errors='replace')
+    commands.append({'command':shlex.join(cmd),'exitcode':r.returncode,'stdout':r.stdout,'stderr':r.stderr})
+    (out/f'install-v3-{arch}-commands.json').write_text(json.dumps(commands,indent=2))
+    print(shlex.join(cmd),'exitcode',r.returncode,flush=True)
+    print(r.stdout,end='',flush=True); print(r.stderr,end='',file=sys.stderr,flush=True)
+    assert r.returncode==0,(cmd,r.stderr)
+    return r.stdout
+def sha(f):
+    with f.open('rb') as stream: return hashlib.file_digest(stream,'sha256').hexdigest()
+old=p/'progress/BUILD_STATIC_0917B/resume_0917'
+llvm=json.loads((old/f'verify_{arch}/result.json').read_text())['rpms']
+assert len(llvm)==(12 if arch=='aarch64' else 18)
+selected={'llvm','llvm-devel','llvm-static-devel','libllvm','clang','clang-devel','libomp','libomp-devel'}
+files=[]
+for row in llvm:
+    f=Path(row['path']); assert sha(f)==row['sha256']
+    run(['rpm','--checksig','--nosignature',str(f)])
+    if row['name'] in selected: files.append(f)
+(out/f'llvm-{arch}-input-status.json').write_text(json.dumps({'status':'COMPLETE_RPM_SET' if arch=='aarch64' else 'USABLE_BUT_BUILD_INCOMPLETE',
+    'verified_rpm_count':len(llvm),'source_record':str(old/f'verify_{arch}/result.json'),
+    'selected_names':sorted(selected),'note':'armv7l overall build exit 1 is not overridden by per-RPM validation.'},indent=2))
+runtime=p/'tmp/NIGHT_0917/finish_validation/rpm/RPMS/aarch64' if arch=='aarch64' else task/'rpm-arm-runtime/RPMS/armv7l'
+runtime_names={'libc++','libc++-devel','libc++abi','libc++abi-devel'}; found=set()
+for f in sorted(runtime.glob('libc++*.rpm')):
+    name=run(['rpm','-qp','--qf','%{NAME}',str(f)])
+    if name in runtime_names:
+        assert name not in found; found.add(name); files.append(f)
+assert found==runtime_names
+static=json.loads((p/'progress/BUILD_NIGHT_0916/repository_static_packages.json').read_text())['records']
+for row in static:
+    if row['arch']==arch and row['package'] in ('libbpf-static','liblzma-static','zlib-devel-static','libffi-devel-static'):
+        f=(p/row['path']).resolve(); assert sha(f)==row['sha256']; files.append(f)
+bcc=[r for r in json.loads((p/'progress/BUILD_W2C_0915/bcc_inputs_for_bpftrace.json').read_text())
+     if r['mode']=='libcxx' and r['arch']==arch and '/bcc-tools-static-' in r['path']]
+assert len(bcc)==1; f=Path(bcc[0]['path']); assert sha(f)==bcc[0]['sha256']; files.append(f)
+guest=[]
+for row in json.loads((out/'ffi-dependencies.json').read_text()):
+    if row['arch']==arch:
+        f=Path(row['path']); assert sha(f)==row['sha256']; files.append(f)
+for i,f in enumerate(files):
+    identity=run(['rpm','-qp','--qf','%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}',str(f)])
+    assert identity.endswith('\t'+arch)
+    run(['rpm','--checksig','--nosignature',str(f)])
+    g=f'/tmp/input-rpms/{i}.rpm'; guest.append(g); base+=['--ro-bind',str(f),g]
+    inputs.append({'path':str(f),'sha256':sha(f),'identity':identity,'guest':g})
+(out/f'install-v3-{arch}-inputs.json').write_text(json.dumps(inputs,indent=2))
+# Reinstall the exact declared inputs after the interrupted private transaction;
+# this does not bypass dependency or file-conflict checks.
+run(base+['--','rpm','-Uvh','--ignorearch','--oldpackage','--replacepkgs','--test',*guest])
+run(base+['--','rpm','-Uvh','--ignorearch','--oldpackage','--replacepkgs',*guest])
+run(base+['--','rpm','-qa','--qf','%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n'])
+libdir='lib64' if arch=='aarch64' else 'lib'
+run(base+['--','ls','-l',*[f'/usr/{libdir}/{x}' for x in ('libc++.a','libc++abi.a','libclang.a')]])
+(out/f'bpf-install-{arch}-result.json').write_text(json.dumps({'status':'STATIC_INPUT_RPMS_INSTALLED','arch':arch,
+    'llvm_input_status':'COMPLETE_RPM_SET' if arch=='aarch64' else 'USABLE_BUT_BUILD_INCOMPLETE',
+    'dependency_bypass':False,'sudo':False},indent=2))
+"""Make only this task's owned private input directories writable for RPM."""
+import json,os,stat,sys
+from pathlib import Path
+arch=sys.argv[1]; assert arch in ('aarch64','armv7l')
+root=Path.cwd()/f'tmp/WEEKEND_0918/input-{arch}-v3'
+assert root.is_dir()
+rows=[]
+for part in ('usr','etc','rpmdb','root'):
+    for directory,dirs,files in os.walk(root/part,followlinks=False):
+        f=Path(directory); info=f.lstat()
+        assert info.st_uid==os.getuid() and not f.is_symlink()
+        before=stat.S_IMODE(info.st_mode); after=before|stat.S_IWUSR
+        if before!=after:
+            os.chmod(f,after)
+            rows.append({'path':str(f),'before':oct(before),'after':oct(after)})
+Path(f'progress/BUILD_WEEKEND_0918/input-{arch}-directory-permission-changes.json').write_text(json.dumps(rows,indent=2))
+print('Task-owned directories made owner-writable',len(rows),'source unchanged')

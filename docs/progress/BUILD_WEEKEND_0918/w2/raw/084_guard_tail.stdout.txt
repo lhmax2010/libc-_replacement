@@ -1,0 +1,62 @@
+                if checked is None:
+                    verified.add(pid)
+                    continue
+            except (FileNotFoundError,ProcessLookupError):
+                note('resource_not_observed_exited',pid=pid)
+                continue
+            except RuntimeError:
+                if not Path(f'/proc/{pid}').exists():
+                    note('resource_not_observed_exited',pid=pid)
+                    continue
+                stop('actual Ninja resource query failed')
+            except AssertionError:
+                stop('actual live Ninja resource constraint failed')
+            note('build_scheduler_verified',pid=pid,command=args,cwd=cwd,makeflags=makeflags)
+            verified.add(pid)
+        for line in reader.readlines():
+            m=re.search(r'\[(\d+)/(\d+)\]',line)
+            if m:
+                current=int(m[1])
+                target += current-last_ninja if current>=last_ninja else current
+                last_ninja=current
+            elif re.search(r'\[\s*\d+%\]\s+(?:Building|Linking|Generating)',line):
+                target += 1
+            elif line.startswith('COPY_ENTRY '):
+                target += 1
+        if target>=next_probe:
+            next_probe=(target//500+1)*500
+            if not probe():
+                send(signal.SIGSTOP); note('paused',completed=target)
+                for attempt in range(1,4):
+                    end=time.time()+600
+                    while time.time()<end:
+                        if time.time()>=DEADLINE-20: stop('deadline during I/O pause')
+                        time.sleep(1)
+                    if probe():
+                        send(signal.SIGCONT); note('resumed',attempt=attempt); break
+                    note('pause_retry_failed',attempt=attempt)
+                else: stop('three consecutive I/O pause retries failed')
+        if time.time()-last>=45:
+            note('running',completed=target); last=time.time()
+        if time.time()-hourly>=3600:
+            with (OUT/'HOURLY_STATUS.md').open('a') as f:
+                f.write(f'\n- {datetime.datetime.now().astimezone().isoformat()}: {LABEL} ongoing, observed target announcements {target}; no RPM success claimed.\n')
+            hourly=time.time()
+        time.sleep(1)
+    note('finished',exitcode=proc.returncode,completed=target)
+    raise SystemExit(proc.returncode)
+finally:
+    timer.cancel()
+    if proc.poll() is None: hard_stop()
+# 周末编译线开工
+
+开工观测：2026-09-18 12:28:14 +08。W1 截止 18:28:14；总窗口最晚 2026-09-19 09:28:14。W2/W3/W4 各自起点在进入任务时记录，分别不超过 6/6/3 小时，且不超过总窗口。
+
+采用人工已批准的 cp -a + 逐文件 SHA256 校验。armv7l LLVM 18 个单独核验的 RPM 标记 USABLE_BUT_BUILD_INCOMPLETE；aarch64 使用已完整通过的 12 个 RPM。输入身份仍须核验，不因历史 PASS 而跳过。
+
+codes/ 只读；候选留在 tmp/；不推包仓、不覆盖 Source1002。只在 codex/r5-ehabi-diagnosis 提交本轮证据。并行 1、nice19、ionice idle、实际 cgroup 内存上限为本次 MemTotal 的 50%。
+
+引导命令与工具返回恢复记录：`pwd; date -Is; git branch --show-current; ls -l AGENTS.md; ls progress/BUILD_STATIC_0917B/resume_0917`，组合退出 0；其中 ls AGENTS.md 报不存在，组合末项成功不表示该文件存在。引导命令输出来自本轮工具返回，非本轮包装器自动记录。
+{"W1":"2026-09-18T18:28:14+08:00","TOTAL":"2026-09-19T09:28:14+08:00"}
+[ 16%] Building CXX object src/CMakeFiles/runtime.dir/types_format.cpp.o
+cd /tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build/src && /emul/usr/bin/aarch64-tizen-linux-gnu-clang++ -DHAVE_LIBBPF_UPROBE_MULTI -DHAVE_NAME_TO_HANDLE_AT=1 -DKERNEL_HEADERS_DIR=\"\" -I/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/src -I/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build/src -I/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv8-a+fp+simd+crc+crypto -mtune=cortex-a53 -g -stdlib=libc++ -O3 -DNDEBUG -std=c++20   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -Wall -Wextra -Werror=missing-field-initializers -Werror=undef -Wpointer-arith -Wcast-align -Wwrite-strings -Wcast-qual -Wunreachable-code -Wdisabled-optimization -Wno-narrowing -MD -MT src/CMakeFiles/runtime.dir/types_format.cpp.o -MF CMakeFiles/runtime.dir/types_format.cpp.o.d -o CMakeFiles/runtime.dir/types_format.cpp.o -c /tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/src/types_format.cpp

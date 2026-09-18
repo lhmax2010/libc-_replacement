@@ -1,0 +1,64 @@
+# 本轮验收口径
+
+## RPM 格与文件数
+
+两架构 × 三路径为六个验证格，不是强行要求六个 RPM 文件。每格保留实际产出的主包、static、common 及其他子包，逐个记录身份、大小、SHA256、RPM digest 与压缩参数。当前不做 x86_64 RPM。
+
+libc++ 格检查主包实际依赖 libc++，static 仅静态纳入 C++/LLVM/BCC 等库、保留动态 libgcc_s；此处“static”不是完全无动态依赖。GCC 与未定义工具链两格的 static 文件与对应架构 Source1002 解出的原文件逐字节 SHA256 一致。
+
+RPM 经 strip 后可能没有私有符号名。命名空间证据取本轮未 strip 的实际链接产物，并用 `.text` 与 `.rodata` 的逐段 SHA256 将它关联到最终 RPM 文件；不把 stripped 文件中搜不到符号写成不存在相应实现。
+
+## 构建与安装边界
+
+完整 `rpmbuild -bb` 必须正常完成，不能把已写出的部分 RPM 自动升级为完整构建。人工批准复用的 armv7l LLVM 18 个输入例外明确保留 `USABLE_BUT_BUILD_INCOMPLETE`；W2 再独立补做整轮。
+
+私有构建根只允许本轮临时文件可写，原根及 codes/ 不改。安装后平台检查器保持启用。此前本轮遗漏其只读输入的失败按准备失误记录，不写为源码或标准库失败。
+
+板上安装前先核对现有包、进程与本任务目录；不覆盖不明已有测试状态。正常 RPM 依赖检查失败时记录缺项，不使用 `--nodeps`、`--force` 跳过。若必须扩大到已有系统库升级，由人工确认，不借安装测试授权默许扩大。
+
+## 功能与取消
+
+RPM 通过不等于功能等价、也不等于允许替换发布资产。板上原件/候选须分别实际测试；不同版本、构建选项、内核能力、列举结果、脚本执行结果分别记录。
+
+静态 libgcc 对照的预期崩溃只是待验证假设。若 armv7l 与 x86_64 表现不同，如实列出，不把预期写为观察值；同链接形态探针也不能证明来源未知且已 strip 的原二进制必然崩溃。
+
+所有产物仍为 tmp/ 候选，不覆盖 Source1002，不推包仓。
+# 周末编译适配验证记录
+
+本目录仅记录候选构建与验证，不表示已替换发布资产。`codes/` 未改；候选保存在 `tmp/WEEKEND_0918/`，不推包仓、不覆盖 Source1002。
+
+建议阅读顺序：
+
+1. `STATUS.md`：当前阶段及尚未闭合项。
+2. `QUESTIONS.md`、`ENVIRONMENT_CORRECTIONS.md`：待裁决问题，以及本轮输入/工具准备错误与修正；不能把这些错误改写成软件回归。
+3. `ACCEPTANCE_SCOPE.md`：构建成功、RPM 产物正确、板上功能等价三者的区别。
+4. 每格 `cells/<名称>/` 的执行日志及 `events.jsonl`，对应 `raw/` 内原始命令、开始/结束时间、退出码。
+5. 各 `verify-*`、`audit-*`、`*-inputs.json`：最终产物与输入身份；只存在目录或日志不代表判据通过，要看结果和实际退出码。
+
+RPM 的 `--checksig --nosignature` 在本轮用于检查包的摘要完整性，不声称做了 GPG 发布者认证。输入同时与既有固定记录的 SHA256 对照。`cp -a` 后核对常规文件 SHA256、符号链接目标、类型及模式；明确排除项见复制结果，不把排除项写为已扫描。
+
+运行时取消测试的原始源码沿用已记录的同一探针；四种等待形式分别五次。测试预期不当作观测值，尤其不会把 x86_64 的静态展开器失败自动外推到 armv7l。
+
+项目仓中的阶段归档若压缩了大日志，其 `MANIFEST.json` 提供解压后 SHA256 和原始长度。执行脚本快照与实际启动 SHA256 对照；事后恢复的快照明确标注恢复方式，不冒称执行前自动保存。
+"""Recover exact guard bytes only when matching the SHA recorded at execution."""
+import hashlib,json
+from pathlib import Path
+out=Path('progress/BUILD_WEEKEND_0918')
+captured=(out/'raw/010_copy_failure_review.stdout.txt').read_text()
+marker='"""Resume the existing RPM build; enforce actual cgroup, serial jobs and I/O gates."""'
+old=captured[captured.index(marker):].encode()
+current=(out/'guard.py').read_bytes()
+versions={hashlib.sha256(x).hexdigest():x for x in (old,current)}
+rows=[]
+for f in sorted((out/'cells').glob('*/events.jsonl')):
+    starts=[json.loads(x) for x in f.read_text().splitlines() if json.loads(x).get('event')=='start']
+    for start in starts:
+        sha=start['script_sha256']; assert sha in versions,(f,sha)
+        target=f.parent/'guard-exact-sha.py'
+        if target.exists(): assert target.read_bytes()==versions[sha]
+        else: target.write_bytes(versions[sha])
+        rows.append({'cell':str(f.parent),'sha256':sha,'matches_execution_record':True,
+                     'source':'captured raw/010 full script output' if versions[sha]==old else 'unchanged current guard',
+                     'note':'Snapshot saved after execution start; exact bytes match the SHA recorded at start.'})
+(out/'guard-version-preservation.json').write_text(json.dumps(rows,indent=2))
+print('Exact SHA-matched guard versions',len(rows))
