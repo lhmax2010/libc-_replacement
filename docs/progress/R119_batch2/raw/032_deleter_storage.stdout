@@ -1,0 +1,328 @@
+memory_basis=[('MemTotal', 33072918528)]
+RLIMIT_AS_bytes=9921875558; parallelism=1; nice=19; ionice=3
+139-
+140-  // Manages the pointer and deleter of a unique_ptr
+141-  template <typename _Tp, typename _Dp>
+142:    class __uniq_ptr_impl
+143-    {
+144-      template <typename _Up, typename _Ep, typename = void>
+145-	struct _Ptr
+--
+165-		     "unique_ptr's deleter type must be a function object type"
+166-		     " or an lvalue reference type" );
+167-
+168:      __uniq_ptr_impl() = default;
+169-      _GLIBCXX23_CONSTEXPR
+170:      __uniq_ptr_impl(pointer __p) : _M_t() { _M_ptr() = __p; }
+171-
+172-      template<typename _Del>
+173-	_GLIBCXX23_CONSTEXPR
+174:	__uniq_ptr_impl(pointer __p, _Del&& __d)
+175:	: _M_t(__p, std::forward<_Del>(__d)) { }
+176-
+177-      _GLIBCXX23_CONSTEXPR
+178:      __uniq_ptr_impl(__uniq_ptr_impl&& __u) noexcept
+179:      : _M_t(std::move(__u._M_t))
+180-      { __u._M_ptr() = nullptr; }
+181-
+182-      _GLIBCXX23_CONSTEXPR
+183:      __uniq_ptr_impl& operator=(__uniq_ptr_impl&& __u) noexcept
+184-      {
+185-	reset(__u.release());
+186-	_M_deleter() = std::forward<_Dp>(__u._M_deleter());
+--
+188-      }
+189-
+190-      _GLIBCXX23_CONSTEXPR
+191:      pointer&   _M_ptr() noexcept { return std::get<0>(_M_t); }
+192-      _GLIBCXX23_CONSTEXPR
+193:      pointer    _M_ptr() const noexcept { return std::get<0>(_M_t); }
+194-      _GLIBCXX23_CONSTEXPR
+195:      _Dp&       _M_deleter() noexcept { return std::get<1>(_M_t); }
+196-      _GLIBCXX23_CONSTEXPR
+197:      const _Dp& _M_deleter() const noexcept { return std::get<1>(_M_t); }
+198-
+199-      _GLIBCXX23_CONSTEXPR
+200-      void reset(pointer __p) noexcept
+--
+215-
+216-      _GLIBCXX23_CONSTEXPR
+217-      void
+218:      swap(__uniq_ptr_impl& __rhs) noexcept
+219-      {
+220-	using std::swap;
+221-	swap(this->_M_ptr(), __rhs._M_ptr());
+--
+223-      }
+224-
+225-    private:
+226:      tuple<pointer, _Dp> _M_t;
+227-    };
+228-
+229-  // Defines move construction + assignment as either defaulted or deleted.
+230-  template <typename _Tp, typename _Dp,
+231-	    bool = is_move_constructible<_Dp>::value,
+232-	    bool = is_move_assignable<_Dp>::value>
+233:    struct __uniq_ptr_data : __uniq_ptr_impl<_Tp, _Dp>
+234-    {
+235:      using __uniq_ptr_impl<_Tp, _Dp>::__uniq_ptr_impl;
+236:      __uniq_ptr_data(__uniq_ptr_data&&) = default;
+237:      __uniq_ptr_data& operator=(__uniq_ptr_data&&) = default;
+238-    };
+239-
+240-  template <typename _Tp, typename _Dp>
+241:    struct __uniq_ptr_data<_Tp, _Dp, true, false> : __uniq_ptr_impl<_Tp, _Dp>
+242-    {
+243:      using __uniq_ptr_impl<_Tp, _Dp>::__uniq_ptr_impl;
+244:      __uniq_ptr_data(__uniq_ptr_data&&) = default;
+245:      __uniq_ptr_data& operator=(__uniq_ptr_data&&) = delete;
+246-    };
+247-
+248-  template <typename _Tp, typename _Dp>
+249:    struct __uniq_ptr_data<_Tp, _Dp, false, true> : __uniq_ptr_impl<_Tp, _Dp>
+250-    {
+251:      using __uniq_ptr_impl<_Tp, _Dp>::__uniq_ptr_impl;
+252:      __uniq_ptr_data(__uniq_ptr_data&&) = delete;
+253:      __uniq_ptr_data& operator=(__uniq_ptr_data&&) = default;
+254-    };
+255-
+256-  template <typename _Tp, typename _Dp>
+257:    struct __uniq_ptr_data<_Tp, _Dp, false, false> : __uniq_ptr_impl<_Tp, _Dp>
+258-    {
+259:      using __uniq_ptr_impl<_Tp, _Dp>::__uniq_ptr_impl;
+260:      __uniq_ptr_data(__uniq_ptr_data&&) = delete;
+261:      __uniq_ptr_data& operator=(__uniq_ptr_data&&) = delete;
+262-    };
+263-  /// @endcond
+264-
+--
+272-    {
+273-      template <typename _Up>
+274-	using _DeleterConstraint =
+275:	  typename __uniq_ptr_impl<_Tp, _Up>::_DeleterConstraint::type;
+276-
+277:      __uniq_ptr_data<_Tp, _Dp> _M_t;
+278-
+279-    public:
+280:      using pointer	  = typename __uniq_ptr_impl<_Tp, _Dp>::pointer;
+281-      using element_type  = _Tp;
+282-      using deleter_type  = _Dp;
+283-
+--
+296-      /// Default constructor, creates a unique_ptr that owns nothing.
+297-      template<typename _Del = _Dp, typename = _DeleterConstraint<_Del>>
+298-	constexpr unique_ptr() noexcept
+299:	: _M_t()
+300-	{ }
+301-
+302-      /** Takes ownership of a pointer.
+--
+309-	_GLIBCXX23_CONSTEXPR
+310-	explicit
+311-	unique_ptr(pointer __p) noexcept
+312:	: _M_t(__p)
+313-        { }
+314-
+315-      /** Takes ownership of a pointer.
+--
+323-	       typename = _Require<is_copy_constructible<_Del>>>
+324-	_GLIBCXX23_CONSTEXPR
+325-	unique_ptr(pointer __p, const deleter_type& __d) noexcept
+326:	: _M_t(__p, __d) { }
+327-
+328-      /** Takes ownership of a pointer.
+329-       *
+--
+338-	unique_ptr(pointer __p,
+339-		   __enable_if_t<!is_lvalue_reference<_Del>::value,
+340-				 _Del&&> __d) noexcept
+341:	: _M_t(__p, std::move(__d))
+342-	{ }
+343-
+344-      template<typename _Del = deleter_type,
+--
+351-      /// Creates a unique_ptr that owns nothing.
+352-      template<typename _Del = _Dp, typename = _DeleterConstraint<_Del>>
+353-	constexpr unique_ptr(nullptr_t) noexcept
+354:	: _M_t()
+355-	{ }
+356-
+357-      // Move constructors.
+--
+372-			       is_convertible<_Ep, _Dp>>>>
+373-	_GLIBCXX23_CONSTEXPR
+374-	unique_ptr(unique_ptr<_Up, _Ep>&& __u) noexcept
+375:	: _M_t(__u.release(), std::forward<_Ep>(__u.get_deleter()))
+376-	{ }
+377-
+378-#if _GLIBCXX_USE_DEPRECATED
+--
+393-      {
+394-	static_assert(__is_invocable<deleter_type&, pointer>::value,
+395-		      "unique_ptr's deleter must be invocable with a pointer");
+396:	auto& __ptr = _M_t._M_ptr();
+397-	if (__ptr != nullptr)
+398-	  get_deleter()(std::move(__ptr));
+399-	__ptr = pointer();
+--
+461-      _GLIBCXX23_CONSTEXPR
+462-      pointer
+463-      get() const noexcept
+464:      { return _M_t._M_ptr(); }
+465-
+466-      /// Return a reference to the stored deleter.
+467-      _GLIBCXX23_CONSTEXPR
+468-      deleter_type&
+469-      get_deleter() noexcept
+470:      { return _M_t._M_deleter(); }
+471-
+472-      /// Return a reference to the stored deleter.
+473-      _GLIBCXX23_CONSTEXPR
+474-      const deleter_type&
+475-      get_deleter() const noexcept
+476:      { return _M_t._M_deleter(); }
+477-
+478-      /// Return @c true if the stored pointer is not null.
+479-      _GLIBCXX23_CONSTEXPR
+--
+486-      _GLIBCXX23_CONSTEXPR
+487-      pointer
+488-      release() noexcept
+489:      { return _M_t.release(); }
+490-
+491-      /** @brief Replace the stored pointer.
+492-       *
+--
+500-      {
+501-	static_assert(__is_invocable<deleter_type&, pointer>::value,
+502-		      "unique_ptr's deleter must be invocable with a pointer");
+503:	_M_t.reset(std::move(__p));
+504-      }
+505-
+506-      /// Exchange the pointer and deleter with another object.
+--
+509-      swap(unique_ptr& __u) noexcept
+510-      {
+511-	static_assert(__is_swappable<_Dp>::value, "deleter must be swappable");
+512:	_M_t.swap(__u._M_t);
+513-      }
+514-
+515-      // Disable copy from lvalue.
+--
+538-    {
+539-      template <typename _Up>
+540-      using _DeleterConstraint =
+541:	typename __uniq_ptr_impl<_Tp, _Up>::_DeleterConstraint::type;
+542-
+543:      __uniq_ptr_data<_Tp, _Dp> _M_t;
+544-
+545-      // like is_base_of<_Tp, _Up> but false if unqualified types are the same
+546-      template<typename _Up>
+--
+549-		    __not_<is_same<__remove_cv_t<_Tp>, __remove_cv_t<_Up>>> >;
+550-
+551-    public:
+552:      using pointer	  = typename __uniq_ptr_impl<_Tp, _Dp>::pointer;
+553-      using element_type  = _Tp;
+554-      using deleter_type  = _Dp;
+555-
+--
+585-      /// Default constructor, creates a unique_ptr that owns nothing.
+586-      template<typename _Del = _Dp, typename = _DeleterConstraint<_Del>>
+587-	constexpr unique_ptr() noexcept
+588:	: _M_t()
+589-	{ }
+590-
+591-      /** Takes ownership of a pointer.
+--
+603-	_GLIBCXX23_CONSTEXPR
+604-	explicit
+605-	unique_ptr(_Up __p) noexcept
+606:	: _M_t(__p)
+607-        { }
+608-
+609-      /** Takes ownership of a pointer.
+--
+619-				   is_copy_constructible<_Del>>>
+620-	_GLIBCXX23_CONSTEXPR
+621-	unique_ptr(_Up __p, const deleter_type& __d) noexcept
+622:	: _M_t(__p, __d) { }
+623-
+624-      /** Takes ownership of a pointer.
+625-       *
+--
+636-	unique_ptr(_Up __p,
+637-		   __enable_if_t<!is_lvalue_reference<_Del>::value,
+638-				 _Del&&> __d) noexcept
+639:	: _M_t(std::move(__p), std::move(__d))
+640-	{ }
+641-
+642-      template<typename _Up, typename _Del = deleter_type,
+--
+652-      /// Creates a unique_ptr that owns nothing.
+653-      template<typename _Del = _Dp, typename = _DeleterConstraint<_Del>>
+654-	constexpr unique_ptr(nullptr_t) noexcept
+655:	: _M_t()
+656-        { }
+657-
+658-      template<typename _Up, typename _Ep, typename = _Require<
+--
+662-			       is_convertible<_Ep, _Dp>>>>
+663-	_GLIBCXX23_CONSTEXPR
+664-	unique_ptr(unique_ptr<_Up, _Ep>&& __u) noexcept
+665:	: _M_t(__u.release(), std::forward<_Ep>(__u.get_deleter()))
+666-	{ }
+667-
+668-      /// Destructor, invokes the deleter if the stored pointer is not null.
+--
+671-#endif
+672-      ~unique_ptr()
+673-      {
+674:	auto& __ptr = _M_t._M_ptr();
+675-	if (__ptr != nullptr)
+676-	  get_deleter()(__ptr);
+677-	__ptr = pointer();
+--
+731-      _GLIBCXX23_CONSTEXPR
+732-      pointer
+733-      get() const noexcept
+734:      { return _M_t._M_ptr(); }
+735-
+736-      /// Return a reference to the stored deleter.
+737-      _GLIBCXX23_CONSTEXPR
+738-      deleter_type&
+739-      get_deleter() noexcept
+740:      { return _M_t._M_deleter(); }
+741-
+742-      /// Return a reference to the stored deleter.
+743-      _GLIBCXX23_CONSTEXPR
+744-      const deleter_type&
+745-      get_deleter() const noexcept
+746:      { return _M_t._M_deleter(); }
+747-
+748-      /// Return @c true if the stored pointer is not null.
+749-      _GLIBCXX23_CONSTEXPR
+--
+756-      _GLIBCXX23_CONSTEXPR
+757-      pointer
+758-      release() noexcept
+759:      { return _M_t.release(); }
+760-
+761-      /** @brief Replace the stored pointer.
+762-       *
+--
+779-      _GLIBCXX23_CONSTEXPR
+780-      void
+781-      reset(_Up __p) noexcept
+782:      { _M_t.reset(std::move(__p)); }
+783-
+784-      _GLIBCXX23_CONSTEXPR
+785-      void reset(nullptr_t = nullptr) noexcept
+--
+791-      swap(unique_ptr& __u) noexcept
+792-      {
+793-	static_assert(__is_swappable<_Dp>::value, "deleter must be swappable");
+794:	_M_t.swap(__u._M_t);
+795-      }
+796-
+797-      // Disable copy from lvalue.
