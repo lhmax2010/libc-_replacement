@@ -1,0 +1,25 @@
+75M	progress/BUILD_WEEKEND_0918
+codex/r5-ehabi-diagnosis
+ M .gitignore
+ M docs/progress/R111/raw/053_archive_delivery_verification.stdout.txt
+ M docs/progress/R114/raw/048_archive_submission_evidence.stdout.txt
+{"time": "2026-09-18T16:37:48.942400+08:00", "event": "command", "command": ["ionice", "-p", "239595"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T16:37:48.942465+08:00", "event": "resource_verified", "pid": 239595, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T16:37:48.942484+08:00", "event": "build_scheduler_verified", "pid": 239595, "command": ["/usr/bin/qemu-arm-static", "/bin/make", "-f", "src/aot/CMakeFiles/bpftrace-aotrt.dir/build.make", "src/aot/CMakeFiles/bpftrace-aotrt.dir/build"], "cwd": "/tmp/task/rpm-bpf-armv7l-undefined/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+"""Check exact staged scope and common secret patterns; never read credentials."""
+import gzip,hashlib,json,re,subprocess
+from pathlib import Path
+paths=[x for x in subprocess.check_output(['git','diff','--cached','--name-only','-z']).decode().split('\0') if x]
+assert paths and all(x.startswith('docs/progress/BUILD_WEEKEND_0918/') for x in paths)
+rows=[]
+for name in paths:
+    data=subprocess.check_output(['git','show',':'+name]); assert data==Path(name).read_bytes()
+    decoded=gzip.decompress(data) if name.endswith('.gz') else data
+    for pattern in (rb'-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----',rb'Authorization:\s*(?:Basic|Bearer)\s+\S+',rb'curl\s+-u\s+[^\s]+:[^\s]+'):
+        assert not re.search(pattern,decoded),name
+    rows.append({'path':name,'sha256':hashlib.sha256(data).hexdigest()})
+assert not subprocess.check_output(['git','status','--porcelain','--','password.md','.quickbuild-credentials']).strip()
+result={'status':'PASS','scope':'docs/progress/BUILD_WEEKEND_0918 only','files':rows,
+        'credential_contents_read':False,'exact_secret_string_scan':'NOT_OBSERVED; no credential contents read'}
+Path('progress/BUILD_WEEKEND_0918/STAGED_CHECK.json').write_text(json.dumps(result,indent=2))
+print('PASS staged files',len(rows))

@@ -1,0 +1,121 @@
+"""Physical-board RPM transactions and functional comparison, without dependency bypass."""
+import datetime,hashlib,json,re,shlex,subprocess
+from pathlib import Path
+p=Path.cwd(); output=p/'progress/BUILD_WEEKEND_0918'; out=output/'board-install'; out.mkdir(exist_ok=False)
+sdb=['/home/toolchain/.local/bin/sdb','-s','192.168.108.26:26101']
+remote='/var/tmp/build_weekend_0918_rpms'; func='/var/tmp/build_weekend_0918_function'
+records=[]; uploaded=[]; connected=True; root_changed=False; made_dirs=False; results=[]
+names=('bpftrace-static','bpftrace','bpftrace-common')
+def command(args,limit=90):
+    global connected
+    row={'command':shlex.join(args),'started':datetime.datetime.now().astimezone().isoformat()}
+    try: r=subprocess.run(args,capture_output=True,timeout=limit)
+    except subprocess.TimeoutExpired:
+        connected=False; row['exitcode']='NOT_OBSERVED_TIMEOUT'; records.append(row)
+        (out/'commands.json').write_text(json.dumps(records,indent=2))
+        raise RuntimeError('Connection/command timeout: stop; manual cleanup may be required')
+    n=len(records); (out/f'{n:03d}.stdout').write_bytes(r.stdout); (out/f'{n:03d}.stderr').write_bytes(r.stderr)
+    row.update(exitcode=r.returncode,stdout=f'{n:03d}.stdout',stderr=f'{n:03d}.stderr'); records.append(row)
+    (out/'commands.json').write_text(json.dumps(records,indent=2))
+    print(shlex.join(args),'exitcode',r.returncode,flush=True)
+    if r.returncode:
+        connected=False
+        raise RuntimeError('Transport command failed: stop')
+    return r.stdout.decode(errors='replace').replace('\r\n','\n')
+def shell(script):
+    global connected
+    text=command(sdb+['shell',script+'; task_rc=$?; printf "\\nTASK_REMOTE_RC=%s\\n" "$task_rc"'])
+    match=re.findall(r'^TASK_REMOTE_RC=(\d+)$',text,re.M)
+    if len(match)!=1:
+        connected=False; raise RuntimeError('Missing remote completion marker: stop')
+    records[-1]['remote_exitcode']=int(match[0]); (out/'commands.json').write_text(json.dumps(records,indent=2))
+    return int(match[0]),text
+def require(script):
+    code,text=shell(script); assert code==0,(script,code,text); return text
+def installed():
+    text=require("rpm -qa --qf '%{NAME}\\n'")
+    return [x for x in text.splitlines() if x in names]
+def remove_packages():
+    current=installed()
+    if current:
+        require('rpm -e --test '+' '.join(shlex.quote(x) for x in current))
+        require('rpm -e '+' '.join(shlex.quote(x) for x in current))
+    assert not installed()
+def upload(f,target):
+    sha=hashlib.sha256(f.read_bytes()).hexdigest()
+    command(sdb+['push',str(f),target],limit=120)
+    uploaded.append(target)
+    text=require('sha256sum '+shlex.quote(target)); assert re.search(r'^'+sha+r'\s',text,re.M)
+    row={'source':str(f),'destination':target,'sha256':sha}; print(json.dumps(row),flush=True)
+    return row
+
+preflight=json.loads((output/'board-preflight/result.json').read_text())
+assert preflight['status']=='READY_NO_OBSERVED_TEST_RESIDUE'
+identity=require('id'); initial_root='uid=0(' in identity
+assert not installed(), 'Existing package state changed since preflight; stop'
+require('test ! -e '+remote+' && test ! -e '+func)
+require('test ! -e /usr/bin/bpftrace && test ! -L /usr/bin/bpftrace && test ! -e /usr/bin/bpftrace-static && test ! -L /usr/bin/bpftrace-static')
+runner=p/'tmp/WEEKEND_0918/board-probes/run-bounded'; assert runner.is_file()
+inputs=[]
+for label,mode in (('candidate','libcxx'),('original','gcc')):
+    evidence=json.loads((output/f'verify-bpf-armv7l-{mode}/result.json').read_text())
+    assert evidence['status']=='RPM_PAYLOAD_CHECK_PASS_NOT_FUNCTIONAL_EQUIVALENCE'
+    selected=[x for x in evidence['rpms'] if x['identity'].split('\t')[0] in names]
+    assert len(selected)==3
+    for row in selected: assert hashlib.sha256(Path(row['path']).read_bytes()).hexdigest()==row['sha256']
+    inputs.append((label,evidence,selected))
+try:
+    if not initial_root:
+        command(sdb+['root','on']); root_changed=True
+    assert 'uid=0(' in require('id')
+    require('mkdir '+remote+' '+func); made_dirs=True
+    transfers=[upload(runner,func+'/run-bounded')]; require('chmod 755 '+func+'/run-bounded')
+    for label,evidence,rpms in inputs:
+        guest=[]
+        for row in rpms:
+            f=Path(row['path']); g=remote+'/'+label+'-'+f.name
+            transfers.append(upload(f,g)); guest.append(g)
+        (out/'transfer_sha256.json').write_text(json.dumps(transfers,indent=2))
+        code,text=shell('rpm -ivh --test '+' '.join(shlex.quote(x) for x in guest))
+        if code:
+            results.append({'label':label,'status':'NOT_AVAILABLE_NORMAL_RPM_DEPENDENCY_TEST_FAILED','remote_exitcode':code,
+                            'notes':'No dependency bypass, no system library upgrade attempted.'})
+            break
+        require('rpm -ivh '+' '.join(shlex.quote(x) for x in guest))
+        assert set(installed())==set(names)
+        installed_hash=require('sha256sum /usr/bin/bpftrace')
+        assert re.search('^'+evidence['static_binary_sha256']+r'\s',installed_hash,re.M),'post static payload differs'
+        functional_snapshot=out/('executed-functional-'+label+'.py')
+        functional_snapshot.write_bytes((output/'board_functional_check.py').read_bytes())
+        call=['python3',str(functional_snapshot),label,evidence['static_binary_sha256']]
+        print('COMMAND '+shlex.join(call),flush=True)
+        r=subprocess.run(call)
+        records.append({'command':shlex.join(call),'exitcode':r.returncode,'kind':'local functional helper',
+                        'executed_script_sha256':hashlib.sha256(functional_snapshot.read_bytes()).hexdigest()})
+        (out/'commands.json').write_text(json.dumps(records,indent=2))
+        if r.returncode:
+            connected=False
+            raise RuntimeError('Functional helper failed; inspect transport records before any further board action')
+        summary=json.loads((output/('board-functional-'+label)/'summary.json').read_text())
+        passed=len(summary['tests'])>=3 and all(x['assertions_pass'] for x in summary['tests'])
+        results.append({'label':label,'status':'INSTALLED_TESTS_PASS' if passed else 'INSTALLED_FUNCTIONAL_GATE_NOT_CLOSED',
+                        'installed_binary_sha256':evidence['static_binary_sha256'],'functional_summary':summary})
+        (out/'results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2))
+        remove_packages()
+finally:
+    cleanup={'connection_available':connected,'task_directories':[remote,func],'uploaded_files':uploaded,'initial_root':initial_root}
+    (out/'cleanup.json').write_text(json.dumps(cleanup,indent=2))
+    if connected:
+        remove_packages()
+        if uploaded: require('rm -- '+' '.join(shlex.quote(x) for x in uploaded))
+        if made_dirs:
+            require('rmdir '+remote+' '+func)
+            require('test ! -e '+remote+' && test ! -e '+func)
+        require('test ! -e /usr/bin/bpftrace && test ! -e /usr/bin/bpftrace-static')
+        if root_changed: command(sdb+['root','off'])
+        assert ('uid=0(' in require('id'))==initial_root
+        cleanup['status']='PACKAGES_AND_OWN_FILES_REMOVED_INITIAL_ROOT_STATE_RESTORED'
+        (out/'cleanup.json').write_text(json.dumps(cleanup,indent=2))
+(out/'results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2))
+print(json.dumps(results,ensure_ascii=False),flush=True)
+assert len(results)==2 and all(x['status']=='INSTALLED_TESTS_PASS' for x in results),'Board functional comparison not closed'

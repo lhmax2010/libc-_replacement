@@ -1,0 +1,158 @@
+     1	%if %{defined _toolchain}
+     2	%if %{toolchain_is clang}
+     3	%define build_with_libcxx 1
+     4	%endif
+     5	%endif
+     6	
+     7	Name:           bpftrace
+     8	Version:        0.24.2
+     9	Release:        1
+    10	Summary:        High-level tracing language for Linux eBPF
+    11	License:        Apache-2.0
+    12	
+    13	Source0:        %{name}-%{version}.tar.gz
+    14	Source1001:     %{name}.manifest
+    15	Source1002:     prebuilt-static-bpftrace.tar.gz
+    16	
+    17	ExclusiveArch:  armv7l aarch64
+    18	
+    19	BuildRequires:  gcc-c++
+    20	BuildRequires:  bison
+    21	BuildRequires:  flex
+    22	BuildRequires:  cmake
+    23	BuildRequires:  pkgconfig(libelf)
+    24	BuildRequires:  zlib-devel
+    25	BuildRequires:  llvm-devel
+    26	BuildRequires:  llvm-static-devel
+    27	BuildRequires:  clang-devel
+    28	BuildRequires:  bcc-tools-devel
+    29	BuildRequires:  libbpf-devel
+    30	# for xxd command
+    31	BuildRequires:  vim
+    32	BuildRequires:  cereal-devel
+    33	BuildRequires:  tar
+    34	BuildRequires:  libomp
+    35	%if 0%{?build_with_libcxx}
+    36	BuildRequires:  libc++-devel
+    37	BuildRequires:  libc++abi-devel
+    38	BuildRequires:  bcc-tools-static
+    39	BuildRequires:  libbpf-static
+    40	BuildRequires:  liblzma-static
+    41	BuildRequires:  zlib-devel-static
+    42	%endif
+    43	
+    44	%description
+    45	BPFtrace is a high-level tracing language for Linux enhanced Berkeley Packet
+    46	Filter (eBPF) available in recent Linux kernels (4.x). BPFtrace uses LLVM as a
+    47	backend to compile scripts to BPF-bytecode and makes use of BCC for
+    48	interacting with the Linux BPF system, as well as existing Linux tracing
+    49	capabilities: kernel dynamic tracing (kprobes), user-level dynamic tracing
+    50	(uprobes), and tracepoints. The BPFtrace language is inspired by awk and C,
+    51	and predecessor tracers such as DTrace and SystemTap
+    52	
+    53	%package common
+    54	Summary: Common files for bpftrace (scripts, man pages, bash-completion)
+    55	
+    56	%description common
+    57	This package contains architecture-independent files for bpftrace:
+    58	- Example bpftrace scripts (.bt files)
+    59	- Man pages
+    60	- Bash completion
+    61	
+    62	%package static
+    63	Summary: High-level tracing language for Linux eBPF (static binary)
+    64	
+    65	%description static
+    66	BPFtrace is a high-level tracing language for Linux enhanced Berkeley Packet
+    67	Filter (eBPF) available in recent Linux kernels (4.x). BPFtrace uses LLVM as a
+    68	backend to compile scripts to BPF-bytecode and makes use of BCC for
+    69	interacting with the Linux BPF system, as well as existing Linux tracing
+    70	capabilities: kernel dynamic tracing (kprobes), user-level dynamic tracing
+    71	(uprobes), and tracepoints. The BPFtrace language is inspired by awk and C,
+    72	and predecessor tracers such as DTrace and SystemTap
+    73	
+    74	This package is the bpftrace static binary.
+    75	
+    76	%prep
+    77	%setup -q
+    78	cp %{SOURCE1001} .
+    79	tar xzvf %{SOURCE1002}
+    80	%if 0%{?build_with_libcxx}
+    81	# Keep a single shared unwinder for glibc pthread cancellation. The C++
+    82	# libraries remain static; GCC and undefined-toolchain paths stay unchanged.
+    83	test "$(grep -Fc 'target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")' src/CMakeLists.txt)" = 1
+    84	sed -i 's/target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")/target_link_options(bpftrace BEFORE PRIVATE "-shared-libgcc" "-static-libstdc++")/' src/CMakeLists.txt
+    85	%endif
+    86	
+    87	%build
+    88	%if 0%{?build_with_libcxx}
+    89	bpftrace_original_ldflags="${LDFLAGS}"
+    90	export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+    91	export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+    92	%endif
+    93	
+    94	%{?asan:/usr/bin/gcc-unforce-options}
+    95	%{?ubsan:/usr/bin/gcc-unforce-options}
+    96	
+    97	mkdir build
+    98	cd build
+    99	cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -DBUILD_TESTING=OFF -DSTATIC_LINKING=OFF \
+   100	         -DCMAKE_SKIP_RPATH:BOOL=ON -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix}
+   101	%make_build
+   102	cd ..
+   103	
+   104	%if 0%{?build_with_libcxx}
+   105	# Keep the ordinary shared build unchanged; build the static subpackage separately.
+   106	# CMake treats this option as source-relative, so preserve that form explicitly.
+   107	ln -s "%{_libdir}/libclang.a" build/libclang-static-input.a
+   108	libclang_static_relpath=build/libclang-static-input.a
+   109	LDFLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
+   110	cmake -S . -B build-static -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+   111	      -DSTATIC_LINKING=ON -DCMAKE_SKIP_RPATH:BOOL=ON \
+   112	      -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix} \
+   113	      -DLIBCLANG_STATIC_PATH:STRING="${libclang_static_relpath}" \
+   114	      -DCMAKE_EXE_LINKER_FLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
+   115	      -DCMAKE_CXX_STANDARD_LIBRARIES="-Wl,--start-group %{_libdir}/libc++.a %{_libdir}/libc++abi.a -Wl,--end-group"
+   116	cmake --build build-static --target bpftrace -- %{?_smp_mflags}
+   117	%endif
+   118	
+   119	%install
+   120	cd build
+   121	%make_install
+   122	cd ..
+   123	
+   124	# Install bpftrace static binary
+   125	%if %{defined _toolchain}
+   126	%if %{toolchain_is clang}
+   127	install -m 0755 build-static/src/bpftrace %{buildroot}%{_bindir}/bpftrace-static
+   128	%else
+   129	install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
+   130	%endif
+   131	%else
+   132	install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
+   133	%endif
+   134	
+   135	%post static
+   136	cp -rf %{_bindir}/%{name}-static %{_bindir}/%{name}
+   137	rm -rf %{_bindir}/%{name}-static
+   138	
+   139	%postun static
+   140	rm -rf %{_bindir}/%{name}
+   141	
+   142	%files
+   143	%manifest %{name}.manifest
+   144	%license LICENSE
+   145	%{_bindir}/%{name}
+   146	%{_bindir}/%{name}-aotrt
+   147	
+   148	%files common
+   149	%manifest %{name}.manifest
+   150	%license LICENSE
+   151	%{_datadir}/bpftrace/
+   152	%{_datadir}/man/man8/*.gz
+   153	%{_datadir}/bash-completion/completions/bpftrace
+   154	
+   155	%files static
+   156	%manifest %{name}.manifest
+   157	%license LICENSE
+   158	%{_bindir}/%{name}-static

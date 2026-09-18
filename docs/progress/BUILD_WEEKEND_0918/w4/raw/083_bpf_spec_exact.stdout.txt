@@ -1,0 +1,199 @@
+%if %{defined _toolchain}
+%if %{toolchain_is clang}
+%define build_with_libcxx 1
+%endif
+%endif
+
+Name:           bpftrace
+Version:        0.24.2
+Release:        1
+Summary:        High-level tracing language for Linux eBPF
+License:        Apache-2.0
+
+Source0:        %{name}-%{version}.tar.gz
+Source1001:     %{name}.manifest
+Source1002:     prebuilt-static-bpftrace.tar.gz
+
+ExclusiveArch:  armv7l aarch64
+
+BuildRequires:  gcc-c++
+BuildRequires:  bison
+BuildRequires:  flex
+BuildRequires:  cmake
+BuildRequires:  pkgconfig(libelf)
+BuildRequires:  zlib-devel
+BuildRequires:  llvm-devel
+BuildRequires:  llvm-static-devel
+BuildRequires:  clang-devel
+BuildRequires:  bcc-tools-devel
+BuildRequires:  libbpf-devel
+# for xxd command
+BuildRequires:  vim
+BuildRequires:  cereal-devel
+BuildRequires:  tar
+BuildRequires:  libomp
+%if 0%{?build_with_libcxx}
+BuildRequires:  libc++-devel
+BuildRequires:  libc++abi-devel
+BuildRequires:  bcc-tools-static
+BuildRequires:  libbpf-static
+BuildRequires:  liblzma-static
+BuildRequires:  zlib-devel-static
+%endif
+
+%description
+BPFtrace is a high-level tracing language for Linux enhanced Berkeley Packet
+Filter (eBPF) available in recent Linux kernels (4.x). BPFtrace uses LLVM as a
+backend to compile scripts to BPF-bytecode and makes use of BCC for
+interacting with the Linux BPF system, as well as existing Linux tracing
+capabilities: kernel dynamic tracing (kprobes), user-level dynamic tracing
+(uprobes), and tracepoints. The BPFtrace language is inspired by awk and C,
+and predecessor tracers such as DTrace and SystemTap
+
+%package common
+Summary: Common files for bpftrace (scripts, man pages, bash-completion)
+
+%description common
+This package contains architecture-independent files for bpftrace:
+- Example bpftrace scripts (.bt files)
+- Man pages
+- Bash completion
+
+%package static
+Summary: High-level tracing language for Linux eBPF (static binary)
+
+%description static
+BPFtrace is a high-level tracing language for Linux enhanced Berkeley Packet
+Filter (eBPF) available in recent Linux kernels (4.x). BPFtrace uses LLVM as a
+backend to compile scripts to BPF-bytecode and makes use of BCC for
+interacting with the Linux BPF system, as well as existing Linux tracing
+capabilities: kernel dynamic tracing (kprobes), user-level dynamic tracing
+(uprobes), and tracepoints. The BPFtrace language is inspired by awk and C,
+and predecessor tracers such as DTrace and SystemTap
+
+This package is the bpftrace static binary.
+
+%prep
+%setup -q
+cp %{SOURCE1001} .
+tar xzvf %{SOURCE1002}
+%if 0%{?build_with_libcxx}
+# Keep a single shared unwinder for glibc pthread cancellation. The C++
+# libraries remain static; GCC and undefined-toolchain paths stay unchanged.
+test "$(grep -Fc 'target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")' src/CMakeLists.txt)" = 1
+sed -i 's/target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")/target_link_options(bpftrace BEFORE PRIVATE "-shared-libgcc" "-static-libstdc++")/' src/CMakeLists.txt
+%endif
+
+%build
+%if 0%{?build_with_libcxx}
+bpftrace_original_ldflags="${LDFLAGS}"
+export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+%endif
+
+%{?asan:/usr/bin/gcc-unforce-options}
+%{?ubsan:/usr/bin/gcc-unforce-options}
+
+mkdir build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -DBUILD_TESTING=OFF -DSTATIC_LINKING=OFF \
+         -DCMAKE_SKIP_RPATH:BOOL=ON -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix}
+%make_build
+cd ..
+
+%if 0%{?build_with_libcxx}
+# Keep the ordinary shared build unchanged; build the static subpackage separately.
+# CMake treats this option as source-relative, so preserve that form explicitly.
+ln -s "%{_libdir}/libclang.a" build/libclang-static-input.a
+libclang_static_relpath=build/libclang-static-input.a
+LDFLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
+cmake -S . -B build-static -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+      -DSTATIC_LINKING=ON -DCMAKE_SKIP_RPATH:BOOL=ON \
+      -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix} \
+      -DLIBCLANG_STATIC_PATH:STRING="${libclang_static_relpath}" \
+      -DCMAKE_EXE_LINKER_FLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
+      -DCMAKE_CXX_STANDARD_LIBRARIES="-Wl,--start-group %{_libdir}/libc++.a %{_libdir}/libc++abi.a -Wl,--end-group"
+cmake --build build-static --target bpftrace -- %{?_smp_mflags}
+%endif
+
+%install
+cd build
+%make_install
+cd ..
+
+# Install bpftrace static binary
+%if %{defined _toolchain}
+%if %{toolchain_is clang}
+install -m 0755 build-static/src/bpftrace %{buildroot}%{_bindir}/bpftrace-static
+%else
+install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
+%endif
+%else
+install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
+%endif
+
+%post static
+cp -rf %{_bindir}/%{name}-static %{_bindir}/%{name}
+rm -rf %{_bindir}/%{name}-static
+
+%postun static
+rm -rf %{_bindir}/%{name}
+
+%files
+%manifest %{name}.manifest
+%license LICENSE
+%{_bindir}/%{name}
+%{_bindir}/%{name}-aotrt
+
+%files common
+%manifest %{name}.manifest
+%license LICENSE
+%{_datadir}/bpftrace/
+%{_datadir}/man/man8/*.gz
+%{_datadir}/bash-completion/completions/bpftrace
+
+%files static
+%manifest %{name}.manifest
+%license LICENSE
+%{_bindir}/%{name}-static
+"""Recheck eleven published spec revisions; no package tree changes."""
+import ast,csv,hashlib,json,re,shlex,subprocess
+from pathlib import Path
+out=Path('progress/BUILD_WEEKEND_0918'); dest=out/'spec_audit'; dest.mkdir(exist_ok=False)
+source=Path('progress/BUILD_W2C_0915/audit_guard_context.py')
+node=next(x for x in ast.parse(source.read_text()).body if isinstance(x,ast.FunctionDef) and x.name=='scan')
+namespace={'re':re}; exec(compile(ast.Module(body=[node],type_ignores=[]),str(source),'exec'),namespace)
+scan=namespace['scan']
+good='%if %{defined _toolchain}\n%if %{toolchain_is clang}\n%define build_with_libcxx 1\n%endif\n%endif\n%if 0%{?build_with_libcxx}\nexport CXXFLAGS="-stdlib=libc++"\n%endif\n'
+assert scan(good)[0][0]['valid'] and scan(good)[1][0]['guarded']
+assert not scan('export CXXFLAGS="-stdlib=libc++"\n')[1][0]['guarded']
+assert not scan('%if 0%{?build_with_libcxx}\n%else\nexport CXXFLAGS="-stdlib=libc++"\n%endif\n')[1][0]['guarded']
+assert not scan('%if %{defined _toolchain}\n%define build_with_libcxx 1\n%endif\n')[0][0]['valid']
+packages=list(csv.DictReader(Path('docs/progress/BUILD_NIGHT_0916/PACKAGE_STATUS.tsv').open(),delimiter='\t'))
+inputs={r['package']:r for r in csv.DictReader(Path('progress/BUILD_W2C_0915/spec_audit_before/inputs.tsv').open(),delimiter='\t')}
+assert len(packages)==11
+commands=[]; rows=[]
+for package in packages:
+    name=package['package']; revision=package['adaptation_commit']
+    repo=Path('tmp/BUILD_W1BC_0911/target-fetch') if name=='llvm' else Path('codes/R104')/name
+    command=['git','-C',str(repo),'show',revision+':'+inputs[name]['spec']]
+    r=subprocess.run(command,capture_output=True)
+    commands.append({'command':shlex.join(command),'exitcode':r.returncode,'stderr':r.stderr.decode()})
+    (out/'spec-audit-commands.json').write_text(json.dumps(commands,indent=2))
+    assert r.returncode==0
+    data=r.stdout; (dest/(name+'.spec')).write_bytes(data)
+    definitions,options=scan(data.decode())
+    valid=len(definitions)==1 and definitions[0]['valid'] and bool(options) and all(x['guarded'] for x in options)
+    rows.append({'package':name,'branch':package['branch'],'revision':revision,'sha256':hashlib.sha256(data).hexdigest(),
+                 'definitions':definitions,'options':options,'literal_gate':'PASS' if valid else 'FAIL',
+                 'prior_validation':package['validation'],'status':package['current_status']})
+    if not valid:
+        (out/'spec-audit-failure.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2))
+        raise RuntimeError('Published spec guard check failed: '+name)
+(out/'spec-audit-result.json').write_text(json.dumps({'status':'PASS','packages':rows,'calibration_cases':4,
+    'scanner_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),
+    'scope':'Literal standard-library option/dependency guards in eleven pinned published specs; not arbitrary external macro injection; historical full builds reused, no claim of eleven new builds.'},ensure_ascii=False,indent=2))
+print('PASS eleven published specs; four calibration cases')
+/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/src/globalvars.cpp:298:37: warning: unused parameter 'index' [-Wunused-parameter]
+  298 |                              size_t index) const
+      |                                     ^

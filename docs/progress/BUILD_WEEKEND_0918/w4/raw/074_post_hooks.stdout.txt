@@ -1,0 +1,360 @@
+#!/bin/bash
+
+# Disable pathname expansion by '*' or '?'
+set -f
+
+IFS=";"
+
+# Special keyword for unspecified attribute
+UNSPECIFIED="Unspecified"
+
+# Message formatting
+LINE_MAX_LENGTH=90
+
+# Deprecated
+ROOTSTRAP_BASE_DIR="/etc/app-rootstrap"
+# Rootstrap-checker rule file path
+ROOTSTRAP_DEFAULT_RULES_DIR="/etc/app-rootstrap/default.rules.d"
+ROOTSTRAP_RULES_DIR="/etc/app-rootstrap/rules.d"
+
+# Deprecated: Base dir only reads this specific yaml file
+ROOTSTRAP_BASE_DIR_YAML="app-rootstrap-checker.yaml"
+
+# Current Package Info (Global)
+CURRENT_GROUP_NAME=""
+CURRENT_PACKAGE_NAME=""
+CURRENT_PACKAGE_SPECFILE=""
+SOURCEDIR=""
+RPM_BUILD_ROOT=""
+BUILD_ARCH=""
+BUILD_BIT=""
+
+print_border() {
+	local placeholder=$(printf "%*s" "$LINE_MAX_LENGTH" " ")
+	echo ${placeholder// /\#}
+}
+
+print_message() {
+	local message_max_length=$(($LINE_MAX_LENGTH - 3))
+	printf "# %-*s#\n" "$message_max_length" "$1"
+}
+
+print_not_allowed_files_log() {
+	local target_dir=$1
+	local not_allowed_files=$2
+	local allowed_files=$3
+	local action=$4
+
+	if [[ "$action" == "ignore" ]]; then
+		return
+	fi
+
+	local prefix="WARNING"
+	if [[ "$action" == "error" ]]; then
+		prefix="ERROR"
+	fi
+
+	print_border
+	print_border
+	print_message "$prefix: Target path: $target_dir"
+	print_message "$prefix: There are not allowed files installed."
+	local not_allowed_file=""
+	for not_allowed_file in $not_allowed_files; do
+		print_message "$prefix:  - $not_allowed_file"
+	done
+	print_message "$prefix:"
+	print_message "$prefix: Only allowed files below can be installed:"
+	local allowed_file=""
+	for allowed_file in $allowed_files; do
+		print_message "$prefix:  - $allowed_file"
+	done
+	print_border
+	print_border
+}
+
+print_not_allowed_log() {
+	local warning_type=$1
+	local not_allowed_list=$2
+	local allowed_package_name_list=$3
+	local allowed_group_name_list=$4
+	local action=$5
+
+	if [[ "$action" == "ignore" ]]; then
+		return
+	fi
+
+	local prefix="WARNING"
+	if [[ "$action" == "error" ]]; then
+		prefix="ERROR"
+	fi
+
+	local not_allowed=""
+	local allowed=""
+
+	print_border
+	print_border
+
+	print_message "$prefix: There are not allowed $warning_type. They might cause ABI break."
+	for not_allowed in ${not_allowed_list}; do
+		local not_allowed_package_name=""
+		local not_allowed_group_name=""
+		if [[ $not_allowed =~ (.*)@(.*) ]]; then
+			not_allowed_package_name=${BASH_REMATCH[1]}
+			not_allowed_group_name=${BASH_REMATCH[2]}
+		fi
+		print_message "$prefix:  - $not_allowed_package_name, Group: $not_allowed_group_name"
+	done
+
+	print_message "$prefix:"
+	if [[ ! -z $allowed_package_name_list ]]; then
+		print_message "$prefix: Use only allowed packages below for $warning_type"
+		for allowed in ${allowed_package_name_list}; do
+			print_message "$prefix:  - $allowed"
+		done
+	else
+		print_message "$prefix: It is not allowed to specify $warning_type"
+	fi
+
+	if [[ ! -z $allowed_group_name_list ]]; then
+		print_message "$prefix: Use only allowed package groups below for $warning_type"
+		for allowed in ${allowed_group_name_list}; do
+			print_message "$prefix:  - $allowed"
+		done
+	fi
+
+	print_border
+	print_border
+}
+
+ACTION_ON_VIOLATION=""
+TARGET_PACKAGE_NAME=""
+TARGET_GROUP_NAME=""
+TARGET_INSTALLED_FILE=""
+TARGET_BUILDREQUIRES=""
+EXCLUDED_TARGET_PACKAGE_NAME=""
+ALLOWED_BUILDREQUIRES_PACKAGE_NAME=""
+ALLOWED_BUILDREQUIRES_GROUP_NAME=""
+ALLOWED_BUILDCONFLICTS_PACKAGE_NAME=""
+ALLOWED_REQUIRES=""
+DENIED_LDD_LIST=""
+DIR_KEYS=()
+DIR_VALUES=()
+
+reset_config_variables() {
+	ACTION_ON_VIOLATION="warning"
+	TARGET_PACKAGE_NAME=""
+	TARGET_GROUP_NAME=""
+	TARGET_INSTALLED_FILE=""
+	TARGET_BUILDREQUIRES=""
+	EXCLUDED_TARGET_PACKAGE_NAME=""
+	ALLOWED_BUILDREQUIRES_PACKAGE_NAME=""
+	ALLOWED_BUILDREQUIRES_GROUP_NAME=""
+	ALLOWED_BUILDCONFLICTS_PACKAGE_NAME=""
+	ALLOWED_REQUIRES=""
+	DENIED_LDD_LIST=""
+	DIR_KEYS=()
+	DIR_VALUES=()
+}
+
+get_all_config_files() {
+	local final_file_list=""
+	local OLD_IFS="$IFS"
+	IFS=$'\n'
+
+	# Check if there are any files in ROOTSTRAP_BASE_DIR
+	local base_dir_files
+	base_dir_files=$(find "$ROOTSTRAP_BASE_DIR" -maxdepth 1 -type f -name "*.yaml" 2>/dev/null)
+
+	if [[ -n "$base_dir_files" ]]; then
+		# Case 1: ROOTSTRAP_BASE_DIR has at least one file
+		# Ignore both rules.d and default.rules.d
+		for filepath in $base_dir_files; do
+			final_file_list+="$filepath$OLD_IFS"
+		done
+		IFS="$OLD_IFS"
+		echo "$final_file_list"
+		return
+	fi
+
+	# Check if there are any files in ROOTSTRAP_RULES_DIR
+	local rules_dir_files
+	rules_dir_files=$(find "$ROOTSTRAP_RULES_DIR" -maxdepth 1 -type f -name "*.yaml" 2>/dev/null)
+
+	if [[ -n "$rules_dir_files" ]]; then
+		# Case 2: ROOTSTRAP_BASE_DIR is empty and ROOTSTRAP_RULES_DIR has at least one file
+		# Ignore default.rules.d
+		for filepath in $rules_dir_files; do
+			final_file_list+="$filepath$OLD_IFS"
+		done
+		IFS="$OLD_IFS"
+		echo "$final_file_list"
+		return
+	fi
+
+	# Case 3: Both ROOTSTRAP_BASE_DIR and ROOTSTRAP_RULES_DIR are empty
+	# Use files from ROOTSTRAP_DEFAULT_RULES_DIR
+	local default_rules_files
+	default_rules_files=$(find "$ROOTSTRAP_DEFAULT_RULES_DIR" -maxdepth 1 -type f -name "*.yaml" 2>/dev/null)
+
+	for filepath in $default_rules_files; do
+		final_file_list+="$filepath$OLD_IFS"
+	done
+
+	IFS="$OLD_IFS"
+	echo "$final_file_list"
+}
+
+# Parse critical configuration fields for early skip condition check.
+# This function parses action_on_violation to determine
+# whether to skip parsing the remaining configuration fields.
+# Returns 0 if the key should continue first-pass parsing, 1 to stop first-pass parsing.
+parse_config_action_on_violation_property() {
+	case $KEY in
+		action_on_violation)
+			ACTION_ON_VIOLATION="$VALUE"
+			return 0
+			;;
+		*)
+			# We have already parsed enough information to decide
+			# whether to stop or not.
+			return 1
+40:%__os_install_post    \
+53:%__spec_install_post\
+56:    %{__os_install_post}\
+    
+    /usr/lib/rpm/brp-strip /bin/strip 
+    /usr/lib/rpm/brp-strip-static-archive /bin/strip 
+#    /usr/lib/rpm/brp-strip-comment-note /bin/strip /bin/objdump 
+
+    /usr/lib/rpm/brp-python-hardlink 
+    /usr/lib/rpm/tizen/find-docs.sh /tmp/task/rpm-bpf-aarch64-libcxx/BUILDROOT/bpftrace-0.24.2-1.aarch64 
+
+    
+    /usr/lib/rpm/tizen/find-isufiles.sh /tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/isu.list 
+
+    
+    /etc/hal/rootstrap/hal-rootstrap-checker.sh /tmp/bpf-sources /tmp/task/rpm-bpf-aarch64-libcxx/BUILDROOT/bpftrace-0.24.2-1.aarch64 aarch64 
+
+    
+    /etc/app-rootstrap/app-rootstrap-checker.sh /tmp/bpf-sources /tmp/task/rpm-bpf-aarch64-libcxx/BUILDROOT/bpftrace-0.24.2-1.aarch64 aarch64 
+
+"""Resume the existing RPM build; enforce actual cgroup, serial jobs and I/O gates."""
+import datetime, hashlib, json, os, re, signal, subprocess, sys, threading, time
+from pathlib import Path
+
+ROOT = Path('/home/toolchain/development/libc++_replacement')
+os.chdir(ROOT)
+STAGE, LABEL = sys.argv[1:]
+assert STAGE in ('W1','W2','W3','W4')
+assert re.fullmatch(r'[a-z0-9_-]+', LABEL)
+BASE = ROOT / 'progress/BUILD_WEEKEND_0918'
+OUT = BASE / 'cells' / LABEL
+OUT.mkdir(parents=True, exist_ok=False)
+DEADLINE = datetime.datetime.fromisoformat(json.loads((BASE/'deadlines.json').read_text())[STAGE]).timestamp()
+SCOPE = 'build-weekend-0918.scope'
+MEM = int(next(x.split()[1] for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemTotal:'))) * 1024 // 2 // 4096 * 4096
+os.environ['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/toolchain/.local/bin'
+events = (OUT/'events.jsonl').open('a', buffering=1)
+def note(event, **kw):
+    row = dict(time=datetime.datetime.now().astimezone().isoformat(), event=event, **kw)
+    events.write(json.dumps(row)+'\n')
+    print(json.dumps(row), flush=True)
+def query(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    note('command', command=cmd, exitcode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+    if r.returncode: raise RuntimeError('resource query failed')
+    return r.stdout
+def resources(pid):
+    def state():
+        fields=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
+        return fields[0],fields[19]
+    before=state()
+    if before[0]=='Z':
+        note('resource_not_observed_exited',pid=pid,state=before)
+        return None
+    cg = next(x.split(':',2)[2] for x in query(['cat',f'/proc/{pid}/cgroup']).splitlines() if x.startswith('0::'))
+    assert SCOPE in cg
+    value = query(['cat','/sys/fs/cgroup'+cg+'/memory.max']).strip()
+    assert int(value) == MEM
+    io=query(['ionice','-p',str(pid)]).strip()
+    priority=os.getpriority(os.PRIO_PROCESS,pid)
+    after=state()
+    if after[0]=='Z' or before[1]!=after[1]:
+        note('resource_not_observed_exited',pid=pid,before=before,after=after,ionice=io)
+        return None
+    assert io == 'idle'
+    assert priority == 19
+    note('resource_verified',pid=pid,cgroup=cg,memory_max=int(value),nice=19,ionice='idle')
+    return cg
+cg = resources(os.getpid())
+cmd = json.loads((BASE/'cell_commands'/f'{LABEL}.json').read_text())
+for arg in cmd:
+    f=Path(arg)
+    if f.suffix=='.py' and f.is_file():
+        snap=OUT/('executed-'+f.name)
+        snap.write_bytes(f.read_bytes())
+        note('script_snapshot',path=str(f),snapshot=str(snap),sha256=hashlib.sha256(snap.read_bytes()).hexdigest())
+note('start',command=cmd,deadline=DEADLINE,script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+log=OUT/'build.log'
+if log.exists():
+    backup=OUT/('build.stopped-'+datetime.datetime.now().strftime('%H%M%S')+'.log')
+    log.rename(backup)
+    note('previous_log_preserved',path=str(backup))
+stream = log.open('xb',buffering=0)
+proc = subprocess.Popen(cmd,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+def send(sig):
+    try: os.killpg(proc.pid,sig)
+    except ProcessLookupError: pass
+def hard_stop():
+    send(signal.SIGTERM); send(signal.SIGCONT)
+    time.sleep(15)
+    if proc.poll() is None: send(signal.SIGKILL)
+timer = threading.Timer(max(0,DEADLINE-time.time()-20),hard_stop)
+timer.daemon=True; timer.start()
+def stop(reason):
+    send(signal.SIGTERM); send(signal.SIGCONT)
+    note('stop',reason=reason)
+    try: proc.wait(timeout=15)
+    except subprocess.TimeoutExpired: send(signal.SIGKILL); proc.wait()
+    raise SystemExit(124)
+def probe():
+    testcmd=['timeout','-k','2s','30s','python3',str(ROOT/'progress/BUILD_STATIC_0917B/io_probe.py')]
+    t=time.monotonic()
+    r=subprocess.run(testcmd,capture_output=True,text=True)
+    note('io_probe',command=testcmd,exitcode=r.returncode,seconds=time.monotonic()-t,stdout=r.stdout,stderr=r.stderr)
+    return r.returncode==0
+reader=log.open(errors='replace')
+verified=set(); target=0; next_probe=500; last=0; hourly=0
+last_ninja=0
+try:
+    while proc.poll() is None:
+        if time.time()>=DEADLINE-20: stop('stage deadline')
+        for rawpid in Path('/sys/fs/cgroup'+cg+'/cgroup.procs').read_text().split():
+            pid=int(rawpid)
+            if pid in verified: continue
+            try:
+                args=[x.decode(errors='replace') for x in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0') if x]
+                cwd=os.readlink(f'/proc/{pid}/cwd')
+            except (FileNotFoundError,ProcessLookupError,PermissionError): continue
+            if not args: continue
+            ninja=Path(args[0]).name in ('ninja','ninja.real') or ('qemu-' in args[0] and any(x.endswith('/ninja.real') for x in args))
+            make=Path(args[0]).name in ('make','gmake') or ('qemu-' in args[0] and any(Path(x).name in ('make','gmake') for x in args[1:]))
+            if not (ninja or make) or any(x in args for x in ('-t','--version','--help')): continue
+            one='-j1' in args or any(args[i:i+2]==['-j','1'] for i in range(len(args)-1))
+            makeflags=''
+            if make:
+                try:
+                    makeflags=next((x.split(b'=',1)[1].decode(errors='replace') for x in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0') if x.startswith(b'MAKEFLAGS=')), '')
+                except (FileNotFoundError, ProcessLookupError): continue
+                one=one or bool(re.search(r'(?:^|\s)-j\s*1(?:\s|$)',makeflags))
+                # CMake try_compile can invoke Make without -j. GNU Make's
+                # default is one job; do not confuse absent -j with Ninja's
+                # parallel default. Reject any jobserver/parallel request.
+                if not one and not any(x.startswith(('-j','--jobs','--jobserver')) for x in args) and not re.search(r'(?:^|\s)-?j|--jobs|jobserver',makeflags):
+                    one=True
+                    note('make_default_serial',pid=pid,command=args,makeflags=makeflags)
+            note('scheduler_arguments',pid=pid,command=args,makeflags=makeflags,serial=one)
+            if not one: stop('observed build scheduler not serial')
+            try:
+                checked=resources(pid)
+                if checked is None:
