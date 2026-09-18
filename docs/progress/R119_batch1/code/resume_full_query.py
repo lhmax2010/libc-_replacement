@@ -19,7 +19,7 @@ meta={i:json.loads(m) for i,m in db.execute('SELECT id,metadata FROM elf WHERE s
 with (base/'W1/ORDER_495.tsv').open() as f:
     order=list(csv.DictReader(f,delimiter='\t'))[:200]
 names={r['entity'] for r in order}
-alias={'basic_string<char,':'string','basic_string<wchar_t,':'wstring','basic_istream<char,':'istream','basic_ostream<char,':'ostream','basic_ifstream<char,':'ifstream','basic_ofstream<char,':'ofstream','basic_stringstream<char,':'stringstream','basic_ostringstream<char,':'ostringstream','basic_istringstream<char,':'istringstream','basic_streambuf<char,':'streambuf','basic_ios<char,':'ios','basic_string_view<char,':'string_view'}
+alias={'basic_string<char,':'string','basic_string<wchar_t,':'wstring','basic_string<char16_t,':'u16string','basic_istream<char,':'istream','basic_ostream<char,':'ostream','basic_ifstream<char,':'ifstream','basic_ofstream<char,':'ofstream','basic_fstream<char,':'fstream','basic_stringstream<char,':'stringstream','basic_ostringstream<char,':'ostringstream','basic_istringstream<char,':'istringstream','basic_streambuf<char,':'streambuf','basic_ios<char,':'ios','basic_string_view<char,':'string_view','basic_regex<char,':'regex'}
 token=re.compile(r'\bstd::[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*')
 def entities(s):
     s=s.replace('std::__cxx11::','std::').replace('std::__1::','std::').replace('std::filesystem::__cxx11::','std::filesystem::').replace('std::chrono::_V2::','std::chrono::')
@@ -46,6 +46,9 @@ with gzip.open(base/'W1/full_elf/intersections.tsv.gz','wt',newline='') as strea
     writer=csv.writer(stream,delimiter='\t',lineterminator='\n')
     writer.writerow(['entity','consumer_id','provider_id','consumer_package','provider_package','symbol','status'])
     for name, in db.execute('SELECT DISTINCT name FROM normalized_symbol WHERE ndx="UND"'):
+        # Rust 旧修饰名的结尾哈希；仅排除可明确识别的一种形态，其余仍须人工核对。
+        if re.search(r'::h[0-9a-f]{16}$',name):
+            continue
         found=entities(name)
         if not found:
             continue
@@ -62,7 +65,8 @@ with gzip.open(base/'W1/full_elf/intersections.tsv.gz','wt',newline='') as strea
                         continue
                     seen.add(pair)
                     counts[n]+=1
-                    if len(queue[n])<40:
+                    bundled=lambda m:m['sourcerpm'].startswith(('app-rootstrap-','mic-bootstrap-','qemu-accel-'))
+                    if not bundled(meta[c]) and not bundled(meta[p]) and len(queue[n])<40:
                         queue[n].append(dict(consumer_id=c,provider_id=p,consumer=meta[c],provider=meta[p],symbol=name))
 (base/'W1/full_elf/CANDIDATE_QUEUE.json').write_text(json.dumps(queue,ensure_ascii=False,indent=2)+'\n')
 (base/'W1/full_elf/QUERY_COUNTS.json').write_text(json.dumps(counts,ensure_ascii=False,indent=2)+'\n')
