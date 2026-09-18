@@ -1,0 +1,85 @@
+"""Inspect actual final RPM payloads; never treat build success as acceptance."""
+import hashlib
+import json
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+p=Path.cwd(); arch,mode=sys.argv[1:]
+assert arch in ('armv7l','aarch64') and mode in ('libcxx','gcc','undefined')
+label=f'bpf-{arch}-{mode}'
+out=p/'progress/BUILD_WEEKEND_0918'/f'verify-{label}'
+out.mkdir(exist_ok=False)
+top=p/'tmp/WEEKEND_0918'/f'rpm-{label}'
+payload=p/'tmp/WEEKEND_0918'/f'payload-{label}'
+assert not payload.exists(); payload.mkdir()
+commands=[]; rpms=[]
+def run(cmd,cwd=None):
+    r=subprocess.run(cmd,cwd=cwd,capture_output=True,text=True,errors='replace')
+    commands.append({'command':shlex.join(cmd),'cwd':str(cwd) if cwd else str(p),'exitcode':r.returncode,
+                     'stdout':r.stdout,'stderr':r.stderr})
+    (out/'commands.json').write_text(json.dumps(commands,indent=2))
+    assert r.returncode==0,(cmd,r.stderr)
+    return r.stdout
+for f in sorted((top/'RPMS').rglob('*.rpm')):
+    identity=run(['rpm','-qp','--qf','%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}',str(f)])
+    name=identity.split('\t')[0]
+    run(['rpm','--checksig','--nosignature',str(f)])
+    compression=run(['rpm','-qp','--qf','%{PAYLOADCOMPRESSOR}|%{PAYLOADFLAGS}',str(f)])
+    assert compression=='xz|5T1'
+    with f.open('rb') as stream: sha=hashlib.file_digest(stream,'sha256').hexdigest()
+    names=run(['rpm','-qpl',str(f)])
+    assert all('..' not in Path(x).parts for x in names.splitlines())
+    (out/f'{name}.files.txt').write_text(names)
+    (out/f'{name}.scripts.txt').write_text(run(['rpm','-qp','--scripts',str(f)]))
+    rpms.append({'path':str(f),'identity':identity,'sha256':sha,'bytes':f.stat().st_size,'compression':compression})
+    if name in ('bpftrace','bpftrace-static'):
+        d=payload/name; d.mkdir()
+        run(['bash','-o','pipefail','-c','rpm2cpio "$1" | cpio -id --quiet --no-absolute-filenames','extract',str(f)],cwd=d)
+assert {'bpftrace','bpftrace-static','bpftrace-common'} <= {x['identity'].split('\t')[0] for x in rpms}
+binary=payload/'bpftrace-static/usr/bin/bpftrace-static'
+main=payload/'bpftrace/usr/bin/bpftrace'
+with binary.open('rb') as stream: static_sha=hashlib.file_digest(stream,'sha256').hexdigest()
+details={'rpms':rpms,'static_binary_sha256':static_sha,'arch':arch,'mode':mode,'static_binary_bytes':binary.stat().st_size}
+for key,f in [('main',main),('static',binary)]:
+    run(['file',str(f)])
+    dynamic=run(['readelf','-dW',str(f)])
+    (out/f'{key}.dynamic.txt').write_text(dynamic)
+    details[key+'_needed']=[x.split('[')[1].split(']')[0] for x in dynamic.splitlines() if '(NEEDED)' in x]
+    headers=run(['readelf','-hW',str(f)])
+    assert ('AArch64' if arch=='aarch64' else 'ARM') in headers
+if mode=='libcxx':
+    strings_file=payload/'static.strings.txt'
+    cmd=['strings','-a',str(binary)]
+    with strings_file.open('wb') as stream:
+        r=subprocess.run(cmd,stdout=stream,stderr=subprocess.PIPE)
+    with strings_file.open('rb') as stream: sha=hashlib.file_digest(stream,'sha256').hexdigest()
+    commands.append({'command':shlex.join(cmd),'exitcode':r.returncode,'stderr':r.stderr.decode(errors='replace'),
+                     'stdout_path':str(strings_file),'stdout_sha256':sha})
+    (out/'commands.json').write_text(json.dumps(commands,indent=2))
+    assert r.returncode==0
+    std1=cxx11=0; excerpt=[]
+    with strings_file.open(errors='replace') as stream:
+        for line in stream:
+            std1 += '_ZNSt3__1' in line
+            cxx11 += '_ZNSt7__cxx11' in line
+            if '_ZNSt3__1' in line and len(excerpt)<20: excerpt.append(line)
+    details['std1_string_lines']=std1
+    details['cxx11_string_lines']=cxx11
+    (out/'namespace_excerpt.txt').write_text(''.join(excerpt))
+    assert 'libgcc_s.so.1' in details['static_needed']
+    assert not any(x.startswith(('libc++.so','libc++abi.so','libLLVM','libstdc++')) for x in details['static_needed'])
+    assert 'libc++.so.1' in details['main_needed']
+    assert 'libstdc++.so.6' not in details['main_needed']
+    assert details['std1_string_lines']>0 and details['cxx11_string_lines']==0
+else:
+    original=p/'tmp/NIGHT_0917/original_assets/prebuilt-static-bpftrace'/('aarch64' if arch=='aarch64' else 'arm')/'usr/bin/bpftrace'
+    with original.open('rb') as stream: original_sha=hashlib.file_digest(stream,'sha256').hexdigest()
+    details['original_sha256']=original_sha
+    assert static_sha==original_sha, 'RPM static payload differs from Source1002 original'
+    assert 'libstdc++.so.6' in details['main_needed']
+    assert 'libc++.so.1' not in details['main_needed']
+details['status']='RPM_PAYLOAD_CHECK_PASS_NOT_FUNCTIONAL_EQUIVALENCE'
+(out/'result.json').write_text(json.dumps(details,indent=2))
+print(json.dumps(details,indent=2))

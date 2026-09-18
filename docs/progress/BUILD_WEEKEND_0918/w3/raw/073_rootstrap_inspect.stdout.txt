@@ -1,0 +1,450 @@
+"""Approved cp -a input copy, followed by per-file SHA256 verification."""
+import hashlib, json, os, shlex, stat, subprocess, sys
+from pathlib import Path
+p=Path.cwd(); out=p/'progress/BUILD_WEEKEND_0918'; task=p/'tmp/WEEKEND_0918'
+arch=sys.argv[1]; assert arch in ('armv7l','aarch64')
+source=p/f'tmp/GBS-ROOT/BUILD-W2C-bpftrace-{arch}-libcxx/local/BUILD-ROOTS/scratch.{arch}.0'
+dest=task/f'input-{arch}-v3'; dest.mkdir(parents=True,exist_ok=False)
+records=[]
+def run(cmd,stream=False):
+    idx=len(records); print('COMMAND '+shlex.join(cmd),flush=True)
+    so=out/f'copy-v3-{arch}-{idx:02d}.stdout'; se=out/f'copy-v3-{arch}-{idx:02d}.stderr'
+    with so.open('wb') as o,se.open('wb') as e:
+        child=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=e)
+        for line in child.stdout:
+            o.write(line)
+            if stream: print('COPY_ENTRY '+line.decode(errors='replace').rstrip(),flush=True)
+        rc=child.wait()
+    records.append({'command':shlex.join(cmd),'exitcode':rc,'stdout':str(so),'stderr':str(se)})
+    (out/f'copy-v3-{arch}-commands.json').write_text(json.dumps(records,indent=2))
+    assert rc==0,(cmd,rc,str(se))
+    return so.read_text(errors='replace')
+du=run(['du','-s','--block-size=1','--exclude=upgrade',str(source/'usr'),str(source/'var/lib/rpm')])
+size=sum(int(x.split()[0]) for x in du.splitlines()); assert size<=3*1024**3
+print('COPY_SIZE_GATE',size,flush=True)
+for d in ('usr','usr/share','rpmdb','etc','root'): (dest/d).mkdir(parents=True,exist_ok=True)
+os.chmod(dest/'usr/share',stat.S_IMODE((source/'usr/share').stat().st_mode))
+(dest/'usr/sbin').mkdir(exist_ok=True)
+cp=['cp','-av','--no-preserve=ownership','--']
+main=sorted(x for x in (source/'usr').iterdir() if x.name not in ('share','sbin'))
+run(cp+list(map(str,main))+[str(dest/'usr')+'/'],True)
+share=sorted(x for x in (source/'usr/share').iterdir() if x.name!='upgrade')
+run(cp+list(map(str,share))+[str(dest/'usr/share')+'/'],True)
+run(cp+[str(source/'var/lib/rpm')+'/.',str(dest/'rpmdb')+'/'],True)
+public=['ld.so.conf','ld.so.cache','ld.so.conf.d','passwd','group','nsswitch.conf','os-release','rpm','localtime']
+public_present=[]
+for name in public:
+    f=source/'etc'/name
+    if not os.path.lexists(f): continue
+    run(cp+[str(f),str(dest/'etc')+'/'],True); public_present.append(name)
+def entries(base,omit_upgrade=False):
+    result={}
+    for root,dirs,files in os.walk(base,followlinks=False):
+        rel=Path(root).relative_to(base)
+        if omit_upgrade and rel==Path('.') and 'sbin' in dirs: dirs.remove('sbin')
+        if omit_upgrade and rel==Path('share') and 'upgrade' in dirs: dirs.remove('upgrade')
+        for name in dirs+files:
+            f=Path(root)/name; result[str(f.relative_to(base))]=f
+    return result
+def digest(f):
+    with f.open('rb') as stream: return hashlib.file_digest(stream,'sha256').hexdigest()
+manifest=out/f'copy-{arch}-sha256.jsonl'; count=0
+with manifest.open('x') as stream:
+    for label,old,new,omit in [('usr',source/'usr',dest/'usr',True),('rpmdb',source/'var/lib/rpm',dest/'rpmdb',False)]:
+        a,b=entries(old,omit),entries(new,omit)
+        assert set(a)==set(b),(label,sorted(set(a)^set(b))[:20])
+        for rel,f in sorted(a.items()):
+            g=b[rel]; sa,sd=f.lstat(),g.lstat()
+            assert stat.S_IFMT(sa.st_mode)==stat.S_IFMT(sd.st_mode),(rel,'type')
+            row={'group':label,'path':rel,'mode_source':stat.S_IMODE(sa.st_mode),'mode_destination':stat.S_IMODE(sd.st_mode)}
+            assert row['mode_source']==row['mode_destination'],(rel,'mode')
+            if f.is_symlink():
+                row.update(link_source=os.readlink(f),link_destination=os.readlink(g))
+                assert row['link_source']==row['link_destination']
+            elif f.is_file():
+                row.update(source_sha256=digest(f),destination_sha256=digest(g),bytes=sa.st_size)
+                assert row['source_sha256']==row['destination_sha256'],rel
+            else: assert f.is_dir(),(rel,'unexpected special file')
+            stream.write(json.dumps(row)+'\n'); count+=1
+            print('COPY_ENTRY verified '+label+'/'+rel,flush=True)
+    for name in public_present:
+        a,b=source/'etc'/name,dest/'etc'/name
+        pairs=[('',a,b)] if not a.is_dir() else [(k,v,entries(b)[k]) for k,v in entries(a).items()]
+        for rel,f,g in pairs:
+            row={'group':'public_etc','path':name+'/'+rel}
+            if f.is_symlink():
+                row.update(link_source=os.readlink(f),link_destination=os.readlink(g)); assert row['link_source']==row['link_destination']
+            elif f.is_file():
+                row.update(source_sha256=digest(f),destination_sha256=digest(g)); assert row['source_sha256']==row['destination_sha256']
+            else: assert f.is_dir() and g.is_dir()
+            stream.write(json.dumps(row)+'\n'); count+=1
+base=['bwrap','--unshare-user','--uid','0','--gid','0','--ro-bind',str(source),'/',
+      '--bind',str(dest/'usr'),'/usr','--bind',str(dest/'rpmdb'),'/var/lib/rpm',
+      '--ro-bind',str(source/'usr/sbin'),'/usr/sbin',
+      '--bind',str(dest/'etc'),'/etc','--bind',str(dest/'root'),'/root','--dev','/dev','--proc','/proc','--tmpfs','/tmp',
+      '--bind',str(task),'/tmp/task','--ro-bind',str(p/'tmp/NIGHT_0917'),'/tmp/night',
+      '--setenv','PATH','/bin:/usr/bin:/sbin:/usr/sbin','--setenv','CMAKE_BUILD_PARALLEL_LEVEL','1',
+      '--setenv','RPM_BUILD_NCPUS','1','--setenv','MAKEFLAGS','-j1','--setenv','QEMU_RESERVED_VA','0x100000000','--setenv','LC_ALL','C']
+hal=source/'etc/hal'
+assert hal.is_dir()
+base+=['--ro-bind',str(hal),'/etc/hal']
+(out/f'hal-{arch}-input-identities.json').write_text(json.dumps([
+    {'path':str(f),'sha256':digest(f)} for f in sorted(hal.rglob('*')) if f.is_file() and not f.is_symlink()
+],indent=2))
+(out/f'bpf-private-{arch}-base.json').write_text(json.dumps(base,indent=2))
+run(base+['--','id'])
+run(base+['--','rpm','-qa','--qf','%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n'])
+(out/f'copy-{arch}-result.json').write_text(json.dumps({'status':'COPY_AND_PER_FILE_SHA256_PASS','arch':arch,
+    'bytes_gate':size,'verified_entries':count,'manifest_sha256':digest(manifest),'excluded':'usr/share/upgrade; usr/sbin retained read-only from original root, NOT hash-verified; no arbitrary private etc/home files',
+    'ownership':'destination owned by current user, no sudo','source':str(source),'destination':str(dest)},indent=2))
+print('COPY_AND_PER_FILE_SHA256_PASS',arch,count,flush=True)
+[
+  "bwrap",
+  "--unshare-user",
+  "--uid",
+  "1000",
+  "--gid",
+  "1000",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/BUILD-ROOTS/scratch.aarch64.0",
+  "/",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-aarch64-v3/usr",
+  "/usr",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-aarch64-v3/rpmdb",
+  "/var/lib/rpm",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/BUILD-ROOTS/scratch.aarch64.0/usr/sbin",
+  "/usr/sbin",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-aarch64-v3/etc",
+  "/etc",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-aarch64-v3/root",
+  "/root",
+  "--dev",
+  "/dev",
+  "--proc",
+  "/proc",
+  "--tmpfs",
+  "/tmp",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918",
+  "/tmp/task",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/NIGHT_0917",
+  "/tmp/night",
+  "--setenv",
+  "PATH",
+  "/bin:/usr/bin:/sbin:/usr/sbin",
+  "--setenv",
+  "CMAKE_BUILD_PARALLEL_LEVEL",
+  "1",
+  "--setenv",
+  "RPM_BUILD_NCPUS",
+  "1",
+  "--setenv",
+  "MAKEFLAGS",
+  "-j1",
+  "--setenv",
+  "QEMU_RESERVED_VA",
+  "0x100000000",
+  "--setenv",
+  "LC_ALL",
+  "C",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/BUILD-ROOTS/scratch.aarch64.0/home/abuild/rpmbuild/SOURCES",
+  "/tmp/bpf-sources",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/BUILD-ROOTS/scratch.aarch64.0/etc/hal",
+  "/etc/hal",
+  "--",
+  "rpmbuild",
+  "--rcfile",
+  "/usr/lib/rpm/rpmrc:/home/abuild/.rpmrc",
+  "--macros",
+  "/usr/lib/rpm/macros:/usr/lib/rpm/macros.d/macros.*:/usr/lib/rpm/platform/%{_target}/macros:/usr/lib/rpm/fileattrs/*.attr:/usr/lib/rpm/tizen/macros:/etc/rpm/macros.*:/etc/rpm/macros:/etc/rpm/%{_target}/macros:/home/abuild/.rpmmacros",
+  "--target",
+  "aarch64-tizen-linux",
+  "--define",
+  "_topdir /tmp/task/rpm-bpf-aarch64-libcxx",
+  "--define",
+  "_sourcedir /tmp/bpf-sources",
+  "--define",
+  "_tmppath /tmp/task/rpm-bpf-aarch64-libcxx/TMP",
+  "--define",
+  "_smp_mflags -j1",
+  "--define",
+  "_smp_build_ncpus 1",
+  "--define",
+  "jobs 1",
+  "--define",
+  "_binary_payload w5T1.xzdio",
+  "--define",
+  "_srcdefattr (-,root,root)",
+  "--define",
+  "__cc /emul/usr/bin/aarch64-tizen-linux-gnu-clang",
+  "--define",
+  "__cxx /emul/usr/bin/aarch64-tizen-linux-gnu-clang++",
+  "--noclean",
+  "-bb",
+  "/tmp/task/specs/bpftrace.spec"
+][
+  "bwrap",
+  "--unshare-user",
+  "--uid",
+  "0",
+  "--gid",
+  "0",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/BUILD-ROOTS/scratch.aarch64.0",
+  "/",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-aarch64-v3/usr",
+  "/usr",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-aarch64-v3/rpmdb",
+  "/var/lib/rpm",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/BUILD-ROOTS/scratch.aarch64.0/usr/sbin",
+  "/usr/sbin",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-aarch64-v3/etc",
+  "/etc",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-aarch64-v3/root",
+  "/root",
+  "--dev",
+  "/dev",
+  "--proc",
+  "/proc",
+  "--tmpfs",
+  "/tmp",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918",
+  "/tmp/task",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/NIGHT_0917",
+  "/tmp/night",
+  "--setenv",
+  "PATH",
+  "/bin:/usr/bin:/sbin:/usr/sbin",
+  "--setenv",
+  "CMAKE_BUILD_PARALLEL_LEVEL",
+  "1",
+  "--setenv",
+  "RPM_BUILD_NCPUS",
+  "1",
+  "--setenv",
+  "MAKEFLAGS",
+  "-j1",
+  "--setenv",
+  "QEMU_RESERVED_VA",
+  "0x100000000",
+  "--setenv",
+  "LC_ALL",
+  "C",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/BUILD-ROOTS/scratch.aarch64.0/etc/hal",
+  "/etc/hal"
+]"""Run the unmodified platform HAL checker against the actual candidate spec."""
+import hashlib,json,shlex,subprocess,sys
+from pathlib import Path
+p=Path.cwd(); out=p/'progress/BUILD_WEEKEND_0918'; arch,mode=sys.argv[1:]
+assert arch in ('aarch64','armv7l') and mode in ('libcxx','gcc','undefined')
+label=f'bpf-{arch}-{mode}'; commands=[]
+if arch=='aarch64' and mode=='libcxx': command_file=out/'cell_commands/bpf-aarch64-libcxx-hal.json'
+else: command_file=out/'cell_commands'/f'{label}.json'
+cmd=json.loads(command_file.read_text()); base=cmd[:cmd.index('--')]
+directory=p/f'tmp/WEEKEND_0918/hal-spec-{arch}-{mode}'; directory.mkdir(exist_ok=False)
+spec=directory/'bpftrace.spec'; spec.write_bytes((p/'tmp/WEEKEND_0918/specs/bpftrace.spec').read_bytes())
+base+=['--setenv','HOME','/home/abuild']
+args=base+['--','/etc/hal/rootstrap/hal-rootstrap-checker.sh',f'/tmp/task/{directory.name}',
+           f'/tmp/task/rpm-{label}/BUILDROOT/bpftrace-0.24.2-1.{arch}',arch]
+r=subprocess.run(args,capture_output=True,text=True)
+result={'command':shlex.join(args),'exitcode':r.returncode,'stdout':r.stdout,'stderr':r.stderr,
+        'spec_sha256':hashlib.sha256(spec.read_bytes()).hexdigest(),
+        'scope':'Supplementary platform checker against actual candidate. Checker uses its own RPM macro evaluation; not proof of every externally overridden macro configuration.'}
+(out/f'hal-candidate-{arch}-{mode}.json').write_text(json.dumps(result,indent=2))
+print(r.stdout,r.stderr); raise SystemExit(r.returncode)
+{"time": "2026-09-18T13:12:07.843112+08:00", "event": "command", "command": ["cat", "/proc/117090/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:12:07.844002+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:12:07.844945+08:00", "event": "command", "command": ["ionice", "-p", "117090"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:12:07.845082+08:00", "event": "resource_verified", "pid": 117090, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:12:07.845500+08:00", "event": "start", "command": ["bwrap", "--unshare-user", "--uid", "1000", "--gid", "1000", "--ro-bind", "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/BUILD-ROOTS/scratch.aarch64.0", "/", "--bind", "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-aarch64-v3/usr", "/usr", "--bind", "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-aarch64-v3/rpmdb", "/var/lib/rpm", "--ro-bind", "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/BUILD-ROOTS/scratch.aarch64.0/usr/sbin", "/usr/sbin", "--bind", "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-aarch64-v3/etc", "/etc", "--bind", "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-aarch64-v3/root", "/root", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--bind", "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918", "/tmp/task", "--ro-bind", "/home/toolchain/development/libc++_replacement/tmp/NIGHT_0917", "/tmp/night", "--setenv", "PATH", "/bin:/usr/bin:/sbin:/usr/sbin", "--setenv", "CMAKE_BUILD_PARALLEL_LEVEL", "1", "--setenv", "RPM_BUILD_NCPUS", "1", "--setenv", "MAKEFLAGS", "-j1", "--setenv", "QEMU_RESERVED_VA", "0x100000000", "--setenv", "LC_ALL", "C", "--ro-bind", "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/BUILD-ROOTS/scratch.aarch64.0/home/abuild/rpmbuild/SOURCES", "/tmp/bpf-sources", "--ro-bind", "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/BUILD-ROOTS/scratch.aarch64.0/etc/hal", "/etc/hal", "--", "rpmbuild", "--rcfile", "/usr/lib/rpm/rpmrc:/home/abuild/.rpmrc", "--macros", "/usr/lib/rpm/macros:/usr/lib/rpm/macros.d/macros.*:/usr/lib/rpm/platform/%{_target}/macros:/usr/lib/rpm/fileattrs/*.attr:/usr/lib/rpm/tizen/macros:/etc/rpm/macros.*:/etc/rpm/macros:/etc/rpm/%{_target}/macros:/home/abuild/.rpmmacros", "--target", "aarch64-tizen-linux", "--define", "_topdir /tmp/task/rpm-bpf-aarch64-libcxx", "--define", "_sourcedir /tmp/bpf-sources", "--define", "_tmppath /tmp/task/rpm-bpf-aarch64-libcxx/TMP", "--define", "_smp_mflags -j1", "--define", "_smp_build_ncpus 1", "--define", "jobs 1", "--define", "_binary_payload w5T1.xzdio", "--define", "_srcdefattr (-,root,root)", "--define", "__cc /emul/usr/bin/aarch64-tizen-linux-gnu-clang", "--define", "__cxx /emul/usr/bin/aarch64-tizen-linux-gnu-clang++", "--noclean", "-bb", "/tmp/task/specs/bpftrace.spec"], "deadline": 1789727294.0, "script_sha256": "b1ad704369c8c38a01bc830a2b2ac502f1b75ad02be739057d8ea9189e1969d1"}
+{"time": "2026-09-18T13:12:07.846198+08:00", "event": "running", "completed": 0}
+{"time": "2026-09-18T13:12:11.851974+08:00", "event": "make_default_serial", "pid": 117191, "command": ["/usr/bin/qemu-arm64-static", "/usr/bin/cmake", "-E", "env", "VERBOSE=1", "/bin/gmake", "-f", "Makefile", "cmTC_b55eb/fast"], "makeflags": ""}
+{"time": "2026-09-18T13:12:11.852055+08:00", "event": "scheduler_arguments", "pid": 117191, "command": ["/usr/bin/qemu-arm64-static", "/usr/bin/cmake", "-E", "env", "VERBOSE=1", "/bin/gmake", "-f", "Makefile", "cmTC_b55eb/fast"], "makeflags": "", "serial": true}
+{"time": "2026-09-18T13:12:11.854347+08:00", "event": "command", "command": ["cat", "/proc/117191/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:12:11.855449+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:12:11.856825+08:00", "event": "command", "command": ["ionice", "-p", "117191"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:12:11.856988+08:00", "event": "resource_verified", "pid": 117191, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:12:11.857031+08:00", "event": "build_scheduler_verified", "pid": 117191, "command": ["/usr/bin/qemu-arm64-static", "/usr/bin/cmake", "-E", "env", "VERBOSE=1", "/bin/gmake", "-f", "Makefile", "cmTC_b55eb/fast"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build/CMakeFiles/CMakeScratch/TryCompile-YiFnnP", "makeflags": ""}
+{"time": "2026-09-18T13:12:11.857165+08:00", "event": "make_default_serial", "pid": 117194, "command": ["/usr/bin/qemu-arm64-static", "/bin/gmake", "-f", "Makefile", "cmTC_b55eb/fast"], "makeflags": ""}
+{"time": "2026-09-18T13:12:11.857182+08:00", "event": "scheduler_arguments", "pid": 117194, "command": ["/usr/bin/qemu-arm64-static", "/bin/gmake", "-f", "Makefile", "cmTC_b55eb/fast"], "makeflags": "", "serial": true}
+{"time": "2026-09-18T13:12:11.857991+08:00", "event": "command", "command": ["cat", "/proc/117194/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:12:11.858731+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:12:11.859719+08:00", "event": "command", "command": ["ionice", "-p", "117194"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:12:11.859799+08:00", "event": "resource_verified", "pid": 117194, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:12:11.859818+08:00", "event": "build_scheduler_verified", "pid": 117194, "command": ["/usr/bin/qemu-arm64-static", "/bin/gmake", "-f", "Makefile", "cmTC_b55eb/fast"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build/CMakeFiles/CMakeScratch/TryCompile-YiFnnP", "makeflags": ""}
+{"time": "2026-09-18T13:12:15.864021+08:00", "event": "scheduler_arguments", "pid": 117383, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-O", "-j1"], "makeflags": "-j1", "serial": true}
+{"time": "2026-09-18T13:12:15.866512+08:00", "event": "command", "command": ["cat", "/proc/117383/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:12:15.868236+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:12:15.869636+08:00", "event": "command", "command": ["ionice", "-p", "117383"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:12:15.869723+08:00", "event": "resource_verified", "pid": 117383, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:12:15.869739+08:00", "event": "build_scheduler_verified", "pid": 117383, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-O", "-j1"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": "-j1"}
+{"time": "2026-09-18T13:12:15.869823+08:00", "event": "scheduler_arguments", "pid": 117392, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "CMakeFiles/Makefile2", "all"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:12:15.871392+08:00", "event": "command", "command": ["cat", "/proc/117392/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:12:15.872429+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:12:15.873403+08:00", "event": "command", "command": ["ionice", "-p", "117392"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:12:15.873532+08:00", "event": "resource_verified", "pid": 117392, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:12:15.873569+08:00", "event": "build_scheduler_verified", "pid": 117392, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "CMakeFiles/Makefile2", "all"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:12:15.873763+08:00", "event": "scheduler_arguments", "pid": 117395, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "CMakeFiles/parser.dir/build.make", "CMakeFiles/parser.dir/depend"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:12:15.875043+08:00", "event": "command", "command": ["cat", "/proc/117395/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:12:15.876234+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:12:15.876938+08:00", "event": "command", "command": ["ionice", "-p", "117395"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:12:15.877022+08:00", "event": "resource_verified", "pid": 117395, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:12:15.877042+08:00", "event": "build_scheduler_verified", "pid": 117395, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "CMakeFiles/parser.dir/build.make", "CMakeFiles/parser.dir/depend"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:12:16.878209+08:00", "event": "scheduler_arguments", "pid": 117449, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "CMakeFiles/parser.dir/build.make", "CMakeFiles/parser.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:12:16.880877+08:00", "event": "command", "command": ["cat", "/proc/117449/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:12:16.882317+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:12:16.884114+08:00", "event": "command", "command": ["ionice", "-p", "117449"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:12:16.884206+08:00", "event": "resource_verified", "pid": 117449, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:12:16.884234+08:00", "event": "build_scheduler_verified", "pid": 117449, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "CMakeFiles/parser.dir/build.make", "CMakeFiles/parser.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:12:23.891621+08:00", "event": "scheduler_arguments", "pid": 117494, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/CMakeFiles/required_resources.dir/build.make", "src/CMakeFiles/required_resources.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:12:23.893328+08:00", "event": "command", "command": ["cat", "/proc/117494/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:12:23.894870+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:12:23.895737+08:00", "event": "command", "command": ["ionice", "-p", "117494"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:12:23.895826+08:00", "event": "resource_verified", "pid": 117494, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:12:23.895846+08:00", "event": "build_scheduler_verified", "pid": 117494, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/CMakeFiles/required_resources.dir/build.make", "src/CMakeFiles/required_resources.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:12:28.900234+08:00", "event": "scheduler_arguments", "pid": 117542, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/CMakeFiles/compiler_core.dir/build.make", "src/CMakeFiles/compiler_core.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:12:28.902611+08:00", "event": "command", "command": ["cat", "/proc/117542/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:12:28.903956+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:12:28.904951+08:00", "event": "command", "command": ["ionice", "-p", "117542"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:12:28.905090+08:00", "event": "resource_verified", "pid": 117542, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:12:28.905135+08:00", "event": "build_scheduler_verified", "pid": 117542, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/CMakeFiles/compiler_core.dir/build.make", "src/CMakeFiles/compiler_core.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:12:34.912180+08:00", "event": "scheduler_arguments", "pid": 117621, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/debugfs/CMakeFiles/debugfs.dir/build.make", "src/debugfs/CMakeFiles/debugfs.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:12:34.914688+08:00", "event": "command", "command": ["cat", "/proc/117621/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:12:34.915722+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:12:34.916957+08:00", "event": "command", "command": ["ionice", "-p", "117621"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:12:34.917044+08:00", "event": "resource_verified", "pid": 117621, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:12:34.917063+08:00", "event": "build_scheduler_verified", "pid": 117621, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/debugfs/CMakeFiles/debugfs.dir/build.make", "src/debugfs/CMakeFiles/debugfs.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:12:35.918240+08:00", "event": "scheduler_arguments", "pid": 117676, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/util/CMakeFiles/util.dir/build.make", "src/util/CMakeFiles/util.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:12:35.920480+08:00", "event": "command", "command": ["cat", "/proc/117676/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:12:35.921988+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:12:35.922902+08:00", "event": "command", "command": ["ionice", "-p", "117676"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:12:35.923077+08:00", "event": "resource_verified", "pid": 117676, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:12:35.923111+08:00", "event": "build_scheduler_verified", "pid": 117676, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/util/CMakeFiles/util.dir/build.make", "src/util/CMakeFiles/util.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:12:52.943541+08:00", "event": "running", "completed": 30}
+{"time": "2026-09-18T13:12:56.946858+08:00", "event": "scheduler_arguments", "pid": 118087, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/output/CMakeFiles/output.dir/build.make", "src/output/CMakeFiles/output.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:12:56.949518+08:00", "event": "command", "command": ["cat", "/proc/118087/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:12:56.951105+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:12:56.952697+08:00", "event": "command", "command": ["ionice", "-p", "118087"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:12:56.952878+08:00", "event": "resource_verified", "pid": 118087, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:12:56.952923+08:00", "event": "build_scheduler_verified", "pid": 118087, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/output/CMakeFiles/output.dir/build.make", "src/output/CMakeFiles/output.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:13:05.962998+08:00", "event": "scheduler_arguments", "pid": 118243, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/tracefs/CMakeFiles/tracefs.dir/build.make", "src/tracefs/CMakeFiles/tracefs.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:13:05.965307+08:00", "event": "command", "command": ["cat", "/proc/118243/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:13:05.966825+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:13:05.967770+08:00", "event": "command", "command": ["ionice", "-p", "118243"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:13:05.967915+08:00", "event": "resource_verified", "pid": 118243, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:13:05.967959+08:00", "event": "build_scheduler_verified", "pid": 118243, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/tracefs/CMakeFiles/tracefs.dir/build.make", "src/tracefs/CMakeFiles/tracefs.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:13:06.969281+08:00", "event": "scheduler_arguments", "pid": 118291, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/CMakeFiles/runtime.dir/build.make", "src/CMakeFiles/runtime.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:13:06.971439+08:00", "event": "command", "command": ["cat", "/proc/118291/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:13:06.973399+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:13:06.974562+08:00", "event": "command", "command": ["ionice", "-p", "118291"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:13:06.974755+08:00", "event": "resource_verified", "pid": 118291, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:13:06.974797+08:00", "event": "build_scheduler_verified", "pid": 118291, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/CMakeFiles/runtime.dir/build.make", "src/CMakeFiles/runtime.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:13:38.010599+08:00", "event": "running", "completed": 53}
+{"time": "2026-09-18T13:14:03.041676+08:00", "event": "scheduler_arguments", "pid": 118725, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/aot/CMakeFiles/aot.dir/build.make", "src/aot/CMakeFiles/aot.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:03.044752+08:00", "event": "command", "command": ["cat", "/proc/118725/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:03.046133+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:03.047043+08:00", "event": "command", "command": ["ionice", "-p", "118725"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:03.047139+08:00", "event": "resource_verified", "pid": 118725, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:03.047171+08:00", "event": "build_scheduler_verified", "pid": 118725, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/aot/CMakeFiles/aot.dir/build.make", "src/aot/CMakeFiles/aot.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:07.051230+08:00", "event": "scheduler_arguments", "pid": 118788, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/arch/CMakeFiles/arch.dir/build.make", "src/arch/CMakeFiles/arch.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:07.053336+08:00", "event": "command", "command": ["cat", "/proc/118788/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:07.055074+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:07.056465+08:00", "event": "command", "command": ["ionice", "-p", "118788"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:07.056555+08:00", "event": "resource_verified", "pid": 118788, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:07.056573+08:00", "event": "build_scheduler_verified", "pid": 118788, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/arch/CMakeFiles/arch.dir/build.make", "src/arch/CMakeFiles/arch.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:13.065195+08:00", "event": "scheduler_arguments", "pid": 118919, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/ast/CMakeFiles/ast_defs.dir/build.make", "src/ast/CMakeFiles/ast_defs.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:13.067807+08:00", "event": "command", "command": ["cat", "/proc/118919/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:13.069334+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:13.071010+08:00", "event": "command", "command": ["ionice", "-p", "118919"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:13.071203+08:00", "event": "resource_verified", "pid": 118919, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:13.071247+08:00", "event": "build_scheduler_verified", "pid": 118919, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/ast/CMakeFiles/ast_defs.dir/build.make", "src/ast/CMakeFiles/ast_defs.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:19.077990+08:00", "event": "scheduler_arguments", "pid": 118996, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/btf/CMakeFiles/btf.dir/build.make", "src/btf/CMakeFiles/btf.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:19.080103+08:00", "event": "command", "command": ["cat", "/proc/118996/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:19.081875+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:19.083242+08:00", "event": "command", "command": ["ionice", "-p", "118996"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:19.083330+08:00", "event": "resource_verified", "pid": 118996, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:19.083350+08:00", "event": "build_scheduler_verified", "pid": 118996, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/btf/CMakeFiles/btf.dir/build.make", "src/btf/CMakeFiles/btf.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:23.089093+08:00", "event": "running", "completed": 83}
+{"time": "2026-09-18T13:14:28.094598+08:00", "event": "scheduler_arguments", "pid": 119107, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/stdlib_base_bt.dir/build.make", "src/stdlib/CMakeFiles/stdlib_base_bt.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:28.095890+08:00", "event": "command", "command": ["cat", "/proc/119107/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:28.096683+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:28.097352+08:00", "event": "command", "command": ["ionice", "-p", "119107"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:28.097426+08:00", "event": "resource_verified", "pid": 119107, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:28.097444+08:00", "event": "build_scheduler_verified", "pid": 119107, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/stdlib_base_bt.dir/build.make", "src/stdlib/CMakeFiles/stdlib_base_bt.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:29.098273+08:00", "event": "scheduler_arguments", "pid": 119209, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_generic_bitsperlong_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_generic_bitsperlong_h.dir/depend"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:29.100734+08:00", "event": "command", "command": ["cat", "/proc/119209/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:29.101523+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:29.102390+08:00", "event": "command", "command": ["ionice", "-p", "119209"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:29.102540+08:00", "event": "resource_verified", "pid": 119209, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:29.102578+08:00", "event": "build_scheduler_verified", "pid": 119209, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_generic_bitsperlong_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_generic_bitsperlong_h.dir/depend"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:30.103282+08:00", "event": "scheduler_arguments", "pid": 119293, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_generic_errno_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_generic_errno_h.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:30.104859+08:00", "event": "command", "command": ["cat", "/proc/119293/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:30.105905+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:30.107392+08:00", "event": "command", "command": ["ionice", "-p", "119293"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:30.107589+08:00", "event": "resource_verified", "pid": 119293, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:30.107636+08:00", "event": "build_scheduler_verified", "pid": 119293, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_generic_errno_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_generic_errno_h.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:32.109835+08:00", "event": "scheduler_arguments", "pid": 119478, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_generic_types_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_generic_types_h.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:32.111513+08:00", "event": "command", "command": ["cat", "/proc/119478/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:32.112502+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:32.113451+08:00", "event": "command", "command": ["ionice", "-p", "119478"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:32.113534+08:00", "event": "resource_verified", "pid": 119478, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:32.113554+08:00", "event": "build_scheduler_verified", "pid": 119478, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_generic_types_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_generic_types_h.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:33.114964+08:00", "event": "scheduler_arguments", "pid": 119558, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm_byteorder_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm_byteorder_h.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:33.116942+08:00", "event": "command", "command": ["cat", "/proc/119558/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:33.118439+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:33.119747+08:00", "event": "command", "command": ["ionice", "-p", "119558"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:33.119940+08:00", "event": "resource_verified", "pid": 119558, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:33.119983+08:00", "event": "build_scheduler_verified", "pid": 119558, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm_byteorder_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm_byteorder_h.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:34.120968+08:00", "event": "scheduler_arguments", "pid": 119667, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm_ioctl_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm_ioctl_h.dir/depend"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:34.122996+08:00", "event": "command", "command": ["cat", "/proc/119667/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:34.124723+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:34.125696+08:00", "event": "command", "command": ["ionice", "-p", "119667"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:34.125823+08:00", "event": "resource_verified", "pid": 119667, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:34.125860+08:00", "event": "build_scheduler_verified", "pid": 119667, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm_ioctl_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm_ioctl_h.dir/depend"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:35.126935+08:00", "event": "scheduler_arguments", "pid": 119758, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm_rwonce_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm_rwonce_h.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:35.129191+08:00", "event": "command", "command": ["cat", "/proc/119758/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:35.130278+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:35.131272+08:00", "event": "command", "command": ["ionice", "-p", "119758"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:35.131435+08:00", "event": "resource_verified", "pid": 119758, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:35.131469+08:00", "event": "build_scheduler_verified", "pid": 119758, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm_rwonce_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm_rwonce_h.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:36.132244+08:00", "event": "scheduler_arguments", "pid": 119834, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm_types_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm_types_h.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:36.134253+08:00", "event": "command", "command": ["cat", "/proc/119834/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:36.135473+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:36.136902+08:00", "event": "command", "command": ["ionice", "-p", "119834"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:36.137068+08:00", "event": "resource_verified", "pid": 119834, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:36.137100+08:00", "event": "build_scheduler_verified", "pid": 119834, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm_types_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm_types_h.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:37.138209+08:00", "event": "scheduler_arguments", "pid": 119936, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm64_errno_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm64_errno_h.dir/depend"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:37.140105+08:00", "event": "command", "command": ["cat", "/proc/119936/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:37.141557+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:37.142429+08:00", "event": "command", "command": ["ionice", "-p", "119936"], "exitcode": 1, "stdout": "", "stderr": "ionice: ioprio_get failed: No such process\n"}
+{"time": "2026-09-18T13:14:37.142542+08:00", "event": "resource_not_observed_exited", "pid": 119936}
+{"time": "2026-09-18T13:14:38.143925+08:00", "event": "scheduler_arguments", "pid": 120020, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm64_ioctl_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm64_ioctl_h.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:38.146033+08:00", "event": "command", "command": ["cat", "/proc/120020/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:38.147299+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:38.148527+08:00", "event": "command", "command": ["ionice", "-p", "120020"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:38.148694+08:00", "event": "resource_verified", "pid": 120020, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:38.148739+08:00", "event": "build_scheduler_verified", "pid": 120020, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm64_ioctl_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm64_ioctl_h.dir/build"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:39.149474+08:00", "event": "scheduler_arguments", "pid": 120122, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm64_swab_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm64_swab_h.dir/depend"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:39.151255+08:00", "event": "command", "command": ["cat", "/proc/120122/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}
+{"time": "2026-09-18T13:14:39.152382+08:00", "event": "command", "command": ["cat", "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope/memory.max"], "exitcode": 0, "stdout": "16536457216\n", "stderr": ""}
+{"time": "2026-09-18T13:14:39.153645+08:00", "event": "command", "command": ["ionice", "-p", "120122"], "exitcode": 0, "stdout": "idle\n", "stderr": ""}
+{"time": "2026-09-18T13:14:39.153740+08:00", "event": "resource_verified", "pid": 120122, "cgroup": "/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope", "memory_max": 16536457216, "nice": 19, "ionice": "idle"}
+{"time": "2026-09-18T13:14:39.153757+08:00", "event": "build_scheduler_verified", "pid": 120122, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_arm64_swab_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_arm64_swab_h.dir/depend"], "cwd": "/tmp/task/rpm-bpf-aarch64-libcxx/BUILD/bpftrace-0.24.2/build", "makeflags": " -j1 -Otarget"}
+{"time": "2026-09-18T13:14:40.154856+08:00", "event": "scheduler_arguments", "pid": 120206, "command": ["/usr/bin/qemu-arm64-static", "/bin/make", "-f", "src/stdlib/CMakeFiles/include_asm_loongarch_bitsperlong_h.dir/build.make", "src/stdlib/CMakeFiles/include_asm_loongarch_bitsperlong_h.dir/build"], "makeflags": " -j1 -Otarget", "serial": true}
+{"time": "2026-09-18T13:14:40.156789+08:00", "event": "command", "command": ["cat", "/proc/120206/cgroup"], "exitcode": 0, "stdout": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/build-weekend-0918.scope\n", "stderr": ""}

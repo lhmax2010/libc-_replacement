@@ -1,0 +1,230 @@
+#!/bin/bash
+
+# Disable pathname expansion by '*' or '?'
+set -f
+
+IFS=";"
+
+# Special keyword for unspecified attribute
+UNSPECIFIED="Unspecified"
+
+# Message formatting
+LINE_MAX_LENGTH=90
+
+# Deprecated
+ROOTSTRAP_BASE_DIR="/etc/hal/rootstrap"
+# Rootstrap-checker rule file path
+ROOTSTRAP_DEFAULT_RULES_DIR="/etc/hal/rootstrap/default.rules.d"
+ROOTSTRAP_RULES_DIR="/etc/hal/rootstrap/rules.d"
+
+# Deprecated: Base dir only reads this specific yaml file
+ROOTSTRAP_BASE_DIR_YAML="hal-rootstrap-checker.yaml"
+
+# Current Package Info (Global)
+CURRENT_GROUP_NAME=""
+CURRENT_PACKAGE_NAME=""
+CURRENT_PACKAGE_SPECFILE=""
+SOURCEDIR=""
+RPM_BUILD_ROOT=""
+BUILD_ARCH=""
+BUILD_BIT=""
+
+print_border() {
+	local placeholder=$(printf "%*s" "$LINE_MAX_LENGTH" " ")
+	echo ${placeholder// /\#}
+}
+
+print_message() {
+	local message_max_length=$(($LINE_MAX_LENGTH - 3))
+	printf "# %-*s#\n" "$message_max_length" "$1"
+}
+
+print_not_allowed_files_log() {
+	local target_dir=$1
+	local not_allowed_files=$2
+	local allowed_files=$3
+	local action=$4
+
+	if [[ "$action" == "ignore" ]]; then
+		return
+	fi
+
+	local prefix="WARNING"
+	if [[ "$action" == "error" ]]; then
+		prefix="ERROR"
+	fi
+
+	print_border
+	print_border
+	print_message "$prefix: Target path: $target_dir"
+	print_message "$prefix: There are not allowed files installed."
+	local not_allowed_file=""
+	for not_allowed_file in $not_allowed_files; do
+		print_message "$prefix:  - $not_allowed_file"
+	done
+	print_message "$prefix:"
+	print_message "$prefix: Only allowed files below can be installed:"
+	local allowed_file=""
+	for allowed_file in $allowed_files; do
+		print_message "$prefix:  - $allowed_file"
+	done
+	print_border
+	print_border
+}
+
+print_not_allowed_log() {
+	local warning_type=$1
+	local not_allowed_list=$2
+	local allowed_package_name_list=$3
+	local allowed_group_name_list=$4
+	local action=$5
+
+	if [[ "$action" == "ignore" ]]; then
+		return
+	fi
+
+	local prefix="WARNING"
+	if [[ "$action" == "error" ]]; then
+		prefix="ERROR"
+	fi
+
+	local not_allowed=""
+	local allowed=""
+
+	print_border
+	print_border
+
+	print_message "$prefix: There are not allowed $warning_type. They might cause ABI break."
+	for not_allowed in ${not_allowed_list}; do
+		local not_allowed_package_name=""
+		local not_allowed_group_name=""
+		if [[ $not_allowed =~ (.*)@(.*) ]]; then
+			not_allowed_package_name=${BASH_REMATCH[1]}
+			not_allowed_group_name=${BASH_REMATCH[2]}
+		fi
+		print_message "$prefix:  - $not_allowed_package_name, Group: $not_allowed_group_name"
+		# Show transitive violation chain if available
+		local vchain
+		vchain=$(echo "$PACKAGE_VIOLATION_CHAINS" | grep "^${not_allowed_package_name}:::" | head -1 | sed "s/^${not_allowed_package_name}::://")
+		if [[ -n "$vchain" ]]; then
+			print_message "$prefix:      transitive: ${vchain}"
+		fi
+	done
+
+	print_message "$prefix:"
+	if [[ ! -z $allowed_package_name_list ]]; then
+		print_message "$prefix: Use only allowed packages below for $warning_type"
+		for allowed in ${allowed_package_name_list}; do
+			print_message "$prefix:  - $allowed"
+		done
+	else
+		print_message "$prefix: It is not allowed to specify $warning_type"
+	fi
+
+	if [[ ! -z $allowed_group_name_list ]]; then
+		print_message "$prefix: Use only allowed package groups below for $warning_type"
+		for allowed in ${allowed_group_name_list}; do
+			print_message "$prefix:  - $allowed"
+		done
+	fi
+
+	print_border
+	print_border
+}
+
+ACTION_ON_VIOLATION=""
+TARGET_PACKAGE_NAME=""
+TARGET_GROUP_NAME=""
+TARGET_INSTALLED_FILE=""
+EXCLUDED_TARGET_PACKAGE_NAME=""
+ALLOWED_BUILDREQUIRES_PACKAGE_NAME=""
+ALLOWED_BUILDREQUIRES_GROUP_NAME=""
+ALLOWED_BUILDCONFLICTS_PACKAGE_NAME=""
+ALLOWED_REQUIRES=""
+DENIED_LDD_LIST=""
+TRANSITIVE_DEPENDENCY_MODE="disabled"
+TRANSITIVE_DEPENDENCY_MAX_DEPTH=10
+DIR_KEYS=()
+DIR_VALUES=()
+
+reset_config_variables() {
+	ACTION_ON_VIOLATION="warning"
+	TARGET_PACKAGE_NAME=""
+	TARGET_GROUP_NAME=""
+	TARGET_INSTALLED_FILE=""
+	EXCLUDED_TARGET_PACKAGE_NAME=""
+	ALLOWED_BUILDREQUIRES_PACKAGE_NAME=""
+	ALLOWED_BUILDREQUIRES_GROUP_NAME=""
+	ALLOWED_BUILDCONFLICTS_PACKAGE_NAME=""
+	ALLOWED_REQUIRES=""
+	DENIED_LDD_LIST=""
+	TRANSITIVE_DEPENDENCY_MODE="disabled"
+	TRANSITIVE_DEPENDENCY_MAX_DEPTH=10
+	DIR_KEYS=()
+	DIR_VALUES=()
+}
+
+get_all_config_files() {
+	local final_file_list=""
+	local OLD_IFS="$IFS"
+	IFS=$'\n'
+
+	# Check if there are any files in ROOTSTRAP_BASE_DIR
+	local base_dir_files
+	base_dir_files=$(find "$ROOTSTRAP_BASE_DIR" -maxdepth 1 -type f -name "*.yaml" 2>/dev/null)
+
+	if [[ -n "$base_dir_files" ]]; then
+		# Case 1: ROOTSTRAP_BASE_DIR has at least one file
+		# Ignore both rules.d and default.rules.d
+		for filepath in $base_dir_files; do
+			final_file_list+="$filepath$OLD_IFS"
+		done
+		IFS="$OLD_IFS"
+		echo "$final_file_list"
+		return
+	fi
+
+	# Check if there are any files in ROOTSTRAP_RULES_DIR
+	local rules_dir_files
+	rules_dir_files=$(find "$ROOTSTRAP_RULES_DIR" -maxdepth 1 -type f -name "*.yaml" 2>/dev/null)
+
+	if [[ -n "$rules_dir_files" ]]; then
+		# Case 2: ROOTSTRAP_BASE_DIR is empty and ROOTSTRAP_RULES_DIR has at least one file
+		# Ignore default.rules.d
+		for filepath in $rules_dir_files; do
+			final_file_list+="$filepath$OLD_IFS"
+		done
+		IFS="$OLD_IFS"
+		echo "$final_file_list"
+		return
+	fi
+
+	# Case 3: Both ROOTSTRAP_BASE_DIR and ROOTSTRAP_RULES_DIR are empty
+	# Use files from ROOTSTRAP_DEFAULT_RULES_DIR
+	local default_rules_files
+	default_rules_files=$(find "$ROOTSTRAP_DEFAULT_RULES_DIR" -maxdepth 1 -type f -name "*.yaml" 2>/dev/null)
+
+	for filepath in $default_rules_files; do
+		final_file_list+="$filepath$OLD_IFS"
+	done
+
+	IFS="$OLD_IFS"
+	echo "$final_file_list"
+}
+
+# Parse critical configuration fields for early skip condition check.
+# This function parses action_on_violation to determine
+# whether to skip parsing the remaining configuration fields.
+# Returns 0 if the key should continue first-pass parsing, 1 to stop first-pass parsing.
+parse_config_action_on_violation_property() {
+	case $KEY in
+		action_on_violation)
+			ACTION_ON_VIOLATION="$VALUE"
+			return 0
+			;;
+		*)
+			# We have already parsed enough information to decide
+			# whether to stop or not.
+			return 1
+			;;
+	esac
