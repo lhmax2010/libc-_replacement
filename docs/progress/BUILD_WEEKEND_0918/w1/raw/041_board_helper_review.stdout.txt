@@ -1,0 +1,137 @@
+"""Compile the unchanged cancellation probe against the installed static RPMs."""
+import hashlib
+import json
+import shlex
+import subprocess
+from pathlib import Path
+
+p=Path.cwd(); out=p/'progress/BUILD_STATIC_0917B/resume_0917'
+task=p/'tmp/STATIC_0917B'; dest=task/'board-probes'
+dest.mkdir(exist_ok=False)
+base=json.loads((out/'bpf-private-armv7l-base.json').read_text())
+assert json.loads((out/'bpf-install-armv7l-result.json').read_text())['status']=='STATIC_INPUT_RPMS_INSTALLED'
+source=p/'docs/progress/BUILD_STATIC_0917/inputs/condition_cancel_probe.cpp'
+base+=['--ro-bind',str(source),'/tmp/task/board-probes/condition_cancel_probe.cpp']
+commands=[]; results=[]
+def run(cmd, expected=0):
+    r=subprocess.run(cmd,capture_output=True,text=True,errors='replace')
+    commands.append({'command':shlex.join(cmd),'exitcode':r.returncode,'stdout':r.stdout,'stderr':r.stderr})
+    (out/'arm_cancel_compile_commands.json').write_text(json.dumps(commands,indent=2))
+    print(shlex.join(cmd),'exitcode='+str(r.returncode),flush=True)
+    assert r.returncode==expected,r.stderr
+    return r.stdout
+version=run(base+['--','armv7l-tizen-linux-gnueabi-clang++','--version'])
+assert 'clang version 22.1.8' in version
+run(base+['--','armv7l-tizen-linux-gnueabi-clang','-O2','-Wall','-Wextra','-Werror',
+          '/tmp/task/board_run_bounded.c','-o','/tmp/task/board-probes/run-bounded'])
+run(['readelf','-dW',str(dest/'run-bounded')])
+run(base+['--','/tmp/task/board-probes/run-bounded','5','/bin/true'])
+run(base+['--','/tmp/task/board-probes/run-bounded','5','/bin/sh','-c','exit 7'],expected=7)
+run(base+['--','/tmp/task/board-probes/run-bounded','1','/bin/sleep','2'],expected=124)
+for mode in ('shared-gcc','static-gcc'):
+    exe='/tmp/task/board-probes/cancel-'+mode
+    args=['armv7l-tizen-linux-gnueabi-clang++','-std=c++20','-O0','-g','-fno-inline',
+          '-march=armv7-a','-mtune=cortex-a8','-mfpu=neon','-mfloat-abi=softfp','-mthumb',
+          '-stdlib=libc++','-static-libstdc++','-shared-libgcc' if mode=='shared-gcc' else '-static-libgcc',
+          '/tmp/task/board-probes/condition_cancel_probe.cpp','-pthread','-latomic',
+          '-Wl,--start-group','/usr/lib/libc++.a','/usr/lib/libc++abi.a','-Wl,--end-group',
+          '-Wl,-Map,'+exe+'.map','-o',exe]
+    run(base+['--',*args])
+    f=dest/('cancel-'+mode)
+    dynamic=run(['readelf','-dW',str(f)])
+    needed=[x.split('[')[1].split(']')[0] for x in dynamic.splitlines() if '(NEEDED)' in x]
+    assert not any(x.startswith(('libc++.so','libc++abi.so','libstdc++')) for x in needed)
+    assert ('libgcc_s.so.1' in needed)==(mode=='shared-gcc')
+    text=(dest/('cancel-'+mode+'.map')).read_text(errors='replace')
+    hits=[x for x in text.splitlines() if any(k in x for k in ('libc++.a','libc++abi.a','libgcc_eh','libgcc_s','libunwind','cxa_personality'))]
+    (out/f'arm_cancel_{mode}_map_excerpt.txt').write_text('\n'.join(hits)+'\n')
+    results.append({'mode':mode,'binary':str(f),'sha256':hashlib.sha256(f.read_bytes()).hexdigest(),
+                    'needed':needed,'status':'COMPILED_NOT_RUN'})
+(out/'arm_cancel_probe_inputs.json').write_text(json.dumps({'source':str(source),
+    'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'compiler_version':version,'probes':results,
+    'bounded_runner_source_sha256':hashlib.sha256((task/'board_run_bounded.c').read_bytes()).hexdigest(),
+    'bounded_runner_binary_sha256':hashlib.sha256((dest/'run-bounded').read_bytes()).hexdigest()},indent=2))
+"""Physical-board cancellation checks; explicit remote exit codes and cleanup.
+
+Only task-owned probe files are installed. No RPM/system configuration changes.
+On connection failure stop immediately and preserve cleanup requirements.
+"""
+import datetime
+import hashlib
+import json
+import re
+import shlex
+import subprocess
+from pathlib import Path
+
+p=Path.cwd(); out=p/'progress/BUILD_STATIC_0917B/resume_0917/board_cancel'
+out.mkdir(exist_ok=False)
+local=p/'tmp/STATIC_0917B/board-probes'
+remote='/var/tmp/build_static_0917b_cancel'
+sdb=['/home/toolchain/.local/bin/sdb','-s','192.168.108.26:26101']
+records=[]; results=[]; uploaded=[]
+def command(args, seconds=40):
+    n=len(records)
+    record={'command':shlex.join(args),'started':datetime.datetime.now().astimezone().isoformat()}
+    try:
+        r=subprocess.run(args,capture_output=True,text=True,errors='replace',timeout=seconds)
+    except subprocess.TimeoutExpired as e:
+        record.update(exitcode='NOT_OBSERVED_TIMEOUT',timeout_seconds=seconds)
+        records.append(record)
+        (out/'commands.json').write_text(json.dumps(records,indent=2))
+        raise RuntimeError('Connection/command timeout: stop; manual cleanup required') from e
+    record.update(exitcode=r.returncode,stdout=r.stdout,stderr=r.stderr)
+    records.append(record)
+    (out/'commands.json').write_text(json.dumps(records,indent=2))
+    print(n,shlex.join(args),'exitcode='+str(r.returncode),flush=True)
+    assert r.returncode==0,record
+    return r.stdout.replace('\r\n','\n')
+def shell(script, expected=0):
+    # sdb's transport exit code is not a substitute for the remote command code.
+    text=command(sdb+['shell',script+'; task_rc=$?; printf "\\nTASK_REMOTE_RC=%s\\n" "$task_rc"'])
+    codes=re.findall(r'^TASK_REMOTE_RC=(\d+)$',text,re.M)
+    assert len(codes)==1, 'Missing remote completion marker; stop without retry'
+    code=int(codes[0])
+    if expected is not None: assert code==expected,(code,text)
+    return code,text
+
+assert all((local/x).is_file() for x in ('run-bounded','cancel-shared-gcc','cancel-static-gcc'))
+shell('test ! -e '+remote)
+command(sdb+['root','on'])
+_,identity=shell('id')
+assert 'uid=0(' in identity
+shell('mkdir '+remote)
+for name in ('run-bounded','cancel-shared-gcc','cancel-static-gcc'):
+    f=local/name
+    sha=hashlib.sha256(f.read_bytes()).hexdigest()
+    command(sdb+['push',str(f),remote+'/'+name],seconds=90)
+    _,text=shell('sha256sum '+remote+'/'+name)
+    assert re.search(r'^'+sha+r'\s+',text,re.M)
+    uploaded.append({'name':name,'sha256':sha,'path':remote+'/'+name})
+    (out/'transfer_sha256.json').write_text(json.dumps(uploaded,indent=2))
+shell('chmod 755 '+ ' '.join(remote+'/'+x['name'] for x in uploaded))
+shell('uname -a')
+for link in ('shared-gcc','static-gcc'):
+    for mode in ('wait','system_clock','steady_clock','custom_clock'):
+        for repeat in range(1,6):
+            code,text=shell('ulimit -c 0; '+remote+'/run-bounded 20 '+remote+'/cancel-'+link+' '+mode,expected=None)
+            passed=(code==0 and 'event=wait_confirmed mode='+mode in text
+                    and text.count('event=cleanup\n')==1
+                    and 'event=joined cancel_rc=0 join_rc=0 canceled=1 cleanup_count=1' in text)
+            results.append({'platform':'物理板','link':link,'mode':mode,'repeat':repeat,
+                            'remote_exitcode':code,'assertions_pass':passed,'stdout':text})
+            (out/'results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2))
+# Cleanup only the three files copied by this script, then the empty task dir.
+shell('rm -- '+' '.join(shlex.quote(x['path']) for x in uploaded))
+shell('rmdir '+remote)
+shell('test ! -e '+remote)
+command(sdb+['root','off'])
+_,identity=shell('id')
+assert 'uid=0(' not in identity
+summary={'shared_gcc_pass':sum(x['assertions_pass'] for x in results if x['link']=='shared-gcc'),
+         'static_gcc_pass':sum(x['assertions_pass'] for x in results if x['link']=='static-gcc'),
+         'static_exitcodes':[x['remote_exitcode'] for x in results if x['link']=='static-gcc'],
+         'cleanup':'VERIFIED_TASK_DIRECTORY_ABSENT_ROOT_OFF','platform':'物理板'}
+(out/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2))
+print(json.dumps(summary,ensure_ascii=False),flush=True)
+assert summary['shared_gcc_pass']==20, 'Shared-unwinder cancellation gate failed; static control is observational'

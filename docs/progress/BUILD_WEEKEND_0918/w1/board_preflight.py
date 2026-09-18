@@ -1,0 +1,49 @@
+"""Read-only physical-board inventory before any upload or package transaction."""
+import datetime,json,re,shlex,subprocess
+from pathlib import Path
+out=Path('progress/BUILD_WEEKEND_0918/board-preflight'); out.mkdir(exist_ok=False)
+sdb=['/home/toolchain/.local/bin/sdb','-s','192.168.108.26:26101']; records=[]
+def shell(label,script):
+    cmd=sdb+['shell',script+'; task_rc=$?; printf "\\nTASK_REMOTE_RC=%s\\n" "$task_rc"']
+    row={'command':shlex.join(cmd),'started':datetime.datetime.now().astimezone().isoformat()}
+    try: r=subprocess.run(cmd,capture_output=True,timeout=45)
+    except subprocess.TimeoutExpired:
+        row.update(transport_exitcode='NOT_OBSERVED_TIMEOUT'); records.append(row)
+        (out/'commands.json').write_text(json.dumps(records,indent=2))
+        raise SystemExit('BOARD_CONNECTION_INTERRUPTED: stop; no automatic reconnection')
+    (out/(label+'.stdout')).write_bytes(r.stdout); (out/(label+'.stderr')).write_bytes(r.stderr)
+    text=r.stdout.decode(errors='replace').replace('\r\n','\n')
+    codes=re.findall(r'^TASK_REMOTE_RC=(\d+)$',text,re.M)
+    row.update(transport_exitcode=r.returncode,remote_exitcode=int(codes[0]) if len(codes)==1 else 'NOT_OBSERVED',label=label)
+    records.append(row); (out/'commands.json').write_text(json.dumps(records,indent=2))
+    assert r.returncode==0 and len(codes)==1,'BOARD_CONNECTION_INTERRUPTED: stop'
+    return int(codes[0]),text
+rc,identity=shell('identity','id'); assert rc==0
+rc,kernel=shell('kernel','uname -a'); assert rc==0
+shell('glibc_identity','getconf GNU_LIBC_VERSION')
+shell('runtime_rpm_identity',"rpm -q --qf '%{NAME}\\t%{VERSION}-%{RELEASE}\\t%{ARCH}\\n' glibc libgcc libstdc++")
+shell('disk','df -h /var/tmp /usr')
+rc,processes=shell('processes','ps -eo pid,ppid,user,comm,args'); assert rc==0
+rc,packages=shell('packages',"rpm -qa --qf '%{NAME}\\t%{VERSION}-%{RELEASE}\\t%{ARCH}\\n'"); assert rc==0
+rc,dirs=shell('task_directories','for p in /var/tmp/build_weekend_0918_cancel /var/tmp/build_weekend_0918_function /var/tmp/build_weekend_0918_rpms /var/tmp/build_static_0917b_cancel /var/tmp/build_static_0917b_function; do if test -e "$p"; then ls -ld "$p"; fi; done')
+assert rc==0
+rc,executables=shell('existing_bpftrace_files','for p in /usr/bin/bpftrace /usr/bin/bpftrace-static; do if test -e "$p" || test -L "$p"; then ls -ld "$p"; fi; done')
+assert rc==0
+config_rc,config_text=shell('kernel_configuration','if test -r /proc/config.gz; then zcat /proc/config.gz; else for p in /boot/config-*; do if test -r "$p"; then printf "CONFIG_PATH=%s\\n" "$p"; cat "$p"; fi; done; fi')
+shell('bpf_paths','ls -ld /sys/kernel/btf/vmlinux /sys/kernel/debug/tracing /sys/kernel/tracing')
+active=[]
+for line in processes.splitlines():
+    fields=line.split()
+    if len(fields)>=4 and (fields[3]=='bpftrace' or fields[3].startswith(('cancel-shared','cancel-static','condition_cance','run-bounded'))): active.append(line)
+installed=[x for x in packages.splitlines() if x.split('\t')[0] in ('bpftrace','bpftrace-static','bpftrace-common')]
+remaining=[x for x in dirs.splitlines() if '/var/tmp/' in x and not x.startswith('TASK_')]
+existing_files=[x for x in executables.splitlines() if '/usr/bin/bpftrace' in x]
+result={'platform':'物理板','initial_root':'uid=0(' in identity,'existing_test_processes':active,
+        'bpf_kernel_configuration_lines':[line for line in config_text.splitlines() if re.search(r'CONFIG_.*BPF',line)],
+        'kernel_configuration_status':'READABLE' if config_rc==0 and re.search(r'^(?:# )?CONFIG_',config_text,re.M) else 'NOT_OBSERVED',
+        'existing_bpftrace_packages':installed,'existing_task_directories':remaining,
+        'existing_bpftrace_files':existing_files,
+        'status':'NEEDS_REVIEW' if active or installed or remaining or existing_files else 'READY_NO_OBSERVED_TEST_RESIDUE',
+        'scope':'No files uploaded, no package/root-state changes; missing kernel config is not proof that BPF is disabled.'}
+(out/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
+print(json.dumps(result,ensure_ascii=False)); assert not active and not installed and not remaining and not existing_files

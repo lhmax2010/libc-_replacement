@@ -1,0 +1,71 @@
+# 疑问与口径说明
+
+1. 六格 = 两架构 × 三路径。每格至少主包和 static 子包，故实际 RPM 文件数不应强行写成六。逐文件列清单。
+2. armv7l LLVM 输入按人工裁决标记 USABLE_BUT_BUILD_INCOMPLETE；W1 不抹去整轮 rpmbuild 退出 1，W2 独立追查与补做。
+3. armv7l 原生工具等价抽查/切换权限仍待回复；未答复前保留 QEMU，不套用 aarch64 的既有许可。
+4. W4 的机制表述将区分已测 glibc/libgcc 组合与所有平台的普遍结论；不能用源码检索或上游 musl 构建选择冒充所有 musl 版本已实测。具体证据在 W4 核对。
+
+5. 13:40：aarch64 libc++ 完整 rpmbuild 已退出 0（076），但 static ELF 的 DT_NEEDED 额外含 `libbpf.so.1`，产物门禁失败（105）。定位到本次输入源码 `src/ast/CMakeLists.txt:86`：`target_link_libraries(ast PUBLIC ${LIBCLANG_STATIC_ABS_PATH} bpf clangIndex clangDriver clangFrontend clangCodeGen)`；其中裸 `bpf` 成为 `-lbpf`，而 FindLibBpf 已找到 `/usr/lib64/libbpf.a`。已询问人工是否允许在 tmp 候选 spec 的 libc++ 条件内仅修正该静态分支为 `${LIBBPF_LIBRARIES}`；未获答复前不实施该修正、不降低静态门禁。armv7l 运行库输入和其他独立格继续。
+# 本轮验收口径
+
+## RPM 格与文件数
+
+两架构 × 三路径为六个验证格，不是强行要求六个 RPM 文件。每格保留实际产出的主包、static、common 及其他子包，逐个记录身份、大小、SHA256、RPM digest 与压缩参数。当前不做 x86_64 RPM。
+
+libc++ 格检查主包实际依赖 libc++，static 仅静态纳入 C++/LLVM/BCC 等库、保留动态 libgcc_s；此处“static”不是完全无动态依赖。GCC 与未定义工具链两格的 static 文件与对应架构 Source1002 解出的原文件逐字节 SHA256 一致。
+
+RPM 经 strip 后可能没有私有符号名。命名空间证据取本轮未 strip 的实际链接产物，并用 `.text` 与 `.rodata` 的逐段 SHA256 将它关联到最终 RPM 文件；不把 stripped 文件中搜不到符号写成不存在相应实现。
+
+## 构建与安装边界
+
+完整 `rpmbuild -bb` 必须正常完成，不能把已写出的部分 RPM 自动升级为完整构建。人工批准复用的 armv7l LLVM 18 个输入例外明确保留 `USABLE_BUT_BUILD_INCOMPLETE`；W2 再独立补做整轮。
+
+私有构建根只允许本轮临时文件可写，原根及 codes/ 不改。安装后平台检查器保持启用。此前本轮遗漏其只读输入的失败按准备失误记录，不写为源码或标准库失败。
+
+板上安装前先核对现有包、进程与本任务目录；不覆盖不明已有测试状态。正常 RPM 依赖检查失败时记录缺项，不使用 `--nodeps`、`--force` 跳过。若必须扩大到已有系统库升级，由人工确认，不借安装测试授权默许扩大。
+
+## 功能与取消
+
+RPM 通过不等于功能等价、也不等于允许替换发布资产。板上原件/候选须分别实际测试；不同版本、构建选项、内核能力、列举结果、脚本执行结果分别记录。
+
+静态 libgcc 对照的预期崩溃只是待验证假设。若 armv7l 与 x86_64 表现不同，如实列出，不把预期写为观察值；同链接形态探针也不能证明来源未知且已 strip 的原二进制必然崩溃。
+
+所有产物仍为 tmp/ 候选，不覆盖 Source1002，不推包仓。
+"""Recheck eleven published spec revisions; no package tree changes."""
+import ast,csv,hashlib,json,re,shlex,subprocess
+from pathlib import Path
+out=Path('progress/BUILD_WEEKEND_0918'); dest=out/'spec_audit'; dest.mkdir(exist_ok=False)
+source=Path('progress/BUILD_W2C_0915/audit_guard_context.py')
+node=next(x for x in ast.parse(source.read_text()).body if isinstance(x,ast.FunctionDef) and x.name=='scan')
+namespace={'re':re}; exec(compile(ast.Module(body=[node],type_ignores=[]),str(source),'exec'),namespace)
+scan=namespace['scan']
+good='%if %{defined _toolchain}\n%if %{toolchain_is clang}\n%define build_with_libcxx 1\n%endif\n%endif\n%if 0%{?build_with_libcxx}\nexport CXXFLAGS="-stdlib=libc++"\n%endif\n'
+assert scan(good)[0][0]['valid'] and scan(good)[1][0]['guarded']
+assert not scan('export CXXFLAGS="-stdlib=libc++"\n')[1][0]['guarded']
+assert not scan('%if 0%{?build_with_libcxx}\n%else\nexport CXXFLAGS="-stdlib=libc++"\n%endif\n')[1][0]['guarded']
+assert not scan('%if %{defined _toolchain}\n%define build_with_libcxx 1\n%endif\n')[0][0]['valid']
+packages=list(csv.DictReader(Path('docs/progress/BUILD_NIGHT_0916/PACKAGE_STATUS.tsv').open(),delimiter='\t'))
+inputs={r['package']:r for r in csv.DictReader(Path('progress/BUILD_W2C_0915/spec_audit_before/inputs.tsv').open(),delimiter='\t')}
+assert len(packages)==11
+commands=[]; rows=[]
+for package in packages:
+    name=package['package']; revision=package['adaptation_commit']
+    repo=Path('tmp/BUILD_W1BC_0911/target-fetch') if name=='llvm' else Path('codes/R104')/name
+    command=['git','-C',str(repo),'show',revision+':'+inputs[name]['spec']]
+    r=subprocess.run(command,capture_output=True)
+    commands.append({'command':shlex.join(command),'exitcode':r.returncode,'stderr':r.stderr.decode()})
+    (out/'spec-audit-commands.json').write_text(json.dumps(commands,indent=2))
+    assert r.returncode==0
+    data=r.stdout; (dest/(name+'.spec')).write_bytes(data)
+    definitions,options=scan(data.decode())
+    valid=len(definitions)==1 and definitions[0]['valid'] and bool(options) and all(x['guarded'] for x in options)
+    rows.append({'package':name,'branch':package['branch'],'revision':revision,'sha256':hashlib.sha256(data).hexdigest(),
+                 'definitions':definitions,'options':options,'literal_gate':'PASS' if valid else 'FAIL',
+                 'prior_validation':package['validation'],'status':package['current_status']})
+    if not valid:
+        (out/'spec-audit-failure.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2))
+        raise RuntimeError('Published spec guard check failed: '+name)
+(out/'spec-audit-result.json').write_text(json.dumps({'status':'PASS','packages':rows,'calibration_cases':4,
+    'scanner_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),
+    'scope':'Literal standard-library option/dependency guards in eleven pinned published specs; not arbitrary external macro injection; historical full builds reused, no claim of eleven new builds.'},ensure_ascii=False,indent=2))
+print('PASS eleven published specs; four calibration cases')

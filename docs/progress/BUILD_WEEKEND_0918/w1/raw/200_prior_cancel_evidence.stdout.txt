@@ -1,0 +1,270 @@
+# 同配置 libstdc++ 对照：同样崩溃，机制一致
+
+## 输入与可比性
+
+使用与上一轮 libc++ 探针相同的 x86_64 Tizen 构建根、Clang 22.1.8、glibc
+2.40-1.10、libgcc 14.2.0-1.10。GNU 标准库为 libstdc++ 14.2.0-1.10。
+本轮选用任务书允许的 **Clang + libstdc++**，不是声称用 GCC driver 编译了本轮探针。
+`toolchain-runtime-identities.json` 另记录根内 GCC 14.2.0 的实际版本。
+
+探针取自运行时分支 `2955f679d0be0b7aee96ae49125955940d01467f` 的
+`docs/progress/R111/code/condition_cancel_probe.cpp`，复用上轮归档原文，未改逻辑。
+编译线自己的同编号文档不是本探针来源。源码副本及 SHA256 一并归档。
+
+| 项目 | 上轮 libc++ 静态组 | 本轮 libstdc++ 静态组 |
+| --- | --- | --- |
+| driver / 优化 / 调试 | Clang 22.1.8；C++20、O0、g、fno-inline | 相同 |
+| 标准库选择 | `-stdlib=libc++`；指定对应头文件及两份 `.a` | `-stdlib=libstdc++`；driver 默认 GNU 头文件/静态库 |
+| 展开器选择 | `-static-libgcc` | 相同 |
+| 标准库静态选择 | `-static-libstdc++`；显式 libc++.a/libc++abi.a 组 | `-static-libstdc++` |
+| 线程及探针自身依赖 | `-pthread -latomic` | 相同 |
+| glibc | 动态 | 动态 |
+| export-dynamic | 未添加 | 未添加 |
+
+转换标准库所必需的头文件/归档路径也随之改变，没有把它们描述为逐参数完全相同。
+`gnu-static-driver.json`、`gnu-static-compile.json` 记录实际完整命令；link map
+确认 personality 来自 libstdc++.a，展开器对象来自 libgcc_eh.a。
+GNU 动态对照用共享 libstdc++/libgcc_s；同配置静态 GNU 组没有这些 DT_NEEDED。
+
+## 结果
+
+| 形态 | GNU 静态标准库＋静态 libgcc | GNU 动态标准库＋动态 libgcc | GNU 静态标准库＋动态 libgcc（额外单变量复核） |
+| --- | --- | --- | --- |
+| wait | 5/5 SIGABRT，断言未通过 | 5/5 PASS | 5/5 PASS |
+| system_clock | 5/5 SIGABRT，断言未通过 | 5/5 PASS | 5/5 PASS |
+| steady_clock | 5/5 SIGABRT，断言未通过 | 5/5 PASS | 5/5 PASS |
+| custom_clock | 5/5 SIGABRT，断言未通过 | 5/5 PASS | 5/5 PASS |
+
+20 次普通运行中 bwrap 返回 134；GDB 独立确认 SIGABRT。动态组及额外复核均断言
+wait 已进入、清理恰好一次、cancel/join 返回 0、join 值为 PTHREAD_CANCELED。
+额外复核仅删除 GNU 静态命令中的 `-static-libgcc`，保留静态 libstdc++，不依赖
+“同时换成动态标准库”解释修复效果。结果见 `gnu-matrix.json` 与
+`gnu-counterfactual-matrix.json`。收集程序退出 0 不代表静态取消成功。
+除 wait 的回溯和寄存器检查，还对其余三种形态分别收集一次 GDB 回溯，均在
+同一 `_Unwind_SetGR.cold` 链上 SIGABRT，见 `gnu-gdb-abort-*.json`。
+
+## 回溯逐层对照
+
+| 执行层（由取消向外展开） | 上轮 libc++ | 本轮 GNU |
+| --- | --- | --- |
+| 取消点 | glibc pthread_cond_wait / signal / 取消内部函数 | 相同类别 |
+| 强制展开入口 | `/lib64/libgcc_s.so.1::_Unwind_ForcedUnwind` | 同一共享库入口 |
+| phase2 | libgcc_s 内部帧 | libgcc_s 内部帧 |
+| personality | 可执行文件内的 libc++abi `__gxx_personality_v0` | 可执行文件内的 libsupc++ `__gxx_personality_v0` |
+| 写回辅助函数 | 静态 `_Unwind_SetGR`，经 libc++abi 的 set_registers | 静态 `_Unwind_SetGR` |
+| 失败出口 | `_Unwind_SetGR.cold` → abort → raise → SIGABRT | 相同 |
+
+GNU 回溯 #3 为 `_Unwind_SetGR.cold`，#4 为 personality，#6 为共享库
+`_Unwind_ForcedUnwind`。两组不同函数内部的额外帧、地址并不逐字相同。
+上一轮证据：`../BUILD_STATIC_0916B/static_gdb_abort.json`、
+`static_gdb_registers_pc.json`；本轮：`gnu-gdb-abort.json`、`gnu-gdb-registers.json`。
+
+GNU 组在实际 `_Unwind_SetGR` PC 停下时，rsi=0，静态
+`dwarf_reg_size_table` 前 17 字节均为 0。实际 PC 反汇编读取该表，比较尺寸 8，
+不等跳往 cold/abort，与 libc++ 组一致。没有按同名函数猜地址，也没有放宽
+GDB auto-load 安全设置；libthread_db 警告原样保留。
+
+静态 libgcc_eh 与动态 libgcc_s 均归属同一 RPM 版本，SHA256 在
+`toolchain-runtime-identities.json`，本轮没有观测到两者版本错配。
+
+## 源码对应与因果边界
+
+只读 `codes/gcc` revision `49c5060508ce8a6ed6beca375233688a6bdd9140` 中：
+
+```c
+/* libgcc/unwind-dw2.c:149 */
+static unsigned char dwarf_reg_size_table[__LIBGCC_DWARF_FRAME_REGISTERS__+1];
+/* :280–281 */
+gcc_assert (index < (int) sizeof(dwarf_reg_size_table));
+size = dwarf_reg_size_table[index];
+/* :1316–1318 */
+init_dwarf_reg_size_table (void)
+{
+  __builtin_init_dwarf_reg_size_table (dwarf_reg_size_table);
+```
+
+`:1340–1347` 在 uw_init_context_1 中通过 once 初始化本份私有状态。
+`libstdc++-v3/libsupc++/eh_personality.cc:728–732` 调用 `_Unwind_SetGR`
+设置返回寄存器，随后 `_Unwind_SetIP`。实际内容和上下文见两个 gcc-source JSON。
+该只读源树作为机制对应，不冒充已逐文件证明就是本机 RPM 的精确构建输入；
+结论主要依据当前二进制 GDB 和单变量反事实实验。
+
+**归因：不是 libc++ 独有，而是本次动态 glibc＋静态 libgcc 场景中的两份展开器
+及其私有状态混用。** 不能把这句话外推为“任何静态 libgcc 程序必崩”；是否到达
+取消/展开路径、静态状态是否此前初始化、架构和绑定方式都会影响可见行为。
+
+本轮未测异步取消、aarch64 取消及 ARM EHABI。armv7l 为
+`NOT_OBSERVED_BOARD_OFFLINE`。
+# 社区核查：同类机制已知，未确认 bpftrace 官方资产同样崩溃
+
+W1 已实测 GNU 静态组同机制失败，因此本阶段前置满足。仅查资料，未向任何社区
+发帖或提交补丁。
+
+## 上游的两套构建形态不能混为一谈
+
+1. bpftrace **v0.24.2** 的 [src/CMakeLists.txt](https://github.com/bpftrace/bpftrace/blob/v0.24.2/src/CMakeLists.txt)
+   在 STATIC_LINKING 下确实加 `-static-libgcc` 和 `-static-libstdc++`。
+   因此“这个选项是我们独有的”不成立。当前 master 的独立取样也已下载，不能把
+   滚动 master 当成本次版本的构建身份。
+2. 对应 [静态 CI 脚本](https://github.com/bpftrace/bpftrace/blob/v0.24.2/.github/include/static.sh)
+   开 STATIC_LINKING，检查剩余动态依赖为 musl loader 和 musl libc；
+   [Dockerfile](https://github.com/bpftrace/bpftrace/blob/v0.24.2/docker/Dockerfile.static)
+   基于 Alpine 3.22。这不是 `-static` 的全静态程序，也不是动态 glibc 取消路径。
+3. [Release 工作流](https://github.com/bpftrace/bpftrace/blob/v0.24.2/.github/workflows/release.yml)
+   走 Nix/create-assets。复用已下载的官方 v0.24.2 AppImage **内部实际 bpftrace**，
+   重新算 SHA256、readelf：其直接依赖包括 `libstdc++.so.6`、`libgcc_s.so.1`、
+   glibc 及 LLVM/BCC 等共 18 项。AppImage 外壳不是内部程序的链接形态。
+   内部 SHA256 `46f917df57bd9f04525ecb991e49ae3fa61ddf16ee46105b89ee59abfddd9f7a`。
+
+API Release/tree 已重新访问，HTTP 200；CI 原文、HTTP 状态、URL、SHA 在
+`community_sources.json`、`upstream_more_sources.json`；内部 ELF 当前证据为
+`official-appimage-inner-needed.json` / `official-appimage-inner-sha256.json`。
+下载与解包身份的既有链条见 `../BUILD_W2C_0915/upstream_release/REPORT.md`。
+
+## bpftrace issues/PR 检索
+
+匿名 GitHub issues search API，同一仓库、同时覆盖 issues 与 PR，关键词如下：
+
+| 查询词 | API 总数 | 本次取回 |
+| --- | ---: | ---: |
+| pthread_cancel | 0 | 0 |
+| _Unwind | 0 | 0 |
+| static-libgcc | 13 | 13 |
+| libgcc | 21 | 21 |
+| SIGABRT | 27 | 27 |
+| unwind | 44 | 44 |
+| static | 461 | 第一页 100 |
+
+具体 query URL、incomplete_results、标题/正文均留档。static 是宽查询，**未声称
+审阅全部 461 条**；其余精确词未检出描述本次寄存器尺寸表机制的已确认 bpftrace
+取消故障。正向查询返回已知静态构建条目，不能把返回空页默认为检索器正常。
+[issue 1710](https://github.com/bpftrace/bpftrace/issues/1710) 讨论静态构建形态，
+不是本次取消回溯；另取得 342、4233、4243 的评论供核对，未据标题推断已修复本问题。
+结论限于以上检索，**不是宣称上游从未遇到过**。
+
+## GCC / glibc 已有记录
+
+- [GCC 开发邮件，2012-03-08](https://gcc.gnu.org/legacy-ml/gcc/2012-03/msg00106.html)：
+  讨论 libgcc_eh 隐藏符号、进程内展开器统一、glibc 内部动态装载 libgcc_s；指出
+  非全静态场景应使用共享 libgcc_s。这是机制/使用方式说明，不是 bpftrace 专项修复。
+- [glibc 开发者邮件，2016-10-14](https://sourceware.org/pipermail/libc-help/2016-October/003944.html)：
+  直接讨论 pthread_cancel 与静态 libgcc_eh，指出多份展开器和隐藏符号导致的问题；
+  文中探索性补丁未成功，不能作为本次可采用的上游已合入解法。
+- [GCC bug 42850 的官方邮件记录](https://gcc.gnu.org/pipermail/gcc-bugs/2010-January/327517.html)：
+  记录 dwarf_reg_size_table 未初始化及 glibc 隐含依赖共享展开器的历史故障。
+  当时触发背景是共享库版本变更，与本次环境不完全相同；不能把它写成本次故障
+  已被该 bug 精确覆盖或当前已修复。
+
+本机 curl 对 GCC/Sourceware 页面为 403；浏览工具可读上述邮件文本。
+Bugzilla 当前页面受访问限制，状态/精确修复提交 **NOT_AVAILABLE**；没有绕过挑战。
+额外访问的 glibc bug 13378 未取得内容，也未确认关联，**不作为支持性证据**。
+网页检索还见 libunwind 支持的提案，但它不是当前 Tizen 实测环境，未当作本任务解法。
+
+## 是否向上游提
+
+当前证据足以说明**动态 glibc 混用静态 libgcc 的风险已有社区解释**，不足以说明
+bpftrace 官方 musl 静态 CI 或官方 AppImage 有同一未解决故障。因此未生成一份
+宣称“上游 bpftrace 已复现”的 issue 草稿，也未提交 issue。
+
+供人工选择的事实：
+
+- “向上游提”：可以讨论 glibc 下 STATIC_LINKING 的适用边界；但本次直接复现对象是
+  独立探针，上游产品内触发路径未确认，不能按已证实 bpftrace 产品 bug 对外表述。
+- “照上游做法”：官方 AppImage 使用共享 libgcc_s；musl 静态 CI 则是另一种 libc，
+  不能直接移植其取消语义结论到本平台。
+- “我们自己改”：本轮仅删除候选的 `-static-libgcc`，共享 glibc 与共享 libgcc_s
+  统一展开流程；实测结果见 W4。没有改 libc++abi 或 glibc 源码，没有自行选定发布方案。
+# 去掉静态 libgcc：本次 x86_64 失败机制已消除
+
+## 实际改动与构建方式
+
+候选位于 `tmp/STATIC_0917/bpftrace-dynamic-libgcc`，未覆盖上一轮二进制、
+Source1002、spec、平台源码或任何包仓提交。
+
+通过 Ninja `-t commands bpftrace` 取得上一轮实际构建树的链接规则。复用原有
+Clang 22.1.8 编译的对象、LLVM/BCC/libclang/libc++/libc++abi 静态归档，在同一只读
+构建根重链接。**本轮是一个链接目标的重新构建，不是再次从头编译全包。**
+只有链接配置需要改变，复用对象使本实验更直接地隔离该变量。
+
+语义参数只删一项：
+
+```diff
+- -static-libgcc -static-libstdc++
++ -static-libstdc++
+```
+
+没有额外添加 `-shared-libgcc`、`--no-as-needed`、export-dynamic、预初始化代码或
+无用符号。其余修改仅是二进制、map、链接依赖记录的输出路径迁至新目录。
+本机 Clang driver 在这种参数组合下实际选择共享 libgcc_s，不能据此推断所有
+driver/版本均有同样默认值。完整原命令、候选命令、输入对象哈希分别在
+`relink_plan_v2.json`、`reused_object_identities_v2.json`。
+
+首次链接因 `--dependency-file` 仍指向只读旧构建树而失败；没有放宽旧树写权限，
+只把该输出路径迁走，第二次链接 15.01 秒、退出 0。旧脚本/旧结果保留。
+这不是取消判据失败后的“调判据”，而是独立的输出路径技术错误。
+
+## 候选产物检查
+
+`candidate_checks.json`、`candidate-map-excerpts.txt`、`candidate-string-counts.json`：
+
+- DT_NEEDED 恰为 `librt.so.1`、`libdl.so.2`、`libm.so.6`、`libpthread.so.0`、
+  `libgcc_s.so.1`、`libc.so.6`、`ld-linux-x86-64.so.2`。这里将 rt/dl/pthread/loader
+  按实际名称列全，没有用“只剩 libc/libm”省略它们；它们是该构建环境的 glibc 家族。
+- 没有 libc++.so、libc++abi.so、libstdc++.so、libLLVM.so、libclang.so、libbcc.so。
+- map 仍拉入静态 libc++abi 的 cxa_personality.cpp.o，LLVM/BCC 等仍由原静态输入提供；
+  未拉入 libgcc_eh.a 或 LLVM libunwind.a 的成员。
+- `_Unwind_SetGR` 变为 `U _Unwind_SetGR@GCC_3.0`，不再是程序内静态定义。
+  personality 和 patched `__forced_unwind` 的类型/析构符号仍在可执行文件内。
+- `_ZNSt3__1` 字符串匹配 23,218 行，`_ZNSt7__cxx11` 为 0；同时用链接输入和 map
+  支持标准库来源，不把单一字符串检索当成所有 ABI 的穷尽证明。
+- `--version`、`--help` 均退出 0，与**上一轮 x86_64 libc++ 候选**的 stdout/stderr
+  逐字相同。原 Source1002 不含 x86_64，不能声称完成了同架构原发布资产对比。
+
+| 体积 | 旧 libc++ 候选 | 新候选 | 差异 |
+| --- | ---: | ---: | ---: |
+| strip 前（字节） | 160,787,128 | 160,749,120 | -38,008 |
+| strip 后（字节） | 120,865,088 | 120,832,008 | -33,080 |
+
+strip 采用同一构建根的 `eu-strip --remove-comment -f`，保留分离调试文件；
+这是与旧对照一致的 strip 核心步骤，不冒充完整 RPM 后处理/写包。
+
+新候选 SHA256：`a47882b4396bba41dd7ad05b55e793992c8c2bb377815f64cc646f0cd2576fca`。
+strip 后：`a0862a0f7333e32b24fe72221371d2dee394a916905db2ad38d74999112f978d`。
+
+## 取消验证
+
+用相同的 R111 探针和同两份 libc++.a/libc++abi.a，只去掉 `-static-libgcc`，
+保留静态标准库；四种等待各 5 次，**20/20 全部断言通过**：
+进入 wait、取消穿过、RAII 清理恰好一次、cancel/join 成功、返回取消值。
+`libcxx-matrix.json` 和逐次 JSON 保留完整 stdout/stderr/退出码。
+该探针额外有自身需要的 libatomic 动态依赖，bpftrace 候选没有这项依赖。
+
+同样的单变量变更应用到 GNU 静态标准库探针，也 **20/20 通过**，见 W1 附加列。
+这支持“消除静态/共享展开器私有状态混用”这一归因，而非仅换掉 libc++ 就碰巧通过。
+
+**在本次 x86_64/glibc 2.40/libgcc 14.2 配置和四种 deferred cancellation 形态内，
+该失败机制已消除。** 这不是 bpftrace 内直接取消线程的实验，不是 aarch64/armv7l、
+异步取消、其他异常形态的全面结论。上轮动态 libc++ 对照 20/20 沿用原证据，不重复
+计为本轮新执行。
+
+## GCC 与未定义工具链回退
+
+本轮未修改 spec，只重链接实验候选，回退逻辑自然没有新代码。仍独立执行了：
+
+1. 用实际 RPM 宏分别展开 GCC / 未定义 `_toolchain` 的 baseline 和夜间候选 spec；
+   去空行后逐字相同，`-stdlib=libc++`、`-lc++abi` 均为 0。
+2. 按展开的 install 行重新安装 Source1002 的 aarch64 资产到本轮临时目录。
+3. 新安装件、原 tar 内文件、上一轮实际 GCC/undefined 构建后的安装件逐字节相同，
+   SHA256 均为 `4d12f98487f70addfeaa1602f91463458a738a4dd437241a70f77ab54680cab1`。
+
+证据：`fallback_recheck.json` 和逐项 expansion/install JSON。
+本轮没有再编译 GCC 全包；复用的两次实际 GNU 14.2 全 CMake 目标构建见
+`../BUILD_NIGHT_0917/fallback_result.json`，那两次也不是完整 RPM 写包。
+不能把本次复查夸大为“三条路径完整 RPM 均已重新构建”。
+
+## 发布边界
+
+仅消除了本次已复现的取消阻断；尚不能宣布候选已具备替换全部发布资产的条件。
+前轮未闭合的完整 RPM/安装与真实 BPF 功能验证不由本轮 CLI 检查替代；
+aarch64 尚未重链接新配置，armv7l 为 `NOT_OBSERVED_BOARD_OFFLINE`。
+是否纳入打包层、扩展架构、发布替换，由人工裁决；本轮不推包仓。
