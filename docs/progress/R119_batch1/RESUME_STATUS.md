@@ -8,14 +8,14 @@
 | --- | ---: |
 | INTERNAL_ONLY | 0 |
 | PUBLIC_NO_CONSUMER | 0 |
-| CROSS_PACKAGE | 31 |
+| CROSS_PACKAGE | 34 |
 | RUNTIME_CALL | 0 |
-| NOT_OBSERVED | 68 |
-| NOT_OBSERVED_INCLUDE_CHAIN | 1 |
+| NOT_OBSERVED | 66 |
+| NOT_OBSERVED_INCLUDE_CHAIN | 0 |
 
-另有 49 个候选存在已索引运行库引用，作为并列关系列保留，不加入 CROSS_PACKAGE，也不视为“只有运行库调用”的阴性证明。
+另有 31 个候选存在已索引运行库引用，作为并列关系列保留，不加入 CROSS_PACKAGE，也不视为“只有运行库调用”的阴性证明。
 
-续跑至本检查点实耗 788.3 秒；每个新增复核记录平均 10.7 秒（含共享工作，复用旧证据）。完整定界的总体平均耗时：NOT_OBSERVED，不据此估算后续从零定界工时。
+续跑至本检查点实耗 2126.0 秒；每个新增复核记录平均 28.7 秒（含共享工作，复用旧证据）。完整定界的总体平均耗时：NOT_OBSERVED，不据此估算后续从零定界工时。
 
 资源：light；单进程；nice 19 + ionice 3；RLIMIT_AS 9,921,875,558 字节；Git 普通 I/O。未使用开发板。
 

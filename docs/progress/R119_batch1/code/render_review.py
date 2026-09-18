@@ -5,9 +5,9 @@ d=OUT/'W1';end=int(sys.argv[1]);notes={}
 for p in sorted((OUT/'code').glob('review_notes_*.json')):notes.update(json.loads(p.read_text()))
 with (d/'BATCH_100.tsv').open()as f:order=list(csv.DictReader(f,delimiter='\t'))
 runtime=collections.defaultdict(list)
-with gzip.open(d/'expanded_symbol_edges.tsv.gz','rt')as f:
-    for r in csv.DictReader(f,delimiter='\t'):
-        if r['runtime_provider']=='True':runtime[r['entity']].append(r)
+rp=d/'RUNTIME_CALL_PROOFS.json'
+if rp.exists():
+    for n,r in json.loads(rp.read_text()).items():runtime[n].append(r)
 header_samples=json.loads((d/'DIVERSE_HEADER_REVIEW.json').read_text())
 reviewed=[];rows=[]
 for src in order:
@@ -35,6 +35,7 @@ for src in order:
             provider=proof['spec']['provider'];consumer=proof['spec']['consumer'];shape=note['shape'];own=note['ownership'];seconds=round(proof['verification_seconds'],3)
         reviewed.append(n)
         # 程序耗时仅是证据关联用时，不伪造人工逐候选时间。
+        if runtime[n]:refs.append('W1/RUNTIME_CALL_PROOFS.json')
         dossier={'entity':n,'status':status,'review':note,'header_samples':header_samples.get(n,[]),'runtime_index_rows':len(runtime[n]),'runtime_sample':runtime[n][:1], 'limits':'样本不是全量阴性证明；NOT_OBSERVED 不等于不跨包；静态 ELF 引用不等于已经运行到该接口。','proof_paths':refs}
         save(d/'reviewed'/f'{rank:03d}.json',dossier)
     row=dict(rank=rank,candidate=n,result=status,provider_package=provider,consumer_package=consumer,shape=shape,ownership=own,exceptions=exception,runtime_reference='RUNTIME_CALL'if runtime[n]else'NOT_OBSERVED',runtime_index_rows=len(runtime[n]),evidence_link_seconds=seconds,individual_manual_review_seconds='NOT_OBSERVED',evidence=';'.join(refs)or'NOT_OBSERVED')
