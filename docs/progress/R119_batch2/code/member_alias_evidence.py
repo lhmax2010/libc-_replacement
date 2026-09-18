@@ -3,7 +3,7 @@
 import hashlib,json,pathlib
 root=pathlib.Path(__file__).resolve().parents[4]
 base=root/'docs/progress/R119_batch2'
-files={'bits/ios_base.h':[(640,652)],'bits/chrono.h':[(874,934),(992,1004),(1260,1280)],'std/iosfwd':[(128,150)]}
+files={'bits/ios_base.h':[(360,369),(468,475),(576,583),(640,652)],'std/sstream':[(100,113),(1009,1018)],'bits/chrono.h':[(874,934),(992,1004),(1260,1280)],'std/iosfwd':[(128,150)]}
 rows=[]
 for name,ranges in files.items():
     path=root/'codes/gcc/libstdc++-v3/include'/name
