@@ -13,4 +13,6 @@
 
 与人工给出的数量一致：numeric_limits 1、decay 9。未继续推进 65 项关闭。
 
-主任务尚在进行；只测 x86_64，不用板子。
+第二节清单已建立：585 个固定表达式、20 族；`CATALOG.tsv`、`CATALOG_SOURCE_EVIDENCE.json`。有限实例范围与类型编码判据见 `SCOPE.md`。
+
+主任务测量尚在进行；只测 x86_64，不用板子。

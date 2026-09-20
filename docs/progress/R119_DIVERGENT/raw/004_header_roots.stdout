@@ -1,0 +1,51 @@
+memory_basis=[('MemTotal', 33072918528)]
+RLIMIT_AS_bytes=9921875558; parallelism=1; nice=19; ionice=3
+/home/toolchain/development/libc++_replacement/codes
+codes/gcc/libstdc++-v3/include/bits/postypes.h:62:  typedef __INT64_TYPE__          streamoff;
+codes/gcc/libstdc++-v3/include/bits/postypes.h:64:  typedef long long     streamoff;
+codes/gcc/libstdc++-v3/include/bits/postypes.h:68:  typedef ptrdiff_t	streamsize; // Signed integral type
+codes/gcc/libstdc++-v3/include/bits/postypes.h:204:  typedef fpos<mbstate_t> streampos;
+codes/gcc/libstdc++-v3/include/bits/postypes.h:206:  typedef fpos<mbstate_t> wstreampos;
+codes/gcc/libstdc++-v3/include/bits/postypes.h:210:  typedef fpos<mbstate_t> u8streampos;
+codes/gcc/libstdc++-v3/include/bits/postypes.h:215:  typedef fpos<mbstate_t> u16streampos;
+codes/gcc/libstdc++-v3/include/bits/postypes.h:217:  typedef fpos<mbstate_t> u32streampos;
+codes/llvm/libcxx/include/__cxx03/__fwd/ios.h:36:using streamoff = long int; // for char_traits in <string>
+codes/llvm/libcxx/include/__cxx03/__fwd/ios.h:38:using streamoff = long long; // for char_traits in <string>
+codes/llvm/libcxx/include/__fwd/ios.h:36:using streamoff = long int; // for char_traits in <string>
+codes/llvm/libcxx/include/__fwd/ios.h:38:using streamoff = long long; // for char_traits in <string>
+#!/usr/bin/env python3
+"""续跑资源包装：串行子进程，30% 地址空间上限，低 CPU/I/O 优先级。
+
+RLIMIT_AS 比物理驻留内存上限更保守，限制由子进程继承；不启动并行工作。
+按主机 MemTotal 与当前 cgroup/祖先有效 memory.max 的最小值计算。
+"""
+import os
+import pathlib
+import resource
+import sys
+
+total = int(next(line.split()[1] for line in pathlib.Path('/proc/meminfo').read_text().splitlines()
+                 if line.startswith('MemTotal:'))) * 1024
+limits = [('MemTotal', total)]
+for line in pathlib.Path('/proc/self/cgroup').read_text().splitlines():
+    if line.startswith('0::'):
+        path = pathlib.Path('/sys/fs/cgroup') / line[3:].lstrip('/')
+        root = pathlib.Path('/sys/fs/cgroup')
+        if '..' not in path.parts:
+            while path == root or root in path.parents:
+                f = path / 'memory.max'
+                if f.is_file():
+                    value = f.read_text().strip()
+                    if value.isdigit():
+                        limits.append((str(f), int(value)))
+                if path == root:
+                    break
+                path = path.parent
+cap = min(v for _, v in limits) * 30 // 100
+resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+print('memory_basis=' + repr(limits), flush=True)
+print('RLIMIT_AS_bytes=' + str(cap) + '; parallelism=1; nice=19; ionice=3', flush=True)
+os.execvp('nice', ['nice', '-n', '19', 'ionice', '-c', '3', *sys.argv[1:]])
+id	consumer_package	provider_package	candidate_count	candidates	ranks	arches	evidence	consumer_elf	provider_elf	consumer_sha256	provider_sha256	raw_symbol	demangled
+symbol_edges_01	appcore-agent	app-core	1	std::shared_ptr	6	x86_64	docs/progress/R119_batch1/W1/positive/app_shared.json	/usr/lib64/libappcore-agent.so.1.7.7	/usr/lib64/libapp-core-cpp.so.1.27.13	1688e929d9a16c516a52ddf8554c15e3daa827d101ed52daf6d5d456ea7f4d79	629520688916c61c07a9cb2c70a2b59fbbb406cd63b533396c31aa6197694b75	_ZN9tizen_cpp11AppCoreBase8AddEventESt10shared_ptrINS0_9EventBaseEE	tizen_cpp::AppCoreBase::AddEvent(std::shared_ptr<tizen_cpp::AppCoreBase::EventBase>)
+symbol_edges_02	amd	bundle	4	std::allocator;std::basic_string;std::string;std::vector	1,2,62,71	x86_64	docs/progress/R119_batch1/W1/positive/bundle_add.json	/usr/lib64/libamd.so.1.81.6	/usr/lib64/libbundle.so.0.18.15	1c2720d35947e8441d2edc9968ac58f232286dcbfff4a0993dd2141715e929be	cb8bafe360bac445ec4304fb31771c29d4f74df1979112fa8618c7577cb2faac	_ZN10tizen_base6Bundle3AddERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEERKSt6vectorIS6_SaIS6_EE	tizen_base::Bundle::Add(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::vector<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > const&)
