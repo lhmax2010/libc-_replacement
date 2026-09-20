@@ -10,7 +10,12 @@ def save(path, obj):
 def sha(path): return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 def record(tag, args):
     stem = OUT/'raw'/tag
-    subprocess.run([sys.executable, str(REC), str(stem), *map(str,args)], cwd=ROOT, check=False)
+    attempt=1
+    while pathlib.Path(str(stem)+'.command.txt').exists():
+        attempt+=1;stem=OUT/'raw'/(tag+f'_attempt{attempt}')
+    process=subprocess.run([sys.executable, str(REC), str(stem), *map(str,args)], cwd=ROOT, check=False)
+    if not pathlib.Path(str(stem)+'.exitcode').exists():
+        raise RuntimeError(f'命令记录不完整：{stem}; recorder exit={process.returncode}')
     rc=int(pathlib.Path(str(stem)+'.exitcode').read_text())
     return rc, pathlib.Path(str(stem)+'.stdout').read_text(errors='replace')
 def gate(tag):

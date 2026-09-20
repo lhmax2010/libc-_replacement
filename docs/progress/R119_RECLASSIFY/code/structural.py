@@ -60,7 +60,7 @@ for lib in ['gnu','cxx']:
     flags+=['-Wno-deprecated-declarations']
     begin=time.time();rc,_=record('a_'+lib+'_build',[cfg.CC,*flags,source,*links,'-pthread','-o',exe])
     if rc:raise SystemExit(rc)
-    rc,_=record('a_'+lib+'_preprocess',[cfg.CC,*flags,'-E',source])
+    rc,pre=record('a_'+lib+'_preprocess',[cfg.CC,*flags,'-E',source])
     if rc:raise SystemExit(rc)
     rc,_=record('a_'+lib+'_layout',[cfg.CC,*flags,'-Xclang','-fdump-record-layouts','-c',source,'-o',tmp/('structure_'+lib+'.o')])
     if rc:raise SystemExit(rc)
@@ -74,7 +74,7 @@ for lib in ['gnu','cxx']:
         runs.append(parsed)
     assert all(r==runs[0] for r in runs)
     # 从本次实际预处理的头文件位置取源码证据，不靠名称猜一份未参与构建的头。
-    pre=(OUT/f'raw/a_{lib}_preprocess.stdout').read_text();located=[];path='';line=0
+    located=[];path='';line=0
     for text in pre.splitlines():
         m=re.match(r'# (\d+) "([^"]+)"',text)
         if m:path=m[2];line=int(m[1]);continue
