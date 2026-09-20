@@ -1,0 +1,116 @@
+memory_basis=[('MemTotal', 33072918528)]
+RLIMIT_AS_bytes=9921875558; parallelism=1; nice=19; ionice=3
+codex/runtime-validation
+3e992c645e511cc2e83abb84477f98895d0b737e
+"""资源中止后的证据归档：串行、固定 1 MiB 缓冲，不重扫源码。"""
+from common import *
+import gzip,json,shutil,time
+d=OUT/'W1/entity_full';backup=TMP/'full_context_cache';backup.mkdir(exist_ok=True,parents=True)
+rc,txt,raw=record('tracked_context_files',['git','ls-files','--','docs/progress/R119_batch1/W1/entity_full']);assert rc==0
+tracked=set(txt.splitlines());names=json.loads((d/'COUNTS.json').read_text());items=[]
+for name in names:
+    p=d/(name.replace('::','_')+'.json')
+    if not p.exists():continue
+    dest=p.with_suffix('.json.gz')
+    with p.open('rb')as src,gzip.open(dest,'wb',compresslevel=1)as out:shutil.copyfileobj(src,out,1024*1024)
+    h=digest(p);item={'entity':name,'path':str(dest.relative_to(OUT)),'sha256':digest(dest),'uncompressed_sha256':h,'rows':names[name]}
+    if str(p.relative_to(ROOT))not in tracked:
+        target=backup/p.name
+        assert not target.exists(),target
+        p.rename(target);item['local_uncompressed_backup']=str(target)
+    items.append(item)
+save(d/'ARCHIVE.json',{'scope':'已收集的限定名上下文；归档不代表已逐条完成语义定界。','items':items})
+print('ARCHIVED',len(items),'BUFFER_BYTES',1024*1024)
+"""扫描实际 devel 安装头，产生候选上下文；不自动把函数体用法判为公开签名。"""
+from common import *
+import csv,gzip,re,collections,time
+start=time.time(); target=OUT/'W1'
+with (target/'BATCH_100.tsv').open()as f: rows=list(csv.DictReader(f,delimiter='\t'))
+names={r['entity'] for r in rows};counts=collections.Counter();stats=collections.Counter();samples=collections.defaultdict(list)
+token=re.compile(r'\bstd\s*::\s*[A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*')
+comments=re.compile(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',re.S)
+def normalize(s):return re.sub(r'\s+','',s).replace('std::__cxx11::','std::').replace('std::__1::','std::')
+def scan(s):
+    code=comments.sub(lambda m:'\n'*m.group().count('\n')+' ',s)
+    for m in token.finditer(code):
+        name=normalize(m.group())
+        while name and name not in names:name=name.rpartition('::')[0]
+        if name:yield name,code.count('\n',0,m.start())+1
+# 正负对照：多行限定名、注释/字符串、类型名作为长限定名的前缀。
+control='// std::vector<int> fake;\nconst char* s="std::map";\nstd ::\n string f();\nstd::vector<int> g();\n'
+observed=list(scan(control));assert observed==[('std::string',3),('std::vector',5)],observed
+save(target/'HEADER_SCAN_CONTROLS.json',dict(input=control,observed=observed,expected=observed))
+pkgs={}
+with (ROOT/'docs/progress/P7_0909/tables/packages.tsv').open()as f:
+    for r in csv.DictReader(f,delimiter='\t'):pkgs[r['checksum']]=r
+fields=['entity','package','sourcerpm','installed_path','cache_path','sha256','line','text','context','private_path','signature_status']
+issues=[]
+with gzip.open(target/'header_occurrences.tsv.gz','wt',newline='')as out:
+    w=csv.DictWriter(out,fieldnames=fields,delimiter='\t',lineterminator='\n');w.writeheader()
+    with gzip.open(ROOT/'docs/progress/P7_0909/tables/headers.tsv.gz','rt')as f:
+        for r in csv.DictReader(f,delimiter='\t'):
+            stats['inventory_headers']+=1
+            meta=pkgs.get(r['rpm_sha256'],{})
+            if meta.get('devel_name')!='YES' or r['scope']!='INCLUDE_TREE':continue
+            stats['devel_include_headers']+=1
+            if r['status']!='PASS':issues.append(dict(path=r['path'],package=r['name'],reason=r['status']));continue
+            # Plain-C headers cannot contain std-qualified type declarations;
+            # unresolved/macro-only headers remain included, not silently dropped.
+            if r['form']=='C_DECLARATION_SHAPE':stats['plain_c_shape_skipped']+=1;continue
+            p=pathlib.Path(r['cache_path'])
+            try:data=p.read_bytes()
+            except OSError as e:issues.append(dict(path=str(p),reason=str(e)));continue
+            sha=__import__('hashlib').sha256(data).hexdigest()
+            if sha!=r['file_sha256']:issues.append(dict(path=str(p),reason='SHA256_CHANGED'));continue
+            stats['read_headers']+=1;s=data.decode(errors='replace');lines=s.splitlines()
+            found=set(scan(s))
+            if found:stats['matched_headers']+=1
+            for name,n in sorted(found):
+                item=dict(entity=name,package=r['name'],sourcerpm=r['sourcerpm'],installed_path=r['path'],cache_path=str(p),sha256=sha,line=n,text=lines[n-1].strip(),context=' | '.join(lines[max(0,n-3):n+3]),private_path=r['private_path'],signature_status='HEADER_OCCURRENCE_REQUIRES_REVIEW')
+                w.writerow(item);counts[name]+=1
+                # retain an auditable diverse set, prefer non-private non-toolchain headers.
+                rank=(r['private_path']=='YES',r['sourcerpm'].startswith(('gcc-','llvm-')),len(item['text'])>400)
+                samples[name].append((rank,item))
+                if len(samples[name])>80:samples[name]=sorted(samples[name],key=lambda x:x[0])[:40]
+            if stats['read_headers']%10000==0:print(dict(stats),flush=True)
+save(target/'HEADER_COVERAGE.json',dict(stats=stats,issues=issues,occurrences=counts,elapsed_seconds=time.time()-start))
+save(target/'HEADER_REVIEW_QUEUE.json',{name:[r for _,r in sorted(items,key=lambda x:x[0])[:30]]for name,items in samples.items()})
+print(dict(stats),dict(counts),len(issues),flush=True)
+#!/usr/bin/env python3
+"""只对有本次结构结果或逐项头上下文结论者重判，其他不动。"""
+from common import *
+import gzip, re
+start=time.time();gate('ab_gate')
+cases=json.loads((OUT/'A_CASES.json').read_text());results=json.loads((OUT/'A_RESULTS.json').read_text())
+defs={lib:json.loads((OUT/f'A_DEFINITIONS_{lib}.json').read_text()) for lib in ['gnu','cxx']}
+table={x['rank']:x for x in inputs()}; decisions=[]
+for case in cases:
+    rank=case['rank'];item=table[rank];name=case['candidate'];key=str(rank)
+    assert all(defs[lib][key] for lib in defs),(rank,'missing actual definition')
+    pair={r['library']:r['results'][key] for r in results}
+    if case['subtype']=='BUILTIN_ALIAS':
+        actual=[re.search(r'\[T = (.*?)\]',text)[1] for text in pair.values()];assert len(set(actual))==1
+        reason='两侧实际展开一致：'+actual[0]+'；仅限 x86_64 本次头配置。'
+    elif case['subtype']=='EMPTY_TYPE':
+        assert all('empty=1' in text and 'size=1' in text for text in pair.values())
+        reason='两侧指定实例 is_empty=1、sizeof=1；继承的空基类计入空性检查。空对象可有地址/大小，不等于任意接口无条件兼容。'
+    else:
+        reason='本次实际定义为类型投影或静态/编译期查询；平台样本使用该投影/查询，不承载该元设施的独立运行时表示。结果类型的对象另计，不能抹去其存储与跨包风险。'
+    # 绑定实际平台样本和其当前内容摘要，不能只给概括性 old note。
+    base=item['base']; path=base/'W1/entity_full'/(name.replace('::','_')+('.json.gz' if item['rank']<=100 else '.json'))
+    if path.exists():
+        with (gzip.open(path,'rt') if path.suffix=='.gz' else path.open()) as f: samples=json.load(f)
+    else:samples=item['dossier'].get('header_samples',[])
+    if isinstance(samples,dict):samples=samples.get('contexts',samples.get('items',samples.get('samples',[])))
+    verified=[]
+    for sample in samples[:3]:
+        p=pathlib.Path(sample.get('cache_path',sample.get('metadata',{}).get('cache_path','')))
+        if not p.is_file():continue
+        verified.append(dict(source=sample,current_sha256=sha(p)))
+    if not verified:raise RuntimeError(f'missing actual platform sample {rank}: {path}')
+    detail=dict(case=case,observed=pair,definition_files={lib:f'A_DEFINITIONS_{lib}.json#{rank}' for lib in defs},platform_samples=verified,source_dossier=str(item['dossier_path'].relative_to(ROOT)),scope='S_A: x86_64 C++17 两侧实际标准实现及所列平台样本；不覆盖用户自定义特化与投影结果对象的新边界。')
+    save(OUT/'items'/f'{rank:03}.json',detail)
+    decisions.append(dict(rank=rank,candidate=name,original='NOT_OBSERVED',new='NO_STDLIB_OBJECT',subtype=case['subtype'],scope='S_A',reason=reason,evidence=f'items/{rank:03}.json'))
+save(OUT/'A_RECLASSIFIED.json',decisions)
+save(OUT/'A_VALIDATION_TIME.json',dict(elapsed_seconds=time.time()-start,candidates=len(cases),scope='证据验证及逐项报告生成，不含先前共享探针时间'))
+print('A verified',len(decisions))
