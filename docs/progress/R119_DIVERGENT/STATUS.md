@@ -22,3 +22,13 @@
 第四节完成本轮扫描并保留缺口：242 项的逐项暴露表已出。4 项有闭合跨包结构链，15 项有公开声明但消费路径未闭合，223 项未闭合具体实例的公开签名（NOT_OBSERVED，不是阴性）。新增 2 包对 / 2 符号边，已确认范围由 16/21 更新为 18/23。Dali ReadFile 另有消费者匹配，但同 SONAME 的 provider 配置未唯一绑定，未混入已确认数字。
 
 总体 PARTIAL：有限的 585 表达式测量和旧结果重判完成；不声称已经枚举所有可能实现定义类型、所有模板实例或闭合全部暴露路径。armv7l 全部 NOT_OBSERVED，未使用开发板。最终证据审计和交接见 FINAL.md / AUDIT.json。
+
+| 节 | 状态 | 产物 |
+| --- | --- | --- |
+| 断言与重判 | COMPLETE，10 处改判 | RECLASSIFIED_CHANGES.tsv、RECLASSIFIED_COUNTS.json |
+| 待查清单 | COMPLETE_IN_DECLARED_SCOPE，585 固定表达式 | CATALOG.tsv、CATALOG_SOURCE_EVIDENCE.json |
+| 两库类型测量 | COMPLETE_IN_DECLARED_SCOPE，含 60 项不可得记录 | TYPE_RESULTS.tsv、DIVERGENT_TYPES.md |
+| 跨包暴露 | PARTIAL，已确认 18 包对 / 23 符号边 | DIVERGENT_EXPOSURE.tsv、CROSS_*_UPDATED.tsv |
+| 架构与交接 | x86_64；armv7l 未测 | ARMV7L_RETEST.tsv、FINAL.md、AUDIT.json |
+
+从首个资源闸门至最终证据审计用时 2,670.76 秒（约 44.5 分钟，不含随后交付操作），低于八小时上限。逐命令时间在 raw/*.time.json；未把多表达式共享进程的输出观察数当作进程启动次数。

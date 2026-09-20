@@ -1,0 +1,100 @@
+memory_basis=[('MemTotal', 33072918528)]
+RLIMIT_AS_bytes=9921875558; parallelism=1; nice=19; ionice=3
+#!/usr/bin/env python3
+"""对冻结逐处结果补充独立的类型一致性门槛，不改旧产物。"""
+from common import *
+from collections import Counter
+import re
+def checked_no_object(d):
+    if d['result']!='RESULT_NO_OBJECT':return dict(d)
+    if d['basis']=='STATIC_DEFINITION_CHAIN':
+        assert d['result_type']=='const bool；谓词值 NOT_OBSERVED'
+        actual=['const bool','const bool']
+    else:
+        assert d['basis']=='MEASURED_BOTH'
+        actual=[]
+        for lib,ref in zip(['gnu','cxx'],d['measurement']):
+            m=json.loads((OLD/ref).read_text());assert m['status']=='MEASURED' and m['repeat_count']==5
+            actual.append(re.search(r'TYPE=.*?\[T = (.*?)\]',m['result'])[1])
+            assert actual[-1]==d['result_type'][lib]
+            assert any(s in m['result'] for s in ['kind=void','kind=builtin','empty=1'])
+    out=dict(d)
+    if len(set(actual))!=1:
+        out.update(result='RESULT_TYPE_DIVERGENT',reason='两侧均不承载对象不等于类型相同；两库实际投影类型不同',identity_check=dict(actual=actual,equal=False))
+        return out
+    assert len(set(actual))==1,'NO_OBJECT requires identical actual types'
+    out['identity_check']=dict(actual=actual,equal=True)
+    return out
+def main():
+    gate('reclassify_gate');start=time.time()
+    frozen={str(p.relative_to(ROOT)):sha(p) for p in OLD.rglob('*') if p.is_file() and '__pycache__' not in p.parts}
+    save(OUT/'PROJECTION_FROZEN_SHA256.json',frozen)
+    verified={};changes=[];summary=[];counts=Counter();oldcounts=Counter()
+    for p in sorted((OLD/'results').glob('*.json.gz')):
+        with gzip.open(p,'rt') as f:rows=json.load(f)
+        local=Counter()
+        for h in rows:
+            for src in h['references']:
+                path=src['cache_path']
+                if path not in verified:verified[path]=sha(path)
+                assert verified[path]==src['sha256'],path
+            before=h['decision'];after=checked_no_object(before);oldcounts[before['result']]+=1;counts[after['result']]+=1;local[after['result']]+=1
+            h['previous_decision']=before;h['decision']=after
+            if before['result']!=after['result']:
+                changes.append(dict(occurrence_id=h['id'],candidate=h['candidate'],source=h['references'][0]['installed_path'],line=h['line'],gnu=after['result_type']['gnu'],cxx=after['result_type']['cxx'],expression=after['requested_expression'],old=before['result'],new=after['result'],evidence='results/'+p.name))
+        dest=OUT/'results'/p.name;dest.parent.mkdir(parents=True,exist_ok=True)
+        with gzip.open(dest,'wt') as f:json.dump(rows,f,ensure_ascii=False)
+        summary.append(dict(candidate=rows[0]['candidate'],file='results/'+p.name,positions=len(rows),no_object=local['RESULT_NO_OBJECT'],divergent=local['RESULT_TYPE_DIVERGENT'],object=local['RESULT_STDLIB_OBJECT'],unresolved=local['RESULT_UNRESOLVED']))
+    assert len(changes)==10 and Counter(r['candidate'] for r in changes)=={'std::numeric_limits':1,'std::decay':9}
+    assert all(r['old']=='RESULT_NO_OBJECT' and r['new']=='RESULT_TYPE_DIVERGENT' for r in changes)
+    # 单元对照：空类型但类型不同必须拒绝；静态 const bool 必须仍通过。
+    static=dict(result='RESULT_NO_OBJECT',basis='STATIC_DEFINITION_CHAIN',result_type='const bool；谓词值 NOT_OBSERVED')
+    assert checked_no_object(static)['identity_check']['equal']
+    tsv(OUT/'RECLASSIFIED_CHANGES.tsv',changes);tsv(OUT/'RECLASSIFIED_CANDIDATES.tsv',summary)
+    save(OUT/'RECLASSIFIED_COUNTS.json',dict(before=dict(oldcounts),after=dict(counts),changed=len(changes),candidate_count=len(summary),verified_source_paths=len(verified),elapsed_seconds=time.time()-start))
+    save(OUT/'VERIFIED_HEADERS.json',verified)
+    for p,digest in frozen.items():assert sha(ROOT/p)==digest,p
+    print(json.dumps(dict(counts=counts,changes=changes),ensure_ascii=False,indent=2))
+if __name__=='__main__':main()
+{
+  "cells": 585,
+  "distribution": {
+    "DIVERGENT": 242,
+    "IDENTICAL": 283,
+    "NOT_AVAILABLE": 60
+  },
+  "elapsed_seconds": 51.84594702720642,
+  "architecture": "x86_64",
+  "standard": "c++17",
+  "repeats": 5,
+  "identity": "same exact TypeToken<T> type encoding; pretty spelling retained; not a layout equivalence claim"
+}
+{
+  "old_read": 223533,
+  "new_raw_read": 223534,
+  "extra": [
+    {
+      "path": "/usr/include/webapi-plugins/tools/desc_gentool",
+      "package": "webapi-plugins-devel",
+      "reason": "NOT_TEXT"
+    }
+  ],
+  "effective_original_scope_read": 223533,
+  "note": "额外读入的工具正文不作为公开 C++ 签名证据；不把读入数 +1 解释为新增平台 API"
+}
+# 开工记录
+
+本任务仅一个执行通道，无子代理；逐条等待退出后才发下一条命令。
+扫描、分析、编译由现有 resume_limited.py 设置 nice19、ionice3、RLIMIT_AS 30%；Git 普通优先级。
+
+开工定位命令（尚未建立 recorder，补录）：
+
+```bash
+pwd; rg --files -g AGENTS.md -g '!codes/**' -g '!tmp/**' -g '!config/**' -g '!docs/**' . /home/toolchain/development 2>/dev/null
+```
+
+该搜索范围过宽，主动 Ctrl-C，退出 130；没有启动第二个任务与它并行。随后定点查父目录指令：
+
+```bash
+for p in /AGENTS.md /home/AGENTS.md /home/toolchain/AGENTS.md /home/toolchain/development/AGENTS.md /home/toolchain/development/libcxx_runtime_validation/AGENTS.md; do if test -f "$p"; then printf '%s\n' "$p"; sed -n '1,240p' "$p"; fi; done
+```
