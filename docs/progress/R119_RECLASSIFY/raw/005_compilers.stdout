@@ -1,0 +1,190 @@
+memory_basis=[('MemTotal', 33072918528)]
+RLIMIT_AS_bytes=9921875558; parallelism=1; nice=19; ionice=3
+#!/usr/bin/env python3
+"""顺序编译/执行，原始命令归档；物理板失败立即停止，不自动重试。"""
+import argparse, hashlib, json, os, pathlib, re, shutil, subprocess, sys, time
+ROOT=pathlib.Path(__file__).resolve().parents[4]
+OUT=ROOT/'docs/progress/R118'; TMP=ROOT/'tmp/R118'; CODE=OUT/'code'
+OLD=pathlib.Path('/home/toolchain/development/libc++_replacement')
+CC=OLD/'progress/R33/tools/tizen-clang++'
+REC=ROOT/'docs/progress/API_0911/record.py'
+SDK=ROOT/'tmp/API_0911/W1_CONT'
+ARMROOT=OLD/'tmp/GBS-ROOT/R30-semantic-libcxx-armv7l-20260812-01/local/BUILD-ROOTS/scratch.armv7l.0'
+SDB=['sdb','-s','192.168.108.26:26101']
+REMOTE='/opt/usr/home/owner/share/tmp/r118'
+
+def digest(p): return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+def save(p,obj):
+ p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(obj,ensure_ascii=False,indent=2)+'\n')
+def record(tag,args):
+ stem=OUT/'raw'/tag; n=1
+ while pathlib.Path(str(stem)+'.command.txt').exists():
+  n+=1;stem=OUT/'raw'/(tag+f'_attempt{n}')
+ subprocess.run([sys.executable,str(REC),str(stem),*map(str,args)],cwd=ROOT,check=False)
+ rc=int(pathlib.Path(str(stem)+'.exitcode').read_text())
+ return rc,pathlib.Path(str(stem)+'.stdout').read_text(errors='replace'),str(stem.relative_to(ROOT))
+def checked(tag,args):
+ rc,out,raw=record(tag,args)
+ if rc:raise RuntimeError(f'{tag}: exit={rc}, {raw}')
+ return out,raw
+def remote(tag,cmd):
+ rc,out,raw=record(tag,['timeout','45',*SDB,'shell',f'{{ {cmd}; }}; r118_rc=$?; printf "\\nR118_TARGET_EXIT=%s\\n" "$r118_rc"'])
+ m=re.findall(r'R118_TARGET_EXIT=(\d+)',out)
+ if rc or not m:raise RuntimeError(f'BOARD_CONNECTION_INTERRUPTED: {raw}; 不重试、不清理，停报')
+ return int(m[-1]),out,raw
+def remote_checked(tag,cmd):
+ rc,out,raw=remote(tag,cmd)
+ if rc:raise RuntimeError(f'BOARD_COMMAND_FAILED: exit={rc}, {raw}')
+ return out,raw
+def configuration(arch,lib):
+ target='native' if arch=='x86_64' else 'armv7l'
+ build=ROOT/f'tmp/IMPL_0908/build-{target}'
+ gnu_lib=SDK/('closure_ewk/libstdc++.so.6' if arch=='x86_64' else 'arm/sdk/libstdc++/usr/lib/libstdc++.so.6')
+ if arch=='x86_64':
+  inc=SDK/'gnu14_sdk/usr/lib64/gcc/x86_64-tizen-linux-gnu/14.2.0/include/c++';triplet='x86_64-tizen-linux-gnu'
+  extra=['-fuse-ld=/usr/bin/ld.gold']
+ else:
+  inc=SDK/'arm/sdk/libstdc++-devel/usr/lib/gcc/armv7l-tizen-linux-gnueabi/14.2.0/include/c++';triplet='armv7l-tizen-linux-gnueabi'
+  extra=['--target=armv7l-tizen-linux-gnueabi',f'--sysroot={ARMROOT}',f'--ld-path={OLD}/progress/R36/tools/armv7l-ld','-march=armv7-a','-mfpu=neon','-mfloat-abi=softfp','-mthumb']
+ flags=['-std=c++17','-O0','-g','-fexceptions','-nostdinc++','-nostdlib++','-I'+str(CODE),*extra]
+ if lib=='gnu':flags+=['-I'+str(inc),'-I'+str(inc/triplet)];links=[str(gnu_lib)]
+ else:flags+=['-I'+str(build/'include/c++/v1')];links=['-L'+str(build/'lib'),'-lc++','-lc++abi']
+ return flags,links,build,gnu_lib
+def native_run(tag,exe,lib):
+ _,_,build,gnu_lib=configuration('x86_64',lib)
+ return record(tag,['nice','-n','19','ionice','-c','3',SDK/'closure_ewk/ld-linux-x86-64.so.2','--library-path',str(build/'lib')+':'+str(SDK/'closure_ewk'),exe])
+def clean_output(s):return '\n'.join(x for x in s.replace('\r','').splitlines() if not x.startswith('MAP ') and not x.startswith('R118_TARGET_EXIT='))
+
+def main():
+ p=argparse.ArgumentParser();p.add_argument('type',choices=['string','vector','function']);p.add_argument('--arch',choices=['x86_64','armv7l'],required=True);p.add_argument('--only');a=p.parse_args()
+ start=time.time();dest=TMP/a.type/a.arch;dest.mkdir(parents=True,exist_ok=True);rows=[];built=[]
+ for source in sorted((CODE/a.type).glob('*.cpp')):
+  if a.only and source.stem!=a.only:continue
+  for lib in ['gnu','cxx']:
+   flags,links,build,gnu_lib=configuration(a.arch,lib);exe=dest/(source.stem+'_'+lib)
+   if source.stem.startswith('cxx23_'):flags=['-std=c++23' if x=='-std=c++17' else x for x in flags]
+   tag=f'{a.type}_{a.arch}_{source.stem}_{lib}'
+   rc,out,raw=record(tag+'_build',['nice','-n','19','ionice','-c','3',CC,*flags,source,*links,'-ldl','-pthread','-o',exe])
+   row=dict(test=source.stem,arch=a.arch,library=lib,source=str(source.relative_to(ROOT)),source_sha256=digest(source),build_exit=rc,build_raw=raw,runs=[])
+   rows.append(row)
+   if rc==0:row['executable_sha256']=digest(exe);built.append((row,exe,tag))
+   elif 'extension' not in source.stem:save(OUT/a.type/(a.arch+'_matrix.json'),rows);raise RuntimeError('非预期编译失败：'+tag)
+   if source.stem=='layout' and rc==0:
+    checked(tag+'_record_layout',['nice','-n','19','ionice','-c','3',CC,*flags,'-Xclang','-fdump-record-layouts','-c',source,'-o',dest/('layout_'+lib+'.o')])
+ if a.arch=='armv7l':
+  remote_checked(a.type+'_pre_upload',f'test ! -e {REMOTE} && uname -m && mkdir {REMOTE}')
+  _,_,build,gnu_lib=configuration(a.arch,'cxx')
+  upload=[(build/'lib/libc++.so.1.0','libc++.so.1'),(build/'lib/libc++abi.so.1.0','libc++abi.so.1'),(gnu_lib,'libstdc++.so.6')]+[(exe,exe.name) for _,exe,_ in built]
+  save(OUT/a.type/'board_uploads.json',[dict(local=str(src),remote=REMOTE+'/'+name,sha256=digest(src)) for src,name in upload])
+  for src,name in upload:checked(a.type+'_upload_'+name,['timeout','45',*SDB,'push',src,REMOTE+'/'+name])
+  out,_=remote_checked(a.type+'_board_hashes','sha256sum '+' '.join(REMOTE+'/'+name for _,name in upload))
+  for src,name in upload:assert digest(src)+'  '+REMOTE+'/'+name in out
+  remote_checked(a.type+'_board_chmod','chmod 755 '+' '.join(REMOTE+'/'+exe.name for _,exe,_ in built))
+ for row,exe,tag in built:
+  for repeat in range(1,6):
+   if a.arch=='x86_64':rc,out,raw=native_run(tag+f'_run{repeat}',exe,row['library'])
+   else:rc,out,raw=remote(tag+f'_run{repeat}',f'cd {REMOTE} && LD_LIBRARY_PATH={REMOTE} nice -n 19 ionice -c 3 ./{exe.name}')
+   row['runs'].append(dict(repeat=repeat,exit=rc,raw=raw,result=clean_output(out)))
+   save(OUT/a.type/(a.arch+('_'+a.only if a.only else '')+'_matrix.json'),rows)
+   if rc:raise RuntimeError(f'运行失败（不是成功的差异结果）：{tag} exit={rc}')
+  row['repeat_results_identical']=len({x['result'] for x in row['runs']})==1
+ if a.arch=='armv7l':
+  remote_checked(a.type+'_cleanup','rm -- '+' '.join(REMOTE+'/'+name for _,name in upload)+f' && rmdir {REMOTE} && test ! -e {REMOTE}')
+  save(OUT/a.type/'board_cleanup.json',dict(directory=REMOTE,removed=[name for _,name in upload],absent=True,board_released=True))
+ save(OUT/a.type/(a.arch+('_'+a.only if a.only else '')+'_matrix.json'),rows)
+ save(OUT/a.type/(a.arch+'_timing.json'),dict(start_epoch=start,end_epoch=time.time(),elapsed_seconds=time.time()-start))
+
+if __name__=='__main__':main()
+cwd: /home/toolchain/development/libcxx_runtime_validation
+command: nice -n 19 ionice -c 3 /home/toolchain/development/libc++_replacement/progress/R33/tools/tizen-clang++ -std=c++17 -O0 -g -fexceptions -nostdinc++ -nostdlib++ -I/home/toolchain/development/libcxx_runtime_validation/docs/progress/R118/code -fuse-ld=/usr/bin/ld.gold -I/home/toolchain/development/libcxx_runtime_validation/tmp/API_0911/W1_CONT/gnu14_sdk/usr/lib64/gcc/x86_64-tizen-linux-gnu/14.2.0/include/c++ -I/home/toolchain/development/libcxx_runtime_validation/tmp/API_0911/W1_CONT/gnu14_sdk/usr/lib64/gcc/x86_64-tizen-linux-gnu/14.2.0/include/c++/x86_64-tizen-linux-gnu /home/toolchain/development/libcxx_runtime_validation/docs/progress/R118/code/string/layout.cpp /home/toolchain/development/libcxx_runtime_validation/tmp/API_0911/W1_CONT/closure_ewk/libstdc++.so.6 -ldl -pthread -o /home/toolchain/development/libcxx_runtime_validation/tmp/R118/string/x86_64/layout_gnu
+cwd: /home/toolchain/development/libcxx_runtime_validation
+command: nice -n 19 ionice -c 3 /home/toolchain/development/libc++_replacement/progress/R33/tools/tizen-clang++ -std=c++17 -O0 -g -fexceptions -nostdinc++ -nostdlib++ -I/home/toolchain/development/libcxx_runtime_validation/docs/progress/R118/code -fuse-ld=/usr/bin/ld.gold -I/home/toolchain/development/libcxx_runtime_validation/tmp/IMPL_0908/build-native/include/c++/v1 /home/toolchain/development/libcxx_runtime_validation/docs/progress/R118/code/string/layout.cpp -L/home/toolchain/development/libcxx_runtime_validation/tmp/IMPL_0908/build-native/lib -lc++ -lc++abi -ldl -pthread -o /home/toolchain/development/libcxx_runtime_validation/tmp/R118/string/x86_64/layout_cxx
+93 std::is_unsigned {"note": "absl/numeric/bits.h:72/79/107、cereal/json.hpp:280/285 为 ::value 约束。", "missing": "未完成全量宏、标签分派与 using 后用法排除；不能从局部样本推出全局阴性。"}
+94 std::random_device {"note": "OpenFST/float-weight.h:1082 在默认参数表达式中取随机种子；TensorFlow/local_device_state.h:221 有 random_device 成员。", "missing": "默认参数产生的整数与 random_device 对象不可混算；外层成员对象真实跨包路径未闭合。"}
+95 std::is_enum {"note": "absl/str_cat.h:402/410 和 substitute.h:209 以 is_enum<T>{} 做常量约束；cereal/common.hpp:85 取 ::value。", "missing": "常量求值临时对象不等于包间对象；完整宏及无限定使用尚未闭合。"}
+96 std::is_reference {"note": "absl/meta/type_traits.h:270、386 为元编程条件；fmt/core.h:1282 构造临时对象放在 static_assert 中。", "missing": "编译期临时实例不能当作 ELF 对象交接；尚缺完整签名层排除。"}
+98 std::random_access_iterator_tag {"note": "rapidjson/document.h:127 与 Eigen/StlIterators.h:36 为 iterator_category 别名；libsigc++/signal.h:187–190 的老式 reverse_iterator 形式受条件编译控制。", "missing": "未确定这些标签是否作为对象跨平台包传递；不能因出现于类型别名而直接计 CROSS_PACKAGE。"}
+99 std::remove_cv {"note": "absl/meta/type_traits.h:164 和 cereal/helpers.hpp:145/238 取 ::type 进行类型选择。", "missing": "没有对象签名的已确认边；尚未完成宏/别名及未限定名语义排除。"}
+100 std::bidirectional_iterator_tag {"note": "rapidxml_iterators.hpp:25/104、jsoncpp/value.h:772 为 iterator_category 别名；ICU/utfiterator.h:216 是 is_base_of 条件。", "missing": "具体标签分派调用边未闭合；迭代器对象跨包不自动等于它的 category 类型对象跨包。"}
+102 std::bitset {"note": "nntrainer/tensor_dim.h:120 的构造签名有 const bitset<MAXDIM>&；cereal/bitset.hpp:56 有序列化模板引用参数。", "missing": "已安装头确有公开形态；实际两个源码包的消费关系仍未闭合。grpc 的 WriteEventSet 是别名，不能只凭类型名认定传递。"}
+104 std::once_flag {"note": "UiDevice.h:487、CodecIPCBufferFactory.h:37 和 klay/logger-core.h:44 都是 static 字段；oneDNN/cache_blob_id.hpp:48 为实例成员。", "missing": "static 字段不随实例一起跨界；oneDNN 含成员外层对象是否跨另一平台包尚未闭合。"}
+105 std::fstream {"note": "srt/udt.h:192–193 的 sendfile/recvfile 接受 fstream&，不是仅局部用流；MLIR File.h:369 和 Boost debug_file 为局部变量。", "missing": "函数身份检索尚未闭合真实外包消费；不以直接动态名字检索未命中覆盖宏、静态实例和其他架构。", "extra_evidence": ["raw/009_fstream_identity.stdout"]}
+106 std::is_floating_point {"note": "absl/beta_distribution.h:199 与 cereal/portable_binary.hpp:269 是 static_assert 中的 ::value 查询。", "missing": "限定名样本为编译期查询；无限定引入、宏和潜在标签对象未全量排除。"}
+107 std::is_trivially_destructible {"note": "absl/no_destructor.h:178 的 conditional_t 条件取 ::value；旧 absl/meta/type_traits.h:290 从 std trait 继承。", "missing": "派生 trait 是类型计算还是对象传递仍须闭合，不能只看 ::value 样本判全内部。"}
+-rw-rw-r-- 1 toolchain toolchain 120419 Aug  7 10:56 codes/gcc/libstdc++-v3/include/std/type_traits
+-rw-rw-r-- 1 toolchain toolchain   1584 Aug  5 11:41 codes/llvm/libcxx/include/__type_traits/is_same.h
+{
+  "stats": {
+    "selected_records": 223602,
+    "read_unique_contents": 86978
+  },
+  "issues": [
+    {
+      "path": "/usr/include/json",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/json",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/json",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/asm-x86",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/asm-arm64",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/curses.h",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/ncurses.h",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/ncurses/ncurses.h",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/ncurses5/curses.h",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/ncurses5/ncurses.h",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/ncurses5/ncurses/ncurses.h",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/ncurses5/ncursesw/ncurses.h",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/ncurses5/term.h",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/ncursesw/ncurses.h",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/term.h",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/termcap.h",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
+      "path": "/usr/include/curses.h",
+      "reason": "SYMLINK_NOT_FOLLOWED"
+    },
+    {
