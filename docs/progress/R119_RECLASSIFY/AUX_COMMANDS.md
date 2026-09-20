@@ -47,6 +47,10 @@ command: sed -n '1,100p' docs/progress/R119_RECLASSIFY/CROSS_SURFACE.md
 exit: 0
 command: cat docs/progress/R119_RECLASSIFY/raw/026_timing_inputs.stdout
 exit: 0
+command: cat docs/progress/R119_RECLASSIFY/raw/037_delivery_check.stdout
+exit: 0
+command: cat docs/progress/R119_RECLASSIFY/raw/038_tracked_cache.stdout
+exit: 0
 ```
 
 两次 `ls` 退出 2 因所询问 AGENTS.md 不存在；不是候选源码/符号零命中，未用于定界。一次 STATUS.md 补丁应用因上下文不匹配未生效，随即以精确上下文重试成功；没有改动原始两张表。辅助命令先在会话中执行、后补录，是本次记录流程的偏差，已显式披露。
