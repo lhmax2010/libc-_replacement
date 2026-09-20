@@ -23,4 +23,4 @@ def gate(tag):
  if rc:save(OUT/'RESOURCE_STOP.json',dict(exit=rc,record=ref));raise SystemExit(rc)
  return out
 if __name__=='__main__':
- tag=sys.argv[1];args=sys.argv[2:];git=args[0]=='git';rc,out,ref=record(tag,args,not git);print(out);print((ROOT/(ref+'.stderr')).read_text());raise SystemExit(rc)
+ tag=sys.argv[1];args=sys.argv[2:];git=args[0]=='git';rc,out,ref=record(tag,args,not git);print(out if len(out)<12000 else out[:4000]+'\n[会话仅显示摘要；完整 stdout 已落盘 '+ref+'.stdout]\n'+out[-1500:]);print((ROOT/(ref+'.stderr')).read_text());raise SystemExit(rc)

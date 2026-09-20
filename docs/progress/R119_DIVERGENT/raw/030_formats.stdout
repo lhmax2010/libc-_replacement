@@ -1,0 +1,119 @@
+memory_basis=[('MemTotal', 33072918528)]
+RLIMIT_AS_bytes=9921875558; parallelism=1; nice=19; ionice=3
+id	expression	family	kind	source_token	note	gnu_definition_hits	cxx_definition_hits	result	gnu_type	cxx_type	gnu_encoding	cxx_encoding	gnu_wrapper	cxx_wrapper	gnu_size	cxx_size	gnu_evidence	cxx_evidence	gnu_canonical	cxx_canonical	mechanism
+T0001	std::streamoff	ios	type	streamoff		14	10	DIVERGENT	long	long long	l	x	9TypeTokenIlE	9TypeTokenIxE	8	8	measurements/T0001_gnu.json	measurements/T0001_cxx.json	long	long long	内建底层类型选择不同
+T0002	std::streamsize	ios	type	streamsize		1	8	IDENTICAL	long	long	l	l	9TypeTokenIlE	9TypeTokenIlE	8	8	measurements/T0002_gnu.json	measurements/T0002_cxx.json	long	long	类型编码相同（不证明类布局相同）
+T0003	std::streampos	ios	type	streampos		5	2	DIVERGENT	std::fpos<__mbstate_t>	std::fpos<__mbstate_t>	St4fposI11__mbstate_tE	NSt3__14fposI11__mbstate_tEE	9TypeTokenISt4fposI11__mbstate_tEE	9TypeTokenINSt3__14fposI11__mbstate_tEEE	16	16	measurements/T0003_gnu.json	measurements/T0003_cxx.json	std::fpos<__mbstate_t>	std::__1::fpos<__mbstate_t>	仅内联命名空间/ABI标签导致编码不同
+id	consumer_package	provider_package	candidate_count	candidates	ranks	arches	evidence
+package_pairs_01	amd	bundle	6	std::allocator;std::basic_string;std::initializer_list;std::pair;std::string;std::vector	1,2,5,36,62,71	x86_64	docs/progress/R119_batch1/W1/positive/bundle_add.json;docs/progress/R119_batch1/W1/positive/bundle_pair.json
+package_pairs_02	app-core	gtest	6	std::basic_ostream;std::ios;std::ios_base;std::ios_base::fmtflags;std::locale;std::ostream	16,29,61,103,113,163	x86_64	docs/progress/R119_batch1/W1/positive/gtest_ostream.json
+ACTIVE_CONFIG.json
+BOOTSTRAP.md
+BOUNDARY_FUNCTION_QUERIES.json
+BOUNDARY_POSITIVE_CONTROL.json
+CATALOG.json
+CATALOG.tsv
+CATALOG_HEADER_SHA256.json
+CATALOG_MISSING_HEADER_PATHS.json
+CATALOG_SOURCE_EVIDENCE.json
+CONFIRMED_ASSOCIATIONS.tsv
+CONFIRMED_EDGE_PROOFS.json
+CONSUMER_INCLUDES.json
+CROSS_SYMBOL_EDGES_UPDATED.tsv
+DIVERGENT_TYPES.tsv
+EDGE_COUNTS.json
+EDGE_STRUCTURAL_HEADERS.json
+HEADER_HITS.json.gz
+HEADER_HIT_COUNTS.tsv
+HEADER_SCAN_SHA256.json
+HEADER_SCAN_SUMMARY.json
+HEADER_SCOPE_DELTA.json
+LINK_CONTROL.json
+MEASUREMENT_SUMMARY.json
+MECHANISM_COUNTS.json
+NEW_SYMBOL_EDGES.tsv
+PROJECTION_FROZEN_SHA256.json
+RECLASSIFIED_CANDIDATES.tsv
+RECLASSIFIED_CHANGES.tsv
+RECLASSIFIED_COUNTS.json
+SCOPE.md
+SCRIPT_SHA256.json
+STATUS.md
+TYPE_RESULTS.json
+TYPE_RESULTS.tsv
+VERIFIED_HEADERS.json
+code
+controls
+measurements
+measurements_pass1
+probes
+raw
+results
+structure
+#!/usr/bin/env python3
+from common import *
+import re,collections
+gate('refine_gate');rows=json.loads((OUT/'TYPE_RESULTS.json').read_text())
+codes=sorted({r[lib+'_wrapper'] for r in rows if r['result']!='NOT_AVAILABLE' for lib in ['gnu','cxx']});decoded={}
+for i in range(0,len(codes),60):
+ rc,out,ref=record('decode_'+str(i),['c++filt','-t',*codes[i:i+60]]);assert rc==0
+ # resource wrapper adds two diagnostic lines before c++filt output.
+ lines=[s for s in out.splitlines() if not s.startswith(('memory_basis=','RLIMIT_AS_bytes='))]
+ assert len(lines)==len(codes[i:i+60]);decoded.update(zip(codes[i:i+60],lines))
+def norm(s):return s.replace('std::__1::','std::').replace('std::__cxx11::','std::').replace('std::filesystem::__cxx11::','std::filesystem::')
+for r in rows:
+ if r['result']=='NOT_AVAILABLE':r['mechanism']='请求类型不可得';continue
+ vals=[decoded[r[lib+'_wrapper']] for lib in ['gnu','cxx']]
+ assert all(s.startswith('TypeToken<') and s.endswith('>') for s in vals),vals
+ a,b=[s[len('TypeToken<'):-1].strip() for s in vals];r['gnu_canonical']=a;r['cxx_canonical']=b
+ if r['result']=='IDENTICAL':r['mechanism']='类型编码相同（不证明类布局相同）'
+ elif norm(a)==norm(b):r['mechanism']='仅内联命名空间/ABI标签导致编码不同'
+ elif re.fullmatch(r'[PKROVr]*[a-z]',r['gnu_encoding']) and re.fullmatch(r'[PKROVr]*[a-z]',r['cxx_encoding']):r['mechanism']='内建底层类型选择不同'
+ elif r['family']=='ios' and r['expression'].startswith('std::ios_base::'):r['mechanism']='枚举/内建类型或枚举身份不同'
+ else:r['mechanism']='实现类/模板实参/组合类型不同'
+tsv(OUT/'TYPE_RESULTS.tsv',[{k:r.get(k,'NOT_OBSERVED') for k in list(rows[0])} for r in rows]);save(OUT/'TYPE_RESULTS.json',rows)
+div=[r for r in rows if r['result']=='DIVERGENT'];tsv(OUT/'DIVERGENT_TYPES.tsv',div)
+save(OUT/'MECHANISM_COUNTS.json',dict(collections.Counter(r['mechanism'] for r in div)))
+print('DIVERGENT mechanisms',dict(collections.Counter(r['mechanism'] for r in div)))
+print('scalar choices',[(r['expression'],r['gnu_canonical'],r['cxx_canonical']) for r in div if r['mechanism']=='内建底层类型选择不同'])
+# 实现定义类型差异扫描
+
+第一节完成：对冻结的 31,586 处结果重扫，旧输出未覆盖。
+
+| 结果 | 改前 | 改后 |
+| --- | ---: | ---: |
+| RESULT_NO_OBJECT | 15,780 | 15,770 |
+| RESULT_TYPE_DIVERGENT | 0 | 10 |
+| RESULT_STDLIB_OBJECT | 13 | 13 |
+| RESULT_UNRESOLVED | 15,793 | 15,793 |
+
+10 处逐条见 `RECLASSIFIED_CHANGES.tsv`，65 候选全量计数见 `RECLASSIFIED_CANDIDATES.tsv`。本节重新核验 6,952 个平台来源路径 SHA；复用原有两库五次测量，不重新选择实参。静态 const bool 定义链沿用受保护的实际两侧声明证据；具体类型必须相同才允许 RESULT_NO_OBJECT。
+
+与人工给出的数量一致：numeric_limits 1、decay 9。未继续推进 65 项关闭。
+
+第二节清单已建立：585 个固定表达式、20 族；`CATALOG.tsv`、`CATALOG_SOURCE_EVIDENCE.json`。有限实例范围与类型编码判据见 `SCOPE.md`。
+
+第三节测量完成（x86_64）：585 个表达式，IDENTICAL 283、DIVERGENT 242、NOT_AVAILABLE 60；成功实例两库各五轮一致。
+
+242 个不同分为：内建底层类型 13；仅命名空间/ABI 标签 102；枚举/内建或枚举身份 4；实现类/模板实参/组合类型 123。完整两侧展开、编码与原始证据见 TYPE_RESULTS.tsv / DIVERGENT_TYPES.tsv。不能把242个均称为本次新的标量类型问题。
+
+第四节公开签名与消费者仍在核查；不用板子。
+# 范围与判据
+
+继承 [S_R119_20260918 与 S_A](../R119_RECLASSIFY/SCOPE.md)。只在 x86_64、C++17、既有 GCC 14.2 SDK 头及 libc++ 22.1.8 构建头测量。不用开发板，不把 LP64 结果外推到 armv7l ILP32。
+
+新增覆盖：`CATALOG.tsv` 中 585 个固定类型表达式，而非只检查上轮命中的 10 处。包含 I/O、整数、字符串/容器成员、迭代器、时钟、随机引擎、线程、文件系统、bind、智能指针、原子别名、正则等 20 族。每项在 `CATALOG_SOURCE_EVIDENCE.json` 绑定两侧实际源头文件命中、行号、上下文和 SHA。源代码头负责定义发现；实际生效配置由 SDK/构建头探针验证。
+
+这是**有限清单，不是所有标准版本/扩展/任意模板实参的全集**。容器采用明确的 `int` 等实例、默认 allocator/comparator/hash；不同参数可改变嵌套类型。已测同名类型对具体实例成立，不继承到其他实例。清单中的同族头命中仅是选取依据，具体类有没有该成员由实例探测决定；不把同族其他类的同名成员挪用。
+
+模板的嵌套类型数量并无有限的“所有实例”。尚未覆盖 C++20/23/26 专有设施、debug/hardening/替代命名空间配置、用户 allocator/fancy pointer、自定义 char_traits、条件构建分支和用户特化。发现头布局与预期路径不同的记录在 `CATALOG_MISSING_HEADER_PATHS.json`；不把缺路径当作缺接口。
+
+## 类型编码与同一性
+
+使用 `__PRETTY_FUNCTION__` 保存展开显示名，`sizeof/alignof` 保存尺寸，`typeid(TypeToken<T>).name()` 保存编译器给出的类型编码。通过外层模板保留 cv/引用，避免直接 `typeid(T)` 丢掉这些限定。独立正向对照断言 `int=i`、`long=l`、`long long=x`、`const long&=RKl`。同时保存 `readelf -Ws --wide` 中 `abi_identity(TypeToken<T>)` 的实际 ELF 符号。
+
+两库类型编码不同记 `DIVERGENT`；相同记 `IDENTICAL`，严格解释为本配置下该具体类型表达式的编码身份相同。显示名保留：libc++ 的 preferred-name 属性可能把规范类模板显示成别名，不能仅凭这种显示差异认定不同类型。**IDENTICAL 不证明两套库的同名类定义、布局或行为相同。** 此扫描与布局/状态验证正交。
+
+无成员或编译失败记 `NOT_AVAILABLE`，保存所试表达式与实际失败，不替换模板实参。每个成功表达式每侧五轮具体输出一致；测量程序只做类型查询，不调用平台业务接口。
+
+跨包核查仍使用冻结安装头及 3,085 个 x86_64 ELF。标准库自身调用不计为两个平台包之间的新边；公开安装头、公开函数签名、实际异包消费者是不同层次。头命中不等于 SDK 可用，内联/返回值/生成头/动态间接调用等洞继续保留。名字编码差异不能仅靠类型名交集查，要回到函数身份与源码结构链。

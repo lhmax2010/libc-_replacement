@@ -1,0 +1,84 @@
+memory_basis=[('MemTotal', 33072918528)]
+RLIMIT_AS_bytes=9921875558; parallelism=1; nice=19; ionice=3
+#!/usr/bin/env python3
+from common import *
+import re,sqlite3,collections
+gate('confirm_edges_gate')
+allq=json.loads((OUT/'BOUNDARY_FUNCTION_QUERIES.json').read_text())
+con=sqlite3.connect('file:'+str(ROOT/'tmp/R119_batch1/full_elf/symbols.sqlite3')+'?mode=ro',uri=True)
+selected=[]
+for q in allq:
+ for e in q['other_source_links']:
+  ps=e['provider']['metadata']['sourcerpm'];cs=e['consumer']['metadata']['sourcerpm']
+  if q['query']=='WaitUntil(' and ps=='dali2-2.5.26-1.src.rpm' and cs in ['dali2-toolkit-2.5.26-1.src.rpm','dali2-ui-foundation-2.5.14.10210-1.src.rpm']:selected.append((e,'dali_time'))
+  if q['query']=='zypp::xml::Reader::Reader(' and ps=='libzypp-17.23.7-1.src.rpm' and cs=='zypper-1.14.38-0.src.rpm':selected.append((e,'zypp_storage'))
+base=pathlib.Path('/home/toolchain/development/libc++_replacement/tmp/R11/extracted')
+prior=ROOT/'docs/progress/R119_RECLASSIFY';old=list(csv.DictReader((prior/'CROSS_SYMBOL_EDGES.tsv').open(),delimiter='\t'));oldkeys={(r['consumer_package'],r['provider_package'],r['consumer_elf'],r['provider_elf'],r['raw_symbol']) for r in old}
+proofs=[];seen=set();elfcache={}
+def checked_elf(eid,entry):
+ if eid in elfcache:return elfcache[eid]
+ meta=entry['metadata'];rpmsha=meta['rpm_sha256'];p=base/rpmsha[:2]/rpmsha/meta['path'].lstrip('/')
+ assert p.is_file(),p;assert sha(p)==entry['sha256'],p
+ rc,out,raw=record(f'verify_elf_{eid}',['readelf','-Ws','-d','--wide',p]);assert rc==0
+ elfcache[eid]=dict(path=str(p),sha256=entry['sha256'],metadata=meta,raw=raw,text=out)
+ return elfcache[eid]
+headers={}
+oldproof=json.loads((ROOT/'docs/progress/R119_batch1/W1/positive/dali_time.json').read_text())
+hm=oldproof['header_matches'][0]['metadata'];p=pathlib.Path(hm['cache_path']);assert sha(p)==hm['file_sha256'];headers['dali_time']=[dict(path=str(p),sha256=sha(p),text='\n'.join(f'{i+1}: {s}' for i,s in enumerate(p.read_text().splitlines())))]
+prefix=base/'2e/2eb3b0715587e43b460a2861ad479dbe825e1205e6b83f394110f7ce5e1aa357/usr/include/zypp/base'
+headers['zypp_storage']=[]
+manifest={}
+with gzip.open(ROOT/'docs/progress/P7_0909/tables/headers.tsv.gz','rt') as f:
+ for r in csv.DictReader(f,delimiter='\t'):
+  if r['sourcerpm']=='libzypp-17.23.7-1.src.rpm' and r['arch']=='x86_64':manifest[r['path']]=r
+for name in ['InputStream.h','DefaultIntegral.h']:
+ p=prefix/name;assert sha(p)==manifest['/usr/include/zypp/base/'+name]['file_sha256'];headers['zypp_storage'].append(dict(path=str(p),sha256=sha(p),text='\n'.join(f'{i+1}: {s}' for i,s in enumerate(p.read_text().splitlines()))))
+reader=[r for path,r in manifest.items() if path.endswith('/xml/Reader.h')];assert len(reader)==1,reader
+p=pathlib.Path(reader[0]['cache_path']);assert sha(p)==reader[0]['file_sha256'];text=p.read_text();assert re.search(r'Reader\s*\(\s*const InputStream\s*&',text)
+headers['zypp_storage'].append(dict(path=str(p),sha256=sha(p),text='\n'.join(f'{i+1}: {s}' for i,s in enumerate(text.splitlines()))))
+assert 'DefaultIntegral<std::streamoff,-1> _size;' in headers['zypp_storage'][0]['text']
+assert 'Tp _val;' in headers['zypp_storage'][1]['text']
+save(OUT/'EDGE_STRUCTURAL_HEADERS.json',headers)
+includes={}
+for sr,pattern in [('dali2-ui-foundation-2.5.14.10210-1.src.rpm',r'conditional-wait\.h'),('zypper-1.14.38-0.src.rpm',r'zypp/base/InputStream\.h')]:
+ root=pathlib.Path('/home/toolchain/development/libc++_replacement/tmp/corpus/extracted')/sr
+ if root.is_dir():
+  rc,out,ref=record('include_'+sr.split('-')[0],['rg','-n','--glob','*.h','--glob','*.cpp','--glob','*.cc',pattern,root]);includes[sr]=dict(exit=rc,record=ref,output=out)
+ else:includes[sr]=dict(status='NOT_OBSERVED',missing=str(root))
+save(OUT/'CONSUMER_INCLUDES.json',includes)
+new=[];allmatched=[]
+for e,kind in selected:
+ p=checked_elf(e['provider_id'],e['provider']);c=checked_elf(e['consumer_id'],e['consumer'])
+ sonames=re.findall(r'\(SONAME\).*?\[([^]]+)\]',p['text']);needs=re.findall(r'\(NEEDED\).*?\[([^]]+)\]',c['text']);assert len(sonames)==1 and sonames[0] in needs
+ # 用原始符号交集确认；demangle 仅用于把精确函数身份与原始条目对应。
+ def symbol_lines(text,undefined):
+  result={}
+  for line in text.splitlines():
+   fields=line.split()
+   if len(fields)<8 or not re.match(r'^\d+:$',fields[0]):continue
+   if (fields[6]=='UND')!=undefined:continue
+   result.setdefault(fields[7].split('@')[0],[]).append(line)
+  return result
+ pmap=symbol_lines(p['text'],False);cmap=symbol_lines(c['text'],True)
+ pnames=set(pmap);cnames=set(cmap)
+ targets=sorted(n for n in pnames&cnames if ('ConditionalWait9WaitUntil' in n if kind=='dali_time' else 'InputStream' in n))
+ for rawsymbol in targets:
+  key=(c['metadata']['sourcerpm'].rsplit('-',2)[0],p['metadata']['sourcerpm'].rsplit('-',2)[0],c['metadata']['path'],p['metadata']['path'],rawsymbol)
+  if key in seen:continue
+  seen.add(key)
+  rc,out,dref=record('decode_edge_'+str(len(seen)),['c++filt',rawsymbol]);assert rc==0
+  demangled=[s for s in out.splitlines() if not s.startswith(('memory_basis=','RLIMIT_AS_bytes='))][-1]
+  if kind=='zypp_storage' and not demangled.startswith('zypp::xml::Reader::Reader(zypp::InputStream const&'):continue
+  pl=pmap[rawsymbol];cl=cmap[rawsymbol];assert pl and cl
+  proof=dict(kind=kind,raw_symbol=rawsymbol,demangled=demangled,provider={k:v for k,v in p.items() if k!='text'},consumer={k:v for k,v in c.items() if k!='text'},provider_lines=pl,consumer_lines=cl,needed_soname=sonames[0],header_chain='EDGE_STRUCTURAL_HEADERS.json#'+kind,source_include=includes.get(c['metadata']['sourcerpm'],{'status':'already in prior proof'}),already_registered=key in oldkeys,interpretation=('显式参数 TimePoint → steady_clock::time_point → duration → rep；不是仅由修饰名中的模板实参猜测' if kind=='dali_time' else 'Reader 显式接收 InputStream const& → _size → DefaultIntegral<streamoff,-1>::_val。不是 streamoff 显式参数符号，也不声称这条边必然因 l/x 链接失败'))
+  proofs.append(proof)
+  ids=['T0372','T0371','T0369'] if kind=='dali_time' else ['T0001']
+  row=dict(id='divergent_edge_'+str(len(proofs)),consumer_package=key[0],provider_package=key[1],candidate_count=len(ids),candidates=('std::chrono::steady_clock::time_point;std::chrono::steady_clock::duration;std::chrono::steady_clock::rep' if kind=='dali_time' else 'std::streamoff'),ranks=';'.join(ids),arches='x86_64',evidence='docs/progress/R119_DIVERGENT/CONFIRMED_EDGE_PROOFS.json#'+str(len(proofs)-1),consumer_elf=key[2],provider_elf=key[3],consumer_sha256=c['sha256'],provider_sha256=p['sha256'],raw_symbol=rawsymbol,demangled=demangled)
+  allmatched.append(row)
+  if key not in oldkeys:new.append(row)
+save(OUT/'CONFIRMED_EDGE_PROOFS.json',proofs);tsv(OUT/'CONFIRMED_ASSOCIATIONS.tsv',allmatched)
+if new:tsv(OUT/'NEW_SYMBOL_EDGES.tsv',new)
+combined=old+new;tsv(OUT/'CROSS_SYMBOL_EDGES_UPDATED.tsv',combined)
+oldpairs={(r['consumer_package'],r['provider_package']) for r in old};newpairs={(r['consumer_package'],r['provider_package']) for r in new}-oldpairs
+save(OUT/'EDGE_COUNTS.json',dict(old_package_pairs=len(oldpairs),old_symbol_edges=len(old),confirmed_new_package_pairs=len(newpairs),confirmed_new_symbol_edges=len(new),new_package_pairs=sorted(newpairs),updated_package_pairs=len(oldpairs|newpairs),updated_symbol_edges=len(combined),meaning='本次闭合证据的下界，不是所有候选边的全集'))
+print((OUT/'EDGE_COUNTS.json').read_text());print('new',[(r['consumer_package'],r['demangled']) for r in new])

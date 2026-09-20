@@ -2,7 +2,7 @@
 from common import *
 import re,collections
 gate('refine_gate');rows=json.loads((OUT/'TYPE_RESULTS.json').read_text())
-codes=sorted({r[lib+'_encoding'] for r in rows if r['result']!='NOT_AVAILABLE' for lib in ['gnu','cxx']});decoded={}
+codes=sorted({r[lib+'_wrapper'] for r in rows if r['result']!='NOT_AVAILABLE' for lib in ['gnu','cxx']});decoded={}
 for i in range(0,len(codes),60):
  rc,out,ref=record('decode_'+str(i),['c++filt','-t',*codes[i:i+60]]);assert rc==0
  # resource wrapper adds two diagnostic lines before c++filt output.
@@ -11,7 +11,9 @@ for i in range(0,len(codes),60):
 def norm(s):return s.replace('std::__1::','std::').replace('std::__cxx11::','std::').replace('std::filesystem::__cxx11::','std::filesystem::')
 for r in rows:
  if r['result']=='NOT_AVAILABLE':r['mechanism']='请求类型不可得';continue
- a,b=[decoded[r[lib+'_encoding']] for lib in ['gnu','cxx']];r['gnu_canonical']=a;r['cxx_canonical']=b
+ vals=[decoded[r[lib+'_wrapper']] for lib in ['gnu','cxx']]
+ assert all(s.startswith('TypeToken<') and s.endswith('>') for s in vals),vals
+ a,b=[s[len('TypeToken<'):-1].strip() for s in vals];r['gnu_canonical']=a;r['cxx_canonical']=b
  if r['result']=='IDENTICAL':r['mechanism']='类型编码相同（不证明类布局相同）'
  elif norm(a)==norm(b):r['mechanism']='仅内联命名空间/ABI标签导致编码不同'
  elif re.fullmatch(r'[PKROVr]*[a-z]',r['gnu_encoding']) and re.fullmatch(r'[PKROVr]*[a-z]',r['cxx_encoding']):r['mechanism']='内建底层类型选择不同'

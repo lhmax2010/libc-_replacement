@@ -10,10 +10,16 @@
 
 ## 类型编码与同一性
 
-使用 `__PRETTY_FUNCTION__` 保存展开显示名，`sizeof/alignof` 保存尺寸，`typeid(TypeToken<T>).name()` 保存编译器给出的类型编码。通过外层模板保留 cv/引用，避免直接 `typeid(T)` 丢掉这些限定。独立正向对照断言 `int=i`、`long=l`、`long long=x`、`const long&=RKl`。同时保存 `readelf -Ws --wide` 中 `abi_identity(TypeToken<T>)` 的实际 ELF 符号。
+使用 `__PRETTY_FUNCTION__` 保存展开显示名，`sizeof/alignof` 保存尺寸。`typeid(TypeToken<T>).name()` 的完整 TOKEN 用于比较身份，保留 cv/引用；`typeid(T).name()` 的 DIRECT 是独立编码，但会去掉顶层 cv/引用。表内分别保存二者。独立正向对照包括 int、long、long long 和 const long&；同时保存 `readelf -Ws --wide` 中 `abi_identity(TypeToken<T>)` 的实际 ELF 符号。
+
+自检修正：第一版把 TOKEN 的外层字符去掉后单独解码，复杂类型中的替换索引可能依赖被去掉的上下文，因此该解码方法不成立。第二版对全部 585 项重跑两库五轮：新增 DIRECT，并对完整 TOKEN 解码后才去掉显示包装。第一版原始记录及 measurements_pass1 保留；242/283/60 总计不变，机制子类修正为 13/114/4/111。不把去除 cv/ref 后的 DIRECT 用作完整类型同一性判据。
 
 两库类型编码不同记 `DIVERGENT`；相同记 `IDENTICAL`，严格解释为本配置下该具体类型表达式的编码身份相同。显示名保留：libc++ 的 preferred-name 属性可能把规范类模板显示成别名，不能仅凭这种显示差异认定不同类型。**IDENTICAL 不证明两套库的同名类定义、布局或行为相同。** 此扫描与布局/状态验证正交。
 
-无成员或编译失败记 `NOT_AVAILABLE`，保存所试表达式与实际失败，不替换模板实参。每个成功表达式每侧五轮具体输出一致；测量程序只做类型查询，不调用平台业务接口。
+请求成员类型在本次访问上下文不可形成（可能未声明或不可访问），或编译失败，记 `NOT_AVAILABLE`；保存所试表达式与实际失败，不替换模板实参，也不推断该成员绝对不存在。每个成功表达式每侧五轮具体输出一致；测量程序只做类型查询，不调用平台业务接口。
 
 跨包核查仍使用冻结安装头及 3,085 个 x86_64 ELF。标准库自身调用不计为两个平台包之间的新边；公开安装头、公开函数签名、实际异包消费者是不同层次。头命中不等于 SDK 可用，内联/返回值/生成头/动态间接调用等洞继续保留。名字编码差异不能仅靠类型名交集查，要回到函数身份与源码结构链。
+
+安装头扫描选中 223,602 行清单、读取 86,979 个唯一内容 SHA 的代表路径；原始可读清单行数 223,534、问题 68。比旧范围多读入的唯一文件是 webapi-plugins 的工具 desc_gentool，旧记录归 NOT_TEXT；本轮不得用它作 C++ 声明证据。有效 C++ 取证范围仍为旧 223,533 行，见 HEADER_SCOPE_DELTA.json。85,383 个限定名根命中是词法位置数，既不是公开签名数，也不是独立包数。
+
+DIVERGENT_EXPOSURE.tsv 对全部 242 项列出扫描状态。仅经过声明与函数身份核查的记录可以提升到公开/跨包；其余保留 NOT_OBSERVED。没有以 exact_spelling_positions=0 证明无别名、无成员或无跨包使用。qualified_root_positions 也可能命中同族其他模板实例。32 个身份查询是选定函数集合，不是全部重载/全部公开函数全集。
