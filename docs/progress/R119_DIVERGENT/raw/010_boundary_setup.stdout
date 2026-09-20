@@ -1,0 +1,58 @@
+memory_basis=[('MemTotal', 33072918528)]
+RLIMIT_AS_bytes=9921875558; parallelism=1; nice=19; ionice=3
+['repo_id\tname\tarch\tepoch\tversion\trelease\tsourcerpm\tchecksum\tdevel_name\theader_paths\tinclude_header_paths\tcategory\tavailable_arches\theader_path_sets_equal\tvariant_count\tscan_status\tdetail\trpm_sha256_actual\tsummary\trpm_group\tc_shape_headers\tcpp_signal_headers\tunresolved_headers\tunavailable_headers\tprivate_path_headers\tpublic_marker_headers\trpm_url', 'base_binary\tabseil-cpp-devel\tx86_64\t0\t20250814.1\t1.2\tabseil-cpp-20250814.1-1.2.src.rpm\tefa070c850073cd078cc88ce47009cbf5f3b61621d46d54b0f4d6976d73995b2\tYES\t382\t382\tOTHER\taarch64,armv7l,x86_64\tYES\t3\tPASS\t\tefa070c850073cd078cc88ce47009cbf5f3b61621d46d54b0f4d6976d73995b2\tHeader files for Abseil\tUnspecified\t3\t359\t20\t0\t247\t0\thttps://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/x86_64/abseil-cpp-devel-20250814.1-1.2.x86_64.rpm']
+[('CREATE TABLE elf (id INTEGER PRIMARY KEY, metadata TEXT, status TEXT, sha256 TEXT, elapsed REAL)',), ('CREATE TABLE symbol (elf_id INTEGER, name TEXT, ndx TEXT, binding TEXT, kind TEXT)',), ('CREATE TABLE normalized_symbol(\n  elf_id INT,\n  name,\n  ndx TEXT\n)',)]
+[(1, '{"repo_id": "unified_binary", "name": "rust-appcore-agent", "arch": "x86_64", "epoch": "0", "version": "1.7.7", "release": "1", "sourcerpm": "appcore-agent-1.7.7-1.src.rpm", "rpm_sha256": "007b0576f8e304e44c47edbb76cfe0d67e89f1fadd5d36cdef3d96c49102ba5f", "path": "/usr/lib64/rustlib/dylib/libappcore_agent.so", "elf_type": "DYN", "machine": "Advanced Micro Devices X86-64", "runtime_elf": "YES", "debug_payload": "NO", "itanium_mangled_symbol": "YES", "cpp_runtime_needed": "NO", "cpp_indicator": "YES", "eh_frame": "YES", "arm_exidx": "NO", "arm_extab": "NO", "dlopen_und": "NO", "build_id": "1ee4c42e13a0955726684d477110d4c5a12d3bfe", "needed_count": "3"}', 'PASS', '5e6ca2797b6935f8114ada27d677e9127f44b9a12a842155ace941ca8853aaf8', 0.04273093100346159)]
+#!/usr/bin/env python3
+"""按函数/外层对象身份检索实际提供者，再找精确符号消费；不搜投影名字。"""
+from common import *
+import sqlite3,re,collections
+gate('boundary_gate');start=time.time()
+objects=json.loads((OUT/'STDLIB_OBJECT_OCCURRENCES.json').read_text())
+db=ROOT/'tmp/R119_batch1/full_elf/symbols.sqlite3'
+con=sqlite3.connect('file:'+str(db)+'?mode=ro',uri=True)
+elves={r[0]:dict(metadata=json.loads(r[1]),sha256=r[2]) for r in con.execute('select id,metadata,sha256 from elf')}
+specs={
+ 'errors.h':('PrepareForStrCat',['PrepareForStrCat']),
+ 'ostreamMethods.h':('operator<<',['operator<<']),
+ 'CLI11.h':('tuple_name',['tuple_name']),
+ 'streamOut.h':('VtStreamOut',['VtStreamOut']),
+ 'any.hpp':('linb::any / BT::Any / 外层对象方法',['BT::Any','linb::any','BT::Blackboard::']),
+ 'event.h':('TraceEvent 负载子对象',['TraceEvent'])
+}
+cache={};reports=[]
+for h in objects:
+    r=h['references'][0];p=pathlib.Path(r['cache_path']);assert sha(p)==r['sha256'];lines=p.read_text().splitlines();line=h['line'];identity,tokens=specs[p.name]
+    # 同内容文件来自多个架构/RPM：保留全部源码 RPM，不因首个去重样本丢掉对应关系。
+    source_rpms=sorted({x['sourcerpm'] for x in h['references']})
+    key=(tuple(source_rpms),tuple(tokens))
+    if key not in cache:
+        providers=[i for i,e in elves.items() if e['metadata']['sourcerpm'] in source_rpms]
+        hits=[]
+        for token in tokens:
+            for eid,name,ndx in con.execute('select elf_id,name,ndx from normalized_symbol where instr(name,?)>0',(token,)):
+                if eid in providers and ndx!='UND':hits.append((eid,name))
+        hits=sorted(set(hits));links=[]
+        for eid,name in hits:
+            for cid in sorted({x[0] for x in con.execute("select elf_id from normalized_symbol where name=? and ndx='UND'",(name,))}):
+                links.append(dict(provider_id=eid,consumer_id=cid,name=name,provider=elves[eid],consumer=elves[cid],different_source_rpm=elves[cid]['metadata']['sourcerpm']!=elves[eid]['metadata']['sourcerpm']))
+        cache[key]=dict(source_rpms=source_rpms,identity=identity,tokens=tokens,provider_elfs=[dict(id=i,**elves[i]) for i in providers],provider_defined_symbols=[dict(elf_id=i,name=n) for i,n in hits],exact_consumer_links=links)
+    result=cache[key]
+    expanded='\n'.join(f'{i+1}: {lines[i]}' for i in range(max(0,line-25),min(len(lines),line+45)))
+    class_lines=[dict(line=i+1,text=s) for i,s in enumerate(lines) if re.search(r'\b(class|struct|union)\s+(any|Any|TraceEvent|storage_union)\b|\b(_any|_storage|_payload|PayloadStorage|stack_storage_t)\b',s)]
+    reports.append(dict(occurrence_id=h['id'],rank=h['rank'],candidate=h['candidate'],installed_path=r['installed_path'],line=line,source_sha256=r['sha256'],source_rpms=source_rpms,result_type=h['decision']['result_type'],projection_condition=h['decision'].get('condition',''),expanded_source=expanded,outer_object_storage_lines=class_lines,query_result=result))
+save(OUT/'BOUNDARY_SEARCH.json',reports)
+# 名字交集方法的正向对照：已证实 bundle::Add 的旧原始证据独立保留。
+control=json.loads((ROOT/'docs/progress/R119_batch1/W1/positive/bundle_add.json').read_text())
+symbol=control['elf_matches'][0]['symbol']['demangled']
+control_hits=list(con.execute('select elf_id,ndx from normalized_symbol where name=?',(symbol,)))
+assert any(ndx=='UND' for i,ndx in control_hits) and any(ndx!='UND' for i,ndx in control_hits)
+save(OUT/'BOUNDARY_QUERY_CONTROL.json',dict(symbol=symbol,observed=control_hits,assert_consumer_and_definition=True,proof='docs/progress/R119_batch1/W1/positive/bundle_add.json',proof_sha256=sha(ROOT/'docs/progress/R119_batch1/W1/positive/bundle_add.json')))
+print('identity groups',len(cache),'objects',len(reports),'seconds',time.time()-start)
+for h in reports:
+    q=h['query_result'];print(h['occurrence_id'],h['installed_path'],'providers',len(q['provider_elfs']),'definitions',len(q['provider_defined_symbols']),'consumer_links',len(q['exact_consumer_links']),'different_source',sum(x['different_source_rpm'] for x in q['exact_consumer_links']))
+    print(h['expanded_source']);print('STORAGE',h['outer_object_storage_lines'])
+for key,q in cache.items():
+    for edge in q['exact_consumer_links']:
+        if edge['different_source_rpm']:print('CROSS_SOURCE_CANDIDATE',json.dumps(edge,ensure_ascii=False))
+
