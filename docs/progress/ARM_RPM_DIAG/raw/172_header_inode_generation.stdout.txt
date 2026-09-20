@@ -1,0 +1,56 @@
+	if (fl->largeFiles) {
+	    rpm_loff_t rsize64 = (rpm_loff_t)flp->fl_size;
+	    headerPutUint64(h, RPMTAG_LONGFILESIZES, &rsize64, 1);
+            (void) rpmlibNeedsFeature(pkg, "LargeFiles", "4.12.0-1");
+	} else {
+	    rpm_off_t rsize32 = (rpm_off_t)flp->fl_size;
+	    headerPutUint32(h, RPMTAG_FILESIZES, &rsize32, 1);
+	}
+	/* Excludes and dupes have been filtered out by now. */
+	if (S_ISREG(flp->fl_mode)) {
+	    if (flp->fl_nlink == 1 || !seenHardLink(&fl->files, flp, &fileid)) {
+		totalFileSize += flp->fl_size;
+	    }
+	}
+	
+	if (override_date && flp->fl_mtime > source_date_epoch) {
+	    flp->fl_mtime = source_date_epoch;
+	}
+	/*
+ 	 * For items whose size varies between systems, always explicitly 
+ 	 * cast to the header type before inserting.
+ 	 * TODO: check and warn if header type overflows for each case.
+ 	 */
+	{   rpm_time_t rtime = (rpm_time_t) flp->fl_mtime;
+	    headerPutUint32(h, RPMTAG_FILEMTIMES, &rtime, 1);
+	}
+
+	{   rpm_mode_t rmode = (rpm_mode_t) flp->fl_mode;
+	    headerPutUint16(h, RPMTAG_FILEMODES, &rmode, 1);
+	}
+
+	{   rpm_rdev_t rrdev = (rpm_rdev_t) flp->fl_rdev;
+	    headerPutUint16(h, RPMTAG_FILERDEVS, &rrdev, 1);
+	}
+	
+	/*
+	 * To allow rpmbuild to work on filesystems with 64bit inodes numbers,
+	 * remap them into 32bit integers based on filelist index, just
+	 * preserving semantics for determining hardlinks.
+	 * Start at 1 as inode zero as that could be considered as an error.
+	 * Since we flatten all the inodes to appear within a single fs,
+	 * we also need to flatten the devices.
+	 */
+	{   rpm_ino_t rino = fileid + 1;
+	    rpm_dev_t rdev = flp->fl_dev ? 1 : 0;
+	    headerPutUint32(h, RPMTAG_FILEINODES, &rino, 1);
+	    headerPutUint32(h, RPMTAG_FILEDEVICES, &rdev, 1);
+	}
+	
+	headerPutString(h, RPMTAG_FILELANGS, flp->langs);
+
+	if (fl->haveCaps) {
+	    headerPutString(h, RPMTAG_FILECAPS, flp->caps);
+	}
+	
+	buf[0] = '\0';

@@ -1,0 +1,294 @@
+   115	    if (*end != '\0')
+   116		*endptr = ((char *)str) + (end - buf);	/* XXX discards const */
+   117	    else
+   118		*endptr = ((char *)str) + strlen(buf);
+   119	
+   120	    return ret;
+   121	}
+   122	
+   123	
+   124	static int rpmcpioWritePad(rpmcpio_t cpio, ssize_t modulo)
+   125	{
+   126	    char buf[modulo];
+   127	    ssize_t left, written;
+   128	    memset(buf, 0, modulo);
+   129	    left = (modulo - ((cpio->offset) % modulo)) % modulo;
+   130	    if (left <= 0)
+   131	        return 0;
+   132	    written = Fwrite(&buf, left, 1, cpio->fd);
+   133	    if (written != left) {
+   134	        return RPMERR_WRITE_FAILED;
+   135	    }
+   136	    cpio->offset += written;
+   137	    return 0;
+   138	}
+   139	
+   140	static int rpmcpioReadPad(rpmcpio_t cpio)
+   141	{
+   142	    ssize_t modulo = 4;
+   143	    char buf[4];
+   144	    ssize_t left, read;
+   145	    left = (modulo - (cpio->offset % modulo)) % modulo;
+   146	    if (left <= 0)
+   147	        return 0;
+   148	    read = Fread(&buf, left, 1, cpio->fd);
+   149	    cpio->offset += read;
+   150	    if (read != left) {
+   151	        return RPMERR_READ_FAILED;
+   152	    }
+   153	    return 0;
+   154	}
+   155	
+   156	#define GET_NUM_FIELD(phys, log) \
+   157		\
+   158		log = strntoul(phys, &end, 16, sizeof(phys)); \
+   159		\
+   160		if ( (end - phys) != sizeof(phys) ) return RPMERR_BAD_HEADER;
+   161	#define SET_NUM_FIELD(phys, val, space) \
+   162		sprintf(space, "%8.8lx", (unsigned long) (val)); \
+   163		\
+   164		memcpy(phys, space, 8) \
+   165	
+   166	static int rpmcpioTrailerWrite(rpmcpio_t cpio)
+   167	{
+   168	    struct cpioCrcPhysicalHeader hdr;
+   169	    int rc;
+   170	    size_t written;
+   171	
+   172	    if (cpio->fileend != cpio->offset) {
+   173	        return RPMERR_WRITE_FAILED;
+   174	    }
+   175	
+   176	    rc = rpmcpioWritePad(cpio, 4);
+   177	    if (rc)
+   178	        return rc;
+   179	
+   180	    memset(&hdr, '0', PHYS_HDR_SIZE);
+   181	    memcpy(&hdr.nlink, "00000001", 8);
+   182	    memcpy(&hdr.namesize, "0000000b", 8);
+   183	
+   184	    written = Fwrite(CPIO_NEWC_MAGIC, 6, 1, cpio->fd);
+   185	    cpio->offset += written;
+   186	    if (written != 6) {
+   187	        return RPMERR_WRITE_FAILED;
+   188	    }
+   189	
+   190	    written = Fwrite(&hdr, PHYS_HDR_SIZE, 1, cpio->fd);
+   191	    cpio->offset += written;
+   192	    if (written != PHYS_HDR_SIZE) {
+   193	        return RPMERR_WRITE_FAILED;
+   194	    }
+   195	    written = Fwrite(&CPIO_TRAILER, sizeof(CPIO_TRAILER), 1, cpio->fd);
+   196	    cpio->offset += written;
+   197	    if (written != sizeof(CPIO_TRAILER)) {
+   198	        return RPMERR_WRITE_FAILED;
+   199	    }
+   200	
+   201	    /*
+   202	     * XXX GNU cpio pads to 512 bytes. This may matter for
+   203	     * tape device(s) and/or concatenated cpio archives.
+   204	     */
+   205	
+   206	    rc = rpmcpioWritePad(cpio, 4);
+   207	
+   208	    return rc;
+   209	}
+   210	
+   211	int rpmcpioHeaderWrite(rpmcpio_t cpio, char * path, struct stat * st)
+   212	{
+   213	    struct cpioCrcPhysicalHeader hdr_s;
+   214	    struct cpioCrcPhysicalHeader * hdr = &hdr_s;
+   215	    char field[64];
+   216	    size_t len, written;
+   217	    dev_t dev;
+   218	    int rc = 0;
+   219	
+   220	    if ((cpio->mode & O_ACCMODE) != O_WRONLY) {
+   221	        return RPMERR_WRITE_FAILED;
+   222	    }
+   223	
+   224	    if (cpio->fileend != cpio->offset) {
+   225	        return RPMERR_WRITE_FAILED;
+   226	    }
+   227	
+   228	    if (st->st_size >= CPIO_FILESIZE_MAX) {
+   229		return RPMERR_FILE_SIZE;
+   230	    }
+   231	
+   232	    rc = rpmcpioWritePad(cpio, 4);
+   233	    if (rc) {
+   234	        return rc;
+   235	    }
+   236	
+   237	    SET_NUM_FIELD(hdr->inode, st->st_ino, field);
+   238	    SET_NUM_FIELD(hdr->mode, st->st_mode, field);
+   239	    SET_NUM_FIELD(hdr->uid, st->st_uid, field);
+   240	    SET_NUM_FIELD(hdr->gid, st->st_gid, field);
+   241	    SET_NUM_FIELD(hdr->nlink, st->st_nlink, field);
+   242	    SET_NUM_FIELD(hdr->mtime, st->st_mtime, field);
+   243	    SET_NUM_FIELD(hdr->filesize, st->st_size, field);
+   244	
+   245	    dev = major(st->st_dev); SET_NUM_FIELD(hdr->devMajor, dev, field);
+   246	    dev = minor(st->st_dev); SET_NUM_FIELD(hdr->devMinor, dev, field);
+   247	    dev = major(st->st_rdev); SET_NUM_FIELD(hdr->rdevMajor, dev, field);
+   248	    dev = minor(st->st_rdev); SET_NUM_FIELD(hdr->rdevMinor, dev, field);
+   249	
+   250	    len = strlen(path) + 1;
+   251	    SET_NUM_FIELD(hdr->namesize, len, field);
+   252	
+   253	    memcpy(hdr->checksum, "00000000", 8);
+   254	
+   255	    written = Fwrite(CPIO_NEWC_MAGIC, 6, 1, cpio->fd);
+   256	    cpio->offset += written;
+   257	    if (written != 6) {
+   258	        return RPMERR_WRITE_FAILED;
+   259	    }
+   260	
+  2330	    return rc;
+  2331	}
+  2332	
+  2333	int rpmfiArchiveReadToFile(rpmfi fi, FD_t fd, int nodigest)
+  2334	{
+  2335	    return rpmfiArchiveReadToFilePsm(fi, fd, nodigest, NULL);
+  2336	}
+  2337	
+  2338	char * rpmfileStrerror(int rc)
+  2339	{
+  2340	    char *msg = NULL;
+  2341	    const char *s = NULL;
+  2342	    const char *prefix = "cpio";
+  2343	    int myerrno = errno;
+  2344	
+  2345	    switch (rc) {
+  2346	    default:
+  2347		break;
+  2348	    case RPMERR_BAD_MAGIC:	s = _("Bad magic");		break;
+  2349	    case RPMERR_BAD_HEADER:	s = _("Bad/unreadable  header");break;
+  2350	
+  2351	    case RPMERR_OPEN_FAILED:	s = "open";	break;
+  2352	    case RPMERR_CHMOD_FAILED:	s = "chmod";	break;
+  2353	    case RPMERR_CHOWN_FAILED:	s = "chown";	break;
+  2354	    case RPMERR_WRITE_FAILED:	s = "write";	break;
+  2355	    case RPMERR_UTIME_FAILED:	s = "utime";	break;
+  2356	    case RPMERR_UNLINK_FAILED:	s = "unlink";	break;
+  2357	    case RPMERR_RENAME_FAILED:	s = "rename";	break;
+  2358	    case RPMERR_SYMLINK_FAILED: s = "symlink";	break;
+  2359	    case RPMERR_STAT_FAILED:	s = "stat";	break;
+  2360	    case RPMERR_LSTAT_FAILED:	s = "lstat";	break;
+  2361	    case RPMERR_MKDIR_FAILED:	s = "mkdir";	break;
+  2362	    case RPMERR_RMDIR_FAILED:	s = "rmdir";	break;
+  2363	    case RPMERR_MKNOD_FAILED:	s = "mknod";	break;
+  2364	    case RPMERR_MKFIFO_FAILED:	s = "mkfifo";	break;
+  2365	    case RPMERR_LINK_FAILED:	s = "link";	break;
+  2366	    case RPMERR_READLINK_FAILED: s = "readlink";	break;
+  2367	    case RPMERR_READ_FAILED:	s = "read";	break;
+  2368	    case RPMERR_COPY_FAILED:	s = "copy";	break;
+  2369	    case RPMERR_LSETFCON_FAILED: s = "lsetfilecon";	break;
+  2370	    case RPMERR_SETCAP_FAILED: s = "cap_set_file";	break;
+  2371	
+  2372	    case RPMERR_HDR_SIZE:	s = _("Header size too big");	break;
+  2373	    case RPMERR_FILE_SIZE:	s = _("File too large for archive");	break;
+  2374	    case RPMERR_UNKNOWN_FILETYPE: s = _("Unknown file type");	break;
+  2375	    case RPMERR_MISSING_FILE: s = _("Missing file(s)"); break;
+  2376	    case RPMERR_DIGEST_MISMATCH: s = _("Digest mismatch");	break;
+  2377	    case RPMERR_INTERNAL:	s = _("Internal error");	break;
+  2378	    case RPMERR_UNMAPPED_FILE:	s = _("Archive file not in header"); break;
+  2379	    case RPMERR_ENOENT:	s = strerror(ENOENT); break;
+  2380	    case RPMERR_ENOTEMPTY:	s = strerror(ENOTEMPTY); break;
+  2381	    case RPMERR_EXIST_AS_DIR:
+  2382		s = _("File from package already exists as a directory in system");
+  2383		break;
+  2384	    }
+  2385	
+  2386	    if (s != NULL) {
+  2387		rasprintf(&msg, "%s: %s", prefix, s);
+  2388		if ((rc <= RPMERR_CHECK_ERRNO) && myerrno) {
+  2389		    rstrscat(&msg, _(" failed - "), strerror(myerrno), NULL);
+  2390		}
+  2391	    } else {
+  2392		rasprintf(&msg, _("%s: (error 0x%x)"), prefix, rc);
+  2393	    }
+  2394	
+  2395	    return msg;
+  2396	}
+    20	#include "build/rpmbuild_misc.h"
+    21	
+    22	#include "debug.h"
+    23	
+    24	static int rpmPackageFilesArchive(rpmfiles fi, int isSrc,
+    25					  FD_t cfd, ARGV_t dpaths,
+    26					  rpm_loff_t * archiveSize, char ** failedFile)
+    27	{
+    28	    int rc = 0;
+    29	    rpmfi archive = rpmfiNewArchiveWriter(cfd, fi);
+    30	
+    31	    while (!rc && (rc = rpmfiNext(archive)) >= 0) {
+    32	        /* Copy file into archive. */
+    33		FD_t rfd = NULL;
+    34		const char *path = dpaths[rpmfiFX(archive)];
+    35	
+    36		rfd = Fopen(path, "r.ufdio");
+    37		if (Ferror(rfd)) {
+    38		    rc = RPMERR_OPEN_FAILED;
+    39		} else {
+    40		    rc = rpmfiArchiveWriteFile(archive, rfd);
+    41		}
+    42	
+    43		if (rc && failedFile)
+    44		    *failedFile = xstrdup(path);
+    45		if (rfd) {
+    46		    /* preserve any prior errno across close */
+    47		    int myerrno = errno;
+    48		    Fclose(rfd);
+    49		    errno = myerrno;
+    50		}
+    51	    }
+    52	
+    53	    if (rc == RPMERR_ITER_END)
+    54		rc = 0;
+    55	
+    56	    /* Finish the payload stream */
+    57	    if (!rc)
+    58		rc = rpmfiArchiveClose(archive);
+    59	
+    60	    if (archiveSize)
+    61		*archiveSize = (rc == 0) ? rpmfiArchiveTell(archive) : 0;
+    62	
+    63	    rpmfiFree(archive);
+    64	
+    65	    return rc;
+    66	}
+    67	/**
+    68	 * @todo Create transaction set *much* earlier.
+    69	 */
+    70	static rpmRC cpio_doio(FD_t fdo, Package pkg, const char * fmodeMacro,
+    71				rpm_loff_t *archiveSize)
+    72	{
+    73	    char *failedFile = NULL;
+    74	    FD_t cfd;
+    75	    int fsmrc;
+    76	
+    77	    (void) Fflush(fdo);
+    78	    cfd = Fdopen(fdDup(Fileno(fdo)), fmodeMacro);
+    79	    if (cfd == NULL)
+    80		return RPMRC_FAIL;
+    81	
+    82	    fsmrc = rpmPackageFilesArchive(pkg->cpioList, headerIsSource(pkg->header),
+    83					   cfd, pkg->dpaths,
+    84					   archiveSize, &failedFile);
+    85	
+    86	    if (fsmrc) {
+    87		char *emsg = rpmfileStrerror(fsmrc);
+    88		if (failedFile)
+    89		    rpmlog(RPMLOG_ERR, _("create archive failed on file %s: %s\n"),
+    90			   failedFile, emsg);
+    91		else
+    92		    rpmlog(RPMLOG_ERR, _("create archive failed: %s\n"), emsg);
+    93		free(emsg);
+    94	    }
+    95	
+    96	    free(failedFile);
+    97	    Fclose(cfd);
+    98	
+    99	    return (fsmrc == 0) ? RPMRC_OK : RPMRC_FAIL;
+   100	}

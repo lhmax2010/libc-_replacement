@@ -1,0 +1,196 @@
+ENVIRONMENT.md
+INTERIM_RESULT.md
+START.md
+aarch_query.py
+analyze_failed_header.py
+cell_commands
+cells
+deadlines.json
+environment-0.json
+environment-1.json
+environment-2.json
+environment_probe.py
+first-18-rpm-files.tsv
+guard.py
+historical-buildroot-file-metadata.tsv
+historical-metadata-summary.json
+host.strace
+inventory.py
+log.py
+observed-header-prefixes
+preflight.json
+preflight.py
+prepare_repro.py
+raw
+repro-inputs.json
+root_query.py
+rpm-query-clang-22.1.8-1.armv7l.json
+rpm-query-clang-debuginfo-22.1.8-1.armv7l.json
+rpm-query-clang-devel-22.1.8-1.armv7l.json
+rpm-query-clang-devel-debuginfo-22.1.8-1.armv7l.json
+rpm-query-compiler-rt-22.1.8-1.armv7l.json
+rpm-query-libllvm-22.1.8-1.armv7l.json
+rpm-query-libllvm-debuginfo-22.1.8-1.armv7l.json
+rpm-query-libomp-22.1.8-1.armv7l.json
+rpm-query-libomp-devel-22.1.8-1.armv7l.json
+rpm-query-lldb-22.1.8-1.armv7l.json
+rpm-query-lldb-devel-22.1.8-1.armv7l.json
+rpm-query-llvm-22.1.8-1.armv7l.json
+rpm-query-llvm-debuginfo-22.1.8-1.armv7l.json
+rpm-query-llvm-debugsource-22.1.8-1.armv7l.json
+rpm-query-llvm-devel-22.1.8-1.armv7l.json
+rpm-query-llvm-devel-debuginfo-22.1.8-1.armv7l.json
+rpm-query-llvm-static-devel-22.1.8-1.armv7l.json
+rpm-query-python-clang-22.1.8-1.armv7l.json
+script-snapshot-sha256.json
+script-snapshots
+snapshot.py
+upstream-cpio.c
+upstream-pack.c
+upstream-rpmfi.c
+upstream-rpmio.c
+view.py
+watch_headers.py
+# 复现环境及与 aarch64 的可比性
+
+## 本次复现
+
+19:58:55 启动一次 LLVM armv7l 完整 `rpmbuild --noprep --noclean -bb`，保留原准备树，使用原 spec，不声明从空目录全量编译。截止仍为次日 01:46:15。
+
+- 完整命令：`raw/044_prepare.stdout.txt`、`cell_commands/llvm-arm-repro.json`。
+- 输入 spec、串行 Ninja 包装器、QEMU 二进制的 SHA256：`repro-inputs.json`。
+- 只改变诊断输出位置、增加 `-vv` 和两层 trace；不改压缩格式、debug 包策略、文件清单或依赖。
+- `tmp/WEEKEND_0918` 在本轮只读绑定，新 RPM/BUILDROOT/TMP 在 `tmp/ARM_RPM_DIAG/`，不覆盖此前 18 个 RPM。
+- QEMU 使用同一个构建根的 `/usr/bin/qemu-arm`；原 binfmt 指向 `/usr/bin/qemu-arm-static`，该根内该路径是 `qemu-arm` 的符号链接。显式增加 `-strace -D` 仅记录来宾 rpmbuild 的系统调用。版本 9.2.3，见 raw/036、040、042、056。
+- 宿主 `strace -f` 包含要求的 write/mknod/link/setxattr/fallocate，另含其 *at 变体及 open/read/close。读写缓冲区以地址记录而非展开文件正文，不影响返回值记录。见 raw/044。
+- 资源：`arm-rpm-diag.scope` 的实际 `memory.max=16536457216`；Ninja PID 387793 实际命令含 `-j1 -j 1`，nice 19、ionice idle、同一 cgroup，见 cells/llvm-arm-repro/events.jsonl。
+- 全量构建输出：`cells/llvm-arm-repro/build.log`；宿主 trace：`host.strace`；来宾 trace：`tmp/ARM_RPM_DIAG/guest-rpmbuild.strace`。
+- 只读头部观察器留存新输出 RPM 的前 1 MiB，便于 RPM 自动删除失败输出后仍能查询文件清单。这些文件标记为 header-prefix，**不是可安装 RPM**；不更改被观察文件，见 `watch_headers.py`、raw/119。
+
+## 文件系统、容器与扩展属性
+
+`df -T` 和 findmnt 已确认 armv7l 构建根、armv7l 输出、aarch64 构建根与 aarch64 输出均位于 `/dev/sda1`、ext4、宿主 `rw,relatime`。因此“两个构建根在不同文件系统”不成立（raw/038、077）。
+
+使用 bubblewrap 用户/挂载命名空间；不是在宿主根直接 rpmbuild。只读查询环境里的 `Seccomp: 0`、`Seccomp_filters: 0`（raw/048）。诊断输出绑定为 ext4 `rw,nosuid,nodev,relatime`；环境探测为了只读安全将 BUILD 绑定成 ro，这一点与实际构建的 BUILD rw 不同，不能把探测 mount 输出冒充构建全部挂载状态。
+
+环境无 `setfattr/getfattr` 命令，因此用来宾 Python `os.setxattr/os.getxattr/os.listxattr` 等价探测：在 `/tmp/diag` 新建独占临时文件，写入 `user.arm_rpm_diag=probe`，读回完全一致，返回 0，最后只删除该临时文件。证明 **user 命名空间 xattr 在所测路径可用**；不泛化为任意 security/trusted 命名空间都允许。完整调用和输出见 `environment-2.json`、raw/048。
+
+## aarch64 不是同条件对照
+
+| 项目 | armv7l 失败轮/本轮 | aarch64 已成功轮 |
+| --- | --- | --- |
+| RPM 程序 | ARM 32 位 | ARM aarch64 64 位 |
+| 文件系统 | 同一 /dev/sda1 ext4 | 同一 /dev/sda1 ext4 |
+| debug 包 | 明确 `_build_create_debug 1`，产生 debuginfo/debugsource 子包 | 实际 12 个 RPM，无独立 debuginfo/debugsource |
+| 载荷压缩（读取已有 lldb RPM 头） | xz，5T1 | zstd，19 |
+| 编译器入口 | 原 armv7l 构建树/工具集 | 经此前抽查批准的 /emul 原生交叉入口 |
+
+证据：raw/073–077、121–125。上述差异是已观测的可比性限制，不直接等同于根因，更不通过改压缩器或关 debug 包来绕过本轮复现。
+
+## RPM 源码身份
+
+实际安装 RPM 的 VCS 字段均为 `platform/upstream/rpm#355231365d01b3fb7979a82a429f6b95c5e95993`（raw/066）。已只读 fetch 该提交至 `tmp/ARM_RPM_DIAG/rpm-source.git`（raw/102），没有工作树、没有改平台源码。
+
+固定提交的实际源码分别保存在 raw/107（rpmio/rpmio.c）、110（build/pack.c）、111（lib/cpio.c）、112（lib/rpmfi.c）。源码显示 `RPMERR_WRITE_FAILED` 可由库内部检查返回，错误格式化函数会读取 errno；因此 ENOSYS 文本不能单独证明某个宿主写入系统调用失败。本轮最终结论仍须结合实际 trace。
+
+此前 HTTP 取得精确源码的尝试有超时、403、旧 SRPM 404；它们是取证方法的失败，不是本次 rpmbuild 故障。随后 SSH 只读 fetch 成功，未使用 sudo 或密码文件。
+rpm	package	path	mode	file_size	link_target	inode
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/armv7l-tizen-linux-gnueabi-clang	lrwxrwxrwx	5	clang	1
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/armv7l-tizen-linux-gnueabi-clang++	lrwxrwxrwx	7	clang++	2
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang	lrwxrwxrwx	8	clang-22	3
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang++	lrwxrwxrwx	5	clang	4
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang++-22	lrwxrwxrwx	16	/usr/bin/clang++	5
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang++.cfg	lrwxrwxrwx	9	clang.cfg	6
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-22	-rwxr-xr-x	74432		7
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-apply-replacements	-rwxr-xr-x	61976		8
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-change-namespace	-rwxr-xr-x	153128		9
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-check	-rwxr-xr-x	25744		10
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-cl	lrwxrwxrwx	5	clang	11
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-cpp	lrwxrwxrwx	5	clang	12
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-doc	-rwxr-xr-x	530316		13
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-extdef-mapping	-rwxr-xr-x	22012		14
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-format	-rwxr-xr-x	56912		15
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-include-cleaner	-rwxr-xr-x	188888		16
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-include-fixer	-rwxr-xr-x	96568		17
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-installapi	-rwxr-xr-x	97184		18
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-move	-rwxr-xr-x	130332		19
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-nvlink-wrapper	-rwxr-xr-x	65688		20
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-offload-bundler	-rwxr-xr-x	36312		21
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-query	-rwxr-xr-x	93512		22
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-refactor	-rwxr-xr-x	51072		23
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-reorder-fields	-rwxr-xr-x	72580		24
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-scan-deps	-rwxr-xr-x	107692		25
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-sycl-linker	-rwxr-xr-x	45224		26
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang-tidy	-rwxr-xr-x	7207432		27
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clang.cfg	-rw-r--r--	67		28
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/clangd	-rwxr-xr-x	9184404		29
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/find-all-symbols	-rwxr-xr-x	144412		30
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/git-clang-format	-rwxr-xr-x	28325		31
+clang-22.1.8-1.armv7l.rpm	clang	/usr/bin/modularize	-rwxr-xr-x	121872		32
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_cuda_builtin_vars.h	-rw-r--r--	4892		33
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_cuda_cmath.h	-rw-r--r--	18493		34
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_cuda_complex_builtins.h	-rw-r--r--	8866		35
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_cuda_device_functions.h	-rw-r--r--	58753		36
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_cuda_intrinsics.h	-rw-r--r--	46120		37
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_cuda_libdevice_declares.h	-rw-r--r--	22414		38
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_cuda_math.h	-rw-r--r--	16602		39
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_cuda_math_forward_declares.h	-rw-r--r--	8469		40
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_cuda_runtime_wrapper.h	-rw-r--r--	18624		41
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_cuda_texture_intrinsics.h	-rw-r--r--	56680		42
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_hip_cmath.h	-rw-r--r--	27196		43
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_hip_libdevice_declares.h	-rw-r--r--	20133		44
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_hip_math.h	-rw-r--r--	36682		45
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_hip_runtime_wrapper.h	-rw-r--r--	5281		46
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_hip_stdlib.h	-rw-r--r--	1223		47
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__clang_spirv_builtins.h	-rw-r--r--	9174		48
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__float_float.h	-rw-r--r--	5890		49
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__float_header_macro.h	-rw-r--r--	449		50
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__float_infinity_nan.h	-rw-r--r--	613		51
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stdarg___gnuc_va_list.h	-rw-r--r--	467		52
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stdarg___va_copy.h	-rw-r--r--	445		53
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stdarg_header_macro.h	-rw-r--r--	417		54
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stdarg_va_arg.h	-rw-r--r--	771		55
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stdarg_va_copy.h	-rw-r--r--	451		56
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stdarg_va_list.h	-rw-r--r--	448		57
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stddef_header_macro.h	-rw-r--r--	417		58
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stddef_max_align_t.h	-rw-r--r--	857		59
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stddef_null.h	-rw-r--r--	875		60
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stddef_nullptr_t.h	-rw-r--r--	958		61
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stddef_offsetof.h	-rw-r--r--	708		62
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stddef_ptrdiff_t.h	-rw-r--r--	717		63
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stddef_rsize_t.h	-rw-r--r--	710		64
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stddef_size_t.h	-rw-r--r--	708		65
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stddef_unreachable.h	-rw-r--r--	735		66
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stddef_wchar_t.h	-rw-r--r--	853		67
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__stddef_wint_t.h	-rw-r--r--	443		68
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__wmmintrin_aes.h	-rw-r--r--	5269		69
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/__wmmintrin_pclmul.h	-rw-r--r--	2036		70
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/adcintrin.h	-rw-r--r--	5565		71
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/adxintrin.h	-rw-r--r--	3447		72
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/altivec.h	-rw-r--r--	715031		73
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/amdgpuintrin.h	-rw-r--r--	7483		74
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/ammintrin.h	-rw-r--r--	7739		75
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/amo.h	-rw-r--r--	3986		76
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/amxavx512intrin.h	-rw-r--r--	19744		77
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/amxcomplexintrin.h	-rw-r--r--	6933		78
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/amxfp16intrin.h	-rw-r--r--	3327		79
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/amxfp8intrin.h	-rw-r--r--	8839		80
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/amxintrin.h	-rw-r--r--	20212		81
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/amxmovrsintrin.h	-rw-r--r--	2290		82
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/amxtf32intrin.h	-rw-r--r--	3562		83
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/andes_vector.h	-rw-r--r--	518		84
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/arm64intr.h	-rw-r--r--	993		85
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/arm_acle.h	-rw-r--r--	30926		86
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/arm_bf16.h	-rw-r--r--	548		87
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/arm_cde.h	-rw-r--r--	33450		88
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/arm_cmse.h	-rw-r--r--	6357		89
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/arm_fp16.h	-rw-r--r--	19040		90
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/arm_mve.h	-rw-r--r--	1554929		91
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/arm_neon.h	-rw-r--r--	3195233		92
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/arm_neon_sve_bridge.h	-rw-r--r--	9708		93
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/arm_sme.h	-rw-r--r--	281366		94
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/arm_sve.h	-rw-r--r--	2174511		95
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/arm_vector_types.h	-rw-r--r--	10098		96
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/armintr.h	-rw-r--r--	843		97
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/avx10_2_512bf16intrin.h	-rw-r--r--	23626		98
+clang-22.1.8-1.armv7l.rpm	clang	/usr/lib/clang/22/include/avx10_2_512convertintrin.h	-rw-r--r--	13192		99

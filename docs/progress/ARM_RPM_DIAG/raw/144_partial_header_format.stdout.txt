@@ -1,0 +1,66 @@
+    pld = nullDigest(pld_algo, 1);
+    headerPutUint32(pkg->header, RPMTAG_PAYLOADDIGESTALGO, &pld_algo, 1);
+    headerPutString(pkg->header, RPMTAG_PAYLOADDIGEST, pld);
+    pld = _free(pld);
+    
+    /* Check for UTF-8 encoding of string tags, add encoding tag if all good */
+    if (checkForEncoding(pkg->header, 1))
+	goto exit;
+
+    /* Open the output file */
+    fd = Fopen(fileName, "w+.ufdio");
+    if (fd == NULL || Ferror(fd)) {
+	rpmlog(RPMLOG_ERR, _("Could not open %s: %s\n"),
+		fileName, Fstrerror(fd));
+	goto exit;
+    }
+
+    /* Write the lead section into the package. */
+    if (rpmLeadWrite(fd, pkg->header)) {
+	rpmlog(RPMLOG_ERR, _("Unable to write package: %s\n"), Fstrerror(fd));
+	goto exit;
+    }
+
+    /* Save the position of signature section */
+    sigStart = Ftell(fd);
+
+    /* Generate and write a placeholder signature header */
+    SHA1 = nullDigest(PGPHASHALGO_SHA1, 1);
+    SHA256 = nullDigest(PGPHASHALGO_SHA256, 1);
+    MD5 = nullDigest(PGPHASHALGO_MD5, 0);
+    if (rpmGenerateSignature(SHA256, SHA1, MD5, 0, 0, fd))
+	goto exit;
+    SHA1 = _free(SHA1);
+    SHA256 = _free(SHA256);
+    MD5 = _free(MD5);
+
+    /* Write a placeholder header. */
+    hdrStart = Ftell(fd);
+    if (writeHdr(fd, pkg->header))
+	goto exit;
+
+    /* Write payload section (cpio archive) */
+    payloadStart = Ftell(fd);
+    if (cpio_doio(fd, pkg, rpmio_flags, &archiveSize))
+	goto exit;
+    payloadEnd = Ftell(fd);
+
+    /* Re-read payload to calculate compressed digest */
+    fdInitDigestID(fd, pld_algo, RPMTAG_PAYLOADDIGEST, 0);
+    if (fdConsume(fd, payloadStart, payloadEnd - payloadStart))
+	goto exit;
+    fdFiniDigest(fd, RPMTAG_PAYLOADDIGEST, (void **)&pld, NULL, 1);
+
+    /* Insert the payload digest in main header */
+    headerDel(pkg->header, RPMTAG_PAYLOADDIGEST);
+    headerPutString(pkg->header, RPMTAG_PAYLOADDIGEST, pld);
+    pld = _free(pld);
+
+    /* Write the final header */
+    if (fdJump(fd, hdrStart))
+	goto exit;
+    if (writeHdr(fd, pkg->header))
+	goto exit;
+
+    /* Calculate digests: SHA on header, legacy MD5 on header + payload */
+    fdInitDigestID(fd, PGPHASHALGO_MD5, RPMTAG_SIGMD5, 0);

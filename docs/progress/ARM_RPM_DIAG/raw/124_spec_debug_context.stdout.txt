@@ -1,0 +1,65 @@
+%define keepstatic 1
+
+# MLGO AOT support for LLVM MLGO (Ahead-of-Time compilation)
+# TODO: switch back to a project_config-controlled macro after MLGO is enabled
+# for all required arches.
+# %%bcond_with mlgo
+%ifarch armv7l aarch64 x86_64
+%bcond_without mlgo
+%endif
+
+%if %{defined _toolchain}
+%define _toolchain_override clang
+%define llvm_release_build 0
+%else
+%define llvm_release_build 1
+%endif
+
+%if %{defined _toolchain}
+%if %{toolchain_is clang}
+%define build_with_libcxx 1
+%endif
+%endif
+
+%define llvm_version 22
+
+%define sdk_install_prefix /home/owner/share/tmp/sdk_tools/lldb
+%define sdk_bin_dir %{sdk_install_prefix}/bin
+%define sdk_lib_dir %{sdk_install_prefix}/%{_lib}
+
+%if 0%{llvm_release_build}
+# Disable debug packages building
+%define debug_package %{nil}
+%define __debug_install_post %{_rpmconfigdir}/find-debuginfo.sh %{?_find_debuginfo_opts} %{?_find_debuginfo_strip_opts} %{?_find_debuginfo_ko_strip_opts} "%{_builddir}/%{?buildsubdir}"\
+	rm -rf "%{buildroot}/usr/lib/debug"\
+	rm -rf "%{buildroot}/usr/src/debug"
+%endif
+
+Name:      llvm
+Summary:   The LLVM Project is a collection of modular and reusable compiler and toolchain technologies
+Version:   22.1.8
+Release:   1
+Group:     Development/Toolchain
+License:   NCSA
+Source0:   %{name}-%{version}.tar.gz
+Source1001: llvm.manifest
+
+# Bundled MLGO AOT assets for the inliner and regalloc models.
+# These override build-time AOT compilation, avoiding the need for TensorFlow
+# Python in GBS.
+Source1002: mlgo_arm_model.tar.gz
+Source1003: mlgo_aarch_model.tar.gz
+Source1004: mlgo_x86_model.tar.gz
+# TensorFlow 2.18 AOT assets rebuilt with libc++ for the toolchain build.
+# The original TensorFlow 2.15/libstdc++ assets remain the default elsewhere.
+Source1005: mlgo_arm_model_libcxx_tf218.tar.gz
+Source1006: mlgo_aarch_model_libcxx_tf218.tar.gz
+Source1007: mlgo_x86_model_libcxx_tf218.tar.gz
+
+%{!?mlgo_build_jobs: %define mlgo_build_jobs 6}
+%{!?mlgo_verify_configure_only: %define mlgo_verify_configure_only 0}
+
+BuildRequires: cmake
+BuildRequires: python3
+BuildRequires: python3-devel
+BuildRequires: patchelf

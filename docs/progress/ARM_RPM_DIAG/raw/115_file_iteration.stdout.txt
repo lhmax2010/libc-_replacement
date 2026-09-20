@@ -1,0 +1,121 @@
+    return (rpm_loff_t) rpmcpioTell(fi->archive);
+}
+
+static int rpmfiArchiveWriteHeader(rpmfi fi)
+{
+    int rc;
+    struct stat st;
+
+    if (rpmfiStat(fi, 0, &st))
+	return -1;
+
+    rpmfiles files = fi->files;
+
+    if (files->lfsizes) {
+	return rpmcpioStrippedHeaderWrite(fi->archive, rpmfiFX(fi), st.st_size);
+    } else {
+	const char * dn = rpmfiDN(fi);
+	char * path = rstrscat(NULL, (dn[0] == '/' && !rpmExpandNumeric("%{_noPayloadPrefix}")) ? "." : "",
+			       dn, rpmfiBN(fi), NULL);
+	rc = rpmcpioHeaderWrite(fi->archive, path, &st);
+	free(path);
+    }
+
+    return rc;
+}
+
+static int iterWriteArchiveNextFile(rpmfi fi)
+{
+    rpmfiles files = rpmfiFiles(fi);
+    int fx = rpmfiFX(fi);
+    int fc = rpmfiFC(fi);
+    const int * hardlinks;
+    int numHardlinks = 0;
+
+    /* already processing hard linked files */
+    if (rpmfiFNlink(fi) > 1) {
+	/* search next hard linked file */
+	fi->i = -1;
+	for (int i=fx+1; i<fc; i++) {
+	    /* no ghosts */
+	    if (rpmfilesFFlags(files, i) & RPMFILE_GHOST)
+		continue;
+	    numHardlinks = rpmfilesFLinks(files, i, &hardlinks);
+	    if (numHardlinks > 1 && hardlinks[0] == i) {
+		rpmfiSetFX(fi, i);
+		break;
+	    }
+	}
+    } else {
+	fi->i = -1;
+	/* search next non hardlinked file */
+	for (int i=fx+1; i<fc; i++) {
+	    /* no ghosts */
+	    if (rpmfilesFFlags(files, i) & RPMFILE_GHOST)
+		continue;
+	    if (rpmfilesFNlink(files, i) < 2) {
+		rpmfiSetFX(fi, i);
+		break;
+	    }
+	}
+	if (rpmfiFX(fi) == -1) {
+	    /* continue with first hard linked file */
+	    for (int i=0; i<fc; i++) {
+		/* no ghosts */
+		if (rpmfilesFFlags(files, i) & RPMFILE_GHOST)
+		    continue;
+		numHardlinks = rpmfilesFLinks(files, i, &hardlinks);
+		if (numHardlinks > 1) {
+		    rpmfiSetFX(fi, i);
+		    break;
+		}
+	    }
+	}
+    }
+    if (rpmfiFX(fi) == -1)
+	return -1;
+
+    /* write header(s) */
+    if (numHardlinks>1) {
+	for (int i=0; i<numHardlinks; i++) {
+	    rpmfiSetFX(fi, hardlinks[i]);
+	    int rc = rpmfiArchiveWriteHeader(fi);
+	    if (rc) {
+		return rc;
+	    }
+	}
+	rpmfiSetFX(fi, hardlinks[0]);
+    } else {
+	int rc = rpmfiArchiveWriteHeader(fi);
+	if (rc) {
+	    return rc;
+	}
+    }
+    return rpmfiFX(fi);
+}
+
+static int iterWriteArchiveNext(rpmfi fi)
+{
+    int fx;
+    /* loop over the files we can handle ourself */
+    do {
+	fx = iterWriteArchiveNextFile(fi);
+	if (S_ISLNK(rpmfiFMode(fi))) {
+	    /* write symlink target */
+	    const char *lnk = rpmfiFLink(fi);
+	    size_t len = strlen(lnk);
+	    if (rpmfiArchiveWrite(fi, lnk, len) != len) {
+		return RPMERR_WRITE_FAILED;
+	    }
+	} else if (S_ISREG(rpmfiFMode(fi)) && rpmfiFSize(fi)) {
+	    /* this file actually needs some content */
+	    return fx;
+	}
+	/* go on for special files, directories and empty files */
+    } while (fx >= 0);
+    return fx;
+}
+
+size_t rpmfiArchiveWrite(rpmfi fi, const void * buf, size_t size)
+{
+    if (fi == NULL || fi->archive == NULL)

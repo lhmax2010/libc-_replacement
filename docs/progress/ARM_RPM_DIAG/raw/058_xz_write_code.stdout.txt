@@ -1,0 +1,86 @@
+	    return -1;
+      }
+}
+
+static ssize_t lzwrite(LZFILE *lzfile, void *buf, size_t len)
+{
+    lzma_ret ret;
+    size_t n;
+    if (!lzfile || !lzfile->encoding)
+	return -1;
+    if (!len)
+	return 0;
+    lzfile->strm.next_in = buf;
+    lzfile->strm.avail_in = len;
+    for (;;) {
+	lzfile->strm.next_out = lzfile->buf;
+	lzfile->strm.avail_out = kBufferSize;
+	ret = lzma_code(&lzfile->strm, LZMA_RUN);
+	if (ret != LZMA_OK)
+	    return -1;
+	n = kBufferSize - lzfile->strm.avail_out;
+	if (n && fwrite(lzfile->buf, 1, n, lzfile->file) != n)
+	    return -1;
+	if (!lzfile->strm.avail_in)
+	    return len;
+    }
+}
+
+static FD_t xzdFdopen(FD_t fd, int fdno, const char * fmode)
+{
+    LZFILE *lzfile = lzopen_internal(fmode, fdno, 1);
+
+    if (lzfile == NULL)
+	return NULL;
+
+    fdSetFdno(fd, -1);          /* XXX skip the fdio close */
+    fdPush(fd, xzdio, lzfile, fdno);
+    return fd;
+}
+
+static FD_t lzdFdopen(FD_t fd, int fdno, const char * fmode)
+{
+    LZFILE *lzfile = lzopen_internal(fmode, fdno, 0);
+
+    if (lzfile == NULL)
+	return NULL;
+
+    fdSetFdno(fd, -1);          /* XXX skip the fdio close */
+    fdPush(fd, lzdio, lzfile, fdno);
+    return fd;
+}
+
+static int lzdFlush(FDSTACK_t fps)
+{
+    LZFILE *lzfile = fps->fp;
+    return fflush(lzfile->file);
+}
+
+static ssize_t lzdRead(FDSTACK_t fps, void * buf, size_t count)
+{
+    LZFILE *lzfile = fps->fp;
+    ssize_t rc = 0;
+
+    if (lzfile)
+	rc = lzread(lzfile, buf, count);
+    if (rc == -1) {
+	fps->errcookie = "Lzma: decoding error";
+    }
+    return rc;
+}
+
+static ssize_t lzdWrite(FDSTACK_t fps, const void * buf, size_t count)
+{
+    LZFILE *lzfile = fps->fp;
+    ssize_t rc = 0;
+
+    rc = lzwrite(lzfile, (void *)buf, count);
+    if (rc < 0) {
+	fps->errcookie = "Lzma: encoding error";
+    }
+    return rc;
+}
+
+static int lzdClose(FDSTACK_t fps)
+{
+    LZFILE *lzfile = fps->fp;

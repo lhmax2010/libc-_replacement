@@ -1,0 +1,121 @@
+	if ( (end - phys) != sizeof(phys) ) return RPMERR_BAD_HEADER;
+#define SET_NUM_FIELD(phys, val, space) \
+	sprintf(space, "%8.8lx", (unsigned long) (val)); \
+	\
+	memcpy(phys, space, 8) \
+
+static int rpmcpioTrailerWrite(rpmcpio_t cpio)
+{
+    struct cpioCrcPhysicalHeader hdr;
+    int rc;
+    size_t written;
+
+    if (cpio->fileend != cpio->offset) {
+        return RPMERR_WRITE_FAILED;
+    }
+
+    rc = rpmcpioWritePad(cpio, 4);
+    if (rc)
+        return rc;
+
+    memset(&hdr, '0', PHYS_HDR_SIZE);
+    memcpy(&hdr.nlink, "00000001", 8);
+    memcpy(&hdr.namesize, "0000000b", 8);
+
+    written = Fwrite(CPIO_NEWC_MAGIC, 6, 1, cpio->fd);
+    cpio->offset += written;
+    if (written != 6) {
+        return RPMERR_WRITE_FAILED;
+    }
+
+    written = Fwrite(&hdr, PHYS_HDR_SIZE, 1, cpio->fd);
+    cpio->offset += written;
+    if (written != PHYS_HDR_SIZE) {
+        return RPMERR_WRITE_FAILED;
+    }
+    written = Fwrite(&CPIO_TRAILER, sizeof(CPIO_TRAILER), 1, cpio->fd);
+    cpio->offset += written;
+    if (written != sizeof(CPIO_TRAILER)) {
+        return RPMERR_WRITE_FAILED;
+    }
+
+    /*
+     * XXX GNU cpio pads to 512 bytes. This may matter for
+     * tape device(s) and/or concatenated cpio archives.
+     */
+
+    rc = rpmcpioWritePad(cpio, 4);
+
+    return rc;
+}
+
+int rpmcpioHeaderWrite(rpmcpio_t cpio, char * path, struct stat * st)
+{
+    struct cpioCrcPhysicalHeader hdr_s;
+    struct cpioCrcPhysicalHeader * hdr = &hdr_s;
+    char field[64];
+    size_t len, written;
+    dev_t dev;
+    int rc = 0;
+
+    if ((cpio->mode & O_ACCMODE) != O_WRONLY) {
+        return RPMERR_WRITE_FAILED;
+    }
+
+    if (cpio->fileend != cpio->offset) {
+        return RPMERR_WRITE_FAILED;
+    }
+
+    if (st->st_size >= CPIO_FILESIZE_MAX) {
+	return RPMERR_FILE_SIZE;
+    }
+
+    rc = rpmcpioWritePad(cpio, 4);
+    if (rc) {
+        return rc;
+    }
+
+    SET_NUM_FIELD(hdr->inode, st->st_ino, field);
+    SET_NUM_FIELD(hdr->mode, st->st_mode, field);
+    SET_NUM_FIELD(hdr->uid, st->st_uid, field);
+    SET_NUM_FIELD(hdr->gid, st->st_gid, field);
+    SET_NUM_FIELD(hdr->nlink, st->st_nlink, field);
+    SET_NUM_FIELD(hdr->mtime, st->st_mtime, field);
+    SET_NUM_FIELD(hdr->filesize, st->st_size, field);
+
+    dev = major(st->st_dev); SET_NUM_FIELD(hdr->devMajor, dev, field);
+    dev = minor(st->st_dev); SET_NUM_FIELD(hdr->devMinor, dev, field);
+    dev = major(st->st_rdev); SET_NUM_FIELD(hdr->rdevMajor, dev, field);
+    dev = minor(st->st_rdev); SET_NUM_FIELD(hdr->rdevMinor, dev, field);
+
+    len = strlen(path) + 1;
+    SET_NUM_FIELD(hdr->namesize, len, field);
+
+    memcpy(hdr->checksum, "00000000", 8);
+
+    written = Fwrite(CPIO_NEWC_MAGIC, 6, 1, cpio->fd);
+    cpio->offset += written;
+    if (written != 6) {
+        return RPMERR_WRITE_FAILED;
+    }
+
+    written = Fwrite(hdr, PHYS_HDR_SIZE, 1, cpio->fd);
+    cpio->offset += written;
+    if (written != PHYS_HDR_SIZE) {
+        return RPMERR_WRITE_FAILED;
+    }
+
+    written = Fwrite(path, len, 1, cpio->fd);
+    cpio->offset += written;
+    if (written != len) {
+        return RPMERR_WRITE_FAILED;
+    }
+
+    rc = rpmcpioWritePad(cpio, 4);
+
+    cpio->fileend = cpio->offset + st->st_size;
+
+    return rc;
+}
+
+int rpmcpioStrippedHeaderWrite(rpmcpio_t cpio, int fx, off_t fsize)

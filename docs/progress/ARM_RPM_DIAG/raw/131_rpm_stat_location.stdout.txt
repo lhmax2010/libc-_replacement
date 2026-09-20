@@ -1,0 +1,127 @@
+776:int rpmfilesStat(rpmfiles fi, int ix, int flags, struct stat *sb)
+777-{
+778-    int rc = -1;
+779-    if (fi && sb) {
+780-	/* XXX FIXME define proper flags with sane semantics... */
+781-	int warn = flags & 0x1;
+782-	const char *user = rpmfilesFUser(fi, ix);
+783-	const char *group = rpmfilesFGroup(fi, ix);
+784-	const int * hardlinks = NULL;
+785-	uint32_t nlinks = rpmfilesFLinks(fi, ix, &hardlinks);
+786-
+787-	memset(sb, 0, sizeof(*sb));
+788-	sb->st_nlink = nlinks;
+789-	sb->st_ino = rpmfilesFInode(fi, ix);
+790-	sb->st_rdev = rpmfilesFRdev(fi, ix);
+791-	sb->st_mode = rpmfilesFMode(fi, ix);
+792-	sb->st_mtime = rpmfilesFMtime(fi, ix);
+793-
+794-	/* Only regular files and symlinks have a size */
+795-	if (S_ISREG(sb->st_mode)) {
+796-	    /* Content and thus size comes with last hardlink */
+797-	    if (!(nlinks > 1 && hardlinks[nlinks-1] != ix))
+798-		sb->st_size = rpmfilesFSize(fi, ix);
+799-	} else if (S_ISLNK(sb->st_mode)) {
+800-	    /*
+801-	     * Normally rpmfilesFSize() is correct for symlinks too, this is
+802-	     * only needed for glob()'ed links from fakechroot environment.
+803-	     */
+804-	    sb->st_size = strlen(rpmfilesFLink(fi, ix));
+805-	}
+806-
+807-	if (user && rpmugUid(user, &sb->st_uid)) {
+808-	    if (warn)
+809-		rpmlog(RPMLOG_WARNING,
+810-			_("user %s does not exist - using %s\n"), user, UID_0_USER);
+811-	    sb->st_mode &= ~S_ISUID;	  /* turn off suid bit */
+812-	}
+813-
+814-	if (group && rpmugGid(group, &sb->st_gid)) {
+815-	    if (warn)
+816-		rpmlog(RPMLOG_WARNING,
+817-			_("group %s does not exist - using %s\n"), group, GID_0_GROUP);
+818-	    sb->st_mode &= ~S_ISGID;	/* turn off sgid bit */
+819-	}
+820-
+821-	rc = 0;
+822-    }
+823-    return rc;
+824-}
+825-
+826-struct fingerPrint_s *rpmfilesFps(rpmfiles fi)
+827-{
+828-    return (fi != NULL) ? fi->fps : NULL;
+829-}
+830-
+831-static int iterFwd(rpmfi fi)
+832-{
+833-    return fi->i + 1;
+834-}
+835-
+836-static int iterBack(rpmfi fi)
+837-{
+838-    return fi->i - 1;
+--
+1889:int rpmfiStat(rpmfi fi, int flags, struct stat *sb)
+1890-{
+1891-    return rpmfilesStat(fi->files, fi->i, flags, sb);
+1892-}
+1893-
+1894-int rpmfiCompare(const rpmfi afi, const rpmfi bfi)
+1895-{
+1896-    return rpmfilesCompare(afi->files, afi ? afi->i : -1, bfi->files, bfi ? bfi->i : -1);
+1897-}
+1898-
+1899-rpmVerifyAttrs rpmfiVerify(rpmfi fi, rpmVerifyAttrs omitMask)
+1900-{
+1901-    return rpmfilesVerify(fi->files, fi->i, omitMask);
+1902-}
+1903-
+1904-rpmstrPool rpmfilesPool(rpmfiles fi)
+1905-{
+1906-    return (fi != NULL) ? fi->pool : NULL;
+1907-}
+1908-
+1909-rpmfiles rpmfiFiles(rpmfi fi)
+1910-{
+1911-    return (fi != NULL) ? fi->files : NULL;
+1912-}
+1913-
+1914-/******************************************************/
+1915-/*** Archive handling *********************************/
+1916-/******************************************************/
+1917-
+1918-rpmfi rpmfiNewArchiveReader(FD_t fd, rpmfiles files, int itype)
+1919-{
+1920-    rpmcpio_t archive = rpmcpioOpen(fd, O_RDONLY);
+1921-    rpmfi fi = NULL;
+1922-    if (archive && itype >= RPMFI_ITER_READ_ARCHIVE) {
+1923-	fi = rpmfilesIter(files, itype);
+1924-    }
+1925-    if (fi) {
+1926-	fi->archive = archive;
+1927-    } else {
+1928-	rpmcpioFree(archive);
+1929-    }
+1930-    return fi;
+1931-}
+1932-
+1933-rpmfi rpmfiNewArchiveWriter(FD_t fd, rpmfiles files)
+1934-{
+1935-    rpmcpio_t archive = rpmcpioOpen(fd, O_WRONLY);
+1936-    rpmfi fi = NULL;
+1937-    if (archive) {
+1938-	fi = rpmfilesIter(files, RPMFI_ITER_WRITE_ARCHIVE);
+1939-    }
+1940-    if (fi) {
+1941-	fi->archive = archive;
+1942-    } else {
+1943-	rpmcpioFree(archive);
+1944-    }
+1945-    return fi;
+1946-}
+1947-
+1948-int rpmfiArchiveClose(rpmfi fi)
+1949-{
+1950-    if (fi == NULL)
+1951-	return -1;

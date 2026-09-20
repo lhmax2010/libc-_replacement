@@ -1,0 +1,146 @@
+
+#define kBufferSize (1 << 15)
+
+typedef struct lzfile {
+  /* IO buffer */
+    uint8_t buf[kBufferSize];
+
+    lzma_stream strm;
+
+    FILE *file;
+
+    int encoding;
+    int eof;
+
+} LZFILE;
+
+static LZFILE *lzopen_internal(const char *mode, int fd, int xz)
+{
+    int level = LZMA_PRESET_DEFAULT;
+    int encoding = 0;
+    FILE *fp;
+    LZFILE *lzfile;
+    lzma_ret ret;
+    lzma_stream init_strm = LZMA_STREAM_INIT;
+    uint64_t mem_limit = rpmExpandNumeric("%{_xz_memlimit}");
+#ifdef HAVE_LZMA_MT
+    int threads = 0;
+#endif
+    for (; *mode; mode++) {
+	if (*mode == 'w')
+	    encoding = 1;
+	else if (*mode == 'r')
+	    encoding = 0;
+	else if (*mode >= '0' && *mode <= '9')
+	    level = *mode - '0';
+	else if (*mode == 'T') {
+	    if (isdigit(*(mode+1))) {
+#ifdef HAVE_LZMA_MT
+		threads = atoi(++mode);
+#endif
+		/* skip past rest of digits in string that atoi()
+		 * should've processed
+		 * */
+		while (isdigit(*++mode));
+	    }
+#ifdef HAVE_LZMA_MT
+	    else
+		threads = -1;
+#endif
+	}
+    }
+    fp = fdopen(fd, encoding ? "w" : "r");
+    if (!fp)
+	return NULL;
+    lzfile = calloc(1, sizeof(*lzfile));
+    lzfile->file = fp;
+    lzfile->encoding = encoding;
+    lzfile->eof = 0;
+    lzfile->strm = init_strm;
+    if (encoding) {
+	if (xz) {
+#ifdef HAVE_LZMA_MT
+	    if (!threads) {
+#endif
+		ret = lzma_easy_encoder(&lzfile->strm, level, LZMA_CHECK_SHA256);
+#ifdef HAVE_LZMA_MT
+	    } else {
+		if (threads == -1)
+		    threads = sysconf(_SC_NPROCESSORS_ONLN);
+		lzma_mt mt_options = {
+		    .flags = 0,
+		    .threads = threads,
+		    .block_size = 0,
+		    .timeout = 0,
+		    .preset = level,
+		    .filters = NULL,
+		    .check = LZMA_CHECK_SHA256 };
+
+#if __WORDSIZE == 32
+		/* In 32 bit environment, required memory easily exceeds memory address
+		 * space limit if compressing using multiple threads.
+		 * By setting a memory limit, liblzma will automatically adjust number
+		 * of threads to avoid exceeding memory.
+		 */
+		if (threads > 1) {
+		    struct utsname u;
+		    uint32_t memlimit = (SIZE_MAX>>1) + (SIZE_MAX>>3);
+		    uint64_t memory_usage;
+		    /* While a 32 bit linux kernel will have an address limit of 3GiB
+		     * for processes (which is why set the memory limit to 2.5GiB as a safety
+		     * margin), 64 bit kernels will have a limit of 4GiB for 32 bit binaries.
+		     * Therefore the memory limit should be higher if running on a 64 bit
+		     * kernel, so we increase it to 3,5GiB.
+		     */
+		    uname(&u);
+		    if (strstr(u.machine, "64") || strstr(u.machine, "s390x")
+#if defined(__linux__)
+				    || ((personality(0xffffffff) & PER_MASK) == PER_LINUX32)
+#endif
+			    )
+			memlimit += (SIZE_MAX>>2);
+
+		    /* keep reducing the number of threads until memory usage gets below limit */
+		    while ((memory_usage = lzma_stream_encoder_mt_memusage(&mt_options)) > memlimit) {
+			/* number of threads shouldn't be able to hit zero with compression
+			 * settings aailable to set through rpm... */
+			assert(--mt_options.threads != 0);
+		    }
+		    lzma_memlimit_set(&lzfile->strm, memlimit);
+
+		    if (threads != (int)mt_options.threads)
+			rpmlog(RPMLOG_NOTICE,
+				"XZ: Adjusted the number of threads from %d to %d to not exceed the memory usage limit of %u bytes",
+				threads, mt_options.threads, memlimit);
+		}
+#endif
+
+		ret = lzma_stream_encoder_mt(&lzfile->strm, &mt_options);
+	    }
+#endif
+	} else {
+	    lzma_options_lzma options;
+	    lzma_lzma_preset(&options, level);
+	    ret = lzma_alone_encoder(&lzfile->strm, &options);
+	}
+    } else {   /* lzma_easy_decoder_memusage(level) is not ready yet, use hardcoded limit for now */
+	ret = lzma_auto_decoder(&lzfile->strm, mem_limit ? mem_limit : 100<<20, 0);
+    }
+    if (ret != LZMA_OK) {
+	switch (ret) {
+	    case LZMA_MEM_ERROR:
+		rpmlog(RPMLOG_ERR, "liblzma: Memory allocation failed");
+		break;
+
+	    case LZMA_DATA_ERROR:
+		rpmlog(RPMLOG_ERR, "liblzma: File size limits exceeded");
+		break;
+
+	    default:
+		rpmlog(RPMLOG_ERR, "liblzma: <Unknown error (%d), possibly a bug", ret);
+		break;
+	}
+	fclose(fp);
+	free(lzfile);
+	return NULL;
+    }

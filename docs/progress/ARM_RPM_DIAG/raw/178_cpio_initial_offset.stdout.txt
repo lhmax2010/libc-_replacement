@@ -1,0 +1,61 @@
+#define STRIPPED_PHYS_HDR_SIZE 8       /* Don't depend on sizeof(struct) */
+
+rpmcpio_t rpmcpioOpen(FD_t fd, char mode)
+{
+    if ((mode & O_ACCMODE) != O_RDONLY &&
+        (mode & O_ACCMODE) != O_WRONLY)
+        return NULL;
+
+    rpmcpio_t cpio = xcalloc(1, sizeof(*cpio));
+    cpio->fd = fdLink(fd);
+    cpio->mode = mode;
+    cpio->offset = 0;
+    return cpio;
+}
+
+off_t rpmcpioTell(rpmcpio_t cpio)
+{
+    return cpio->offset;
+}
+
+
+/**
+ * Convert string to unsigned integer (with buffer size check).
+ * @param str		input string
+ * @retval endptr	address of 1st character not processed
+ * @param base		numerical conversion base
+ * @param num		max no. of bytes to read
+ * @return		converted integer
+ */
+static unsigned long strntoul(const char *str,char **endptr, int base, size_t num)
+{
+    char buf[num+1], * end;
+    unsigned long ret;
+
+    strncpy(buf, str, num);
+    buf[num] = '\0';
+
+    ret = strtoul(buf, &end, base);
+    if (*end != '\0')
+	*endptr = ((char *)str) + (end - buf);	/* XXX discards const */
+    else
+	*endptr = ((char *)str) + strlen(buf);
+
+    return ret;
+}
+
+
+static int rpmcpioWritePad(rpmcpio_t cpio, ssize_t modulo)
+{
+    char buf[modulo];
+    ssize_t left, written;
+    memset(buf, 0, modulo);
+    left = (modulo - ((cpio->offset) % modulo)) % modulo;
+    if (left <= 0)
+        return 0;
+    written = Fwrite(&buf, left, 1, cpio->fd);
+    if (written != left) {
+        return RPMERR_WRITE_FAILED;
+    }
+    cpio->offset += written;
+    return 0;

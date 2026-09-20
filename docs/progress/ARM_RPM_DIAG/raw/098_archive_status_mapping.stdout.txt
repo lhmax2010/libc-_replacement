@@ -1,0 +1,83 @@
+#include "lib/rpmlead.h"
+#include "build/rpmbuild_internal.h"
+#include "build/rpmbuild_misc.h"
+
+#include "debug.h"
+
+static int rpmPackageFilesArchive(rpmfiles fi, int isSrc,
+				  FD_t cfd, ARGV_t dpaths,
+				  rpm_loff_t * archiveSize, char ** failedFile)
+{
+    int rc = 0;
+    rpmfi archive = rpmfiNewArchiveWriter(cfd, fi);
+
+    while (!rc && (rc = rpmfiNext(archive)) >= 0) {
+        /* Copy file into archive. */
+	FD_t rfd = NULL;
+	const char *path = dpaths[rpmfiFX(archive)];
+
+	rfd = Fopen(path, "r.ufdio");
+	if (Ferror(rfd)) {
+	    rc = RPMERR_OPEN_FAILED;
+	} else {
+	    rc = rpmfiArchiveWriteFile(archive, rfd);
+	}
+
+	if (rc && failedFile)
+	    *failedFile = xstrdup(path);
+	if (rfd) {
+	    /* preserve any prior errno across close */
+	    int myerrno = errno;
+	    Fclose(rfd);
+	    errno = myerrno;
+	}
+    }
+
+    if (rc == RPMERR_ITER_END)
+	rc = 0;
+
+    /* Finish the payload stream */
+    if (!rc)
+	rc = rpmfiArchiveClose(archive);
+
+    if (archiveSize)
+	*archiveSize = (rc == 0) ? rpmfiArchiveTell(archive) : 0;
+
+    rpmfiFree(archive);
+
+    return rc;
+}
+/**
+ * @todo Create transaction set *much* earlier.
+ */
+static rpmRC cpio_doio(FD_t fdo, Package pkg, const char * fmodeMacro,
+			rpm_loff_t *archiveSize)
+{
+    char *failedFile = NULL;
+    FD_t cfd;
+    int fsmrc;
+
+    (void) Fflush(fdo);
+    cfd = Fdopen(fdDup(Fileno(fdo)), fmodeMacro);
+    if (cfd == NULL)
+	return RPMRC_FAIL;
+
+    fsmrc = rpmPackageFilesArchive(pkg->cpioList, headerIsSource(pkg->header),
+				   cfd, pkg->dpaths,
+				   archiveSize, &failedFile);
+
+    if (fsmrc) {
+	char *emsg = rpmfileStrerror(fsmrc);
+	if (failedFile)
+	    rpmlog(RPMLOG_ERR, _("create archive failed on file %s: %s\n"),
+		   failedFile, emsg);
+	else
+	    rpmlog(RPMLOG_ERR, _("create archive failed: %s\n"), emsg);
+	free(emsg);
+    }
+
+    free(failedFile);
+    Fclose(cfd);
+
+    return (fsmrc == 0) ? RPMRC_OK : RPMRC_FAIL;
+}

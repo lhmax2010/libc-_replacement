@@ -1,0 +1,358 @@
+   770	    if (fi != NULL && fi->flangs != NULL && ix >= 0 && ix < rpmfilesFC(fi)) {
+   771		flangs = rpmstrPoolStr(fi->pool, fi->flangs[ix]);
+   772	    }
+   773	    return flangs;
+   774	}
+   775	
+   776	int rpmfilesStat(rpmfiles fi, int ix, int flags, struct stat *sb)
+   777	{
+   778	    int rc = -1;
+   779	    if (fi && sb) {
+   780		/* XXX FIXME define proper flags with sane semantics... */
+   781		int warn = flags & 0x1;
+   782		const char *user = rpmfilesFUser(fi, ix);
+   783		const char *group = rpmfilesFGroup(fi, ix);
+   784		const int * hardlinks = NULL;
+   785		uint32_t nlinks = rpmfilesFLinks(fi, ix, &hardlinks);
+   786	
+   787		memset(sb, 0, sizeof(*sb));
+   788		sb->st_nlink = nlinks;
+   789		sb->st_ino = rpmfilesFInode(fi, ix);
+   790		sb->st_rdev = rpmfilesFRdev(fi, ix);
+   791		sb->st_mode = rpmfilesFMode(fi, ix);
+   792		sb->st_mtime = rpmfilesFMtime(fi, ix);
+   793	
+   794		/* Only regular files and symlinks have a size */
+   795		if (S_ISREG(sb->st_mode)) {
+   796		    /* Content and thus size comes with last hardlink */
+   797		    if (!(nlinks > 1 && hardlinks[nlinks-1] != ix))
+   798			sb->st_size = rpmfilesFSize(fi, ix);
+   799		} else if (S_ISLNK(sb->st_mode)) {
+   800		    /*
+   801		     * Normally rpmfilesFSize() is correct for symlinks too, this is
+   802		     * only needed for glob()'ed links from fakechroot environment.
+   803		     */
+   804		    sb->st_size = strlen(rpmfilesFLink(fi, ix));
+   805		}
+   806	
+   807		if (user && rpmugUid(user, &sb->st_uid)) {
+   808		    if (warn)
+   809			rpmlog(RPMLOG_WARNING,
+   810				_("user %s does not exist - using %s\n"), user, UID_0_USER);
+   811		    sb->st_mode &= ~S_ISUID;	  /* turn off suid bit */
+   812		}
+   813	
+   814		if (group && rpmugGid(group, &sb->st_gid)) {
+   815		    if (warn)
+   816			rpmlog(RPMLOG_WARNING,
+   817				_("group %s does not exist - using %s\n"), group, GID_0_GROUP);
+   818		    sb->st_mode &= ~S_ISGID;	/* turn off sgid bit */
+   819		}
+   820	
+   821		rc = 0;
+   822	    }
+   823	    return rc;
+   824	}
+   825	
+   826	struct fingerPrint_s *rpmfilesFps(rpmfiles fi)
+   827	{
+   828	    return (fi != NULL) ? fi->fps : NULL;
+   829	}
+   830	
+   831	static int iterFwd(rpmfi fi)
+   832	{
+   833	    return fi->i + 1;
+   834	}
+   835	
+   836	static int iterBack(rpmfi fi)
+   837	{
+   838	    return fi->i - 1;
+   839	}
+   840	
+   841	static int iterInterval(rpmfi fi)
+   842	{
+   843	    if (fi->i == -1)
+   844		return fi->intervalStart;
+   845	    else if (fi->i + 1 < fi->intervalEnd)
+   846		return fi->i + 1;
+   847	    else
+   848		return RPMERR_ITER_END;
+   849	}
+   850	
+   851	int rpmfiNext(rpmfi fi)
+   852	{
+   853	    int next = -1;
+   854	    if (fi != NULL) {
+   855		do {
+  1945	    return fi;
+  1946	}
+  1947	
+  1948	int rpmfiArchiveClose(rpmfi fi)
+  1949	{
+  1950	    if (fi == NULL)
+  1951		return -1;
+  1952	    int rc = rpmcpioClose(fi->archive);
+  1953	    return rc;
+  1954	}
+  1955	
+  1956	rpm_loff_t rpmfiArchiveTell(rpmfi fi)
+  1957	{
+  1958	    if (fi == NULL || fi->archive == NULL)
+  1959		return 0;
+  1960	    return (rpm_loff_t) rpmcpioTell(fi->archive);
+  1961	}
+  1962	
+  1963	static int rpmfiArchiveWriteHeader(rpmfi fi)
+  1964	{
+  1965	    int rc;
+  1966	    struct stat st;
+  1967	
+  1968	    if (rpmfiStat(fi, 0, &st))
+  1969		return -1;
+  1970	
+  1971	    rpmfiles files = fi->files;
+  1972	
+  1973	    if (files->lfsizes) {
+  1974		return rpmcpioStrippedHeaderWrite(fi->archive, rpmfiFX(fi), st.st_size);
+  1975	    } else {
+  1976		const char * dn = rpmfiDN(fi);
+  1977		char * path = rstrscat(NULL, (dn[0] == '/' && !rpmExpandNumeric("%{_noPayloadPrefix}")) ? "." : "",
+  1978				       dn, rpmfiBN(fi), NULL);
+  1979		rc = rpmcpioHeaderWrite(fi->archive, path, &st);
+  1980		free(path);
+  1981	    }
+  1982	
+  1983	    return rc;
+  1984	}
+  1985	
+  1986	static int iterWriteArchiveNextFile(rpmfi fi)
+  1987	{
+  1988	    rpmfiles files = rpmfiFiles(fi);
+  1989	    int fx = rpmfiFX(fi);
+  1990	    int fc = rpmfiFC(fi);
+  1991	    const int * hardlinks;
+  1992	    int numHardlinks = 0;
+  1993	
+  1994	    /* already processing hard linked files */
+  1995	    if (rpmfiFNlink(fi) > 1) {
+  1996		/* search next hard linked file */
+  1997		fi->i = -1;
+  1998		for (int i=fx+1; i<fc; i++) {
+  1999		    /* no ghosts */
+  2000		    if (rpmfilesFFlags(files, i) & RPMFILE_GHOST)
+  2001			continue;
+  2002		    numHardlinks = rpmfilesFLinks(files, i, &hardlinks);
+  2003		    if (numHardlinks > 1 && hardlinks[0] == i) {
+  2004			rpmfiSetFX(fi, i);
+  2005			break;
+  2006		    }
+  2007		}
+  2008	    } else {
+  2009		fi->i = -1;
+  2010		/* search next non hardlinked file */
+  2011		for (int i=fx+1; i<fc; i++) {
+  2012		    /* no ghosts */
+  2013		    if (rpmfilesFFlags(files, i) & RPMFILE_GHOST)
+  2014			continue;
+  2015		    if (rpmfilesFNlink(files, i) < 2) {
+  2016			rpmfiSetFX(fi, i);
+  2017			break;
+  2018		    }
+  2019		}
+  2020		if (rpmfiFX(fi) == -1) {
+  2021		    /* continue with first hard linked file */
+  2022		    for (int i=0; i<fc; i++) {
+  2023			/* no ghosts */
+  2024			if (rpmfilesFFlags(files, i) & RPMFILE_GHOST)
+  2025			    continue;
+  2026			numHardlinks = rpmfilesFLinks(files, i, &hardlinks);
+  2027			if (numHardlinks > 1) {
+  2028			    rpmfiSetFX(fi, i);
+  2029			    break;
+  2030			}
+  2031		    }
+  2032		}
+  2033	    }
+  2034	    if (rpmfiFX(fi) == -1)
+  2035		return -1;
+  2036	
+  2037	    /* write header(s) */
+  2038	    if (numHardlinks>1) {
+  2039		for (int i=0; i<numHardlinks; i++) {
+  2040		    rpmfiSetFX(fi, hardlinks[i]);
+  2041		    int rc = rpmfiArchiveWriteHeader(fi);
+  2042		    if (rc) {
+  2043			return rc;
+  2044		    }
+  2045		}
+  2046		rpmfiSetFX(fi, hardlinks[0]);
+  2047	    } else {
+  2048		int rc = rpmfiArchiveWriteHeader(fi);
+  2049		if (rc) {
+  2050		    return rc;
+  2051		}
+  2052	    }
+  2053	    return rpmfiFX(fi);
+  2054	}
+  2055	
+  2056	static int iterWriteArchiveNext(rpmfi fi)
+  2057	{
+  2058	    int fx;
+  2059	    /* loop over the files we can handle ourself */
+  2060	    do {
+  2061		fx = iterWriteArchiveNextFile(fi);
+  2062		if (S_ISLNK(rpmfiFMode(fi))) {
+  2063		    /* write symlink target */
+  2064		    const char *lnk = rpmfiFLink(fi);
+  2065		    size_t len = strlen(lnk);
+  2066		    if (rpmfiArchiveWrite(fi, lnk, len) != len) {
+  2067			return RPMERR_WRITE_FAILED;
+  2068		    }
+  2069		} else if (S_ISREG(rpmfiFMode(fi)) && rpmfiFSize(fi)) {
+  2070		    /* this file actually needs some content */
+  2071		    return fx;
+  2072		}
+  2073		/* go on for special files, directories and empty files */
+  2074	    } while (fx >= 0);
+  2075	    return fx;
+  2076	}
+  2077	
+  2078	size_t rpmfiArchiveWrite(rpmfi fi, const void * buf, size_t size)
+  2079	{
+  2080	    if (fi == NULL || fi->archive == NULL)
+  2081		return -1;
+  2082	    return rpmcpioWrite(fi->archive, buf, size);
+  2083	}
+  2084	
+  2085	int rpmfiArchiveWriteFile(rpmfi fi, FD_t fd)
+  2086	{
+  2087	    rpm_loff_t left;
+  2088	    int rc = 0;
+  2089	    size_t len;
+  2090	    char buf[BUFSIZ*4];
+  2091	
+  2092	    if (fi == NULL || fi->archive == NULL || fd == NULL)
+  2093		return -1;
+  2094	
+  2095	    left = rpmfiFSize(fi);
+  2096	
+  2097	    while (left) {
+  2098		len = (left > sizeof(buf) ? sizeof(buf) : left);
+  2099		if (Fread(buf, sizeof(*buf), len, fd) != len || Ferror(fd)) {
+  2100		    rc = RPMERR_READ_FAILED;
+  2101		    break;
+  2102		}
+  2103	
+  2104		if (rpmcpioWrite(fi->archive, buf, len) != len) {
+  2105		    rc = RPMERR_WRITE_FAILED;
+  2106		    break;
+  2107		}
+  2108		left -= len;
+  2109	    }
+  2110	    return rc;
+  2111	}
+  2112	
+  2113	static void rpmfiSetFound(rpmfi fi, int ix)
+  2114	{
+  2115	    fi->found[ix >> 3] |= (1 << (ix % 8));
+  2116	}
+  2117	
+  2118	static int rpmfiFound(rpmfi fi, int ix)
+  2119	{
+  2120	    return fi->found[ix >> 3] & (1 << (ix % 8));
+  2121	}
+  2122	
+  2123	static int iterReadArchiveNext(rpmfi fi)
+  2124	{
+  2125	    int rc;
+  2126	    int fx = -1;
+  2127	    int fc = rpmfilesFC(fi->files);
+  2128	    char * path = NULL;
+  2129	
+  2130	    if (fi->archive == NULL)
+   260	
+   261	    written = Fwrite(hdr, PHYS_HDR_SIZE, 1, cpio->fd);
+   262	    cpio->offset += written;
+   263	    if (written != PHYS_HDR_SIZE) {
+   264	        return RPMERR_WRITE_FAILED;
+   265	    }
+   266	
+   267	    written = Fwrite(path, len, 1, cpio->fd);
+   268	    cpio->offset += written;
+   269	    if (written != len) {
+   270	        return RPMERR_WRITE_FAILED;
+   271	    }
+   272	
+   273	    rc = rpmcpioWritePad(cpio, 4);
+   274	
+   275	    cpio->fileend = cpio->offset + st->st_size;
+   276	
+   277	    return rc;
+   278	}
+   279	
+   280	int rpmcpioStrippedHeaderWrite(rpmcpio_t cpio, int fx, off_t fsize)
+   281	{
+   282	    struct cpioStrippedPhysicalHeader hdr_s;
+   283	    struct cpioStrippedPhysicalHeader * hdr = &hdr_s;
+   284	    char field[64];
+   285	    size_t written;
+   286	    int rc = 0;
+   287	
+   288	    if ((cpio->mode & O_ACCMODE) != O_WRONLY) {
+   289	        return RPMERR_WRITE_FAILED;
+   290	    }
+   291	
+   292	    if (cpio->fileend != cpio->offset) {
+   293	        return RPMERR_WRITE_FAILED;
+   294	    }
+   295	
+   296	    rc = rpmcpioWritePad(cpio, 4);
+   297	    if (rc) {
+   298	        return rc;
+   299	    }
+   300	
+   301	    SET_NUM_FIELD(hdr->fx, fx, field);
+   302	
+   303	    written = Fwrite(CPIO_STRIPPED_MAGIC, 6, 1, cpio->fd);
+   304	    cpio->offset += written;
+   305	    if (written != 6) {
+   306	        return RPMERR_WRITE_FAILED;
+   307	    }
+   308	
+   309	    written = Fwrite(hdr, STRIPPED_PHYS_HDR_SIZE, 1, cpio->fd);
+   310	    cpio->offset += written;
+   311	    if (written != STRIPPED_PHYS_HDR_SIZE) {
+   312	        return RPMERR_WRITE_FAILED;
+   313	    }
+   314	
+   315	    rc = rpmcpioWritePad(cpio, 4);
+   316	
+   317	    cpio->fileend = cpio->offset + fsize;
+   318	
+   319	    return rc;
+   320	}
+   321	
+   322	ssize_t rpmcpioWrite(rpmcpio_t cpio, const void * buf, size_t size)
+   323	{
+   324	    size_t written, left;
+   325	
+   326	    if ((cpio->mode & O_ACCMODE) != O_WRONLY) {
+   327	        return RPMERR_WRITE_FAILED;
+   328	    }
+   329	
+   330	    // Do not write beyond file length
+   331	    left = cpio->fileend - cpio->offset;
+   332	    size = size > left ? left : size;
+   333	    written = Fwrite(buf, size, 1, cpio->fd);
+   334	    cpio->offset += written;
+   335	    return written;
+   336	}
+   337	
+   338	
+   339	int rpmcpioHeaderRead(rpmcpio_t cpio, char ** path, int * fx)
+   340	{
+   341	    struct cpioCrcPhysicalHeader hdr;
+   342	    int nameSize;
+   343	    char * end;
+   344	    int rc = 0;
+   345	    ssize_t read;

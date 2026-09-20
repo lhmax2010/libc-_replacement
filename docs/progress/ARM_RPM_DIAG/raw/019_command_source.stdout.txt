@@ -1,0 +1,122 @@
+"""Prepare an isolated RPM output set, reusing the approved arm LLVM tree."""
+import hashlib,json
+from pathlib import Path
+p=Path.cwd(); out=p/'progress/BUILD_WEEKEND_0918'; task=p/'tmp/WEEKEND_0918'
+original=p/'progress/BUILD_STATIC_0917B/resume_0917/cell_commands/llvm-arm-rpm-serial.json'
+cmd=json.loads(original.read_text())
+cmd=[x.replace(str(p/'tmp/STATIC_0917B'),str(task)) for x in cmd]
+for part in ('RPMS','SRPMS','BUILDROOT','TMP'):
+    (task/'rpm-arm-llvm'/part).mkdir(parents=True,exist_ok=False)
+spec=task/'specs/llvm.spec'; old=p/'tmp/STATIC_0917B/specs/llvm.spec'
+assert spec.read_bytes()==old.read_bytes()
+assert 'rsync' not in spec.read_text()
+assert '_binary_payload w5T1.xzdio' in cmd
+trace=out/'llvm-arm-rpm-failed-syscalls.strace'
+# Include failed reads as well as writes: a generic cpio error does not prove
+# which underlying I/O operation failed. FD annotations identify the file.
+# No successful data buffers, sudo, host setting changes or source edits.
+cmd=['strace','-f','-yy','-e','trace=%file,read,pread64,write,pwrite64,lseek,ioctl,copy_file_range,sendfile',
+     '-e','status=failed','-s','160','-o',str(trace),*cmd]
+(out/'cell_commands/llvm-arm-whole-retry.json').write_text(json.dumps(cmd,indent=2))
+(out/'llvm-arm-retry-inputs.json').write_text(json.dumps({'original_command':str(original),
+    'spec_sha256':hashlib.sha256(spec.read_bytes()).hexdigest(),'output':str(task/'rpm-arm-llvm'),
+    'existing_18_rpms_preserved':True,'full_rpmbuild_bb':True,'prep_reused_from_approved_tree':True,
+    'rsync_in_spec':False,'note':'Previous whole-build cpio ENOSYS and input-copy rsync EPERM are separate observations.'},indent=2))
+print('Prepared complete arm RPM retry; no build yet')
+[
+  "strace",
+  "-f",
+  "-yy",
+  "-e",
+  "trace=%file,read,pread64,write,pwrite64,lseek,ioctl,copy_file_range,sendfile",
+  "-e",
+  "status=failed",
+  "-s",
+  "160",
+  "-o",
+  "/home/toolchain/development/libc++_replacement/progress/BUILD_WEEKEND_0918/llvm-arm-rpm-failed-syscalls.strace",
+  "bwrap",
+  "--unshare-user",
+  "--uid",
+  "1000",
+  "--gid",
+  "1000",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0",
+  "/",
+  "--dev",
+  "/dev",
+  "--proc",
+  "/proc",
+  "--tmpfs",
+  "/tmp",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/home/abuild/rpmbuild/BUILD",
+  "/home/abuild/rpmbuild/BUILD",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918",
+  "/tmp/task",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/ninja",
+  "/tmp/ninja.real",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/ninja-serial-arm",
+  "/usr/bin/ninja",
+  "--setenv",
+  "PATH",
+  "/bin:/usr/bin:/sbin:/usr/sbin",
+  "--setenv",
+  "QEMU_RESERVED_VA",
+  "0x100000000",
+  "--setenv",
+  "CMAKE_BUILD_PARALLEL_LEVEL",
+  "1",
+  "--setenv",
+  "RPM_BUILD_NCPUS",
+  "1",
+  "--setenv",
+  "MAKEFLAGS",
+  "-j1",
+  "--setenv",
+  "LC_ALL",
+  "C",
+  "--chdir",
+  "/home/abuild/rpmbuild",
+  "--",
+  "rpmbuild",
+  "--define",
+  "_binary_payload w5T1.xzdio",
+  "--rcfile",
+  "/usr/lib/rpm/rpmrc:/home/abuild/.rpmrc",
+  "--macros",
+  "/usr/lib/rpm/macros:/usr/lib/rpm/macros.d/macros.*:/usr/lib/rpm/platform/%{_target}/macros:/usr/lib/rpm/fileattrs/*.attr:/usr/lib/rpm/tizen/macros:/etc/rpm/macros.*:/etc/rpm/macros:/etc/rpm/%{_target}/macros:/home/abuild/.rpmmacros",
+  "--target",
+  "armv7l-tizen-linux",
+  "--define",
+  "_topdir /home/abuild/rpmbuild",
+  "--define",
+  "_rpmdir /tmp/task/rpm-arm-llvm/RPMS",
+  "--define",
+  "_srcrpmdir /tmp/task/rpm-arm-llvm/SRPMS",
+  "--define",
+  "_buildrootdir /tmp/task/rpm-arm-llvm/BUILDROOT",
+  "--define",
+  "_tmppath /tmp/task/rpm-arm-llvm/TMP",
+  "--define",
+  "_smp_mflags -j1",
+  "--define",
+  "_smp_build_ncpus 1",
+  "--define",
+  "jobs 1",
+  "--define",
+  "mlgo_build_jobs 1",
+  "--define",
+  "_srcdefattr (-,root,root)",
+  "--define",
+  "_build_create_debug 1",
+  "--nosignature",
+  "--noprep",
+  "--noclean",
+  "-bb",
+  "/tmp/task/specs/llvm.spec"
+]
