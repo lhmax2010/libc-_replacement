@@ -1,5 +1,9 @@
 # 原 argv 复现：预检与现场保护
 
+**最终状态（2026-09-20 16:22:35+08）：STOP_VV_FAILURE_DISAPPEARED。** 第一轮原argv复现退出1、18包；第二轮只增加-vv（另存trace）退出0、22包，22份摘要校验通过。已停止后续实验，不改host过滤、不加guest跟踪、不插桩；归档局部变量仍NOT_OBSERVED。详见FINAL_RESULT.md、FINAL_AUDIT.json、VV_RESULT.json。以下均为历史阶段快照，不能当作仍在运行的状态。
+
+第二轮（vv-only-repro）已启动：2026-09-20约15:30。唯一构建变量为新增-vv，host strace保留旧status=failed配置、binfmt入口和原输出树；trace另存host-vv-original-config.strace。第一步失败树已完整备份并核验16987项。第一步证据已推送20fddc48b2b1c96bbffc8d409751981a0686772b。第二轮若成功立即停止；总截止仍2026-09-21 02:15:44+08。以下为此前阶段记录。
+
 第一步已完成：2026-09-20 15:23:23，退出1，18份RPM，第7559/7560行与历史失败完全相同；失败现场已取证。详见STEP1_RESULT.md/JSON。下一步先推送本阶段证据、保存失败树，再仅增加-vv进行第二轮。下列14:29起的内容是运行中快照，不是最新结论。
 
 14:29:38 已启动第一步。原现场16987项备份逐文件核验通过。实际Ninja PID608023的cgroup为arm-repro-0920.scope，memory.max=16536457216、nice19、ionice idle；命令含-j1，原96个增量目标已完成，进入调试信息提取/写包前处理。当前未观察到最终退出码。后续只读反汇编明确看到两架构cpio偏移字段均为64位；历史_FILE_OFFSET_BITS宏选项仍未观测，详见PRECHECK.md，不再把两者混淆。

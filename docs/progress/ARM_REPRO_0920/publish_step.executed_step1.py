@@ -1,0 +1,35 @@
+"""Archive completed evidence only; losslessly compress large traces and verify."""
+import base64,hashlib,json,lzma,pathlib,re,shutil,sys
+src=pathlib.Path('progress/ARM_REPRO_0920');dst=pathlib.Path('docs/progress/ARM_REPRO_0920');active=sys.argv[1]
+secrets=[]
+for name in ('password.md','.quickbuild-credentials'):
+    p=pathlib.Path(name)
+    if p.is_file():
+        values=p.read_bytes().splitlines()
+        if name=='.quickbuild-credentials':values=values[1:]
+        for v in values:
+            if len(v)>=4:secrets.extend((v,base64.b64encode(v)))
+records=[]
+for p in sorted(src.rglob('*')):
+    if not p.is_file() or (p.parent.name=='raw' and p.name.startswith(active+'_')):continue
+    rel=p.relative_to(src);data=p.read_bytes()
+    assert not any(s in data for s in secrets),('Potential credential; stop',str(rel))
+    assert not re.search(rb'-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}',data),('Potential credential; stop',str(rel))
+    h=hashlib.sha256(data).hexdigest();q=dst/rel;q.parent.mkdir(parents=True,exist_ok=True)
+    if len(data)>16000000:
+        packed=lzma.compress(data,preset=1);parts=[]
+        for i,start in enumerate(range(0,len(packed),32*1024*1024)):
+            part=q.with_name(q.name+f'.xz.part-{i:03d}');payload=packed[start:start+32*1024*1024]
+            if part.exists():assert part.read_bytes()==payload,('Existing evidence differs',str(part))
+            else:part.write_bytes(payload)
+            parts.append(str(part.relative_to(dst)))
+        restored=lzma.decompress(b''.join((dst/s).read_bytes() for s in parts));assert hashlib.sha256(restored).hexdigest()==h
+        stored=parts;mode='xz-32MiB-parts'
+    else:
+        if q.exists():assert q.read_bytes()==data,('Existing evidence differs',str(q))
+        else:shutil.copy2(p,q)
+        assert hashlib.sha256(q.read_bytes()).hexdigest()==h
+        stored=[str(rel)];mode='verbatim'
+    records.append({'original':str(p),'original_bytes':len(data),'sha256':h,'stored':stored,'mode':mode,'restoration_verified':True})
+(dst/'DELIVERY_MANIFEST.json').write_text(json.dumps({'files':len(records),'known_credentials_checked_in_memory':bool(secrets),'issues':0,'records':records},ensure_ascii=False,indent=2)+'\n')
+print(json.dumps({'files':len(records),'issues':0,'all_restoration_checks_passed':True,'compressed_originals':[r['original'] for r in records if r['mode']!='verbatim']}))
