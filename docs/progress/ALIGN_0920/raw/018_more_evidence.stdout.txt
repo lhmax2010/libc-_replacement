@@ -1,0 +1,81 @@
+    37	| 原文件 | SHA256 |
+    38	| --- | --- |
+    39	| armv7l static | `ade7530b3824dd83eebba837928d3919dcb4cd7708212a8607c3629cb5c55f5b` |
+    40	| aarch64 static | `4d12f98487f70addfeaa1602f91463458a738a4dd437241a70f77ab54680cab1` |
+    41	
+    42	Source1002 的 `3785365b…3514123` 是 tar 文件哈希，不与上述二进制哈希混用。
+    43	
+    44	## 已观测的未闭合项
+    45	
+    46	aarch64 libc++ 完整 `rpmbuild -bb` 退出 0，三份 RPM 已保存。但 static 的直接依赖为：
+    47	
+    48	```text
+    49	libbpf.so.1
+    50	libm.so.6
+    51	libgcc_s.so.1
+    52	libc.so.6
+    53	ld-linux-aarch64.so.1
+    54	```
+    55	
+    56	共享 `libgcc_s.so.1` 符合本轮展开器设计；额外共享 `libbpf.so.1` 不符合其余相关库静态纳入的约束，故载荷门禁失败。它不等于观测到了 libstdc++ 被错误链入。定位及候选修正问题见 `QUESTIONS.md` 第 5 项；未获人工答复，不自行修改接入或降低验收标准。
+    57	
+    58	## “未定义工具链”格的真实执行
+    59	
+    60	单用命令行 `--undefine _toolchain` 的第一次实际 rpmbuild 仍进入 libc++ 依赖分支，退出 1。后续用**仅供测试的入口**先 `%undefine _toolchain`，再 `%include` 原候选 spec，并在包含前后检查实际宏状态；两架构 dry parse 均显示 0。本轮完整未定义格通过该入口实际构建，候选 spec 的内容及 SHA256 不变。具体命令见 raw/269、273–276，不将 `rpmspec` 查询结果当成完整构建通过，也不将这一配置的实测外推为任意外部宏注入情形。
+    61	
+    62	## 检查方法的限制和修正
+    63	
+    64	- RPM 摘要检查验证内容完整性，不声称验证发布者签名。
+    65	- GCC 和未定义格核对真实 verbose 编译/链接命令、展开 BuildRequires、RPM 内全部主包 ELF 依赖及原 static 哈希；已通过格中每格识别到 120 条命令，禁止 libc++ 选项为 0。
+    66	- 原平台安装后检查器未禁用；其两份 app-rootstrap 规则输出 skipped，不能写成所有规则均已执行。
+    67	- 旧附加 HAL helper 的 ARM BUILDROOT 后缀写错，已用 v2 对实际 `.arm` 目录补查。旧退出 0 不作为载荷证据，新检查记录主程序 SHA256。详见 raw/278、282、296。
+    68	- 当前结果是构建和 RPM 载荷证据；真实安装、probe 功能等价及线程取消属于 W3，尚未用这些结果替代。
+    69	
+    70	所有候选仍在 `tmp/WEEKEND_0918/`，未覆盖 Source1002，未推任何包仓。
+    71	
+    72	**当前不能据此替换发布资产。** 除两格未闭合外，物理板安装、功能及取消验证仍待 W3。aarch64 的 libbpf 修正和 ARM 原生工具集切换问题没有得到明确裁决，均未实施；不阻断独立的 W2 补做。
+    73	
+    74	交付预检 raw/402 的 `git check-ignore` 返回 1，表示所列交付路径没有命中忽略规则；正式暂存仍需执行完整性和敏感模式检查，不以这次抽查替代。
+     1	# armv7l LLVM 写包：部分完成，整轮失败
+     2	
+     3	完整命令及退出码：raw/202_arm_serial_rpm_build.*。独立日志：cells/llvm-arm-rpm-serial/build.log。15:00:14 启动，15:47:27 返回 1，约 47 分 13 秒，96 个增量目标公告。
+     4	
+     5	实际错误：
+     6	
+     7	```
+     8	error: create archive failed: cpio: write failed - Function not implemented
+     9	```
+    10	
+    11	在此之前日志写出 18 个 RPM，最后两项为 clang-debuginfo 和 clang-devel-debuginfo。错误没有指出失败包名，故不把“下一项可能为 lldb-debuginfo”写成确认结论。未删除失败现场。
+    12	
+    13	只读核查 raw/261 返回 0：18 个已写出文件逐个通过摘要校验，压缩参数均为 xz/5T1；从 llvm-static-devel 实际提取的 libclang.a 有 1062 行 `_ZNSt3__1`、0 行 `_ZNSt7__cxx11`。从 libllvm RPM 提取的 libLLVM 依赖 libc++、不依赖 libstdc++。完整文件身份、SHA256、成员与动态依赖在 verify_armv7l/。
+    14	
+    15	这些事实不代表完整 rpmbuild 成功。是否可将这个单独核验的静态开发 RPM 作为后续输入已交人工确认；未自行放宽整轮门禁。aarch64 的完整 RPM 结果不受影响。
+    16	
+    17	资源方面，第一次 armv7l 尝试的 XZ 多线程遗漏已停止并单列保留；本次重试使用显式 w5T1.xzdio。资源监控没有 OOM；ENOSYS 的准确原因仍未观测，不用推测补全。
+docs/progress/BUILD_WEEKEND_0918/w4/RUNBOOK_CHECKPOINT.md:9:W1 已在 18:20:28 普通推送项目提交 5576313e4ab957b1ff009308451c2b04b5fe6297；419 暂存自检通过，426 确认其他三个分支未变、旧 HEAD 仍为祖先。不要重跑 W1。
+docs/progress/BUILD_WEEKEND_0918/w4/RUNBOOK_CHECKPOINT.md:42:`executed-matrix-v2.py` 为已快照、记 SHA 的汇总脚本，阶段结束运行它更新矩阵；353 的表为四格通过的中途检查点。原始版本恢复说明见 MATRIX_SCRIPT_VERSION_NOTES.md。`W1_REPORT.md` 也是草稿，要按最后结果修正。原始 cpio 与 rsync 错误已整理到 W2_FAILURE_PROVENANCE.md（309 原文证据）。357 已保存 36 个 guard 的精确匹配 SHA 版本。最新 raw 编号 360，后续用 361 起。
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/ARM_RPM_PARTIAL.md:3:完整命令及退出码：raw/202_arm_serial_rpm_build.*。独立日志：cells/llvm-arm-rpm-serial/build.log。15:00:14 启动，15:47:27 返回 1，约 47 分 13 秒，96 个增量目标公告。
+docs/progress/BUILD_WEEKEND_0918/w4/W4_REPORT.md:21:“六格”是2架构×3路径，不是6个文件。实际每个写包成功格有 main/common/static 三包；本轮 bpftrace 共15份 RPM：12份来自四个通过格，3份为 aarch64 libc++ 门禁失败候选。它们的逐文件 SHA 在 `W1_RPM_MANIFEST.json`，不能全部称通过。x86_64 不在此轮 RPM 范围。
+docs/progress/BUILD_WEEKEND_0918/w4/W2_REPORT.md:5:**PARTIAL：整轮仍失败；未升级为完整构建。** 本次 96 个增量目标完成，但完整 `rpmbuild -bb` 于 2026-09-18 19:15:29 退出 **1**，重新写出的 18 个 RPM 单独核验通过。此前获准使用的 18 个输入仍保持 `USABLE_BUT_BUILD_INCOMPLETE`，原记录不修改。
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/AARCH64_RPM_RESULT.md:16:首轮完整构建已于 13:37 返回 0（7546 个目标，含 6084 次对象编译公告）。随后外层记录器重复启动同一命令；这是执行记录方面的失误，不是新一格验证。已停止重复执行、可恢复地隔离混合/不完整 RPM 集合，换用一次性 Python 记录器并重新完整写包。最终集合不复用被中止写入的 RPM。事故、推断边界、修正、额外 10 次对象编译公告与约 40 分 20 秒额外墙钟时间见 STATUS.md；原始记录不改写。
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/STATUS.md:42:- 两份 llvm 源码 tar 的整体 SHA256 不同（raw/086），SOURCE_PROVENANCE 文本相同（raw/087）。随后逐条比较 184,839 个条目的类型、模式、大小、链接目标和常规文件 SHA256：独有条目 0、差异条目 0（raw/092；source_payload_comparison.json）。该比较忽略时间戳、所有者、归档顺序与压缩表示，证明输入有效载荷相同，不声称压缩包逐字节相同。
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/STATUS.md:68:2. 立即停止该轮 PGID 164290（raw/198 退出 0）；监控/记录器最终退出 241（其构建子进程被 TERM，非正常成功）。原始 arm_llvm/ 日志保留。停止时有 6 个 RPM 文件，其中日志只确认 5 次 Wrote，不能当成完整集合。
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/STATUS.md:69:3. 这 6 个文件带 SHA256 可恢复地移至 tmp/STATIC_0917B/rpm-arm-llvm/RPMS_stopped_parallel_1459，未删除，也不作为后续输入。
+     1	"""Read-only query in the exact ARM build root; never run build stages."""
+     2	import json,subprocess,sys
+     3	from pathlib import Path
+     4	p=Path.cwd()
+     5	cmd=json.loads((p/'progress/BUILD_WEEKEND_0918/cell_commands/llvm-arm-whole-retry.json').read_text())
+     6	cmd=cmd[cmd.index('bwrap'):cmd.index('--')+1]
+     7	cmd=['--ro-bind' if v=='--bind' else v for v in cmd]
+     8	allowed={'rpm','rpmbuild','ls','stat','cat','readelf','sh'}
+     9	assert sys.argv[1] in allowed
+    10	cmd+=sys.argv[1:]
+    11	print('ACTUAL_COMMAND_JSON='+json.dumps(cmd),flush=True)
+    12	raise SystemExit(subprocess.run(cmd).returncode)
+[
+  {
+    "arch": "armv7l",
+    "mode": "gcc",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/rpm-bpf-armv7l-gcc/RPMS/armv7l/bpftrace-0.24.2-1.armv7l.rpm",
