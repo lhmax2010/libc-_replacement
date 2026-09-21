@@ -1,0 +1,148 @@
+# R103：gmp 与 tensorflow2 静态归档实际链入查证
+
+## 1. 结论
+
+本次查证得到可用于收口 R100/R102 两个未定项的直接证据；本任务未修改 R100/R102 的表，也未修改任何 spec、配置或平台源码。
+
+| 提供方 | 查证结论 | 对 R100 分类的建议 | 核心依据 |
+| --- | --- | --- | --- |
+| `gmp` | 指定的两个消费方均未实际链入 `libgmpxx.a` | `NO_LIBCXX_NEEDED`（不需要改） | `eigen` 最终包只有头文件/配置文件、无 ELF；`python-pycrypto` 三架构真实链接命令均为 `-lgmp`，最终 `_fastmath.so` 动态依赖 `libgmp.so.3`，不依赖 `libgmpxx`/`libstdc++`；最终 ELF 与 `libgmpxx.a` 的强定义符号交集为 0。 |
+| `tensorflow2` | 三个指定消费方都实际链入 `libtensorflow2-lite.a` 的大量 C++ 成员；未观察到它们链入 `libtf_xla_runtime.a` | `NEED_LIBCXX`（需要改） | 三架构最终 ELF 各命中 2,591–4,800 个精确强符号、下界 319–517 个归档成员；构建日志、pkg-config/Meson/CMake 关系和最终 ELF 互相印证。消费代码持有并传递 `std::unique_ptr<tflite::Interpreter>`、`std::unique_ptr<tflite::FlatBufferModel>`，不是只使用纯 C 接口。 |
+
+这里的 `NO_LIBCXX_NEEDED`/`NEED_LIBCXX` 是本次证据对 R100 分类的建议，不是对既有清单的修改。
+
+## 2. 输入身份与覆盖口径
+
+### 2.1 仓库快照
+
+- Base Toolchain：沿用 R98/R100 已校验材料，`Tizen-Base-Toolchain` 快照中的 `gmp-4.2.1-1.8`、`tensorflow2-2.18.0-1.1`。
+- Unified Toolchain：`https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247/standard/packages/`。
+- 消费方源码 revision：
+  - `eigen`: `e8e4707a11713b39909fc9db916b5db1ecbfdf6a`
+  - `python-pycrypto`: `fa4a7de575838f0884364ebd05423927f9f79734`
+  - `inference-engine-tflite`: `e59b18b7575bf713023442a51d386bec006f2e16`
+  - `nnstreamer`: `40ae293fe1e293e5d9bfc332e4b293a27ddcb1a4`
+  - `nntrainer`: `97ddb43dcd9e5173d7cb4245ff9bae5d760e5834`
+- 提供方源码 revision：
+  - Base `gmp`: `490fe651469987ccb00b5cba908d69609345e226`
+  - Base `tensorflow2`: `1cdba73549f741720f11dd53da1bb516b03763a2`
+  - Unified `tensorflow2`: `ea3f134d35fc64667c2eebd72992bbb3c8e0069d`
+
+消费方五个源码包的全部 144 个二进制 RPM 均已下载并校验，覆盖 aarch64、armv7l、x86_64（`eigen-devel` 为一份 noarch 包）。共检查 571 个 ELF。另取得五个消费源码包在三架构上的 15 份公开成功构建日志，并保存完整原文及 SHA256。
+
+### 2.2 TensorFlow 提供方版本差异
+
+公开消费方构建日志明确显示构建根安装的是 Unified Toolchain 的 `tensorflow2-lite-devel-2.18.0-1`，所以它才是这些已发布消费 ELF 的实际提供方。Base Toolchain 的候选是 `2.18.0-1.1`。两者归档 SHA256 不同，不能声称字节相同：
+
+| 架构 | Base `1.1` SHA256 | Unified `1` SHA256 |
+| --- | --- | --- |
+| aarch64 | `ffabc2dd7f4155e34e5117c659e55b4375652adacb36402ffb4390c1a6945234` | `277e689134bf51859596a6c97ac63901a8db90c3ea5caef353cb3c864cab2a4c` |
+| armv7l | `76d217d8432bea70cb98e9cad6601be7857b6b8bb4eca6d7b2bd4a4383275219` | `797072a9e1b92bac34980c84f89530a6cbcdddff173130d7b19abef19ec0d0f9` |
+| x86_64 | `a116a39b156f61f63927bca0a8b2aa39c2c65c9494e7d69e9f6a89db75fdee7e` | `aa1da1d91ad208cd3a59c8e3b1b6413f69a0e62fa71bd316de5b111ce0bb3721` |
+
+因此，本报告关于“已发布消费 ELF 实际链入”的版本身份严格限定为 Unified `2.18.0-1`。同时用 Base `1.1` 归档进行了同样的精确符号交集检查：每个消费 ELF 的命中符号集合与 Unified 归档完全一致（20/20 个 ELF 分组均为 `base_only=0`、`unified_only=0`）。这证明 Base 候选提供同一批被消费的符号，但不把它误述为这些现存 ELF 的实际构建输入。
+
+## 3. 方法
+
+按任务书的可靠性顺序使用了三层证据：
+
+1. 对最终 RPM 解包，识别 ELF；对提供方归档执行 `nm -A -P -g --defined-only`，对消费 ELF 同时执行静态/动态符号表检查，以“同名强定义符号”为交集，并把归档侧符号回溯到成员名。
+2. 检查最终 ELF 的 `DT_NEEDED`，判断代码来自静态归档还是运行期共享库。
+3. 读取实际成功构建日志中的构建根包版本和链接命令，再用精确 revision 的 spec、构建文件与消费代码解释边界形态。
+
+对 stripped ELF，最终动态符号表只能给出“可见成员/符号的下界”，不能恢复全部局部符号；LTO、内联、dead stripping 和 ICF 也会让成员计数偏低。因此报告将成员数明确标为下界。这里不是仅凭“可能会链接”的源代码推断：TensorFlow 有数千个最终强定义符号、无 TensorFlow 共享库依赖，且构建日志/构建描述明确使用静态库。
+
+## 4. gmp
+
+### 4.1 `eigen`
+
+- spec 将 `gmp-devel` 列为 BuildRequires，但 `BuildArch: noarch`。
+- 最终 `eigen-devel` 只包含头文件、CMake 文件、pkg-config 文件和许可证，未包含 ELF。
+- 因而该包自身不存在可把 `libgmpxx.a` 链入的最终二进制。其头文件用户将来是否使用 GMP，是用户自己的实例化/链接行为，不是 `eigen` RPM 已实际链入静态归档。
+
+### 4.2 `python-pycrypto`
+
+源码与三架构构建日志一致：
+
+```text
+Extension("Crypto.PublicKey._fastmath",
+          libraries=['gmp'],
+          sources=["src/_fastmath.c"])
+```
+
+`_fastmath.c` 包含的是 `<gmp.h>`。aarch64、armv7l、x86_64 的实际链接命令均使用 `-lgmp`，没有 `-lgmpxx`；最终 `_fastmath.so` 的 `DT_NEEDED` 是 `libgmp.so.3`，没有 `libgmpxx` 或 `libstdc++.so.6`。对全部 18 个 Python 扩展 ELF 与三架构 `libgmpxx.a` 做精确强符号交集，命中为 0。
+
+### 4.3 判定边界
+
+就任务指定的 `eigen`、`python-pycrypto` 两个消费方以及所用快照而言，`libgmpxx.a` 实际链入为否；证据支持将 `gmp` 从“未定”归为“不需要改”。本结论不外推到未列入本任务的任意第三方消费方。
+
+## 5. tensorflow2
+
+### 5.1 最终产物反查结果
+
+下表只列三个任务指定消费方的核心最终库，并使用构建日志确认的 Unified `2.18.0-1` 归档。完整结果还记录了 nnstreamer edgetpu 插件和 nntrainer 三个应用中的命中，见 TSV。
+
+| 消费方 | 架构 | 最终 ELF | 精确强符号 | 可归属归档成员下界 | 其中 C++ mangled 符号 |
+| --- | --- | --- | ---: | ---: | ---: |
+| inference-engine-tflite | aarch64 | `libinference-engine-tflite.so` | 4,776 | 499 | 3,842 |
+| inference-engine-tflite | armv7l | `libinference-engine-tflite.so` | 4,713 | 498 | 3,798 |
+| inference-engine-tflite | x86_64 | `libinference-engine-tflite.so` | 4,711 | 515 | 3,772 |
+| nnstreamer | aarch64 | `libnnstreamer_filter_tensorflow2-lite.so` | 4,800 | 501 | 3,862 |
+| nnstreamer | armv7l | `libnnstreamer_filter_tensorflow2-lite.so` | 4,737 | 500 | 3,818 |
+| nnstreamer | x86_64 | `libnnstreamer_filter_tensorflow2-lite.so` | 4,735 | 517 | 3,792 |
+| nntrainer | aarch64 | `libnntrainer.so` | 2,619 | 319 | 1,690 |
+| nntrainer | armv7l | `libnntrainer.so` | 2,914 | 351 | 2,004 |
+| nntrainer | x86_64 | `libnntrainer.so` | 2,591 | 337 | 1,657 |
+
+观察到的代表性成员包括 `interpreter.cc.o`、`interpreter_builder.cc.o`、`model_builder.cc.o`、`subgraph.cc.o`、`gpu_info.cc.o`、`flatbuffer_conversions.cc.o`、`opencl_wrapper.cc.o`。最终库中可直接看到来自这些实现的定义，例如：
+
+```text
+tflite::impl::Interpreter::SetOutputs(std::vector<int, std::allocator<int> >)
+tflite::impl::Interpreter::AddProfiler(std::unique_ptr<tflite::Profiler, ...>)
+tflite::impl::Interpreter::SetMetadata(std::map<std::__cxx11::basic_string<...>, ...> const&)
+```
+
+上述核心库的 `DT_NEEDED` 含 `libstdc++.so.6` 和 `libgcc_s.so.1`，不含 TensorFlow Lite 共享库；包内提供者只有 `libtensorflow2-lite.a`。这排除了“这些只是对外部 TensorFlow 共享库的未定义引用”的解释。
+
+### 5.2 构建与源码证据
+
+- `inference-engine-tflite`：三架构真实链接命令都含 `-ltensorflow2-lite`。类成员直接保存 `std::unique_ptr<tflite::Interpreter>` 和 `std::unique_ptr<tflite::FlatBufferModel>`，并调用 `BuildFromFile`、`InterpreterBuilder`。
+- `nnstreamer`：spec 明确写明 TensorFlow2 Lite 只提供 `.a`，会嵌入 subplugin；最终 `libnnstreamer_filter_tensorflow2-lite.so` 的符号证据验证了这句话。插件同样保存上述两个 `std::unique_ptr` 并调用 C++ builder API。
+- `nntrainer`：Meson 把 `tflite_dep` 加入 `libnntrainer.so` 的依赖并编译 `tflite_layer.cpp`；最终库中有 2,591–2,914 个精确强符号。`TfLiteLayer` 持有两个 TFLite `std::unique_ptr` 并调用同一组 C++ API。
+
+这三处不是“静态归档可能被列在命令中但没有成员被拉入”的情况；最终 ELF 已包含大量归档实现。它们也不是纯 C 边界，而是实际交换标准库模板类型/所有权对象的 C++ 边界。
+
+### 5.3 两个归档分别如何
+
+| 归档 | 实际链入观察 |
+| --- | --- |
+| `libtensorflow2-lite.a` | **YES**。三个指定消费方、三架构均有大量直接证据。全体已观察消费 ELF 合并后，至少涉及 5,312 个不同强符号、546 个不同成员名。 |
+| `libtf_xla_runtime.a` | **NO（限定于本任务的三个消费方）**。最终 ELF 强符号交集为 0，实际链接日志/构建描述中也未见该归档。该零结果不影响 `tensorflow2` 的 NEED 判定，因为 Lite 归档已足以形成真实边界。 |
+
+## 6. 未覆盖与局限
+
+1. 没有 link map；因此无法声称恢复了“所有被拉入成员”的精确全集，表中的成员数是可观测下界。
+2. gmp 的否定结论只覆盖任务指定的两个消费方和该快照，不代表平台所有潜在消费者。
+3. `libtf_xla_runtime.a` 的否定结论同样只覆盖三个指定 TensorFlow 消费方。
+4. 现存 Unified 消费产物实际使用 TensorFlow `2.18.0-1`，不是 Base `2.18.0-1.1`；两套候选对最终 ELF 的命中集合相同，但本报告没有把版本身份混同。
+5. 未重新构建软件包：第一、二层已有实际最终 ELF 与真实成功构建日志，足以回答“是否实际链入”；重建不会增加本题所需的事实确定性。
+
+## 7. 自行判断与尚存疑问
+
+### 自行判断
+
+1. 将“精确同名强定义符号 + 无对应共享库依赖 + 实际构建关系”作为实际静态链入证据；仅有一两个通用模板符号的应用程序命中不单独用于结论。
+2. 将归档成员计数报告为下界，避免把 stripped/LTO 后仍可见的成员误称为完整集合。
+3. 对 R100 的包级分类，`tensorflow2` 只要任一交付归档形成实际布局敏感边界即应归入 NEED；`libtf_xla_runtime.a` 在这些消费方中零命中不抵消 Lite 归档的阳性事实。
+
+### 尚存疑问
+
+- 若人工要求证明“Base `2.18.0-1.1` 的具体字节已进入某个现存消费 ELF”，当前答案是 **NOT_OBSERVED**：现存日志证明用的是 Unified `2.18.0-1`。要取得这种版本级直接证据，需要以 Base `1.1` 为构建输入重新链接消费方并保留 link map；这不影响本次对消费方式和 R100 包级分类的判断。
+
+## 8. 纪律确认
+
+- 未修改任何 spec、配置或平台源码。
+- 未修改 R100/R102 的表。
+- 未向 Gerrit 或其他外部源码仓推送。
+- 命令、stdout、stderr、退出码均归档在 `raw/`。所有非零均为已记录并已纠正的技术性错误，不是判据失败：第 004 次首次读取大字段 TSV 时触发 Python CSV 默认字段长度上限，第 005 次提高读取上限后成功；第 024、026 次尝试了 Gerrit 上不存在的 TensorFlow 分支短名，第 025 次先读取真实 refs、第 027 次改用实际存在的 `accepted/tizen_base_toolchain` 后成功；第 050 次是包装器无执行位，第 051 次通过 `bash` 调用同一包装器成功。
+- 第 041 次过宽本地日志检索被终止；退出码 143 是恢复时人工补记，不是日志包装器自动写入，说明保存在同名前缀的 `recovery_note.txt`。

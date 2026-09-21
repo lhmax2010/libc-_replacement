@@ -1,0 +1,103 @@
+# Tizen-Base-Toolchain libc++ 适配进度对账（只读）
+
+## 一句话结论
+
+**就锁定的 73 个 C++ 候选的包级适配对账而言，可以启动“11 包逐包启用 libc++、保留既定例外”的 QuickBuild 验证：11 项已适配推送、56 项有既有依据无需新增适配、6 项设计排除，NOT_EVALUATED 为 0；这不是对当前 reference 全部产物、所有架构或 static 替代资产的验收。**
+
+严格回答“是否全部处于已适配推送或无需适配”是：**不是只有这两类，另外有 6 个当前 GCC/glibc 设计例外；没有找不到判定记录的包。** 本轮不启动 QuickBuild，不推送，不改变任何判定。
+
+## 1. 范围与输入身份
+
+- 唯一 Base 仓：`https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/`。本轮 HTTP 200；实际 `build.xml` 标识为 `tizen-base-toolchain_20260914.073422`。原文见 `reference.html`、`reference-build.xml`，访问命令见 raw/018、021。
+- **分母没有随 reference 变化而重算**：采用 `docs/progress/R101/tables/base_all_source_packages.tsv` 的 254 个源码名，与 `docs/progress/R100/tables/base_cpp_package_decisions.tsv` 的 73 个候选逐名核对一致。原表 255/74 行（含表头）。输入 SHA256 见 `INPUT_IDENTITIES.json`。
+- 原分类证据的固定 Base 快照是 `tizen-base-toolchain_20260828.101647`，完整 URL 为 `https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/tizen-base-toolchain_20260828.101647/`。其跨仓消费边取自配套 `Tizen-Unified-Toolchain/tizen-unified-toolchain_20260829.015247`；不是 GCC 的 Tizen-Base。身份依据：`docs/progress/R100/REPORT.md:33`、`:34`。
+- **不使用 R95 镜像成员表，也不把 R100/R101/R109 中继承的镜像字段用于本轮判定或理由。** 本轮对账仅使用候选名、原判定、代码仓身份、符号边分类及后续收口记录；原始行的其他字段仅随输入记录保留，不参与结论。
+- 当前 reference 比原判定快照新；本任务没有重扫当前 reference 包全集、依赖图或所有源码 revision。此限制不改变人工锁定的 73 包对账范围，但不能省略。
+
+## 2. 汇总
+
+| 状态 | 数量 | 说明 |
+| --- | ---: | --- |
+| ADAPTED_PUSHED | 11 | 远端指定分支 HEAD 与 BUILD_WEEKEND_0918 的已发布提交逐一相同，且提交改动已只读核对 |
+| NO_CHANGE_NEEDED | 56 | R100 的 55 项 + 后续收口的 gmp；逐包列出既有判定与限制 |
+| EXCLUDED_BY_DESIGN | 6 | gcc、gcc-aarch64、gcc-armv7hl、gcc-armv7l、gcc-riscv64、glibc |
+| NOT_EVALUATED | 0 | 无 |
+| 合计 | 73 | 11 + 56 + 6 |
+
+R100 当时是 10/55/6/2，不应篡改其原始列。后续 `gmp` 从未定转为无需改，`tensorflow2` 从未定转为需改，依据为 `docs/progress/R103/REPORT.md:9`、`:10`，已在 `docs/progress/R109/REPORT.md:6` 至 `:15` 落表。本轮表保留“R100 判定”原值，最终状态另列。
+
+完整清单：[BASE_73_LEDGER.md](BASE_73_LEDGER.md)、[BASE_73_LEDGER.tsv](BASE_73_LEDGER.tsv)。
+
+不在 11 包内的 **62 项**不是全部“无需改”：其中 56 项无需新增适配，6 项设计排除；逐项理由见 [OUTSIDE_ELEVEN_62.md](OUTSIDE_ELEVEN_62.md) 与 TSV，每行均有 `file:line` 引用。不能把六个例外暗中归并进“无需改”。
+
+## 3. 73 次 Gerrit 只读查询与提交核对
+
+每个源码包均执行 `git ls-remote --exit-code <精确 VCS URL> refs/heads/sandbox/lhmax2025/libcxx-migration`；只有 llvm 按任务要求查 `libcxx-ehabi-backport`。用户名为既有 `lhmax2025`，非交互 SSH；没有尝试新凭据、没有推送或 fetch。共享仓的源码包也逐项查询，没有按一个包的结果推定另一个包。
+
+- 指定分支存在：12 项；不存在：61 项；访问失败：0。
+- “不存在”采用 `ls-remote --exit-code` 的退出码 2 且无匹配引用，不把网络失败当作不存在。
+- 每次完整 URL、argv、环境覆盖、开始/结束时间、stdout/stderr、退出码均在 `remote/<源码包>.json`。
+- 与既有 11 包的提交逐项对照：**11/11 MATCH**，见 [ELEVEN_CROSSCHECK.md](ELEVEN_CROSSCHECK.md)。验证结论沿用历史，不声称本轮重跑了六格或十二格构建。
+- 存在的 12 项的完整 HEAD、提交日期、提交计数、改动文件及性质见 [REMOTE_BRANCH_DETAILS.md](REMOTE_BRANCH_DETAILS.md) / TSV。提交日期是 Git committer date，不冒充推送时间。
+
+### 提交数的具体口径与不可得项
+
+1. **已发布适配提交本身**：11 包每个当前 HEAD 均为一个已记录适配提交；逐个核验其父提交和 `parent..HEAD`，均为 1。LLVM 本次适配为 `c68f376f..f203923a` 的 1 个提交，不把分支已有运行时实施提交吞掉或算作本次新增。
+2. **相对 R101 当时观测的实施基线**：其余 10 包均为 1；libcxx-runtimes 相对已观测 `2d23367d` 是 0。LLVM 本地取证库为浅克隆，只含当前 HEAD 和截断边界，无法完整给出 `2d23367d..f203923a` 的全段提交数，记 `NOT_AVAILABLE_SHALLOW_OR_NONANCESTRAL`，不填猜测值。已尝试 target-fetch、codes/R104/llvm 及 codes/llvm 的只读对象查询；后者没有 c68f376f 对象。要补足可由人工提供完整历史或授权在独立取证副本补齐历史，本轮未改现有仓。
+3. **相对 R101 清单内的老快照 revision**：bcc-tools 为 2、boost 为 3、jsoncpp 为 2，包含此前已存在的非本次适配变更；不能把这些数都称为适配提交数。详细 commit 摘要保存在 `history/*.json`。
+4. **从 HEAD 可达的全历史总数**：不能把浅克隆可见条数冒充全历史。11 个适配包的本地所选库为浅克隆，完整历史总数为 `NOT_AVAILABLE_SHALLOW`。libcxx-runtimes 的同一 HEAD 可在已有完整 `codes/llvm` 中读取，实际 `rev-list --count` 为 565,558；这是包含上游历史的仓库总数，不是新增适配量。该 HEAD 与 R101 老快照 `08a64b6e` 的祖先检查退出 1，因此两者不能解释为线性新增提交数。
+
+这些历史计数限制不影响“当前远端 HEAD 与已验收提交一致”的独立证据，也不应伪装成包未被评估。
+
+### 改动性质不能都写成“仅 flag”
+
+- abseil-cpp、bcc-tools、icu、jsoncpp、libsigc++、taglib：spec 中增加 Clang 条件、开发包依赖和编译/链接 flags。
+- pcre：以上内容外，按条件选择 devel 子包依赖。
+- boost：除条件和 flags，还修正 b2 install 的参数继承；HEAD 自身仅改 spec。其相对老快照范围另含早先 gcc.jam 改动，不能混称本次新增源码改动。
+- tensorflow2：**spec + `tensorflow/lite/kernels/elementwise.cc` 源码兼容修正**，不是仅 flag。
+- llvm：当前适配提交修改 `packaging/llvm.spec`，新增三架构 TF 2.18 libc++ AOT tar；该 HEAD 没有修改上游 C++，但整个 backport 分支已有运行时源码实施，不能统称整条分支仅打包修改。
+- bpftrace：已推的是源码构建路径的 spec 适配，**Source1002 的旧 static 资产未替换**。当前候选验证与 RPM 写包进展不等于 sandbox 已发布替换件。
+
+## 4. 四个点名包
+
+| 包 | 指定 sandbox | 本轮对账结论 | 既有具体依据 |
+| --- | --- | --- | --- |
+| ncurses | 不存在 | NO_CHANGE_NEEDED | R100 候选表第 53 行：包自身有 C++ 运行时/静态归档信号；已测 Unified→Base 的 4 对来源边（aspell、parted、pass、psmisc）分类均 PURE_C_INTERFACE。源对分类表第 5、53、54、57 行；Base 内部提供方边也有纯 C 记录，例如 llvm→ncurses 为内部表第 15 行。不是把 ncurses 当纯 C 源码包。 |
+| nghttp2 | 不存在 | NO_CHANGE_NEEDED | 候选表第 54 行；lwnode→nghttp2 的已测来源边为纯 C，跨仓分类表第 45 行；curl→nghttp2 为内部表第 7 行。自身含 C++/依赖标准库不等于跨边界传递 C++ 对象。 |
+| tiff | 不存在 | NO_CHANGE_NEEDED | 候选表第 69 行；efl、lcms2、opencv→tiff 的来源边均纯 C，跨仓分类表第 25、33、51 行。保留其 C++ 候选身份，不因接口分类而否认包内 C++。 |
+| patchelf | 不存在 | NO_CHANGE_NEEDED | 候选表第 57 行：自身有 C++ runtime 信号，但不提供共享库；已覆盖图 Unified 运行期 consumer=0、Base 内部作为 consumer 边 NONE。coreclr、coreclr-diagnostics、dotnet-build-tools、jdk、lightweight-web-engine、python3-numpy 是记录的构建依赖消费方，不等同于运行期链接。按独立 ELF 工具的原判定无需新增适配。 |
+
+上述“候选表”为 `docs/progress/R100/tables/base_cpp_package_decisions.tsv`；“跨仓分类表”为 `docs/progress/R100/tables/armv7l_cross_edges/actual_cross_source_edge_classification.tsv`；“内部表”为 `docs/progress/R100/tables/armv7l_internal_edges/actual_cross_source_edge_classification.tsv`。本轮精确摘录见 raw/014、037。
+
+这里的纯 C 分类是既有精确符号交集覆盖范围内的结论，不是对任意插件、异常传播或未来消费者的全称证明；不引用设备镜像归属来支撑这四项。
+
+## 5. 两处容易误读的例外
+
+### binutils 不在原来的六个 GCC 例外中
+
+R100 的 6 项是五个 gcc 源码名和 glibc，见 `docs/progress/R100/REPORT.md:118`。binutils、binutils-aarch64、binutils-armv7hl、binutils-armv7l、binutils-riscv64 被原判定明确列在 NO_LIBCXX_NEEDED，而不是 CANNOT_SWITCH_CURRENTLY，见同文件第 129—130 行及逐包表。**不能按任务括号中的举例，把 binutils 自动改成 GCC 设计排除。** 本轮保持原判定并逐个列理由。
+
+### libcxx-runtimes 的第 12 个分支记录不等于第 12 个待适配包
+
+它与 llvm 都映射到 `platform/upstream/llvm`。按任务命名查询，libcxx-runtimes 的 `libcxx-migration` 指向 `2d23367d74afbf2bb1e9e4013fce072b3a154109`，最后提交是 2026-09-02 的 spec 显式选择 Clang；llvm 查询的 `libcxx-ehabi-backport` 指向 `f203923a1508c9344f5fc6b17bd8822f011655c4`。两个名字共享仓，但不是同一个分支，也不表示 QuickBuild 实际取了任意一个。
+
+libcxx-runtimes 的原判定依据是“已在自身 spec 显式构建目标 runtime，无需重复注入”；见 `docs/progress/R100/REPORT.md:142`、候选表对应行。故本轮记 NO_CHANGE_NEEDED（无需新增包侧适配），**不说它没有经过运行时修补，也不据 migration 分支推定实际供给版本**。QuickBuild 需要按既定输入单绑定运行时供给与 LLVM 分支，实际构建输入匹配本轮未验证。
+
+## 6. QuickBuild 结论的边界与未完成项
+
+- 没有 NOT_EVALUATED；无须因为“73 包中有包没判过”而阻止按既定逐包策略开始验证。
+- **不是全局注入许可证**：其余 56 项和 6 个例外并未因此获准切库。保留现有逐包启用条件与 GCC 回退设计。
+- 未验证 QuickBuild 配置已绑定这 11 个 SHA、libcxx-runtimes 实际供给 revision、当前 reference 的新增/漂移包，以及新快照下的边界全集；这些均为 NOT_OBSERVED。本轮不能声明当前 reference 已全量迁移成功。
+- 沿用历史构建结果而非本轮实跑。tensorflow2 的 armv7l GCC 格是“与未改基线同点同因失败”的相对无回归判据，不是六格绝对构建成功；bpftrace 只有 armv7l/aarch64 四格，x86_64 不在 ExclusiveArch；libsigc++ 使用编译参数和 std::__1 痕迹的判据。
+- bpftrace static 原资产按既有人工裁决单列发布；新候选不在本轮“已适配推送”含义内。LLVM 后续静态开发包写包诊断同样不回写已发布源码适配状态。
+- 原 NO 判定依赖固定快照与已覆盖图；本轮只对账记录和远端，不重新评审 R100 规则，也不把“图中未观测”扩大为“绝无风险”。
+
+## 7. 自检与纪律
+
+`SELFCHECK.json` 确认：73 个名字唯一且与固定分母一致，62 项均有逐项说明，11 个发布 SHA 均相同，73 次远端查询均可判定，原始输入哈希未变。完整命令及退出码见 raw/、remote/、history/；脚本快照与哈希一并保留。
+
+只新增 `progress/BASE_LEDGER_0921/` 下取证材料；未构建、未 fetch、未检出/创建/修改分支、未提交、未推送、未使用开发板；codes/ 只读。资源 light 门禁退出 0。发生的工具性错误均保留：最初 VCS 正则未覆盖 product/upstream/gmp，已修正；一次 Python -c 换行转义错误、一个试读文件名不存在，均未用于结论；一次过宽文件枚举已终止并改为限定路径。浅克隆限制按 NOT_AVAILABLE 申报，没有填补猜测。
+
+自行选择的口径仅为：同时保留原始 R100 判定和后续已确认状态；把当前远端 HEAD 等同于本地同 SHA 的 Git 对象以读取元数据/差异；提交数区分老快照、已观测实施基线和 HEAD 适配提交。没有新增迁移判断。
+
+完成后停止，交人工审阅。
