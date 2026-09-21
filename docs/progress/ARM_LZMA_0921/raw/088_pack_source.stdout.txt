@@ -1,0 +1,178 @@
+    20	#include "lib/rpmlead.h"
+    21	#include "build/rpmbuild_internal.h"
+    22	#include "build/rpmbuild_misc.h"
+    23	
+    24	#include "debug.h"
+    25	
+    26	static int rpmPackageFilesArchive(rpmfiles fi, int isSrc,
+    27					  FD_t cfd, ARGV_t dpaths,
+    28					  rpm_loff_t * archiveSize, char ** failedFile)
+    29	{
+    30	    int rc = 0;
+    31	    rpmfi archive = rpmfiNewArchiveWriter(cfd, fi);
+    32	
+    33	    while (!rc && (rc = rpmfiNext(archive)) >= 0) {
+    34	        /* Copy file into archive. */
+    35		FD_t rfd = NULL;
+    36		const char *path = dpaths[rpmfiFX(archive)];
+    37	
+    38		rfd = Fopen(path, "r.ufdio");
+    39		if (Ferror(rfd)) {
+    40		    rc = RPMERR_OPEN_FAILED;
+    41		} else {
+    42		    rc = rpmfiArchiveWriteFile(archive, rfd);
+    43		}
+    44	
+    45		if (rc && failedFile)
+    46		    *failedFile = xstrdup(path);
+    47		if (rfd) {
+    48		    /* preserve any prior errno across close */
+    49		    int myerrno = errno;
+    50		    Fclose(rfd);
+    51		    errno = myerrno;
+    52		}
+    53	    }
+    54	
+    55	    if (rc == RPMERR_ITER_END)
+    56		rc = 0;
+    57	
+    58	    /* Finish the payload stream */
+    59	    if (!rc)
+    60		rc = rpmfiArchiveClose(archive);
+    61	
+    62	    if (archiveSize)
+    63		*archiveSize = (rc == 0) ? rpmfiArchiveTell(archive) : 0;
+    64	
+    65	    rpmfiFree(archive);
+    66	
+    67	    return rc;
+    68	}
+    69	/**
+    70	 * @todo Create transaction set *much* earlier.
+    71	 */
+    72	static rpmRC cpio_doio(FD_t fdo, Package pkg, const char * fmodeMacro,
+    73				rpm_loff_t *archiveSize)
+    74	{
+    75	    char *failedFile = NULL;
+    76	    FD_t cfd;
+    77	    int fsmrc;
+    78	
+    79	    (void) Fflush(fdo);
+    80	    cfd = Fdopen(fdDup(Fileno(fdo)), fmodeMacro);
+    81	    if (cfd == NULL)
+    82		return RPMRC_FAIL;
+    83	
+    84	    fsmrc = rpmPackageFilesArchive(pkg->cpioList, headerIsSource(pkg->header),
+    85					   cfd, pkg->dpaths,
+    86					   archiveSize, &failedFile);
+    87	
+    88	    if (fsmrc) {
+    89		char *emsg = rpmfileStrerror(fsmrc);
+    90		if (failedFile)
+    91		    rpmlog(RPMLOG_ERR, _("create archive failed on file %s: %s\n"),
+    92			   failedFile, emsg);
+    93		else
+    94		    rpmlog(RPMLOG_ERR, _("create archive failed: %s\n"), emsg);
+    95		free(emsg);
+    96	    }
+    97	
+    98	    free(failedFile);
+    99	    Fclose(cfd);
+   100	
+   101	    return (fsmrc == 0) ? RPMRC_OK : RPMRC_FAIL;
+   102	}
+   103	
+   104	static rpmRC addFileToTag(rpmSpec spec, const char * file,
+   105				  Header h, rpmTagVal tag, int append)
+   106	{
+   107	    StringBuf sb = NULL;
+   108	    char buf[BUFSIZ];
+   109	    char * fn;
+   110	    FILE * f;
+   111	    rpmRC rc = RPMRC_FAIL; /* assume failure */
+   112	
+   113	    /* no script file is not an error */
+   114	    if (file == NULL)
+   115		return RPMRC_OK;
+  2320				rc = 0;
+  2321			}
+  2322		    }
+  2323		} else {
+  2324		    rc = RPMERR_DIGEST_MISMATCH;
+  2325		}
+  2326		free(digest);
+  2327	    }
+  2328	
+  2329	exit:
+  2330	    return rc;
+  2331	}
+  2332	
+  2333	int rpmfiArchiveReadToFile(rpmfi fi, FD_t fd, int nodigest)
+  2334	{
+  2335	    return rpmfiArchiveReadToFilePsm(fi, fd, nodigest, NULL);
+  2336	}
+  2337	
+  2338	char * rpmfileStrerror(int rc)
+  2339	{
+  2340	    char *msg = NULL;
+  2341	    const char *s = NULL;
+  2342	    const char *prefix = "cpio";
+  2343	    int myerrno = errno;
+  2344	
+  2345	    switch (rc) {
+  2346	    default:
+  2347		break;
+  2348	    case RPMERR_BAD_MAGIC:	s = _("Bad magic");		break;
+  2349	    case RPMERR_BAD_HEADER:	s = _("Bad/unreadable  header");break;
+  2350	
+  2351	    case RPMERR_OPEN_FAILED:	s = "open";	break;
+  2352	    case RPMERR_CHMOD_FAILED:	s = "chmod";	break;
+  2353	    case RPMERR_CHOWN_FAILED:	s = "chown";	break;
+  2354	    case RPMERR_WRITE_FAILED:	s = "write";	break;
+  2355	    case RPMERR_UTIME_FAILED:	s = "utime";	break;
+  2356	    case RPMERR_UNLINK_FAILED:	s = "unlink";	break;
+  2357	    case RPMERR_RENAME_FAILED:	s = "rename";	break;
+  2358	    case RPMERR_SYMLINK_FAILED: s = "symlink";	break;
+  2359	    case RPMERR_STAT_FAILED:	s = "stat";	break;
+  2360	    case RPMERR_LSTAT_FAILED:	s = "lstat";	break;
+  2361	    case RPMERR_MKDIR_FAILED:	s = "mkdir";	break;
+  2362	    case RPMERR_RMDIR_FAILED:	s = "rmdir";	break;
+  2363	    case RPMERR_MKNOD_FAILED:	s = "mknod";	break;
+  2364	    case RPMERR_MKFIFO_FAILED:	s = "mkfifo";	break;
+  2365	    case RPMERR_LINK_FAILED:	s = "link";	break;
+  2366	    case RPMERR_READLINK_FAILED: s = "readlink";	break;
+  2367	    case RPMERR_READ_FAILED:	s = "read";	break;
+  2368	    case RPMERR_COPY_FAILED:	s = "copy";	break;
+  2369	    case RPMERR_LSETFCON_FAILED: s = "lsetfilecon";	break;
+  2370	    case RPMERR_SETCAP_FAILED: s = "cap_set_file";	break;
+  2371	
+  2372	    case RPMERR_HDR_SIZE:	s = _("Header size too big");	break;
+  2373	    case RPMERR_FILE_SIZE:	s = _("File too large for archive");	break;
+  2374	    case RPMERR_UNKNOWN_FILETYPE: s = _("Unknown file type");	break;
+  2375	    case RPMERR_MISSING_FILE: s = _("Missing file(s)"); break;
+  2376	    case RPMERR_DIGEST_MISMATCH: s = _("Digest mismatch");	break;
+  2377	    case RPMERR_INTERNAL:	s = _("Internal error");	break;
+  2378	    case RPMERR_UNMAPPED_FILE:	s = _("Archive file not in header"); break;
+  2379	    case RPMERR_ENOENT:	s = strerror(ENOENT); break;
+  2380	    case RPMERR_ENOTEMPTY:	s = strerror(ENOTEMPTY); break;
+  2381	    case RPMERR_EXIST_AS_DIR:
+  2382		s = _("File from package already exists as a directory in system");
+  2383		break;
+  2384	    }
+  2385	
+  2386	    if (s != NULL) {
+  2387		rasprintf(&msg, "%s: %s", prefix, s);
+  2388		if ((rc <= RPMERR_CHECK_ERRNO) && myerrno) {
+  2389		    rstrscat(&msg, _(" failed - "), strerror(myerrno), NULL);
+  2390		}
+  2391	    } else {
+  2392		rasprintf(&msg, _("%s: (error 0x%x)"), prefix, rc);
+  2393	    }
+  2394	
+  2395	    return msg;
+  2396	}
+total 16M
+-rw------- 1 toolchain toolchain  16M Sep 21 13:48 rpmbuild-lzma.calls.tsv
+-rw------- 1 toolchain toolchain 1.3K Sep 21 12:56 rpmbuild-lzma.initial.limits
+-rw------- 1 toolchain toolchain 7.6K Sep 21 12:56 rpmbuild-lzma.initial.maps
+-rw------- 1 toolchain toolchain 1.6K Sep 21 12:56 rpmbuild-lzma.initial.status

@@ -1,0 +1,478 @@
+   760		    encoding = 1;
+   761		else if (*mode == 'r')
+   762		    encoding = 0;
+   763		else if (*mode >= '0' && *mode <= '9')
+   764		    level = *mode - '0';
+   765		else if (*mode == 'T') {
+   766		    if (isdigit(*(mode+1))) {
+   767	#ifdef HAVE_LZMA_MT
+   768			threads = atoi(++mode);
+   769	#endif
+   770			/* skip past rest of digits in string that atoi()
+   771			 * should've processed
+   772			 * */
+   773			while (isdigit(*++mode));
+   774		    }
+   775	#ifdef HAVE_LZMA_MT
+   776		    else
+   777			threads = -1;
+   778	#endif
+   779		}
+   780	    }
+   781	    fp = fdopen(fd, encoding ? "w" : "r");
+   782	    if (!fp)
+   783		return NULL;
+   784	    lzfile = calloc(1, sizeof(*lzfile));
+   785	    lzfile->file = fp;
+   786	    lzfile->encoding = encoding;
+   787	    lzfile->eof = 0;
+   788	    lzfile->strm = init_strm;
+   789	    if (encoding) {
+   790		if (xz) {
+   791	#ifdef HAVE_LZMA_MT
+   792		    if (!threads) {
+   793	#endif
+   794			ret = lzma_easy_encoder(&lzfile->strm, level, LZMA_CHECK_SHA256);
+   795	#ifdef HAVE_LZMA_MT
+   796		    } else {
+   797			if (threads == -1)
+   798			    threads = sysconf(_SC_NPROCESSORS_ONLN);
+   799			lzma_mt mt_options = {
+   800			    .flags = 0,
+   801			    .threads = threads,
+   802			    .block_size = 0,
+   803			    .timeout = 0,
+   804			    .preset = level,
+   805			    .filters = NULL,
+   806			    .check = LZMA_CHECK_SHA256 };
+   807	
+   808	#if __WORDSIZE == 32
+   809			/* In 32 bit environment, required memory easily exceeds memory address
+   810			 * space limit if compressing using multiple threads.
+   811			 * By setting a memory limit, liblzma will automatically adjust number
+   812			 * of threads to avoid exceeding memory.
+   813			 */
+   814			if (threads > 1) {
+   815			    struct utsname u;
+   816			    uint32_t memlimit = (SIZE_MAX>>1) + (SIZE_MAX>>3);
+   817			    uint64_t memory_usage;
+   818			    /* While a 32 bit linux kernel will have an address limit of 3GiB
+   819			     * for processes (which is why set the memory limit to 2.5GiB as a safety
+   820			     * margin), 64 bit kernels will have a limit of 4GiB for 32 bit binaries.
+   821			     * Therefore the memory limit should be higher if running on a 64 bit
+   822			     * kernel, so we increase it to 3,5GiB.
+   823			     */
+   824			    uname(&u);
+   825			    if (strstr(u.machine, "64") || strstr(u.machine, "s390x")
+   826	#if defined(__linux__)
+   827					    || ((personality(0xffffffff) & PER_MASK) == PER_LINUX32)
+   828	#endif
+   829				    )
+   830				memlimit += (SIZE_MAX>>2);
+   831	
+   832			    /* keep reducing the number of threads until memory usage gets below limit */
+   833			    while ((memory_usage = lzma_stream_encoder_mt_memusage(&mt_options)) > memlimit) {
+   834				/* number of threads shouldn't be able to hit zero with compression
+   835				 * settings aailable to set through rpm... */
+   836				assert(--mt_options.threads != 0);
+   837			    }
+   838			    lzma_memlimit_set(&lzfile->strm, memlimit);
+   839	
+   840			    if (threads != (int)mt_options.threads)
+   841				rpmlog(RPMLOG_NOTICE,
+   842					"XZ: Adjusted the number of threads from %d to %d to not exceed the memory usage limit of %u bytes",
+   843					threads, mt_options.threads, memlimit);
+   844			}
+   845	#endif
+   846	
+   847			ret = lzma_stream_encoder_mt(&lzfile->strm, &mt_options);
+   848		    }
+   849	#endif
+   850		} else {
+   851		    lzma_options_lzma options;
+   852		    lzma_lzma_preset(&options, level);
+   853		    ret = lzma_alone_encoder(&lzfile->strm, &options);
+   854		}
+   855	    } else {   /* lzma_easy_decoder_memusage(level) is not ready yet, use hardcoded limit for now */
+   856		ret = lzma_auto_decoder(&lzfile->strm, mem_limit ? mem_limit : 100<<20, 0);
+   857	    }
+   858	    if (ret != LZMA_OK) {
+   859		switch (ret) {
+   860		    case LZMA_MEM_ERROR:
+   861			rpmlog(RPMLOG_ERR, "liblzma: Memory allocation failed");
+   862			break;
+   863	
+   864		    case LZMA_DATA_ERROR:
+   865			rpmlog(RPMLOG_ERR, "liblzma: File size limits exceeded");
+   866			break;
+   867	
+   868		    default:
+   869			rpmlog(RPMLOG_ERR, "liblzma: <Unknown error (%d), possibly a bug", ret);
+   870			break;
+   871		}
+   872		fclose(fp);
+   873		free(lzfile);
+   874		return NULL;
+   875	    }
+   876	    return lzfile;
+   877	}
+   878	
+   879	static int lzclose(LZFILE *lzfile)
+   880	{
+   881	    lzma_ret ret;
+   882	    size_t n;
+   883	    int rc;
+   884	
+   885	    if (!lzfile)
+   886		return -1;
+   887	    if (lzfile->encoding) {
+   888		for (;;) {
+   889		    lzfile->strm.avail_out = kBufferSize;
+   890		    lzfile->strm.next_out = lzfile->buf;
+   891		    ret = lzma_code(&lzfile->strm, LZMA_FINISH);
+   892		    if (ret != LZMA_OK && ret != LZMA_STREAM_END)
+   893			return -1;
+   894		    n = kBufferSize - lzfile->strm.avail_out;
+   895		    if (n && fwrite(lzfile->buf, 1, n, lzfile->file) != n)
+   896			return -1;
+   897		    if (ret == LZMA_STREAM_END)
+   898			break;
+   899		}
+   900	    }
+   901	    lzma_end(&lzfile->strm);
+   902	    rc = fclose(lzfile->file);
+   903	    free(lzfile);
+   904	    return rc;
+   905	}
+   906	
+   907	static ssize_t lzread(LZFILE *lzfile, void *buf, size_t len)
+   908	{
+   909	    lzma_ret ret;
+   910	    int eof = 0;
+   911	
+   912	    if (!lzfile || lzfile->encoding)
+   913	      return -1;
+   914	    if (lzfile->eof)
+   915	      return 0;
+   916	    lzfile->strm.next_out = buf;
+   917	    lzfile->strm.avail_out = len;
+   918	    for (;;) {
+   919		if (!lzfile->strm.avail_in) {
+   920		    lzfile->strm.next_in = lzfile->buf;
+   921		    lzfile->strm.avail_in = fread(lzfile->buf, 1, kBufferSize, lzfile->file);
+   922		    if (!lzfile->strm.avail_in)
+   923			eof = 1;
+   924		}
+   925		ret = lzma_code(&lzfile->strm, LZMA_RUN);
+   926		if (ret == LZMA_STREAM_END) {
+   927		    lzfile->eof = 1;
+   928		    return len - lzfile->strm.avail_out;
+   929		}
+   930		if (ret != LZMA_OK)
+   931		    return -1;
+   932		if (!lzfile->strm.avail_out)
+   933		    return len;
+   934		if (eof)
+   935		    return -1;
+   936	      }
+   937	}
+   938	
+   939	static ssize_t lzwrite(LZFILE *lzfile, void *buf, size_t len)
+   940	{
+   941	    lzma_ret ret;
+   942	    size_t n;
+   943	    if (!lzfile || !lzfile->encoding)
+   944		return -1;
+   945	    if (!len)
+   946		return 0;
+   947	    lzfile->strm.next_in = buf;
+   948	    lzfile->strm.avail_in = len;
+   949	    for (;;) {
+   950		lzfile->strm.next_out = lzfile->buf;
+   951		lzfile->strm.avail_out = kBufferSize;
+   952		ret = lzma_code(&lzfile->strm, LZMA_RUN);
+   953		if (ret != LZMA_OK)
+   954		    return -1;
+   955		n = kBufferSize - lzfile->strm.avail_out;
+   956		if (n && fwrite(lzfile->buf, 1, n, lzfile->file) != n)
+   957		    return -1;
+   958		if (!lzfile->strm.avail_in)
+   959		    return len;
+   960	    }
+   961	}
+   962	
+   963	static FD_t xzdFdopen(FD_t fd, int fdno, const char * fmode)
+   964	{
+   965	    LZFILE *lzfile = lzopen_internal(fmode, fdno, 1);
+   966	
+   967	    if (lzfile == NULL)
+   968		return NULL;
+   969	
+   970	    fdSetFdno(fd, -1);          /* XXX skip the fdio close */
+   971	    fdPush(fd, xzdio, lzfile, fdno);
+   972	    return fd;
+   973	}
+   974	
+   975	static FD_t lzdFdopen(FD_t fd, int fdno, const char * fmode)
+   976	{
+   977	    LZFILE *lzfile = lzopen_internal(fmode, fdno, 0);
+   978	
+   979	    if (lzfile == NULL)
+   980		return NULL;
+   981	
+   982	    fdSetFdno(fd, -1);          /* XXX skip the fdio close */
+   983	    fdPush(fd, lzdio, lzfile, fdno);
+   984	    return fd;
+   985	}
+   986	
+   987	static int lzdFlush(FDSTACK_t fps)
+   988	{
+   989	    LZFILE *lzfile = fps->fp;
+   990	    return fflush(lzfile->file);
+   991	}
+   992	
+   993	static ssize_t lzdRead(FDSTACK_t fps, void * buf, size_t count)
+   994	{
+   995	    LZFILE *lzfile = fps->fp;
+   996	    ssize_t rc = 0;
+   997	
+   998	    if (lzfile)
+   999		rc = lzread(lzfile, buf, count);
+  1000	    if (rc == -1) {
+  1001		fps->errcookie = "Lzma: decoding error";
+  1002	    }
+  1003	    return rc;
+  1004	}
+  1005	
+  1006	static ssize_t lzdWrite(FDSTACK_t fps, const void * buf, size_t count)
+  1007	{
+  1008	    LZFILE *lzfile = fps->fp;
+  1009	    ssize_t rc = 0;
+  1010	
+  1011	    rc = lzwrite(lzfile, (void *)buf, count);
+  1012	    if (rc < 0) {
+  1013		fps->errcookie = "Lzma: encoding error";
+  1014	    }
+  1015	    return rc;
+  1016	}
+  1017	
+  1018	static int lzdClose(FDSTACK_t fps)
+  1019	{
+  1020	    LZFILE *lzfile = fps->fp;
+  1021	    int rc;
+  1022	
+  1023	    if (lzfile == NULL) return -2;
+  1024	    rc = lzclose(lzfile);
+  1025	
+  1026	    return rc;
+  1027	}
+  1028	
+  1029	static struct FDIO_s xzdio_s = {
+  1030	  "xzdio", "xz",
+   195	    written = Fwrite(&CPIO_TRAILER, sizeof(CPIO_TRAILER), 1, cpio->fd);
+   196	    cpio->offset += written;
+   197	    if (written != sizeof(CPIO_TRAILER)) {
+   198	        return RPMERR_WRITE_FAILED;
+   199	    }
+   200	
+   201	    /*
+   202	     * XXX GNU cpio pads to 512 bytes. This may matter for
+   203	     * tape device(s) and/or concatenated cpio archives.
+   204	     */
+   205	
+   206	    rc = rpmcpioWritePad(cpio, 4);
+   207	
+   208	    return rc;
+   209	}
+   210	
+   211	int rpmcpioHeaderWrite(rpmcpio_t cpio, char * path, struct stat * st)
+   212	{
+   213	    struct cpioCrcPhysicalHeader hdr_s;
+   214	    struct cpioCrcPhysicalHeader * hdr = &hdr_s;
+   215	    char field[64];
+   216	    size_t len, written;
+   217	    dev_t dev;
+   218	    int rc = 0;
+   219	
+   220	    if ((cpio->mode & O_ACCMODE) != O_WRONLY) {
+   221	        return RPMERR_WRITE_FAILED;
+   222	    }
+   223	
+   224	    if (cpio->fileend != cpio->offset) {
+   225	        return RPMERR_WRITE_FAILED;
+   226	    }
+   227	
+   228	    if (st->st_size >= CPIO_FILESIZE_MAX) {
+   229		return RPMERR_FILE_SIZE;
+   230	    }
+   231	
+   232	    rc = rpmcpioWritePad(cpio, 4);
+   233	    if (rc) {
+   234	        return rc;
+   235	    }
+   236	
+   237	    SET_NUM_FIELD(hdr->inode, st->st_ino, field);
+   238	    SET_NUM_FIELD(hdr->mode, st->st_mode, field);
+   239	    SET_NUM_FIELD(hdr->uid, st->st_uid, field);
+   240	    SET_NUM_FIELD(hdr->gid, st->st_gid, field);
+   241	    SET_NUM_FIELD(hdr->nlink, st->st_nlink, field);
+   242	    SET_NUM_FIELD(hdr->mtime, st->st_mtime, field);
+   243	    SET_NUM_FIELD(hdr->filesize, st->st_size, field);
+   244	
+   245	    dev = major(st->st_dev); SET_NUM_FIELD(hdr->devMajor, dev, field);
+   246	    dev = minor(st->st_dev); SET_NUM_FIELD(hdr->devMinor, dev, field);
+   247	    dev = major(st->st_rdev); SET_NUM_FIELD(hdr->rdevMajor, dev, field);
+   248	    dev = minor(st->st_rdev); SET_NUM_FIELD(hdr->rdevMinor, dev, field);
+   249	
+   250	    len = strlen(path) + 1;
+   251	    SET_NUM_FIELD(hdr->namesize, len, field);
+   252	
+   253	    memcpy(hdr->checksum, "00000000", 8);
+   254	
+   255	    written = Fwrite(CPIO_NEWC_MAGIC, 6, 1, cpio->fd);
+   256	    cpio->offset += written;
+   257	    if (written != 6) {
+   258	        return RPMERR_WRITE_FAILED;
+   259	    }
+   260	
+   261	    written = Fwrite(hdr, PHYS_HDR_SIZE, 1, cpio->fd);
+   262	    cpio->offset += written;
+   263	    if (written != PHYS_HDR_SIZE) {
+   264	        return RPMERR_WRITE_FAILED;
+   265	    }
+   266	
+   267	    written = Fwrite(path, len, 1, cpio->fd);
+   268	    cpio->offset += written;
+   269	    if (written != len) {
+   270	        return RPMERR_WRITE_FAILED;
+   271	    }
+   272	
+   273	    rc = rpmcpioWritePad(cpio, 4);
+   274	
+   275	    cpio->fileend = cpio->offset + st->st_size;
+   276	
+   277	    return rc;
+   278	}
+   279	
+   280	int rpmcpioStrippedHeaderWrite(rpmcpio_t cpio, int fx, off_t fsize)
+   281	{
+   282	    struct cpioStrippedPhysicalHeader hdr_s;
+   283	    struct cpioStrippedPhysicalHeader * hdr = &hdr_s;
+   284	    char field[64];
+   285	    size_t written;
+   286	    int rc = 0;
+   287	
+   288	    if ((cpio->mode & O_ACCMODE) != O_WRONLY) {
+   289	        return RPMERR_WRITE_FAILED;
+   290	    }
+   291	
+   292	    if (cpio->fileend != cpio->offset) {
+   293	        return RPMERR_WRITE_FAILED;
+   294	    }
+   295	
+   296	    rc = rpmcpioWritePad(cpio, 4);
+   297	    if (rc) {
+   298	        return rc;
+   299	    }
+   300	
+   301	    SET_NUM_FIELD(hdr->fx, fx, field);
+   302	
+   303	    written = Fwrite(CPIO_STRIPPED_MAGIC, 6, 1, cpio->fd);
+   304	    cpio->offset += written;
+   305	    if (written != 6) {
+   306	        return RPMERR_WRITE_FAILED;
+   307	    }
+   308	
+   309	    written = Fwrite(hdr, STRIPPED_PHYS_HDR_SIZE, 1, cpio->fd);
+   310	    cpio->offset += written;
+   311	    if (written != STRIPPED_PHYS_HDR_SIZE) {
+   312	        return RPMERR_WRITE_FAILED;
+   313	    }
+   314	
+   315	    rc = rpmcpioWritePad(cpio, 4);
+   316	
+   317	    cpio->fileend = cpio->offset + fsize;
+   318	
+   319	    return rc;
+   320	}
+   321	
+   322	ssize_t rpmcpioWrite(rpmcpio_t cpio, const void * buf, size_t size)
+   323	{
+   324	    size_t written, left;
+   325	
+   326	    if ((cpio->mode & O_ACCMODE) != O_WRONLY) {
+   327	        return RPMERR_WRITE_FAILED;
+   328	    }
+   329	
+   330	    // Do not write beyond file length
+   331	    left = cpio->fileend - cpio->offset;
+   332	    size = size > left ? left : size;
+   333	    written = Fwrite(buf, size, 1, cpio->fd);
+   334	    cpio->offset += written;
+   335	    return written;
+   336	}
+   337	
+   338	
+   339	int rpmcpioHeaderRead(rpmcpio_t cpio, char ** path, int * fx)
+   340	{
+   341	    struct cpioCrcPhysicalHeader hdr;
+   342	    int nameSize;
+   343	    char * end;
+   344	    int rc = 0;
+   345	    ssize_t read;
+  2070		    /* this file actually needs some content */
+  2071		    return fx;
+  2072		}
+  2073		/* go on for special files, directories and empty files */
+  2074	    } while (fx >= 0);
+  2075	    return fx;
+  2076	}
+  2077	
+  2078	size_t rpmfiArchiveWrite(rpmfi fi, const void * buf, size_t size)
+  2079	{
+  2080	    if (fi == NULL || fi->archive == NULL)
+  2081		return -1;
+  2082	    return rpmcpioWrite(fi->archive, buf, size);
+  2083	}
+  2084	
+  2085	int rpmfiArchiveWriteFile(rpmfi fi, FD_t fd)
+  2086	{
+  2087	    rpm_loff_t left;
+  2088	    int rc = 0;
+  2089	    size_t len;
+  2090	    char buf[BUFSIZ*4];
+  2091	
+  2092	    if (fi == NULL || fi->archive == NULL || fd == NULL)
+  2093		return -1;
+  2094	
+  2095	    left = rpmfiFSize(fi);
+  2096	
+  2097	    while (left) {
+  2098		len = (left > sizeof(buf) ? sizeof(buf) : left);
+  2099		if (Fread(buf, sizeof(*buf), len, fd) != len || Ferror(fd)) {
+  2100		    rc = RPMERR_READ_FAILED;
+  2101		    break;
+  2102		}
+  2103	
+  2104		if (rpmcpioWrite(fi->archive, buf, len) != len) {
+  2105		    rc = RPMERR_WRITE_FAILED;
+  2106		    break;
+  2107		}
+  2108		left -= len;
+  2109	    }
+  2110	    return rc;
+  2111	}
+  2112	
+  2113	static void rpmfiSetFound(rpmfi fi, int ix)
+  2114	{
+  2115	    fi->found[ix >> 3] |= (1 << (ix % 8));
+  2116	}
+  2117	
+  2118	static int rpmfiFound(rpmfi fi, int ix)
+  2119	{
+  2120	    return fi->found[ix >> 3] & (1 << (ix % 8));
+  2121	}
+  2122	
+  2123	static int iterReadArchiveNext(rpmfi fi)
+  2124	{
+  2125	    int rc;
