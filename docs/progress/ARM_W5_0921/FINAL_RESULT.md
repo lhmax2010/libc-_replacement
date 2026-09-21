@@ -1,0 +1,74 @@
+# armv7l LLVM：w5.xzdio 整轮写包结果
+
+## 结论
+
+**整轮退出 0，写出 22 个 RPM；22/22 摘要校验通过。原写包失败未再现。**
+
+运行时间为 2026-09-21 19:09:55 至 20:07:00（北京时间），约 57 分 6 秒；任务从 19:03 开始，未超过四小时上限。保留原 binfmt 入口与原宿主 strace；不使用 GDB 或 LD_PRELOAD 包装器。未修改平台源码、spec、project_config、构建根 rpm/liblzma 或 codes/；不推包仓、不推 Gerrit。
+
+这是一轮基于现有共享增量树的完整 `rpmbuild --noprep --noclean -bb` 成功，不是从干净源码重新构建。构建日志第 1210—1305 行为 96 个增量目标；随后执行安装、调试处理和完整写包。不能据此声明与历史轮全部输入逐字节相同。
+
+## 唯一 argv 改动与前置核验
+
+- 对照 `progress/ARM_REPRO_0920/original-argv.json`，唯一改动为 argv index 61：`_binary_payload w5T1.xzdio` → `_binary_payload w5.xzdio`。其他参数逐字节相同，含宿主 strace 过滤器、输出路径、bwrap 绑定、目标架构、debug 开关、`--noprep --noclean -bb`。见 `ARGV_DIFF.json`、`COMMAND.txt`、`cell_commands/w5-original.json`。
+- 在原隔离环境中复用原 rpm 宏源、rcfile、target、命令行 define，实际执行 `rpm --eval '%{_binary_payload}'`：退出 0，输出 `w5.xzdio`。完整命令见 `PAYLOAD_PRECHECK.json` 和 `raw/015*`。
+- spec SHA256 为 `cde49c78e71ed52f99cb9c7691b2cc04c407a98ae4a5b353b5d58efcc4882c68`；前后关键工具与 spec 哈希一致，见 `INPUT_SHA256.json`、`INPUT_RECHECK.json`。
+- 为严格保留原 strace 输出路径，先备份历史 trace，运行后保存本轮 trace，再恢复历史文件；两次均核对 SHA256，见 `TRACE_STORAGE.json`。旧失败输出树另外完整备份，16,993 个条目逐文件校验，见 `previous-preserved-manifest.json`。旧失败证据没有删除。
+- 宿主只读 `/proc` 线程采样是用户要求的观测，不向客体注入仪表；外层资源监控和证据备份不构成“全部环境与历史逐字节相同”的声明。
+
+## 写包与校验
+
+`cells/w5-original/build.log:7542` 起连续 22 条 Wrote；第 18 条为第 7559 行的 `clang-devel-debuginfo`；第 19 条第 7560 行成功写出 `lldb-debuginfo`，最后第 7563 行写出 `libomp-debuginfo`。`cells/w5-original/exitcode` 为 0。完整日志、资源事件、脚本快照均保留。
+
+每个 RPM 单独执行 `rpm -K --nosignature`，均退出 0；这是摘要完整性校验，**不是签名认证或运行功能验证**。另逐个查询 payload，22 个均为 compressor=`xz`、flags=`5`。每份 RPM 的完整路径、大小、SHA256、实际校验命令和输出见 `rpm-validation.jsonl`、`RPM_RESULTS.json`。所有 RPM 的修改时间均在本轮启动后，未把旧输出冒充本轮结果。
+
+22 份 RPM 保留在 `tmp/WEEKEND_0918/rpm-arm-llvm/RPMS/armv7l/`，未提交大型二进制。未推进 bpftrace、未更新任何包仓或批准状态。
+
+## 单线程与历史对照：不能写成“进程总线程数相同”
+
+本轮对宿主 PID 1084979（binfmt 启动的 rpmbuild/QEMU）取得 169 个有效样本，**全部 Threads=2**；其中 102 个采样时已有 RPM 写出。原始 `/proc/status`、task 列表、argv、所选环境、日志位置见 `cells/w5-original/threads.jsonl`，汇总见 `THREAD_SUMMARY.json`。
+
+历史 `w5T1` 包装器轮的两个已有宿主快照分别为：
+
+| 记录 | Threads |
+| --- | ---: |
+| `progress/ARM_LZMA_0921/rpmbuild-host-snapshot-125730.json` | 2 |
+| `progress/ARM_LZMA_0921/rpmbuild-host-snapshot-132743.json` | 3 |
+
+因此人工预期“应相同”不能作为实测结论：本轮总线程 2 与历史首份相同，但与历史第二份的 3 不同。两份历史快照不是本轮同阶段、无仪表的控制实验，不能据此给每个额外线程归因；本轮也未逐线程抓栈，线程具体职责为 NOT_OBSERVED。
+
+单线程的依据分开陈述：构建实际为 `ninja -j 1`；压缩方面，实际 RPM VCS `355231365d01b3fb7979a82a429f6b95c5e95993` 的 `rpmio/rpmio.c:756` 将 threads 初始化为 0，没有 T 参数时在 792—797 行调用单线程 `lzma_easy_encoder`；T1 则走多线程编码器接口且 worker 数设为 1。实际源码全文见 `raw/029_actual_rpmio.stdout.txt`，SHA256=`18d45005014dda1dacb81c771816ddef106af5620db97fd269a1f4876e07b839`；相关摘录见 `raw/030*`。**宿主进程总线程数不是压缩 worker 数。**
+
+## 第五份 libclang.a 身份
+
+从本轮 `llvm-static-devel-22.1.8-1.armv7l.rpm` 用 `rpm2cpio` 与 `cpio -i --to-stdout ./usr/lib/libclang.a` 提取，两个命令均退出 0。
+
+- RPM SHA256：`62cd7fabb07aebac977a036e6340c70bbd4862f3fe6ae398eba5bf54ac7bd501`。
+- 归档大小：2,465,418 字节。
+- **第五份归档 SHA256：`5deb3c6c662c73865e8a38f4f8df8d6e672af2ae8a6a8faae7700b5909c1524a`**。
+- 提取件：`tmp/ARM_W5_0921/libclang-fifth.a`；状态 `WHOLE_BUILD_PASS_AND_DIGESTS_PASS`，未替换下游。
+
+| 身份（历史表标签） | libclang.a SHA256 | 与第五份相同 |
+| --- | --- | --- |
+| approved_old | `9884348bb092f3d550d2485de9a83dcb130f8b1540e0c4f115b82686e42bc374` | 否 |
+| weekend_w2 | `6b5e306dc7a575cb4a1b2e7ee54f9cda999af4ebe16cbdf935840c1fbbe8e96f` | 否 |
+| diagnostic_success | `9d8d9bc44d3080a39d0af03afbf6bc59a6d10c9875390e3b60b65d2fc2c267b7` | 否 |
+| stopped_parallel_not_approved | `22361ff3e78b830df37c225e12e072f1a8f58de27538d23ef57f1299f97665df` | 否 |
+| w5_full_success_fifth | `5deb3c6c662c73865e8a38f4f8df8d6e672af2ae8a6a8faae7700b5909c1524a` | 是 |
+
+此前四份身份引用 `progress/ALIGN_0920/static-identities/summary.json`，本轮未重新定义它们的状态。历史表中的输出路径有被后续轮复用的情况，应以该表已记录的哈希与取证时间识别，不能将历史路径的当前内容等同于历史身份。详见 `FIVE_STATIC_IDENTITIES.json/.tsv`。**第五份与前四份的二进制差异原因本轮未归因，记 NOT_OBSERVED；压缩参数变化本身不能解释归档内部字节变化。**
+
+## 可直接用于周报的根因段落
+
+armv7l LLVM 整轮写包此前在写出 18 个 RPM 后报 `cpio: write failed - Function not implemented`。根因是所用 RPM 的 `rpmio/rpmio.c:773` 数字扫描与第 758 行外层循环递增组合存在 mode 字符串越界读取：压缩模式以 `T<数字>` 结束时，扫描到终止符后外层仍向前递增，可能继续把相邻内存中的 `r` 解析为读模式，导致归档写入失败；错误尾部的 `Function not implemented` 是残留 errno，不表示文件系统不支持写操作。本轮仅将 `_binary_payload w5T1.xzdio` 改为 `w5.xzdio`，避开 T 参数解析并使用 xz level 5 的单线程编码器，整轮退出 0，22 个 RPM 全部通过摘要校验。该修改是命令行规避；根本修复应在 RPM 的 mode 解析中正确处理数字段与字符串终止边界，并增加末尾 T 参数等回归测试后发布修复版 RPM，本轮未实施源码修复。
+
+## 资源、限制与自行判断
+
+- medium 资源门禁通过；开工磁盘约 181 GiB，可用空间高于 20 GiB；开工及启动前 I/O 探测均低于 30 秒。资源上限通过 systemd user scope 实施，MemoryMax=16,536,457,216 字节（总内存 50%），nice=19、ionice=idle、并行度 1；实际 cgroup 与进程记录见 raw/020、raw/026 和 events.jsonl。没有 I/O 退化暂停或内存超限的观测。
+- 本轮只包含 96 个增量目标，没有达到“每 500 目标”额外 I/O 探测门槛；原监控逻辑和时间上限保留。构建约 57 分钟，未到一小时进度周期，事件日志持续记录。
+- 失败未再现，因此按失败条件追加的 GDB 单断点未执行；标为“不触发”，不能写成新的失败现场实测。
+- 本轮不做运行功能等价、库 ABI 等价或下游兼容性验收；22 包完整写出和摘要通过不自动关闭这些门禁。
+- 自行判断仅为：严格 argv 不变要求下，先备份再恢复原 strace 路径以保护证据；线程计数区分宿主总数与压缩 worker；把第五份登记为新的实测身份，不猜差异原因。均已向人工申报。
+- 全部证据通过凭据扫描后归档；大型 trace 无损压缩分片，恢复校验见交付 manifest。执行脚本 SHA256 见 SCRIPT_SHA256.json。
+
+完成后停止，交人工审阅。

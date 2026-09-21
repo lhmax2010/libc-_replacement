@@ -1,0 +1,55 @@
+386378 fstatat64(4,"",0x407ff020,0x1000) = 0
+```
+
+对应前一行打开 `/usr/lib/rpm/fileattrs/pkgconfig.attr`，之后继续读文件。类似 ENOSYS 在启动阶段已出现，并非到第 19 个包才开始；另有 `set_robust_list` 不支持记录。**这些调用没有导致本轮 rpmbuild 失败。致命 ENOSYS 调用及参数：`NOT_OBSERVED`。**
+
+客体 trace 存在多进程写同一行的交错。粗检的 22 条“含 write 和失败文本”候选全部含多个 PID/调用片段，不能把另一调用的 errno 配给 write。逐条保存在 `guest-interleaving-review.json`；不将 22 报为失败 write 次数，也不将 ENOSYS 匹配行数冒充准确调用次数。
+
+已只读取得实际 RPM VCS 的源码，无工作树修改。以下是固定提交实际代码，而非仅拿近似上游版本推论：
+
+`lib/cpio.c:224`：
+
+```c
+if (cpio->fileend != cpio->offset) {
+    return RPMERR_WRITE_FAILED;
+}
+```
+
+这条路径不发起写系统调用，也不设 errno。`lib/cpio.c:172` 的 trailer 检查有同类返回路径。`lib/rpmfi.c:2343,2354,2388`：
+
+```c
+int myerrno = errno;
+case RPMERR_WRITE_FAILED: s = "write"; break;
+if ((rc <= RPMERR_CHECK_ERRNO) && myerrno) {
+    rstrscat(&msg, _(" failed - "), strerror(myerrno), NULL);
+}
+```
+
+`build/pack.c:86`–92 将其组合为 `create archive failed`。以上证明**该错误文字本身不足以定位系统调用**；不证明旧轮一定命中了 fileend 检查，更不证明其 errno 一定来自 statx。原文全文见 raw/107、110–112；带行号摘录见 raw/187、189。
+
+## 6. 分类判断、缺口与后续裁决
+
+| 类别 | 目前能够确认 | 根因结论 |
+| --- | --- | --- |
+| 权限/安全机制 | 本轮实际进程无 Seccomp，所查目录属当前用户，xattr 探测通过；未使用 sudo | 未证明为旧归档失败根因；失败瞬间状态 NOT_OBSERVED |
+| 磁盘/inode/I/O | 本轮空间和探针通过；同一 ext4；22 包摘要通过 | 旧轮磁盘故障根因 NOT_OBSERVED；rsync EPERM 另行保留 |
+| 构建配置/sysroot/依赖 | 两次旧 LLVM 到归档阶段；本次同 spec 成功；96 个增量目标及新输出路径已申报 | 不支持将 bpftrace 编译中止合并为同一根因；未证明具体配置缺陷 |
+| RPM 宏/文件列表/归档库 | 失败阶段已定位；第 19 包路径确认；5 个文件内容与旧轮一致；内部错误可附加 errno | **归档内部的具体失败分支 NOT_OBSERVED，尚无已验证修法** |
+
+尚缺：能再次失败的现场中，`rpmPackageFilesArchive` 的实际返回码、`rpmcpioHeaderWrite/TrailerWrite` 的 fileend/offset、压缩层返回值及当时 errno。旧日志/失败调用筛选 trace 不具备这些信息；本轮成功无法补出失败状态。
+
+若继续诊断，需要人工确认下一轮是否在原输出路径和原 binfmt 入口恢复失败条件，并做库级返回值/调用栈取证；应先保护现有现场，不能把换目录、换压缩器、关调试包当成已证实修复。**本轮没有实施这些操作，也没有擅自进行第二次整轮复现。**
+
+## 7. 自行判断与交付索引
+
+自行判断：为保护旧证据采用新输出目录；为覆盖 QEMU 客体增加客体 trace；为避免错误归因读取部署 RPM 的固定源码；采用只读头部观察器；以可执行元数据/实际调用而非包顺序猜测归因。上述方法的差异及局限均已列出。没有选定修法，没有改判定，没有继续 bpftrace 或板上操作。
+
+- 完整命令、输出、退出码：`raw/`；复现 argv：`cell_commands/llvm-arm-repro.json`。
+- 历史摘录：raw/013、017、023、024、026、033、207、208、216、219；`INTERIM_RESULT.md` 是早期确认前记录，**本报告为最终状态**。
+- 22 RPM、SHA256、摘要校验：`output-manifest.tsv`、`output-01.json` 至 `output-22.json`，raw/215。
+- 包特征对照/第 19 包：`package-feature-comparison.tsv`、`package-19-file-list.tsv`、`package-19-metadata.json`。
+- 追踪及检索限制：`trace-audit.json`、`guest-interleaving-review.json`；raw/213、218–221。
+- 脚本快照：`script-snapshots/` 为启动阶段快照；最终追加脚本/版本在 `final-script-snapshots/`，对应 SHA256 清单。
+- 没有改 codes/spec/系统配置，没有提权、没有推送。构建生成文件及诊断文件仅落既有可写 BUILD 和本任务输出位置。未删除旧产物。技术性路径查询失败与后续纠正保留于 raw，不冒充构建失败。
+
+**停止于此，交人工审阅；不将“本轮成功”写成“根因查明”。**

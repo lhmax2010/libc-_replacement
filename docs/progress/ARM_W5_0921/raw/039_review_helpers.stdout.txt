@@ -1,0 +1,67 @@
+import datetime,hashlib,json,pathlib,subprocess
+root=pathlib.Path('/home/toolchain/development/libc++_replacement');base=root/'progress/ARM_W5_0921';out=base/'cells/w5-original'
+assert int((out/'exitcode').read_text())==0
+lines=(out/'build.log').read_text(errors='replace').splitlines()
+names=[s.split('Wrote: ',1)[1] for s in lines if s.startswith('Wrote: ')]
+assert len(names)==len(set(names))==22, names
+events=[json.loads(s) for s in (out/'events.jsonl').read_text().splitlines()]
+start=datetime.datetime.fromisoformat(next(e['time'] for e in events if e['event']=='start')).timestamp()
+def sha(p):
+    h=hashlib.sha256()
+    with p.open('rb') as f:
+        for b in iter(lambda:f.read(1024*1024),b''):h.update(b)
+    return h.hexdigest()
+rows=[]
+for name in names:
+    assert name.startswith('/tmp/task/rpm-arm-llvm/RPMS/armv7l/')
+    p=root/'tmp/WEEKEND_0918'/name.removeprefix('/tmp/task/')
+    assert p.stat().st_mtime>=start, str(p)
+    cmd=['rpm','-K','--nosignature',str(p)]
+    r=subprocess.run(cmd,capture_output=True,text=True)
+    row=dict(path=str(p.relative_to(root)),bytes=p.stat().st_size,sha256=sha(p),mtime_ns=p.stat().st_mtime_ns,command=cmd,exitcode=r.returncode,stdout=r.stdout,stderr=r.stderr)
+    rows.append(row)
+    qcmd=['rpm','-qp','--nosignature','--qf','%{PAYLOADCOMPRESSOR}\t%{PAYLOADFLAGS}\n',str(p)]
+    qr=subprocess.run(qcmd,capture_output=True,text=True)
+    row['payload_query']=dict(command=qcmd,exitcode=qr.returncode,stdout=qr.stdout,stderr=qr.stderr)
+    with (base/'rpm-validation.jsonl').open('a') as f:f.write(json.dumps(row)+'\n')
+    assert r.returncode==0, str(p)
+    assert qr.returncode==0 and qr.stdout.strip()=='xz\t5', str(p)
+static=next(root/r['path'] for r in rows if pathlib.Path(r['path']).name.startswith('llvm-static-devel-'))
+extract=base/'static-identity';extract.mkdir(exist_ok=True)
+cmd1=['rpm2cpio',str(static)];cmd2=['cpio','-i','--to-stdout','./usr/lib/libclang.a']
+archive=root/'tmp/ARM_W5_0921/libclang-fifth.a'
+with (extract/'rpm2cpio.stderr').open('wb') as err1, (extract/'cpio.stderr').open('wb') as err2, archive.open('wb') as dest:
+    p1=subprocess.Popen(cmd1,stdout=subprocess.PIPE,stderr=err1)
+    p2=subprocess.Popen(cmd2,stdin=p1.stdout,stdout=dest,stderr=err2)
+    p1.stdout.close();rc2=p2.wait();rc1=p1.wait()
+new=dict(label='w5_full_success_fifth',rpm=str(static.relative_to(root)),rpm_sha256=sha(static),extract_commands=[cmd1,cmd2],extract_exitcodes=[rc1,rc2],archive_bytes=archive.stat().st_size,archive_sha256=sha(archive),status='WHOLE_BUILD_PASS_AND_DIGESTS_PASS',downstream_replaced=False)
+(extract/'fifth.json').write_text(json.dumps(new,indent=2)+'\n')
+assert rc1==rc2==0
+previous=json.loads((root/'progress/ALIGN_0920/static-identities/summary.json').read_text())
+new['matches_previous_labels']=[r['label'] for r in previous if r['archive_sha256']==new['archive_sha256']]
+comparison=[dict(label=r['label'],rpm=r['rpm'],archive_bytes=r['archive_bytes'],archive_sha256=r['archive_sha256'],equals_fifth=r['archive_sha256']==new['archive_sha256']) for r in previous]+[new]
+(base/'FIVE_STATIC_IDENTITIES.json').write_text(json.dumps(comparison,indent=2)+'\n')
+(base/'FIVE_STATIC_IDENTITIES.tsv').write_text('label\tarchive_bytes\tarchive_sha256\tequals_fifth\n'+''.join(f"{r['label']}\t{r['archive_bytes']}\t{r['archive_sha256']}\t{r['archive_sha256']==new['archive_sha256']}\n" for r in comparison))
+(base/'RPM_RESULTS.json').write_text(json.dumps(dict(build_exitcode=0,wrote=22,all_digests_pass=True,rpms=rows,fifth=new),indent=2)+'\n')
+print(json.dumps(dict(wrote=22,all_digests_pass=True,fifth=new),indent=2))
+"""Preserve this run's trace and restore the historical evidence path."""
+import hashlib,json,pathlib,subprocess
+root=pathlib.Path('/home/toolchain/development/libc++_replacement');base=root/'progress/ARM_W5_0921'
+row=json.loads((base/'trace-preservation.json').read_text())
+src=root/row['original'];old=root/row['backup'];dst=base/'cells/w5-original/host-failed.strace'
+def sha(p):
+    h=hashlib.sha256()
+    with p.open('rb') as f:
+        for b in iter(lambda:f.read(1024*1024),b''):h.update(b)
+    return h.hexdigest()
+assert sha(old)==row['sha256']
+assert not dst.exists()
+commands=[]
+for a,b in ((src,dst),(old,src)):
+    before=sha(a);cmd=['cp','-a','--',str(a),str(b)]
+    r=subprocess.run(cmd,capture_output=True,text=True)
+    commands.append(dict(command=cmd,exitcode=r.returncode,stdout=r.stdout,stderr=r.stderr,sha256=before))
+    assert r.returncode==0 and sha(b)==before
+result=dict(commands=commands,historical_trace_restored=True,old_sha256=sha(src),new_trace_sha256=sha(dst))
+(base/'TRACE_STORAGE.json').write_text(json.dumps(result,indent=2)+'\n')
+print(json.dumps(result,indent=2))
