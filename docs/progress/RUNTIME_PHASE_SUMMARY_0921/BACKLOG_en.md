@@ -66,3 +66,27 @@ Primary C: aliases, return types, derived/containing types or similar identity i
 | std::back_insert_iterator | D | Establish provider/consumer ownership of concrete fmt get_container(back_insert_iterator) or similar instances and their containers. | PARTLY | [Evidence: pending](EVIDENCE.md#pending) |
 | std::byte | C | Identify MLIR AsyncRuntime C exports using ValueStorage and actual byte* consumers; C symbol names do not encode the type. | YES_LOCAL_RESEARCH | [Evidence: pending](EVIDENCE.md#pending) |
 | std::overflow_error | C | Connect an actual OpenUSD overflow_error-producing entry to its real external caller and exception configuration. | PARTLY | [Evidence: pending](EVIDENCE.md#pending) |
+
+
+## Version 2: four separately tracked enum findings
+
+The original 62 entries and classifications are unchanged. The entries below track type findings, not four new package edges.
+
+### Stream-state enums: type identities still diverge on armv7l
+
+**Fact chain — new measurements added in version 2:** GNU fmtflags, iostate and openmode are the named enums `_Ios_Fmtflags`, `_Ios_Iostate` and `_Ios_Openmode`; libc++ uses `unsigned int` for all three. GNU seekdir is `_Ios_Seekdir`, whereas libc++ uses `ios_base::seekdir`. Both armv7l and aarch64 show 4/4 divergences, with five consistent repetitions per library. All four have size/alignment 4/4 on both sides. The earlier target-type probe/configurations and QEMU user mode were reused; no board was used. [Evidence: TYPES.tsv](../R119_ENUM_RETEST/TYPES.tsv) — SHA256 `f1c2e9551a6a379141ab91b462612ae5799dee1dc077e2044e5fd1816705a377`
+
+| Type | GNU encoding | libc++ encoding (same on both architectures) |
+| --- | --- | --- |
+| fmtflags | `St13_Ios_Fmtflags` | `j` |
+| iostate | `St12_Ios_Iostate` | `j` |
+| openmode | `St13_Ios_Openmode` | `j` |
+| seekdir | `St12_Ios_Seekdir` | `NSt3__18ios_base7seekdirE` |
+
+**Unlike the integer aliases:** the earlier 13 expressions selected the same integer type on the measured armv7l configuration. These four enum/builtin or enum-identity differences remain despite equal widths. They are separately recorded type findings, not four demonstrated product failures.
+
+Compiling the real ARM podofo header produced GNU `_ZN6PoDoFo14PdfInputDevice4SeekExSt12_Ios_Seekdir` and libc++ `_ZN6PoDoFo14PdfInputDevice4SeekExNSt3__18ios_base7seekdirE`. The streamoff encoding is `x` on both sides; seekdir accounts for the remaining difference. A qualified call exposes the UND name. Both ordinary virtual-call IR bodies instead select zero-based index 6 relative to the vtable address point and call indirectly. This observes caller compilation, not provider-vtable or mixed-execution compatibility. [Evidence: SEEK_SYMBOLS.json](../R119_ENUM_RETEST/SEEK_SYMBOLS.json) — SHA256 `32ccb97b8ce8012af090b855466c334cc2eae73aae8c0cacf289cc9e1ef7f0d5` [Evidence: VIRTUAL_CALL.json](../R119_ENUM_RETEST/VIRTUAL_CALL.json) — SHA256 `f928bf2ead58d70a78ad55060a48aed7a3d374172e6c4414b740901001d97e41`
+
+**Excluded explanations:** this is not a 4/8-byte width difference. Different function names do not directly establish different virtual-table slots or inevitable virtual-call failure. Function-identity queries covered the two ChecksumStream::flags overloads, open, PdfInputDevice::Seek and Clear: 5 confirmed declarations under 4 identities. No corresponding external UND was found in the scoped x86_64 set; the bundle::Add positive control passed. The old index's 61/85/87/12 positions are not 245 confirmed public declarations. Virtual calls, inline code and out-of-scope artifacts remain open. Existing fmtflags/openmode stream-member edges are retained. New edges: 0; the total remains 18 pairs / 23 edges. [Evidence: BOUNDARY_QUERIES.json](../R119_ENUM_RETEST/BOUNDARY_QUERIES.json) — SHA256 `ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06` [Evidence: BOUNDARY_CONTROL.json](../R119_ENUM_RETEST/BOUNDARY_CONTROL.json) — SHA256 `0a8d08bb6b8dddb528f55d176d7126f5c0af127a937ff4efc92c2deb67355092`
+
+**What would overturn the finding:** equal complete type encodings under the actual target configuration would require revising the divergence claim. Product consequences require real cross-package calls, including virtual calls, actual providers, parameter semantics and object-lifetime evidence. Symbol/slot observations do not substitute for those execution tests.

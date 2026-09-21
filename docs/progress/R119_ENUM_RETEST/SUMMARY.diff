@@ -1,0 +1,174 @@
+--- a/docs/progress/RUNTIME_PHASE_SUMMARY_0921/SUMMARY_zh.md
++++ b/docs/progress/RUNTIME_PHASE_SUMMARY_0921/SUMMARY_zh.md
+@@ -1,4 +1,6 @@
+ # 按架构的跨包面与标准库新发现
++
++版本 2（2026-09-21）：仅补入四项流状态枚举复测与相关挂账；其余原结论不动。旧版、diff 与本次自检见 [版本说明](VERSION_20260921_2.md)。
+ 
+ 待人工审阅。本文只汇编既有记录，不增加源码分析、探针、板上运行或兼容性承诺。表中的“确认”必须连同证据种类和架构一起阅读。
+ 
+@@ -115,20 +117,40 @@
+ 
+ **可直接引用的一段话**：一些标准库类型名在两套实现中对应不同的整数类型。在已测 x86_64 与 aarch64 配置下，这些整数占用的字节数相同，但编译器在函数名称中区分 long 和 long long，因此使用它们的参数或模板类型可能使调用方找不到提供方的函数。这与“内存布局不同、运行时把对象读错”不是同一种问题；返回类型或对象内部成员也不一定改变函数名。已测 armv7l 配置中，这类整数选择差异不存在，不能将另一架构的问题直接移植过去。
+ 
++### 流状态枚举：armv7l 上仍存在的类型身份分歧
++
++**事实链（新实测，版本 2 补入）**：fmtflags、iostate、openmode 在 GNU 中分别是 `_Ios_Fmtflags`、`_Ios_Iostate`、`_Ios_Openmode` 枚举，在 libc++ 中均是 `unsigned int`；seekdir 在 GNU 中是 `_Ios_Seekdir`，在 libc++ 中是 `ios_base::seekdir`。armv7l 与 aarch64 均 4/4 分歧，两库各五轮一致；四项两侧 size/align 均为 4/4。使用与先前目标类型测量相同的探针、目标配置和 QEMU 用户态，无板上测量。[证据: TYPES.tsv](../R119_ENUM_RETEST/TYPES.tsv) — SHA256 `f1c2e9551a6a379141ab91b462612ae5799dee1dc077e2044e5fd1816705a377`
++
++| 类型 | GNU 编码 | libc++ 编码（两架构相同） |
++| --- | --- | --- |
++| fmtflags | `St13_Ios_Fmtflags` | `j` |
++| iostate | `St12_Ios_Iostate` | `j` |
++| openmode | `St13_Ios_Openmode` | `j` |
++| seekdir | `St12_Ios_Seekdir` | `NSt3__18ios_base7seekdirE` |
++
++**与整数别名不同**：先前 13 项在已测 armv7l 配置中底层整数选择相同；这四项的枚举/内建类型或枚举身份差异仍在，不能由数据宽度相同排除。它们独立登记为已确认类型差异，不代表四个产品故障。
++
++真 ARM podofo 头编译得到 GNU `_ZN6PoDoFo14PdfInputDevice4SeekExSt12_Ios_Seekdir` 与 libc++ `_ZN6PoDoFo14PdfInputDevice4SeekExNSt3__18ios_base7seekdirE`。前面的 streamoff 编码均为 `x`，剩余差异来自 seekdir。显式限定调用用来取得 UND 名称；普通虚调用的两侧 IR 均从虚表 address point 选择从零开始索引 6 的入口并间接调用。这只是调用方编译观察，不是提供方虚表或混合运行兼容性测试。[证据: SEEK_SYMBOLS.json](../R119_ENUM_RETEST/SEEK_SYMBOLS.json) — SHA256 `32ccb97b8ce8012af090b855466c334cc2eae73aae8c0cacf289cc9e1ef7f0d5` [证据: VIRTUAL_CALL.json](../R119_ENUM_RETEST/VIRTUAL_CALL.json) — SHA256 `f928bf2ead58d70a78ad55060a48aed7a3d374172e6c4414b740901001d97e41`
++
++**已排除的解释**：不是 4/8 字节宽度差；也不能由函数名不同直接推出虚表槽位不同或虚调用必失败。对已确认的 ChecksumStream::flags 两重载、open、PdfInputDevice::Seek、Clear 共 5 条公开签名（4 个身份）作函数身份查询，限定 x86_64 集合内没有对应异包 UND；bundle::Add 正向对照通过。旧索引的 61/85/87/12 个位置不是 245 条已确认公开签名。虚调用、内联和范围外产物未被这个阴性排除；已有 fmtflags/openmode 流对象成员边保留。新增边 0，仍为 18 包对 / 23 边。[证据: BOUNDARY_QUERIES.json](../R119_ENUM_RETEST/BOUNDARY_QUERIES.json) — SHA256 `ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06` [证据: BOUNDARY_CONTROL.json](../R119_ENUM_RETEST/BOUNDARY_CONTROL.json) — SHA256 `0a8d08bb6b8dddb528f55d176d7126f5c0af127a937ff4efc92c2deb67355092`
++
++**反驳需要什么**：若实际目标配置下两库完整类型编码相同，本配置的分歧结论需修正；若要判断产品影响，需真实异包调用（包括虚调用）及提供方、参数语义和对象生命周期证据。本轮没有以符号/槽位观察代替这些运行验证。
++
+ ## 四、挂账：状态和重启条件
+ 
+ | 工作项 | 状态 | 重启条件 |
+ | --- | --- | --- |
+ | 62 项函数身份/材料缺口 | 暂停，C 主因 23 项、D 主因 39 项；不是平台级阴性 | 逐项见 [缺口与重启条件](BACKLOG_zh.md) / [完整 TSV](BACKLOG.tsv)，保留本线可解性与依赖 |
+ | 65 项编译期设施的结果投影 | 0/65 完整关闭；15,793 处 RESULT_UNRESOLVED；已停 | 人工重新授权投入；先补实际模板实参、实例化上下文、名字查找或结果结构证据，不能用手选 int 样本关项 |
++| 四项流状态枚举 | 类型分歧已确认（armv7l / aarch64），已确认直接公开签名消费未闭合；独立跟踪 | 真实消费者或虚调用链材料；见枚举补充与 BACKLOG 独立条目 |
+ | 第 201–495 个候选 | 未定界，295 项 | 人工启动下一批定界并确认范围/方法；本次不继续 |
+-| 其余 572 个表达式的 armv7l 复测 | 不测，状态仍未测 | 只有人工更改范围并给出产品相关问题时重启，不因本次 13 项一致就判它们安全 |
++| 其余 568 个表达式的 armv7l 复测 | 不测，状态仍未测 | 只有人工更改范围并给出产品相关问题时重启，不因本次 13 项一致就判它们安全 |
+ 
+ 计数来源：[证据: pending](EVIDENCE.md#pending) [证据: projection](EVIDENCE.md#projection) [证据: projection-count](EVIDENCE.md#projection-count) [证据: base-count](EVIDENCE.md#base-count) [证据: measurement](EVIDENCE.md#measurement) [证据: mechanisms](EVIDENCE.md#mechanisms)。不同表的候选、命中位置及表达式不是同一单位，不相加。
+ 
+ **投影计数的最新口径**：结果位置分别为无对象 15,770、类型分歧 10、标准库对象 13、未定 15,793；“13 个对象结果位置”不等于上节“13 个内建类型表达式”。发现对象结果也不等于已确认新消费边；完整候选关闭仍为 0/65。此前少掉“两侧同一类型”的断言已在新产物纠正，旧产物保留。[证据: projection-count](EVIDENCE.md#projection-count) [证据: projection](EVIDENCE.md#projection)
+ 
+-**不测决定的理由需纠正**：剩余 572 项中，按既有 x86_64 结果分解为相同 283、仅命名空间/标签差异 114、实现类/组合类型差异 111、枚举相关差异 4、不可得 60。已知命名机制不作为新发现重复投入，是保留不测决定的背景；但不能将其余所有项改写成“全为已知实现差异”。相同项不等于 ARM 同样相同，不可得项仍缺结果。本文保留“不测”的人工范围裁决，不替剩余项补结论。[证据: measurement](EVIDENCE.md#measurement) [证据: mechanisms](EVIDENCE.md#mechanisms)
++**不测集合更新**：原 572 项中的枚举相关差异 4 项已独立复测并跟踪；其余 568 项按既有 x86_64 结果分解为相同 283、仅命名空间/标签差异 114、实现类/组合类型差异 111、不可得 60。已知命名机制不作为新发现重复投入，是保留不测决定的背景；但不能将其余所有项改写成“全为已知实现差异”。相同项不等于 ARM 同样相同，不可得项仍缺结果。本文保留“不测”的人工范围裁决，不替剩余项补结论。[证据: measurement](EVIDENCE.md#measurement) [证据: mechanisms](EVIDENCE.md#mechanisms)
+ 
+ ## 五、下一阶段逐边输入与前置
+ 
+--- a/docs/progress/RUNTIME_PHASE_SUMMARY_0921/BACKLOG_zh.md
++++ b/docs/progress/RUNTIME_PHASE_SUMMARY_0921/BACKLOG_zh.md
+@@ -66,3 +66,27 @@
+ | std::back_insert_iterator | D | 公开模板参数确有对象，但实例提供包/消费包尚未对应，不能把 header-only 调用当成已确认跨包符号边。 fmt get_container(back_insert_iterator) 等具体模板实例的 provider/consumer 和底层容器对象。 | PARTLY | [证据: pending](EVIDENCE.md#pending) |
+ | std::byte | C | MLIR 公开别名对应哪些导出函数和实际消费方未闭合；不能因 C 入口名字不带类型就判无对象。 以 MLIR AsyncRuntime 中使用 ValueStorage 的 C 导出函数身份取证，再对应 byte* 的实际 consumer。 | YES_LOCAL_RESEARCH | [证据: pending](EVIDENCE.md#pending) |
+ | std::overflow_error | C | 这些是独立源码路径，尚未证明一个实际平台调用链跨包传播该异常；运行库构造引用不补为包边。 OpenUSD 抛 overflow_error 的实际入口与 cereal/pybind11 或其他真实消费方对应。 | PARTLY | [证据: pending](EVIDENCE.md#pending) |
++
++
++## 版本 2：四项枚举独立条目
++
++原 62 项及其分类保持不变；下列是新增的类型差异跟踪，不是四条新增包边。
++
++### 流状态枚举：armv7l 上仍存在的类型身份分歧
++
++**事实链（新实测，版本 2 补入）**：fmtflags、iostate、openmode 在 GNU 中分别是 `_Ios_Fmtflags`、`_Ios_Iostate`、`_Ios_Openmode` 枚举，在 libc++ 中均是 `unsigned int`；seekdir 在 GNU 中是 `_Ios_Seekdir`，在 libc++ 中是 `ios_base::seekdir`。armv7l 与 aarch64 均 4/4 分歧，两库各五轮一致；四项两侧 size/align 均为 4/4。使用与先前目标类型测量相同的探针、目标配置和 QEMU 用户态，无板上测量。[证据: TYPES.tsv](../R119_ENUM_RETEST/TYPES.tsv) — SHA256 `f1c2e9551a6a379141ab91b462612ae5799dee1dc077e2044e5fd1816705a377`
++
++| 类型 | GNU 编码 | libc++ 编码（两架构相同） |
++| --- | --- | --- |
++| fmtflags | `St13_Ios_Fmtflags` | `j` |
++| iostate | `St12_Ios_Iostate` | `j` |
++| openmode | `St13_Ios_Openmode` | `j` |
++| seekdir | `St12_Ios_Seekdir` | `NSt3__18ios_base7seekdirE` |
++
++**与整数别名不同**：先前 13 项在已测 armv7l 配置中底层整数选择相同；这四项的枚举/内建类型或枚举身份差异仍在，不能由数据宽度相同排除。它们独立登记为已确认类型差异，不代表四个产品故障。
++
++真 ARM podofo 头编译得到 GNU `_ZN6PoDoFo14PdfInputDevice4SeekExSt12_Ios_Seekdir` 与 libc++ `_ZN6PoDoFo14PdfInputDevice4SeekExNSt3__18ios_base7seekdirE`。前面的 streamoff 编码均为 `x`，剩余差异来自 seekdir。显式限定调用用来取得 UND 名称；普通虚调用的两侧 IR 均从虚表 address point 选择从零开始索引 6 的入口并间接调用。这只是调用方编译观察，不是提供方虚表或混合运行兼容性测试。[证据: SEEK_SYMBOLS.json](../R119_ENUM_RETEST/SEEK_SYMBOLS.json) — SHA256 `32ccb97b8ce8012af090b855466c334cc2eae73aae8c0cacf289cc9e1ef7f0d5` [证据: VIRTUAL_CALL.json](../R119_ENUM_RETEST/VIRTUAL_CALL.json) — SHA256 `f928bf2ead58d70a78ad55060a48aed7a3d374172e6c4414b740901001d97e41`
++
++**已排除的解释**：不是 4/8 字节宽度差；也不能由函数名不同直接推出虚表槽位不同或虚调用必失败。对已确认的 ChecksumStream::flags 两重载、open、PdfInputDevice::Seek、Clear 共 5 条公开签名（4 个身份）作函数身份查询，限定 x86_64 集合内没有对应异包 UND；bundle::Add 正向对照通过。旧索引的 61/85/87/12 个位置不是 245 条已确认公开签名。虚调用、内联和范围外产物未被这个阴性排除；已有 fmtflags/openmode 流对象成员边保留。新增边 0，仍为 18 包对 / 23 边。[证据: BOUNDARY_QUERIES.json](../R119_ENUM_RETEST/BOUNDARY_QUERIES.json) — SHA256 `ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06` [证据: BOUNDARY_CONTROL.json](../R119_ENUM_RETEST/BOUNDARY_CONTROL.json) — SHA256 `0a8d08bb6b8dddb528f55d176d7126f5c0af127a937ff4efc92c2deb67355092`
++
++**反驳需要什么**：若实际目标配置下两库完整类型编码相同，本配置的分歧结论需修正；若要判断产品影响，需真实异包调用（包括虚调用）及提供方、参数语义和对象生命周期证据。本轮没有以符号/槽位观察代替这些运行验证。
+--- a/docs/progress/RUNTIME_PHASE_SUMMARY_0921/SUMMARY_en.md
++++ b/docs/progress/RUNTIME_PHASE_SUMMARY_0921/SUMMARY_en.md
+@@ -1,4 +1,6 @@
+ # Cross-package boundaries by architecture and new standard-library findings
++
++Version 2 (2026-09-21): adds only the four stream-state enum retests and related tracking; other conclusions are unchanged. See [version notes](VERSION_20260921_2.md) for the previous version, diff and current audit.
+ 
+ For human review. This document consolidates existing records only. It adds no source investigation, probes, board runs or compatibility commitments. Read every confirmation together with its evidence class and architecture.
+ 
+@@ -115,20 +117,40 @@
+ 
+ **A paragraph ready for external use:** Some standard-library names resolve to different integer types in the two implementations. In the measured x86_64 and aarch64 configurations, those integers occupy the same number of bytes, but the compiler distinguishes long from long long in function names. Parameters or template types involving them may therefore prevent a caller from finding the provider's function. This differs from an object being misread at runtime because its memory layout changed. Return types and internal members do not necessarily change the function name. This integer-selection difference is absent in the measured armv7l configuration; another architecture's finding must not be transferred to it unchanged.
+ 
++### Stream-state enums: type identities still diverge on armv7l
++
++**Fact chain — new measurements added in version 2:** GNU fmtflags, iostate and openmode are the named enums `_Ios_Fmtflags`, `_Ios_Iostate` and `_Ios_Openmode`; libc++ uses `unsigned int` for all three. GNU seekdir is `_Ios_Seekdir`, whereas libc++ uses `ios_base::seekdir`. Both armv7l and aarch64 show 4/4 divergences, with five consistent repetitions per library. All four have size/alignment 4/4 on both sides. The earlier target-type probe/configurations and QEMU user mode were reused; no board was used. [Evidence: TYPES.tsv](../R119_ENUM_RETEST/TYPES.tsv) — SHA256 `f1c2e9551a6a379141ab91b462612ae5799dee1dc077e2044e5fd1816705a377`
++
++| Type | GNU encoding | libc++ encoding (same on both architectures) |
++| --- | --- | --- |
++| fmtflags | `St13_Ios_Fmtflags` | `j` |
++| iostate | `St12_Ios_Iostate` | `j` |
++| openmode | `St13_Ios_Openmode` | `j` |
++| seekdir | `St12_Ios_Seekdir` | `NSt3__18ios_base7seekdirE` |
++
++**Unlike the integer aliases:** the earlier 13 expressions selected the same integer type on the measured armv7l configuration. These four enum/builtin or enum-identity differences remain despite equal widths. They are separately recorded type findings, not four demonstrated product failures.
++
++Compiling the real ARM podofo header produced GNU `_ZN6PoDoFo14PdfInputDevice4SeekExSt12_Ios_Seekdir` and libc++ `_ZN6PoDoFo14PdfInputDevice4SeekExNSt3__18ios_base7seekdirE`. The streamoff encoding is `x` on both sides; seekdir accounts for the remaining difference. A qualified call exposes the UND name. Both ordinary virtual-call IR bodies instead select zero-based index 6 relative to the vtable address point and call indirectly. This observes caller compilation, not provider-vtable or mixed-execution compatibility. [Evidence: SEEK_SYMBOLS.json](../R119_ENUM_RETEST/SEEK_SYMBOLS.json) — SHA256 `32ccb97b8ce8012af090b855466c334cc2eae73aae8c0cacf289cc9e1ef7f0d5` [Evidence: VIRTUAL_CALL.json](../R119_ENUM_RETEST/VIRTUAL_CALL.json) — SHA256 `f928bf2ead58d70a78ad55060a48aed7a3d374172e6c4414b740901001d97e41`
++
++**Excluded explanations:** this is not a 4/8-byte width difference. Different function names do not directly establish different virtual-table slots or inevitable virtual-call failure. Function-identity queries covered the two ChecksumStream::flags overloads, open, PdfInputDevice::Seek and Clear: 5 confirmed declarations under 4 identities. No corresponding external UND was found in the scoped x86_64 set; the bundle::Add positive control passed. The old index's 61/85/87/12 positions are not 245 confirmed public declarations. Virtual calls, inline code and out-of-scope artifacts remain open. Existing fmtflags/openmode stream-member edges are retained. New edges: 0; the total remains 18 pairs / 23 edges. [Evidence: BOUNDARY_QUERIES.json](../R119_ENUM_RETEST/BOUNDARY_QUERIES.json) — SHA256 `ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06` [Evidence: BOUNDARY_CONTROL.json](../R119_ENUM_RETEST/BOUNDARY_CONTROL.json) — SHA256 `0a8d08bb6b8dddb528f55d176d7126f5c0af127a937ff4efc92c2deb67355092`
++
++**What would overturn the finding:** equal complete type encodings under the actual target configuration would require revising the divergence claim. Product consequences require real cross-package calls, including virtual calls, actual providers, parameter semantics and object-lifetime evidence. Symbol/slot observations do not substitute for those execution tests.
++
+ ## Paused work and restart conditions
+ 
+ | Work item | State | Restart condition |
+ | --- | --- | --- |
+ | 62 identity/material gaps | Paused; 23 primarily C and 39 primarily D; not platform-wide negatives | See [individual gaps](BACKLOG_en.md) and [full TSV](BACKLOG.tsv), retaining local-resolvability and dependency records |
+ | Result projections of 65 compile-time facilities | 0/65 fully closed; 15,793 RESULT_UNRESOLVED occurrences; stopped | Renewed human authorization, then actual template arguments, instantiation/name-lookup context or result-structure evidence; hand-selected int examples cannot close candidates |
++| Four stream-state enums | Type divergence confirmed on armv7l / aarch64; consumers of the confirmed direct declarations remain unclosed; tracked separately | Actual consumers or virtual-call paths; see the enum addition and separate BACKLOG entries |
+ | Candidates 201–495 | 295 not yet bounded | Authorization for the next batch and confirmation of scope/method; no continuation here |
+-| Remaining 572 expressions on armv7l | Do not test; remain unmeasured | Restart only after an explicit scope change and a product-relevant question; equality of the selected 13 does not establish safety of the others |
++| Remaining 568 expressions on armv7l | Do not test; remain unmeasured | Restart only after an explicit scope change and a product-relevant question; equality of the selected 13 does not establish safety of the others |
+ 
+ Count sources: [Evidence: pending](EVIDENCE.md#pending) [Evidence: projection](EVIDENCE.md#projection) [Evidence: projection-count](EVIDENCE.md#projection-count) [Evidence: base-count](EVIDENCE.md#base-count) [Evidence: measurement](EVIDENCE.md#measurement) [Evidence: mechanisms](EVIDENCE.md#mechanisms). Candidate counts, source occurrences and type expressions are different units and must not be summed.
+ 
+ **Latest projection counts:** 15,770 no-object result occurrences, 10 type-divergent occurrences, 13 standard-library-object occurrences and 15,793 unresolved occurrences. The 13 object-result occurrences are not the 13 builtin-type expressions above. An object result does not itself establish another consumer edge, and full candidate closure remains 0/65. The missing same-type assertion was corrected in new artifacts while retaining the original records. [Evidence: projection-count](EVIDENCE.md#projection-count) [Evidence: projection](EVIDENCE.md#projection)
+ 
+-**Correction to the rationale for not testing:** the remaining 572 expressions break down, by their existing x86_64 results, into 283 identical, 114 namespace/tag-only differences, 111 implementation/composite-type differences, 4 enum-related differences and 60 unavailable results. Avoiding repeated work on known naming mechanisms supports the scope decision, but does not justify describing all remaining expressions as known implementation differences. Identical x86_64 results do not establish ARM equality, and unavailable results remain unavailable. The human decision not to test is retained without assigning missing conclusions. [Evidence: measurement](EVIDENCE.md#measurement) [Evidence: mechanisms](EVIDENCE.md#mechanisms)
++**Updated no-test set:** the 4 enum-related differences have been separated from the former 572 expressions for retesting and tracking. The remaining 568 break down, by their existing x86_64 results, into 283 identical, 114 namespace/tag-only differences, 111 implementation/composite-type differences and 60 unavailable results. Avoiding repeated work on known naming mechanisms supports the scope decision, but does not justify describing all remaining expressions as known implementation differences. Identical x86_64 results do not establish ARM equality, and unavailable results remain unavailable. The human decision not to test is retained without assigning missing conclusions. [Evidence: measurement](EVIDENCE.md#measurement) [Evidence: mechanisms](EVIDENCE.md#mechanisms)
+ 
+ ## Inputs and prerequisites for the next validation stage
+ 
+--- a/docs/progress/RUNTIME_PHASE_SUMMARY_0921/BACKLOG_en.md
++++ b/docs/progress/RUNTIME_PHASE_SUMMARY_0921/BACKLOG_en.md
+@@ -66,3 +66,27 @@
+ | std::back_insert_iterator | D | Establish provider/consumer ownership of concrete fmt get_container(back_insert_iterator) or similar instances and their containers. | PARTLY | [Evidence: pending](EVIDENCE.md#pending) |
+ | std::byte | C | Identify MLIR AsyncRuntime C exports using ValueStorage and actual byte* consumers; C symbol names do not encode the type. | YES_LOCAL_RESEARCH | [Evidence: pending](EVIDENCE.md#pending) |
+ | std::overflow_error | C | Connect an actual OpenUSD overflow_error-producing entry to its real external caller and exception configuration. | PARTLY | [Evidence: pending](EVIDENCE.md#pending) |
++
++
++## Version 2: four separately tracked enum findings
++
++The original 62 entries and classifications are unchanged. The entries below track type findings, not four new package edges.
++
++### Stream-state enums: type identities still diverge on armv7l
++
++**Fact chain — new measurements added in version 2:** GNU fmtflags, iostate and openmode are the named enums `_Ios_Fmtflags`, `_Ios_Iostate` and `_Ios_Openmode`; libc++ uses `unsigned int` for all three. GNU seekdir is `_Ios_Seekdir`, whereas libc++ uses `ios_base::seekdir`. Both armv7l and aarch64 show 4/4 divergences, with five consistent repetitions per library. All four have size/alignment 4/4 on both sides. The earlier target-type probe/configurations and QEMU user mode were reused; no board was used. [Evidence: TYPES.tsv](../R119_ENUM_RETEST/TYPES.tsv) — SHA256 `f1c2e9551a6a379141ab91b462612ae5799dee1dc077e2044e5fd1816705a377`
++
++| Type | GNU encoding | libc++ encoding (same on both architectures) |
++| --- | --- | --- |
++| fmtflags | `St13_Ios_Fmtflags` | `j` |
++| iostate | `St12_Ios_Iostate` | `j` |
++| openmode | `St13_Ios_Openmode` | `j` |
++| seekdir | `St12_Ios_Seekdir` | `NSt3__18ios_base7seekdirE` |
++
++**Unlike the integer aliases:** the earlier 13 expressions selected the same integer type on the measured armv7l configuration. These four enum/builtin or enum-identity differences remain despite equal widths. They are separately recorded type findings, not four demonstrated product failures.
++
++Compiling the real ARM podofo header produced GNU `_ZN6PoDoFo14PdfInputDevice4SeekExSt12_Ios_Seekdir` and libc++ `_ZN6PoDoFo14PdfInputDevice4SeekExNSt3__18ios_base7seekdirE`. The streamoff encoding is `x` on both sides; seekdir accounts for the remaining difference. A qualified call exposes the UND name. Both ordinary virtual-call IR bodies instead select zero-based index 6 relative to the vtable address point and call indirectly. This observes caller compilation, not provider-vtable or mixed-execution compatibility. [Evidence: SEEK_SYMBOLS.json](../R119_ENUM_RETEST/SEEK_SYMBOLS.json) — SHA256 `32ccb97b8ce8012af090b855466c334cc2eae73aae8c0cacf289cc9e1ef7f0d5` [Evidence: VIRTUAL_CALL.json](../R119_ENUM_RETEST/VIRTUAL_CALL.json) — SHA256 `f928bf2ead58d70a78ad55060a48aed7a3d374172e6c4414b740901001d97e41`
++
++**Excluded explanations:** this is not a 4/8-byte width difference. Different function names do not directly establish different virtual-table slots or inevitable virtual-call failure. Function-identity queries covered the two ChecksumStream::flags overloads, open, PdfInputDevice::Seek and Clear: 5 confirmed declarations under 4 identities. No corresponding external UND was found in the scoped x86_64 set; the bundle::Add positive control passed. The old index's 61/85/87/12 positions are not 245 confirmed public declarations. Virtual calls, inline code and out-of-scope artifacts remain open. Existing fmtflags/openmode stream-member edges are retained. New edges: 0; the total remains 18 pairs / 23 edges. [Evidence: BOUNDARY_QUERIES.json](../R119_ENUM_RETEST/BOUNDARY_QUERIES.json) — SHA256 `ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06` [Evidence: BOUNDARY_CONTROL.json](../R119_ENUM_RETEST/BOUNDARY_CONTROL.json) — SHA256 `0a8d08bb6b8dddb528f55d176d7126f5c0af127a937ff4efc92c2deb67355092`
++
++**What would overturn the finding:** equal complete type encodings under the actual target configuration would require revising the divergence claim. Product consequences require real cross-package calls, including virtual calls, actual providers, parameter semantics and object-lifetime evidence. Symbol/slot observations do not substitute for those execution tests.
+--- a/docs/progress/RUNTIME_PHASE_SUMMARY_0921/BACKLOG.tsv
++++ b/docs/progress/RUNTIME_PHASE_SUMMARY_0921/BACKLOG.tsv
+@@ -61,3 +61,7 @@
+ std::back_insert_iterator	D	D	PAUSED_NOT_OBSERVED	公开模板参数确有对象，但实例提供包/消费包尚未对应，不能把 header-only 调用当成已确认跨包符号边。	fmt get_container(back_insert_iterator) 等具体模板实例的 provider/consumer 和底层容器对象。	Establish provider/consumer ownership of concrete fmt get_container(back_insert_iterator) or similar instances and their containers.	PARTLY	需实例来源，不能以 header-only 签名直接认定跨包。	docs/progress/R119_RECLASSIFY/CD_GAPS_62.tsv	576e84c691c56bb2b04cd6b35a5c7f25377314f918f3ccd69af690876e5c846c	docs/progress/R119_batch2/W1/reviewed/193.json	6fa8369304cba85960d065b912a373c63b06a5757373cb7854099a1be8028e37
+ std::byte	C	C,D	PAUSED_NOT_OBSERVED	MLIR 公开别名对应哪些导出函数和实际消费方未闭合；不能因 C 入口名字不带类型就判无对象。	以 MLIR AsyncRuntime 中使用 ValueStorage 的 C 导出函数身份取证，再对应 byte* 的实际 consumer。	Identify MLIR AsyncRuntime C exports using ValueStorage and actual byte* consumers; C symbol names do not encode the type.	YES_LOCAL_RESEARCH	现有 C 入口与类型别名可查；类型名字不进入 C 符号。	docs/progress/R119_RECLASSIFY/CD_GAPS_62.tsv	576e84c691c56bb2b04cd6b35a5c7f25377314f918f3ccd69af690876e5c846c	docs/progress/R119_batch2/W1/reviewed/194.json	5d910cdbd459b83e7468fad83e38597400900821d1523098b37d6c589bc51229
+ std::overflow_error	C	C,D	PAUSED_NOT_OBSERVED	这些是独立源码路径，尚未证明一个实际平台调用链跨包传播该异常；运行库构造引用不补为包边。	OpenUSD 抛 overflow_error 的实际入口与 cereal/pybind11 或其他真实消费方对应。	Connect an actual OpenUSD overflow_error-producing entry to its real external caller and exception configuration.	PARTLY	源码片段可查，实际调用/异常配置仍缺；不拼接独立 throw/catch。	docs/progress/R119_RECLASSIFY/CD_GAPS_62.tsv	576e84c691c56bb2b04cd6b35a5c7f25377314f918f3ccd69af690876e5c846c	docs/progress/R119_batch2/W1/reviewed/200.json	f1b712483fdabb118eb0219692c859eac9c89c699e34eeb9d1bdad60d6a9bc9b
++std::ios_base::fmtflags	ENUM_IDENTITY		TYPE_DIVERGENCE_CONFIRMED_EXPOSURE_NOT_CLOSED	已确认公开身份 Cynara::ChecksumStream::flags( 在限定 x86_64 ELF 集合内未见异包 UND；不排除虚调用/内联/范围外。	取得真实异包消费或虚调用链、提供方和构建配置，再验证；本轮不下产品结论。	Obtain real external consumers or virtual-call paths, providers and build configuration; no product conclusion from this retest.	PARTLY	实际消费路径/间接调用与提供方材料	docs/progress/R119_ENUM_RETEST/BOUNDARY_QUERIES.json	ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06	docs/progress/R119_DIVERGENT/PUBLIC_DECLARATIONS.tsv	afea3f2711cfd30d5b166d31edd2a3f3c51dc1ff6db3635d5900a2212ffd0fc3
++std::ios_base::openmode	ENUM_IDENTITY		TYPE_DIVERGENCE_CONFIRMED_EXPOSURE_NOT_CLOSED	已确认公开身份 Cynara::ChecksumStream::open( 在限定 x86_64 ELF 集合内未见异包 UND；不排除虚调用/内联/范围外。	取得真实异包消费或虚调用链、提供方和构建配置，再验证；本轮不下产品结论。	Obtain real external consumers or virtual-call paths, providers and build configuration; no product conclusion from this retest.	PARTLY	实际消费路径/间接调用与提供方材料	docs/progress/R119_ENUM_RETEST/BOUNDARY_QUERIES.json	ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06	docs/progress/R119_DIVERGENT/PUBLIC_DECLARATIONS.tsv	afea3f2711cfd30d5b166d31edd2a3f3c51dc1ff6db3635d5900a2212ffd0fc3
++std::ios_base::seekdir	ENUM_IDENTITY		TYPE_DIVERGENCE_CONFIRMED_EXPOSURE_NOT_CLOSED	已确认公开身份 PoDoFo::PdfInputDevice::Seek( 在限定 x86_64 ELF 集合内未见异包 UND；不排除虚调用/内联/范围外。	取得真实异包消费或虚调用链、提供方和构建配置，再验证；本轮不下产品结论。	Obtain real external consumers or virtual-call paths, providers and build configuration; no product conclusion from this retest.	PARTLY	实际消费路径/间接调用与提供方材料	docs/progress/R119_ENUM_RETEST/BOUNDARY_QUERIES.json	ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06	docs/progress/R119_DIVERGENT/PUBLIC_DECLARATIONS.tsv	afea3f2711cfd30d5b166d31edd2a3f3c51dc1ff6db3635d5900a2212ffd0fc3
++std::ios_base::iostate	ENUM_IDENTITY		TYPE_DIVERGENCE_CONFIRMED_EXPOSURE_NOT_CLOSED	已确认公开身份 PoDoFo::PdfInputDevice::Clear( 在限定 x86_64 ELF 集合内未见异包 UND；不排除虚调用/内联/范围外。	取得真实异包消费或虚调用链、提供方和构建配置，再验证；本轮不下产品结论。	Obtain real external consumers or virtual-call paths, providers and build configuration; no product conclusion from this retest.	PARTLY	实际消费路径/间接调用与提供方材料	docs/progress/R119_ENUM_RETEST/BOUNDARY_QUERIES.json	ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06	docs/progress/R119_DIVERGENT/PUBLIC_DECLARATIONS.tsv	afea3f2711cfd30d5b166d31edd2a3f3c51dc1ff6db3635d5900a2212ffd0fc3

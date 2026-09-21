@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""具体函数身份查询；记录正向控制，候选命中不自动成为新边。"""
+from common import *
+import sqlite3,collections
+gate('boundary_gate');db=ROOT/'tmp/R119_batch1/full_elf/symbols.sqlite3'
+con=sqlite3.connect('file:'+str(db)+'?mode=ro',uri=True)
+elves={i:dict(metadata=json.loads(meta),sha256=digest) for i,meta,digest in con.execute('select id,metadata,sha256 from elf')}
+control_path=ROOT/'docs/progress/R119_batch1/W1/positive/bundle_add.json';control=json.loads(control_path.read_text());name=control['elf_matches'][0]['symbol']['demangled']
+found=list(con.execute('select elf_id,ndx from normalized_symbol where name=?',(name,)))
+assert any(n=='UND' for i,n in found) and any(n!='UND' for i,n in found)
+save(OUT/'BOUNDARY_POSITIVE_CONTROL.json',dict(identity=name,hits=found,passed=True,prior_proof=str(control_path.relative_to(ROOT)),sha256=sha(control_path)))
+queries=['ChecksumStream::open(', 'ChecksumStream::flags(', 'PdfInputDevice::Tell(', 'PdfInputDevice::Seek(', 'zypp::InputStream::', 'LineReader::lineStart(', 'WaitUntil(', 'FromChrono(', 'ToChronoSeconds(', 'GetUtilityExpressionTimeout(', 'GetInterruptTimeout(', 'waitForUnlockFor(', 'CreateDirectoryReloaderCrlProvider(', 'getLastModified(', 'mapped_file::open(', 'file_descriptor::open(', 'zypp::xml::Reader::Reader(', 'onert::ir::Coordinates::begin(', 'onert::ir::Coordinates::end(', 'cv::dnn::', 'UnregisterSignal(']
+queries += ['FileLoader::ReadFile(', 'FileLoader::GetFileSize(', 'FontFileManager::FindFontFile(', 'FontFileManager::CacheFontFile(', 'get_unichar_from_std_iterator(', 'ArchGetMainThreadId(', 'RCSResourceObject::getLockOwner(', 'RCSResourceObject::setLockOwner(', 'wrapped_exception::wrapped_exception(', 'AsyncPromise::setException(', 'PdfInputDevice::Clear(']
+reports=json.loads((OUT/'BOUNDARY_FUNCTION_QUERIES.json').read_text()) if (OUT/'BOUNDARY_FUNCTION_QUERIES.json').exists() else []
+done={r['query'] for r in reports}
+for token in queries:
+ if token in done:continue
+ defs=list(con.execute("select elf_id,name,ndx from normalized_symbol where instr(name,?)>0 and ndx!='UND'",(token,)))
+ pairs=[]
+ for eid,name,ndx in defs:
+  for (cid,) in con.execute("select distinct elf_id from normalized_symbol where name=? and ndx='UND'",(name,)):
+   if elves[eid]['metadata']['sourcerpm']!=elves[cid]['metadata']['sourcerpm']:
+    pairs.append(dict(provider_id=eid,consumer_id=cid,symbol=name,provider=elves[eid],consumer=elves[cid]))
+ reports.append(dict(query=token,definitions=[dict(id=eid,name=name,elf=elves[eid]) for eid,name,ndx in defs],other_source_links=pairs))
+ print(token,'defs',len(defs),'cross-source',len(pairs),flush=True)
+ for pair in pairs:print(json.dumps(pair,ensure_ascii=False),flush=True)
+save(OUT/'BOUNDARY_FUNCTION_QUERIES.json',reports)
+print('rows',len(reports))
+#!/usr/bin/env python3
+from common import *
+import collections,re
+gate('exposure_gate')
+rows=json.loads((OUT/'TYPE_RESULTS.json').read_text())
+hits=json.load(gzip.open(OUT/'HEADER_HITS.json.gz','rt'))
+byid=collections.defaultdict(list)
+for h in hits:
+ for id in h['type_candidates']:byid[id].append(h)
+selected={}
+tokens=['ChecksumStream','PdfInputDevice','Coordinates','FromChrono','getLastModified','DictValue']
+for h in hits:
+ if not any(t in h['context'] or any(t in x['path'] for x in h['references']) for t in tokens):continue
+ ref=h['references'][0];p=pathlib.Path(ref['cache_path'])
+ if str(p) in selected:continue
+ assert sha(p)==ref['file_sha256']
+ selected[str(p)]=dict(path=str(p),sha256=sha(p),references=h['references'],text='\n'.join(f'{i+1}: {s}' for i,s in enumerate(p.read_text(errors='replace').splitlines())))
+save(OUT/'EXPOSURE_SELECTED_HEADERS.json',selected)
+for v in selected.values():
+ print(v['references'][0]['path'])
+ for line in v['text'].splitlines():
+  if any(t in line for t in ['streamoff','fmtflags','openmode','seekdir','Tell(','Tell (','Seek(','Seek (','const_iterator','FromChrono','getLastModified']):print(line)
+print('selected_headers',len(selected))
+direct=[]
+for r in rows:
+ if r['result']!='DIVERGENT':continue
+ expression=re.sub(r'\s+','',r['expression'])
+ matches=[h for h in byid[r['id']] if expression in re.sub(r'\s+','',h['text'])]
+ direct.append(dict(id=r['id'],expression=r['expression'],qualified_root_positions=len(byid[r['id']]),exact_spelling_positions=len(matches),matches=matches))
+save(OUT/'DIRECT_EXPOSURE_HITS.json',direct)
+print('DIRECT_COUNTS')
+for r in direct:
+ if r['exact_spelling_positions']:print(r['id'],r['expression'],r['exact_spelling_positions'])
+#!/usr/bin/env python3
+"""固定清单，两库实际展开与类型编码，五轮；缺失类型保留失败，不换实参。"""
+from common import *
+import re
+CC=pathlib.Path('/home/toolchain/development/libc++_replacement/progress/R33/tools/tizen-clang++')
+SDK=ROOT/'tmp/API_0911/W1_CONT';BUILD=ROOT/'tmp/IMPL_0908/build-native'
+GNU=SDK/'gnu14_sdk/usr/lib64/gcc/x86_64-tizen-linux-gnu/14.2.0/include/c++'
+TMP=ROOT/'tmp/R119_DIVERGENT';TMP.mkdir(parents=True,exist_ok=True)
+PRE=r'''#include <cstdio>
+#include <cstddef>
+#include <cstdint>
+#include <cwchar>
+#include <cmath>
+#include <type_traits>
+#include <typeinfo>
+#include <limits>
+#include <ios>
+#include <string>
+#include <string_view>
+#include <vector>
+#include <deque>
+#include <list>
+#include <forward_list>
+#include <array>
+#include <map>
+#include <set>
+#include <unordered_map>
+#include <unordered_set>
+#include <stack>
+#include <queue>
+#include <iterator>
+#include <chrono>
+#include <random>
+#include <thread>
+#include <mutex>
+#include <shared_mutex>
+#include <condition_variable>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <atomic>
+#include <regex>
+#include <exception>
+#include <typeindex>
+#include <initializer_list>
+template<class T> struct TypeToken {};
+template<class T> __attribute__((used,noinline)) void abi_identity(TypeToken<T>) {}
+template<class T> const char* actual(){return __PRETTY_FUNCTION__;}
+template<class T> void emit(const char* id){
+  abi_identity(TypeToken<T>{});
+  std::printf("%s\tTYPE=%s\tTOKEN=%s\tDIRECT=%s\t",id,actual<T>(),typeid(TypeToken<T>).name(),typeid(T).name());
+  if constexpr(std::is_void<T>::value||std::is_function<T>::value) std::printf("SIZE=NA\tALIGN=NA\n");
+  else std::printf("SIZE=%zu\tALIGN=%zu\n",sizeof(T),alignof(T));
+}
+'''
+def flags(lib):
+ opts=['-std=c++17','-O0','-g','-Wno-deprecated-declarations','-nostdinc++','-nostdlib++','-fuse-ld=/usr/bin/ld.gold']
+ if lib=='gnu':return opts+['-I'+str(GNU),'-I'+str(GNU/'x86_64-tizen-linux-gnu')],[SDK/'closure_ewk/libstdc++.so.6']
+ return opts+['-I'+str(BUILD/'include/c++/v1')],['-L'+str(BUILD/'lib'),'-lc++','-lc++abi']
+def source(items):
+ definitions=[];calls=[]
+ for r in items:
+  expr=r['expression'];id=r['id']
+  # 对具体容器/类的成员，用依赖探测记录“此实例无成员”，不替换请求类型。
+  m=re.match(r'^(std::.*)::([a-z][a-z0-9_]*)$',expr)
+  if m and ('<' in m[1] or m[1].count('::')>=2 or m[1] in ['std::string','std::wstring','std::u16string','std::u32string','std::string_view','std::wstring_view','std::ios_base','std::thread','std::mutex','std::recursive_mutex','std::timed_mutex','std::recursive_timed_mutex','std::shared_mutex','std::condition_variable','std::regex','std::wregex','std::cmatch','std::smatch','std::csub_match','std::ssub_match','std::random_device']):
+   parent,member=m.groups()
+   definitions.append(f'template<class C,class=void> struct Probe_{id}{{static void run(){{std::printf("{id}\\tUNAVAILABLE=member {member}\\n");}}}};\ntemplate<class C> struct Probe_{id}<C,std::void_t<typename C::{member}>>{{static void run(){{emit<typename C::{member}>("{id}");}}}};\n')
+   calls.append(f'Probe_{id}<{parent}>::run();')
+  else:calls.append(f'emit<{expr}>("{id}");')
+ return PRE+'\n'.join(definitions)+'\nint main(){emit<int>("CONTROL_INT");emit<long>("CONTROL_LONG");emit<long long>("CONTROL_LONG_LONG");emit<const long&>("CONTROL_CONST_REF");\n'+'\n'.join(calls)+'\n}\n'
+def run_group(lib,items):
+ gate(f'measure_gate_{lib}_{items[0]["id"]}_{len(items)}')
+ label='v2_'+lib+'_'+hashlib.sha256(','.join(r['id'] for r in items).encode()).hexdigest()[:16]
+ src=OUT/'probes'/f'{label}.cpp';src.parent.mkdir(parents=True,exist_ok=True);src.write_text(source(items));exe=TMP/label
+ opts,links=flags(lib);rc,out,build=record('build_'+label,[CC,*opts,src,*links,'-pthread','-o',exe])
+ if rc:
+  if len(items)>1:
+   mid=len(items)//2;run_group(lib,items[:mid]);run_group(lib,items[mid:]);return
+  save(OUT/'measurements'/f'{items[0]["id"]}_{lib}.json',dict(probe_version=2,status='NOT_AVAILABLE',reason='请求表达式在本次 C++17 环境编译失败，未替换实参',expression=items[0]['expression'],build_record=build,build_exit=rc));return
+ rc,syms,symref=record('symbols_'+label,['readelf','-Ws','--wide',exe]);assert rc==0 and 'abi_identity' in syms
+ runs=[]
+ for i in range(1,6):
+  rc,out,ref=record(f'run_{label}_{i}',[SDK/'closure_ewk/ld-linux-x86-64.so.2','--library-path',str(BUILD/'lib')+':'+str(SDK/'closure_ewk'),exe]);assert rc==0
+  values={s.split('\t')[0]:s for s in out.splitlines() if '\t' in s}
+  for name,code in [('INT','i'),('LONG','l'),('LONG_LONG','x'),('CONST_REF','RKl')]:assert 'TOKEN=9TypeTokenI'+code+'E\t' in values['CONTROL_'+name]
+  assert set(r['id'] for r in items)<=set(values)
+  runs.append((values,ref))
+ for r in items:
+  assert len({values[r['id']] for values,ref in runs})==1
+  line=runs[0][0][r['id']];result=dict(probe_version=2,expression=r['expression'],library=lib,architecture='x86_64',source=str(src.relative_to(ROOT)),source_sha256=sha(src),executable_sha256=sha(exe),build_record=build,symbol_record=symref,runs=[ref for values,ref in runs],repeat_count=5,output=line)
+  if '\tUNAVAILABLE=' in line:result.update(status='NOT_AVAILABLE',reason=line.split('UNAVAILABLE=')[1]+'；请求成员类型在本次访问上下文不可形成（可能未声明或不可访问），不推断不存在；探测五轮一致')
+  else:
+   pretty=re.search(r'TYPE=.*?\[T = (.*?)\]',line)[1];token=re.search(r'TOKEN=([^\t]+)',line)[1];assert token.startswith('9TypeTokenI') and token.endswith('E')
+   code=re.search(r'DIRECT=([^\t]+)',line)[1]
+   result.update(status='MEASURED',actual_type=pretty,type_encoding=code,wrapper_encoding=token,encoding_note='DIRECT 是 typeid(T) 的独立编码，会去除顶层 cv/ref；完整 TOKEN 保留 cv/ref，用于判相同。不剥除包装后单独解码，以免破坏替换表。',size=re.search(r'SIZE=([^\t]+)',line)[1],alignment=re.search(r'ALIGN=(.*)$',line)[1])
+  save(OUT/'measurements'/f'{r["id"]}_{lib}.json',result)
+def main():
+ rows=json.loads((OUT/'CATALOG.json').read_text());start=time.time()
+ for lib in ['gnu','cxx']:
+  todo=[]
+  for r in rows:
+   p=OUT/'measurements'/f'{r["id"]}_{lib}.json'
+   if p.exists():
+    m=json.loads(p.read_text())
+    if m.get('probe_version')==2:continue
+    save(OUT/'measurements_pass1'/p.name,m)
+   todo.append(r)
+  for i in range(0,len(todo),48):run_group(lib,todo[i:i+48])
+ summary=[]

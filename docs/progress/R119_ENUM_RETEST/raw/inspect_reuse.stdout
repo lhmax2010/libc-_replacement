@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""复用已验证 source()/PRE；仅选择指定13项，不重新实现类型探针。"""
+from common import *
+import ast,re,os
+OLD=pathlib.Path('/home/toolchain/development/libc++_replacement')
+CC=OLD/'progress/R33/tools/tizen-clang++'
+ARMROOT=OLD/'tmp/GBS-ROOT/R30-semantic-libcxx-armv7l-20260812-01/local/BUILD-ROOTS/scratch.armv7l.0'
+SDK=ROOT/'tmp/API_0911/W1_CONT/arm/sdk'
+BUILD=ROOT/'tmp/IMPL_0908/build-armv7l'
+GNU=SDK/'libstdc++-devel/usr/lib/gcc/armv7l-tizen-linux-gnueabi/14.2.0/include/c++'
+TMP=ROOT/'tmp/R119_ARM_RETEST';TMP.mkdir(parents=True,exist_ok=True)
+QEMU=pathlib.Path('/usr/bin/qemu-arm-static')
+def configuration(lib):
+ opts=['--target=armv7l-tizen-linux-gnueabi','--sysroot='+str(ARMROOT),'--ld-path='+str(OLD/'progress/R36/tools/armv7l-ld'),'-march=armv7-a','-mfpu=neon','-mfloat-abi=softfp','-mthumb','-std=c++17','-O0','-g','-fexceptions','-Wno-deprecated-declarations','-nostdinc++','-nostdlib++']
+ if lib=='gnu':return opts+['-I'+str(GNU),'-I'+str(GNU/'armv7l-tizen-linux-gnueabi')],[str(SDK/'libstdc++/usr/lib/libstdc++.so.6')]
+ return opts+['-I'+str(BUILD/'include/c++/v1')],['-L'+str(BUILD/'lib'),'-lc++','-lc++abi']
+def original_source():
+ p=PRIOR/'code/measure.py';text=p.read_text();tree=ast.parse(text)
+ nodes=[n for n in tree.body if (isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='PRE' for t in n.targets)) or (isinstance(n,ast.FunctionDef) and n.name=='source')]
+ assert len(nodes)==2;ns={'re':re};exec(compile(ast.Module(body=nodes,type_ignores=[]),str(p),'exec'),ns)
+ save(OUT/'PROBE_REUSE.json',dict(path=str(p),sha256=sha(p),functions=['PRE','source'],method='AST 仅提取原生成器；不执行旧脚本的目录/运行副作用',adaptation='main 开头增加库版本与目标宏输出；类型/编码/sizeof/alignof emit 未修改'))
+ return ns['source']
+def main():
+ gate('types_gate')
+ frozen={str(p.relative_to(ROOT)):sha(p) for p in PRIOR.rglob('*') if p.is_file() and '__pycache__' not in p.parts};save(OUT/'PRIOR_FROZEN_SHA256.json',frozen)
+ rows=list(csv.DictReader((PRIOR/'BUILTIN_DIVERGENT.tsv').open(),delimiter='\t'))
+ expected=['T0001','T0014','T0019','T0024','T0029','T0356','T0365','T0369','T0373','T0378','T0380','T0382','T0384']
+ assert [r['id'] for r in rows]==expected and len(rows)==13
+ src=OUT/'probes/types.cpp';src.parent.mkdir(parents=True,exist_ok=True)
+ code=original_source()(rows)
+ extra='''
+#ifdef _LIBCPP_VERSION
+ std::printf("LIBRARY=libc++ VERSION=%d\\n",_LIBCPP_VERSION);
+#else
+ std::printf("LIBRARY=libstdc++ RELEASE=%d\\n",_GLIBCXX_RELEASE);
+#endif
+ std::printf("TARGET_POINTER=%zu TARGET_LONG=%zu TARGET_LONG_LONG=%zu\\n",sizeof(void*),sizeof(long),sizeof(long long));
+'''
+ code=code.replace('int main(){','int main(){'+extra,1);src.write_text(code)
+ result={};libraries=[]
+ for lib in ['gnu','cxx']:
+  opts,links=configuration(lib);exe=TMP/('types_'+lib)
+  rc,out,build=record('build_'+lib,[CC,*opts,src,*links,'-pthread','-o',exe]);assert rc==0,build
+  rc,out,symref=record('symbols_'+lib,['readelf','-h','-Ws','-d','--wide',exe]);assert rc==0 and 'Machine:' in out and 'ARM' in out
+  rc,macros,macroref=record('macros_'+lib,[CC,*opts,'-dM','-E',src]);assert rc==0
+  rc,inc,incref=record('includes_'+lib,[CC,*opts,'-H','-fsyntax-only',src]);assert rc==0
+  includes=[]
+  for line in (ROOT/(incref+'.stderr')).read_text().splitlines():
+   m=re.match(r'^\.+ (/.+)$',line)
+   if m and pathlib.Path(m[1]).is_file():includes.append(dict(path=m[1],sha256=sha(m[1])))
+  allruns=[]
+  for n in range(1,6):
+   loader=ARMROOT/'lib/ld-linux.so.3'
+   paths=':'.join(map(str,[BUILD/'lib',SDK/'libstdc++/usr/lib',ARMROOT/'lib',ARMROOT/'usr/lib']))
+   rc,out,ref=record(f'run_{lib}_{n}',['timeout','30',QEMU,'-L',ARMROOT,loader,'--library-path',paths,exe]);assert rc==0,ref
+   assert ('LIBRARY=libstdc++ RELEASE=14' if lib=='gnu' else 'LIBRARY=libc++ VERSION=220108') in out
+   assert 'TARGET_POINTER=4 TARGET_LONG=4 TARGET_LONG_LONG=8' in out
+   values={s.split('\t')[0]:s for s in out.splitlines() if '\t' in s}
+   for name,encoding in [('INT','i'),('LONG','l'),('LONG_LONG','x'),('CONST_REF','RKl')]:assert 'TOKEN=9TypeTokenI'+encoding+'E\t' in values['CONTROL_'+name]
+   assert set(expected)<=set(values);allruns.append((values,ref))
+  for r in rows:
+   outputs=[v[r['id']] for v,ref in allruns];assert len(set(outputs))==1
+   line=outputs[0];assert 'UNAVAILABLE' not in line
+   data=dict(id=r['id'],expression=r['expression'],library=lib,architecture='armv7l',environment='QEMU_USER',actual_type=re.search(r'TYPE=.*?\[T = (.*?)\]',line)[1],token=re.search(r'TOKEN=([^\t]+)',line)[1],direct=re.search(r'DIRECT=([^\t]+)',line)[1],size=int(re.search(r'SIZE=(\d+)',line)[1]),align=int(re.search(r'ALIGN=(\d+)',line)[1]),output=line,source=str(src.relative_to(ROOT)),source_sha256=sha(src),executable_sha256=sha(exe),build=build,symbols=symref,runs=[ref for v,ref in allruns],repeat_count=5)
+   save(OUT/'measurements'/f'{r["id"]}_{lib}.json',data);result[r['id'],lib]=data
+  libraries.append(dict(library=lib,compiler=str(CC),flags=opts,links=links,sysroot=str(ARMROOT),target='armv7l-tizen-linux-gnueabi',macro_record=macroref,header_record=incref,includes=includes,emulator=str(QEMU),emulator_sha256=sha(QEMU)))
+ table=[]
+ for r in rows:
+  a,b=result[r['id'],'gnu'],result[r['id'],'cxx']
+  table.append(dict(id=r['id'],expression=r['expression'],gnu_type=a['actual_type'],cxx_type=b['actual_type'],gnu_token=a['token'],cxx_token=b['token'],gnu_direct=a['direct'],cxx_direct=b['direct'],gnu_size=a['size'],cxx_size=b['size'],gnu_align=a['align'],cxx_align=b['align'],result='IDENTICAL' if a['token']==b['token'] else 'DIVERGENT',gnu_record=f'measurements/{r["id"]}_gnu.json',cxx_record=f'measurements/{r["id"]}_cxx.json'))
+ tsv(OUT/'ARMV7L_TYPES.tsv',table);save(OUT/'CONFIGURATION.json',libraries)
+ for p,digest in frozen.items():assert sha(ROOT/p)==digest,p
+ print(json.dumps(table,ensure_ascii=False,indent=2))
+if __name__=='__main__':main()
+#!/usr/bin/env python3
+from common import *
+from run_types import CC,TMP
+import re
+gate('aarch64_gate')
+root=pathlib.Path('/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/R105-boost-aarch64/local/BUILD-ROOTS/scratch.aarch64.0')
+gnu=root/'usr/lib64/gcc/aarch64-tizen-linux-gnu/14.2.0/include/c++'
+qemu=pathlib.Path('/usr/bin/qemu-arm64-static');src=OUT/'probes/types.cpp'
+rows=list(csv.DictReader((OUT/'ARMV7L_TYPES.tsv').open(),delimiter='\t'));assert len(rows)==13
+allvalues={};configs=[]
+for lib in ['gnu','cxx']:
+ flags=['--target=aarch64-tizen-linux-gnu','--sysroot='+str(root),'--ld-path='+str(OUT/'code/aarch64-ld.sh'),'-std=c++17','-O0','-g','-fexceptions','-nostdinc++','-nostdlib++','-Wno-deprecated-declarations']
+ if lib=='gnu':flags+=['-I'+str(gnu),'-I'+str(gnu/'aarch64-tizen-linux-gnu')];links=[str(root/'usr/lib64/libstdc++.so.6')]
+ else:flags+=['-I'+str(root/'usr/include/c++/v1')];links=['-L'+str(root/'usr/lib64'),'-lc++','-lc++abi']
+ exe=TMP/('aarch64_'+lib)
+ rc,out,build=record('aarch64_build_'+lib,[CC,*flags,src,*links,'-pthread','-o',exe]);assert rc==0,build
+ rc,out,symref=record('aarch64_symbols_'+lib,['readelf','-h','-Ws','--wide',exe]);assert rc==0 and 'AArch64' in out
+ rc,out,macroref=record('aarch64_macros_'+lib,[CC,*flags,'-dM','-E',src]);assert rc==0
+ assert ('#define _GLIBCXX_RELEASE 14' if lib=='gnu' else '#define _LIBCPP_VERSION 220108') in out
+ rc,out,incref=record('aarch64_includes_'+lib,[CC,*flags,'-H','-fsyntax-only',src]);assert rc==0
+ headers={}
+ for line in (ROOT/(incref+'.stderr')).read_text().splitlines():
+  m=re.match(r'^\.+ (/.+)$',line)
+  if m and pathlib.Path(m[1]).is_file():headers[m[1]]=sha(m[1])
+ runs=[]
+ for n in range(1,6):
+  rc,out,ref=record(f'aarch64_run_{lib}_{n}',['timeout','30',qemu,'-L',root,root/'lib64/ld-linux-aarch64.so.1','--library-path',str(root/'lib64')+':'+str(root/'usr/lib64'),exe]);assert rc==0
+  assert 'TARGET_POINTER=8 TARGET_LONG=8 TARGET_LONG_LONG=8' in out
+  values={s.split('\t')[0]:s for s in out.splitlines() if '\t' in s}
+  for name,code in [('INT','i'),('LONG','l'),('LONG_LONG','x'),('CONST_REF','RKl')]:assert 'TOKEN=9TypeTokenI'+code+'E\t' in values['CONTROL_'+name]
+  assert set(r['id'] for r in rows)<=set(values);runs.append((values,ref))
+ for r in rows:
+  assert len({v[r['id']] for v,_ in runs})==1
+  line=runs[0][0][r['id']];m=dict(id=r['id'],expression=r['expression'],library=lib,architecture='aarch64',environment='QEMU_USER',actual_type=re.search(r'TYPE=.*?\[T = (.*?)\]',line)[1],token=re.search(r'TOKEN=([^\t]+)',line)[1],direct=re.search(r'DIRECT=([^\t]+)',line)[1],size=int(re.search(r'SIZE=(\d+)',line)[1]),align=int(re.search(r'ALIGN=(\d+)',line)[1]),output=line,runs=[ref for _,ref in runs],repeat_count=5,build=build,symbols=symref,source=str(src.relative_to(ROOT)),source_sha256=sha(src),executable_sha256=sha(exe))
+  save(OUT/'aarch64_measurements'/f'{r["id"]}_{lib}.json',m);allvalues[r['id'],lib]=m
+ configs.append(dict(library=lib,target='aarch64-tizen-linux-gnu',sysroot=str(root),flags=flags,links=links,macros=macroref,headers=headers,qemu=str(qemu),qemu_sha256=sha(qemu)))
+table=[]
+for r in rows:
+ a,b=allvalues[r['id'],'gnu'],allvalues[r['id'],'cxx'];table.append(dict(id=r['id'],expression=r['expression'],gnu_type=a['actual_type'],cxx_type=b['actual_type'],gnu_token=a['token'],cxx_token=b['token'],gnu_direct=a['direct'],cxx_direct=b['direct'],gnu_size=a['size'],cxx_size=b['size'],gnu_align=a['align'],cxx_align=b['align'],result='IDENTICAL' if a['token']==b['token'] else 'DIVERGENT'))
+tsv(OUT/'AARCH64_TYPES.tsv',table);save(OUT/'AARCH64_CONFIGURATION.json',configs)
+print(json.dumps(table,indent=2))
+#!/usr/bin/env python3
+from common import *
+from run_types import configuration,CC,ARMROOT,TMP
+import re
+gate('edges_gate')
+materials=json.loads((OUT/'TARGET_PACKAGE_MATERIALS.json').read_text())
+def package(name):
+ a=[r for r in materials if r['name']==name and r['arch']=='armv7l'];assert len(a)==1 and a[0]['exists'];return a[0]
+def pkgroot(name):return pathlib.Path(package(name)['extracted'])
+sources={
+ 'dali':('#include <dali/devel-api/threading/conditional-wait.h>\nvoid probe(Dali::ConditionalWait& w, const Dali::ConditionalWait::ScopedLock& l, Dali::ConditionalWait::TimePoint t) { w.WaitUntil(l,t); }\n',['dali2-integration-devel','dali2-devel'],'ConditionalWait9WaitUntil'),
+ 'zypp':('#include <zypp/parser/xml/Reader.h>\nvoid probe(const zypp::InputStream& in, const zypp::xml::Validate& v) { zypp::xml::Reader r(in,v); }\n',['libzypp-devel'],'ReaderC1ERKNS_11InputStream')}
+results=[];headers={}
+for kind,(code,pkgs,needle) in sources.items():
+ src=OUT/'probes'/f'{kind}_signature.cpp';src.write_text(code)
+ incs=['-I'+str(pkgroot(p)/'usr/include') for p in pkgs]
+ if kind=='zypp':incs+=['-I'+str(pkgroot('boost-devel')/'usr/include'),'-I'+str(pkgroot('libxml2-devel')/'usr/include/libxml2')]
+ for lib in ['gnu','cxx']:
+  opts,_=configuration(lib);runs=[];symbols=[]
+  for i in range(1,6):
+   obj=TMP/f'{kind}_{lib}_{i}.o'
+   rc,out,build=record(f'edge_build_{kind}_{lib}_{i}',[CC,*opts,*incs,'-H','-c',src,'-o',obj])
+   if rc:
+    save(OUT/'EDGE_BUILD_BLOCK.json',dict(kind=kind,library=lib,record=build));raise SystemExit(rc)
+   for line in (ROOT/(build+'.stderr')).read_text().splitlines():
+    m=re.match(r'^\.+ (/.+)$',line)
+    if m and pathlib.Path(m[1]).is_file():headers[m[1]]=sha(m[1])
+   rc,out,symref=record(f'edge_symbols_{kind}_{lib}_{i}',['readelf','-h','-Ws','--wide',obj]);assert rc==0 and 'ARM' in out
+   matches=[s.split()[-1] for s in out.splitlines() if ' UND ' in s and needle in s];assert len(matches)==1,matches
+   symbols.append(matches[0]);runs.append(dict(build=build,readelf=symref,object_sha256=sha(obj)))
+  assert len(set(symbols))==1
+  results.append(dict(interface=kind,library=lib,arch='armv7l',kind='COMPILE_ONLY_REAL_ARM_DEVEL_HEADER',symbol=symbols[0],source=str(src.relative_to(ROOT)),source_sha256=sha(src),header_packages=[package(p) for p in pkgs],repeats=runs))
+save(OUT/'SIGNATURES.json',results);save(OUT/'EDGE_HEADER_SHA256.json',headers)
+# 真实 armv7l GNU 提供方与消费方，验证边仍存在；不构建或运行业务包。
+actual=[]
+for kind,provider,consumer,ppath,cpath in [('dali','dali2','dali2-ui-foundation','usr/lib/libdali2-core.so.2.0.0','usr/lib/libdali2-ui-foundation.so.2.0.0'),('zypp','libzypp','zypper','usr/lib/libzypp.so.1722.1.7','usr/bin/zypper')]:
+ symbol=next(r['symbol'] for r in results if r['interface']==kind and r['library']=='gnu')
+ e=dict(interface=kind,symbol=symbol)
+ for side,pkg,path in [('provider',provider,ppath),('consumer',consumer,cpath)]:
+  p=pkgroot(pkg)/path;assert p.is_file(),p
+  rc,out,ref=record('actual_'+kind+'_'+side,['readelf','-h','-d','-Ws','--wide',p]);assert rc==0 and 'ARM' in out
+  lines=[s for s in out.splitlines() if len(s.split())>=8 and s.split()[7].split('@')[0]==symbol and ((' UND ' in s)==(side=='consumer'))];assert lines,(kind,side,symbol)
+  e[side]=dict(package=package(pkg),path=str(p),sha256=sha(p),record=ref,symbol_lines=lines)
+  if side=='provider':soname=re.findall(r'\(SONAME\).*?\[([^]]+)\]',out);assert len(soname)==1;e['soname']=soname[0]
+  else:assert e['soname'] in re.findall(r'\(NEEDED\).*?\[([^]]+)\]',out)
+ actual.append(e)
+save(OUT/'ACTUAL_ARM_EDGES.json',actual)
+print(json.dumps([dict(interface=r['interface'],library=r['library'],symbol=r['symbol']) for r in results],indent=2));print('actual_edges',len(actual))

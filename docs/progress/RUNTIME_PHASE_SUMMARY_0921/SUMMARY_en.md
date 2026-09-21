@@ -1,5 +1,7 @@
 # Cross-package boundaries by architecture and new standard-library findings
 
+Version 2 (2026-09-21): adds only the four stream-state enum retests and related tracking; other conclusions are unchanged. See [version notes](VERSION_20260921_2.md) for the previous version, diff and current audit.
+
 For human review. This document consolidates existing records only. It adds no source investigation, probes, board runs or compatibility commitments. Read every confirmation together with its evidence class and architecture.
 
 ## Scope totals and counting units
@@ -115,20 +117,40 @@ Exact declaration locations and source SHA256 values: [Evidence: declarations](E
 
 **A paragraph ready for external use:** Some standard-library names resolve to different integer types in the two implementations. In the measured x86_64 and aarch64 configurations, those integers occupy the same number of bytes, but the compiler distinguishes long from long long in function names. Parameters or template types involving them may therefore prevent a caller from finding the provider's function. This differs from an object being misread at runtime because its memory layout changed. Return types and internal members do not necessarily change the function name. This integer-selection difference is absent in the measured armv7l configuration; another architecture's finding must not be transferred to it unchanged.
 
+### Stream-state enums: type identities still diverge on armv7l
+
+**Fact chain — new measurements added in version 2:** GNU fmtflags, iostate and openmode are the named enums `_Ios_Fmtflags`, `_Ios_Iostate` and `_Ios_Openmode`; libc++ uses `unsigned int` for all three. GNU seekdir is `_Ios_Seekdir`, whereas libc++ uses `ios_base::seekdir`. Both armv7l and aarch64 show 4/4 divergences, with five consistent repetitions per library. All four have size/alignment 4/4 on both sides. The earlier target-type probe/configurations and QEMU user mode were reused; no board was used. [Evidence: TYPES.tsv](../R119_ENUM_RETEST/TYPES.tsv) — SHA256 `f1c2e9551a6a379141ab91b462612ae5799dee1dc077e2044e5fd1816705a377`
+
+| Type | GNU encoding | libc++ encoding (same on both architectures) |
+| --- | --- | --- |
+| fmtflags | `St13_Ios_Fmtflags` | `j` |
+| iostate | `St12_Ios_Iostate` | `j` |
+| openmode | `St13_Ios_Openmode` | `j` |
+| seekdir | `St12_Ios_Seekdir` | `NSt3__18ios_base7seekdirE` |
+
+**Unlike the integer aliases:** the earlier 13 expressions selected the same integer type on the measured armv7l configuration. These four enum/builtin or enum-identity differences remain despite equal widths. They are separately recorded type findings, not four demonstrated product failures.
+
+Compiling the real ARM podofo header produced GNU `_ZN6PoDoFo14PdfInputDevice4SeekExSt12_Ios_Seekdir` and libc++ `_ZN6PoDoFo14PdfInputDevice4SeekExNSt3__18ios_base7seekdirE`. The streamoff encoding is `x` on both sides; seekdir accounts for the remaining difference. A qualified call exposes the UND name. Both ordinary virtual-call IR bodies instead select zero-based index 6 relative to the vtable address point and call indirectly. This observes caller compilation, not provider-vtable or mixed-execution compatibility. [Evidence: SEEK_SYMBOLS.json](../R119_ENUM_RETEST/SEEK_SYMBOLS.json) — SHA256 `32ccb97b8ce8012af090b855466c334cc2eae73aae8c0cacf289cc9e1ef7f0d5` [Evidence: VIRTUAL_CALL.json](../R119_ENUM_RETEST/VIRTUAL_CALL.json) — SHA256 `f928bf2ead58d70a78ad55060a48aed7a3d374172e6c4414b740901001d97e41`
+
+**Excluded explanations:** this is not a 4/8-byte width difference. Different function names do not directly establish different virtual-table slots or inevitable virtual-call failure. Function-identity queries covered the two ChecksumStream::flags overloads, open, PdfInputDevice::Seek and Clear: 5 confirmed declarations under 4 identities. No corresponding external UND was found in the scoped x86_64 set; the bundle::Add positive control passed. The old index's 61/85/87/12 positions are not 245 confirmed public declarations. Virtual calls, inline code and out-of-scope artifacts remain open. Existing fmtflags/openmode stream-member edges are retained. New edges: 0; the total remains 18 pairs / 23 edges. [Evidence: BOUNDARY_QUERIES.json](../R119_ENUM_RETEST/BOUNDARY_QUERIES.json) — SHA256 `ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06` [Evidence: BOUNDARY_CONTROL.json](../R119_ENUM_RETEST/BOUNDARY_CONTROL.json) — SHA256 `0a8d08bb6b8dddb528f55d176d7126f5c0af127a937ff4efc92c2deb67355092`
+
+**What would overturn the finding:** equal complete type encodings under the actual target configuration would require revising the divergence claim. Product consequences require real cross-package calls, including virtual calls, actual providers, parameter semantics and object-lifetime evidence. Symbol/slot observations do not substitute for those execution tests.
+
 ## Paused work and restart conditions
 
 | Work item | State | Restart condition |
 | --- | --- | --- |
 | 62 identity/material gaps | Paused; 23 primarily C and 39 primarily D; not platform-wide negatives | See [individual gaps](BACKLOG_en.md) and [full TSV](BACKLOG.tsv), retaining local-resolvability and dependency records |
 | Result projections of 65 compile-time facilities | 0/65 fully closed; 15,793 RESULT_UNRESOLVED occurrences; stopped | Renewed human authorization, then actual template arguments, instantiation/name-lookup context or result-structure evidence; hand-selected int examples cannot close candidates |
+| Four stream-state enums | Type divergence confirmed on armv7l / aarch64; consumers of the confirmed direct declarations remain unclosed; tracked separately | Actual consumers or virtual-call paths; see the enum addition and separate BACKLOG entries |
 | Candidates 201–495 | 295 not yet bounded | Authorization for the next batch and confirmation of scope/method; no continuation here |
-| Remaining 572 expressions on armv7l | Do not test; remain unmeasured | Restart only after an explicit scope change and a product-relevant question; equality of the selected 13 does not establish safety of the others |
+| Remaining 568 expressions on armv7l | Do not test; remain unmeasured | Restart only after an explicit scope change and a product-relevant question; equality of the selected 13 does not establish safety of the others |
 
 Count sources: [Evidence: pending](EVIDENCE.md#pending) [Evidence: projection](EVIDENCE.md#projection) [Evidence: projection-count](EVIDENCE.md#projection-count) [Evidence: base-count](EVIDENCE.md#base-count) [Evidence: measurement](EVIDENCE.md#measurement) [Evidence: mechanisms](EVIDENCE.md#mechanisms). Candidate counts, source occurrences and type expressions are different units and must not be summed.
 
 **Latest projection counts:** 15,770 no-object result occurrences, 10 type-divergent occurrences, 13 standard-library-object occurrences and 15,793 unresolved occurrences. The 13 object-result occurrences are not the 13 builtin-type expressions above. An object result does not itself establish another consumer edge, and full candidate closure remains 0/65. The missing same-type assertion was corrected in new artifacts while retaining the original records. [Evidence: projection-count](EVIDENCE.md#projection-count) [Evidence: projection](EVIDENCE.md#projection)
 
-**Correction to the rationale for not testing:** the remaining 572 expressions break down, by their existing x86_64 results, into 283 identical, 114 namespace/tag-only differences, 111 implementation/composite-type differences, 4 enum-related differences and 60 unavailable results. Avoiding repeated work on known naming mechanisms supports the scope decision, but does not justify describing all remaining expressions as known implementation differences. Identical x86_64 results do not establish ARM equality, and unavailable results remain unavailable. The human decision not to test is retained without assigning missing conclusions. [Evidence: measurement](EVIDENCE.md#measurement) [Evidence: mechanisms](EVIDENCE.md#mechanisms)
+**Updated no-test set:** the 4 enum-related differences have been separated from the former 572 expressions for retesting and tracking. The remaining 568 break down, by their existing x86_64 results, into 283 identical, 114 namespace/tag-only differences, 111 implementation/composite-type differences and 60 unavailable results. Avoiding repeated work on known naming mechanisms supports the scope decision, but does not justify describing all remaining expressions as known implementation differences. Identical x86_64 results do not establish ARM equality, and unavailable results remain unavailable. The human decision not to test is retained without assigning missing conclusions. [Evidence: measurement](EVIDENCE.md#measurement) [Evidence: mechanisms](EVIDENCE.md#mechanisms)
 
 ## Inputs and prerequisites for the next validation stage
 

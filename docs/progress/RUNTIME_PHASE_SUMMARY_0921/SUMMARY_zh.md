@@ -1,5 +1,7 @@
 # 按架构的跨包面与标准库新发现
 
+版本 2（2026-09-21）：仅补入四项流状态枚举复测与相关挂账；其余原结论不动。旧版、diff 与本次自检见 [版本说明](VERSION_20260921_2.md)。
+
 待人工审阅。本文只汇编既有记录，不增加源码分析、探针、板上运行或兼容性承诺。表中的“确认”必须连同证据种类和架构一起阅读。
 
 ## 一、收账结论与计数单位
@@ -115,20 +117,40 @@
 
 **可直接引用的一段话**：一些标准库类型名在两套实现中对应不同的整数类型。在已测 x86_64 与 aarch64 配置下，这些整数占用的字节数相同，但编译器在函数名称中区分 long 和 long long，因此使用它们的参数或模板类型可能使调用方找不到提供方的函数。这与“内存布局不同、运行时把对象读错”不是同一种问题；返回类型或对象内部成员也不一定改变函数名。已测 armv7l 配置中，这类整数选择差异不存在，不能将另一架构的问题直接移植过去。
 
+### 流状态枚举：armv7l 上仍存在的类型身份分歧
+
+**事实链（新实测，版本 2 补入）**：fmtflags、iostate、openmode 在 GNU 中分别是 `_Ios_Fmtflags`、`_Ios_Iostate`、`_Ios_Openmode` 枚举，在 libc++ 中均是 `unsigned int`；seekdir 在 GNU 中是 `_Ios_Seekdir`，在 libc++ 中是 `ios_base::seekdir`。armv7l 与 aarch64 均 4/4 分歧，两库各五轮一致；四项两侧 size/align 均为 4/4。使用与先前目标类型测量相同的探针、目标配置和 QEMU 用户态，无板上测量。[证据: TYPES.tsv](../R119_ENUM_RETEST/TYPES.tsv) — SHA256 `f1c2e9551a6a379141ab91b462612ae5799dee1dc077e2044e5fd1816705a377`
+
+| 类型 | GNU 编码 | libc++ 编码（两架构相同） |
+| --- | --- | --- |
+| fmtflags | `St13_Ios_Fmtflags` | `j` |
+| iostate | `St12_Ios_Iostate` | `j` |
+| openmode | `St13_Ios_Openmode` | `j` |
+| seekdir | `St12_Ios_Seekdir` | `NSt3__18ios_base7seekdirE` |
+
+**与整数别名不同**：先前 13 项在已测 armv7l 配置中底层整数选择相同；这四项的枚举/内建类型或枚举身份差异仍在，不能由数据宽度相同排除。它们独立登记为已确认类型差异，不代表四个产品故障。
+
+真 ARM podofo 头编译得到 GNU `_ZN6PoDoFo14PdfInputDevice4SeekExSt12_Ios_Seekdir` 与 libc++ `_ZN6PoDoFo14PdfInputDevice4SeekExNSt3__18ios_base7seekdirE`。前面的 streamoff 编码均为 `x`，剩余差异来自 seekdir。显式限定调用用来取得 UND 名称；普通虚调用的两侧 IR 均从虚表 address point 选择从零开始索引 6 的入口并间接调用。这只是调用方编译观察，不是提供方虚表或混合运行兼容性测试。[证据: SEEK_SYMBOLS.json](../R119_ENUM_RETEST/SEEK_SYMBOLS.json) — SHA256 `32ccb97b8ce8012af090b855466c334cc2eae73aae8c0cacf289cc9e1ef7f0d5` [证据: VIRTUAL_CALL.json](../R119_ENUM_RETEST/VIRTUAL_CALL.json) — SHA256 `f928bf2ead58d70a78ad55060a48aed7a3d374172e6c4414b740901001d97e41`
+
+**已排除的解释**：不是 4/8 字节宽度差；也不能由函数名不同直接推出虚表槽位不同或虚调用必失败。对已确认的 ChecksumStream::flags 两重载、open、PdfInputDevice::Seek、Clear 共 5 条公开签名（4 个身份）作函数身份查询，限定 x86_64 集合内没有对应异包 UND；bundle::Add 正向对照通过。旧索引的 61/85/87/12 个位置不是 245 条已确认公开签名。虚调用、内联和范围外产物未被这个阴性排除；已有 fmtflags/openmode 流对象成员边保留。新增边 0，仍为 18 包对 / 23 边。[证据: BOUNDARY_QUERIES.json](../R119_ENUM_RETEST/BOUNDARY_QUERIES.json) — SHA256 `ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06` [证据: BOUNDARY_CONTROL.json](../R119_ENUM_RETEST/BOUNDARY_CONTROL.json) — SHA256 `0a8d08bb6b8dddb528f55d176d7126f5c0af127a937ff4efc92c2deb67355092`
+
+**反驳需要什么**：若实际目标配置下两库完整类型编码相同，本配置的分歧结论需修正；若要判断产品影响，需真实异包调用（包括虚调用）及提供方、参数语义和对象生命周期证据。本轮没有以符号/槽位观察代替这些运行验证。
+
 ## 四、挂账：状态和重启条件
 
 | 工作项 | 状态 | 重启条件 |
 | --- | --- | --- |
 | 62 项函数身份/材料缺口 | 暂停，C 主因 23 项、D 主因 39 项；不是平台级阴性 | 逐项见 [缺口与重启条件](BACKLOG_zh.md) / [完整 TSV](BACKLOG.tsv)，保留本线可解性与依赖 |
 | 65 项编译期设施的结果投影 | 0/65 完整关闭；15,793 处 RESULT_UNRESOLVED；已停 | 人工重新授权投入；先补实际模板实参、实例化上下文、名字查找或结果结构证据，不能用手选 int 样本关项 |
+| 四项流状态枚举 | 类型分歧已确认（armv7l / aarch64），已确认直接公开签名消费未闭合；独立跟踪 | 真实消费者或虚调用链材料；见枚举补充与 BACKLOG 独立条目 |
 | 第 201–495 个候选 | 未定界，295 项 | 人工启动下一批定界并确认范围/方法；本次不继续 |
-| 其余 572 个表达式的 armv7l 复测 | 不测，状态仍未测 | 只有人工更改范围并给出产品相关问题时重启，不因本次 13 项一致就判它们安全 |
+| 其余 568 个表达式的 armv7l 复测 | 不测，状态仍未测 | 只有人工更改范围并给出产品相关问题时重启，不因本次 13 项一致就判它们安全 |
 
 计数来源：[证据: pending](EVIDENCE.md#pending) [证据: projection](EVIDENCE.md#projection) [证据: projection-count](EVIDENCE.md#projection-count) [证据: base-count](EVIDENCE.md#base-count) [证据: measurement](EVIDENCE.md#measurement) [证据: mechanisms](EVIDENCE.md#mechanisms)。不同表的候选、命中位置及表达式不是同一单位，不相加。
 
 **投影计数的最新口径**：结果位置分别为无对象 15,770、类型分歧 10、标准库对象 13、未定 15,793；“13 个对象结果位置”不等于上节“13 个内建类型表达式”。发现对象结果也不等于已确认新消费边；完整候选关闭仍为 0/65。此前少掉“两侧同一类型”的断言已在新产物纠正，旧产物保留。[证据: projection-count](EVIDENCE.md#projection-count) [证据: projection](EVIDENCE.md#projection)
 
-**不测决定的理由需纠正**：剩余 572 项中，按既有 x86_64 结果分解为相同 283、仅命名空间/标签差异 114、实现类/组合类型差异 111、枚举相关差异 4、不可得 60。已知命名机制不作为新发现重复投入，是保留不测决定的背景；但不能将其余所有项改写成“全为已知实现差异”。相同项不等于 ARM 同样相同，不可得项仍缺结果。本文保留“不测”的人工范围裁决，不替剩余项补结论。[证据: measurement](EVIDENCE.md#measurement) [证据: mechanisms](EVIDENCE.md#mechanisms)
+**不测集合更新**：原 572 项中的枚举相关差异 4 项已独立复测并跟踪；其余 568 项按既有 x86_64 结果分解为相同 283、仅命名空间/标签差异 114、实现类/组合类型差异 111、不可得 60。已知命名机制不作为新发现重复投入，是保留不测决定的背景；但不能将其余所有项改写成“全为已知实现差异”。相同项不等于 ARM 同样相同，不可得项仍缺结果。本文保留“不测”的人工范围裁决，不替剩余项补结论。[证据: measurement](EVIDENCE.md#measurement) [证据: mechanisms](EVIDENCE.md#mechanisms)
 
 ## 五、下一阶段逐边输入与前置
 

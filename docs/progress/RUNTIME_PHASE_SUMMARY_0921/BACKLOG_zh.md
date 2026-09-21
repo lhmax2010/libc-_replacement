@@ -66,3 +66,27 @@
 | std::back_insert_iterator | D | 公开模板参数确有对象，但实例提供包/消费包尚未对应，不能把 header-only 调用当成已确认跨包符号边。 fmt get_container(back_insert_iterator) 等具体模板实例的 provider/consumer 和底层容器对象。 | PARTLY | [证据: pending](EVIDENCE.md#pending) |
 | std::byte | C | MLIR 公开别名对应哪些导出函数和实际消费方未闭合；不能因 C 入口名字不带类型就判无对象。 以 MLIR AsyncRuntime 中使用 ValueStorage 的 C 导出函数身份取证，再对应 byte* 的实际 consumer。 | YES_LOCAL_RESEARCH | [证据: pending](EVIDENCE.md#pending) |
 | std::overflow_error | C | 这些是独立源码路径，尚未证明一个实际平台调用链跨包传播该异常；运行库构造引用不补为包边。 OpenUSD 抛 overflow_error 的实际入口与 cereal/pybind11 或其他真实消费方对应。 | PARTLY | [证据: pending](EVIDENCE.md#pending) |
+
+
+## 版本 2：四项枚举独立条目
+
+原 62 项及其分类保持不变；下列是新增的类型差异跟踪，不是四条新增包边。
+
+### 流状态枚举：armv7l 上仍存在的类型身份分歧
+
+**事实链（新实测，版本 2 补入）**：fmtflags、iostate、openmode 在 GNU 中分别是 `_Ios_Fmtflags`、`_Ios_Iostate`、`_Ios_Openmode` 枚举，在 libc++ 中均是 `unsigned int`；seekdir 在 GNU 中是 `_Ios_Seekdir`，在 libc++ 中是 `ios_base::seekdir`。armv7l 与 aarch64 均 4/4 分歧，两库各五轮一致；四项两侧 size/align 均为 4/4。使用与先前目标类型测量相同的探针、目标配置和 QEMU 用户态，无板上测量。[证据: TYPES.tsv](../R119_ENUM_RETEST/TYPES.tsv) — SHA256 `f1c2e9551a6a379141ab91b462612ae5799dee1dc077e2044e5fd1816705a377`
+
+| 类型 | GNU 编码 | libc++ 编码（两架构相同） |
+| --- | --- | --- |
+| fmtflags | `St13_Ios_Fmtflags` | `j` |
+| iostate | `St12_Ios_Iostate` | `j` |
+| openmode | `St13_Ios_Openmode` | `j` |
+| seekdir | `St12_Ios_Seekdir` | `NSt3__18ios_base7seekdirE` |
+
+**与整数别名不同**：先前 13 项在已测 armv7l 配置中底层整数选择相同；这四项的枚举/内建类型或枚举身份差异仍在，不能由数据宽度相同排除。它们独立登记为已确认类型差异，不代表四个产品故障。
+
+真 ARM podofo 头编译得到 GNU `_ZN6PoDoFo14PdfInputDevice4SeekExSt12_Ios_Seekdir` 与 libc++ `_ZN6PoDoFo14PdfInputDevice4SeekExNSt3__18ios_base7seekdirE`。前面的 streamoff 编码均为 `x`，剩余差异来自 seekdir。显式限定调用用来取得 UND 名称；普通虚调用的两侧 IR 均从虚表 address point 选择从零开始索引 6 的入口并间接调用。这只是调用方编译观察，不是提供方虚表或混合运行兼容性测试。[证据: SEEK_SYMBOLS.json](../R119_ENUM_RETEST/SEEK_SYMBOLS.json) — SHA256 `32ccb97b8ce8012af090b855466c334cc2eae73aae8c0cacf289cc9e1ef7f0d5` [证据: VIRTUAL_CALL.json](../R119_ENUM_RETEST/VIRTUAL_CALL.json) — SHA256 `f928bf2ead58d70a78ad55060a48aed7a3d374172e6c4414b740901001d97e41`
+
+**已排除的解释**：不是 4/8 字节宽度差；也不能由函数名不同直接推出虚表槽位不同或虚调用必失败。对已确认的 ChecksumStream::flags 两重载、open、PdfInputDevice::Seek、Clear 共 5 条公开签名（4 个身份）作函数身份查询，限定 x86_64 集合内没有对应异包 UND；bundle::Add 正向对照通过。旧索引的 61/85/87/12 个位置不是 245 条已确认公开签名。虚调用、内联和范围外产物未被这个阴性排除；已有 fmtflags/openmode 流对象成员边保留。新增边 0，仍为 18 包对 / 23 边。[证据: BOUNDARY_QUERIES.json](../R119_ENUM_RETEST/BOUNDARY_QUERIES.json) — SHA256 `ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06` [证据: BOUNDARY_CONTROL.json](../R119_ENUM_RETEST/BOUNDARY_CONTROL.json) — SHA256 `0a8d08bb6b8dddb528f55d176d7126f5c0af127a937ff4efc92c2deb67355092`
+
+**反驳需要什么**：若实际目标配置下两库完整类型编码相同，本配置的分歧结论需修正；若要判断产品影响，需真实异包调用（包括虚调用）及提供方、参数语义和对象生命周期证据。本轮没有以符号/槽位观察代替这些运行验证。

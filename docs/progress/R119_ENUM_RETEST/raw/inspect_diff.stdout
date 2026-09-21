@@ -1,0 +1,215 @@
+ docs/progress/R115/W3/raw/033_angle_files.stderr   | 142 +++++++++++++++++++++
+ docs/progress/R115/W3/raw/033_angle_files.stdout   |   6 +
+ .../RUNTIME_PHASE_SUMMARY_0921/BACKLOG.tsv         |   4 +
+ .../RUNTIME_PHASE_SUMMARY_0921/BACKLOG_en.md       |  25 ++++
+ .../RUNTIME_PHASE_SUMMARY_0921/BACKLOG_zh.md       |  25 ++++
+ .../RUNTIME_PHASE_SUMMARY_0921/SUMMARY_en.md       |  26 +++-
+ .../RUNTIME_PHASE_SUMMARY_0921/SUMMARY_zh.md       |  26 +++-
+ 7 files changed, 250 insertions(+), 4 deletions(-)
+--- a/docs/progress/RUNTIME_PHASE_SUMMARY_0921/SUMMARY_zh.md
++++ b/docs/progress/RUNTIME_PHASE_SUMMARY_0921/SUMMARY_zh.md
+@@ -1,4 +1,6 @@
+ # 按架构的跨包面与标准库新发现
++
++版本 2（2026-09-21）：仅补入四项流状态枚举复测与相关挂账；其余原结论不动。旧版、diff 与本次自检见 [版本说明](VERSION_20260921_2.md)。
+ 
+ 待人工审阅。本文只汇编既有记录，不增加源码分析、探针、板上运行或兼容性承诺。表中的“确认”必须连同证据种类和架构一起阅读。
+ 
+@@ -115,20 +117,40 @@
+ 
+ **可直接引用的一段话**：一些标准库类型名在两套实现中对应不同的整数类型。在已测 x86_64 与 aarch64 配置下，这些整数占用的字节数相同，但编译器在函数名称中区分 long 和 long long，因此使用它们的参数或模板类型可能使调用方找不到提供方的函数。这与“内存布局不同、运行时把对象读错”不是同一种问题；返回类型或对象内部成员也不一定改变函数名。已测 armv7l 配置中，这类整数选择差异不存在，不能将另一架构的问题直接移植过去。
+ 
++### 流状态枚举：armv7l 上仍存在的类型身份分歧
++
++**事实链（新实测，版本 2 补入）**：fmtflags、iostate、openmode 在 GNU 中分别是 `_Ios_Fmtflags`、`_Ios_Iostate`、`_Ios_Openmode` 枚举，在 libc++ 中均是 `unsigned int`；seekdir 在 GNU 中是 `_Ios_Seekdir`，在 libc++ 中是 `ios_base::seekdir`。armv7l 与 aarch64 均 4/4 分歧，两库各五轮一致；四项两侧 size/align 均为 4/4。使用与先前目标类型测量相同的探针、目标配置和 QEMU 用户态，无板上测量。[证据: TYPES.tsv](../R119_ENUM_RETEST/TYPES.tsv) — SHA256 `f1c2e9551a6a379141ab91b462612ae5799dee1dc077e2044e5fd1816705a377`
++
++| 类型 | GNU 编码 | libc++ 编码（两架构相同） |
++| --- | --- | --- |
++| fmtflags | `St13_Ios_Fmtflags` | `j` |
++| iostate | `St12_Ios_Iostate` | `j` |
++| openmode | `St13_Ios_Openmode` | `j` |
++| seekdir | `St12_Ios_Seekdir` | `NSt3__18ios_base7seekdirE` |
++
++**与整数别名不同**：先前 13 项在已测 armv7l 配置中底层整数选择相同；这四项的枚举/内建类型或枚举身份差异仍在，不能由数据宽度相同排除。它们独立登记为已确认类型差异，不代表四个产品故障。
++
++真 ARM podofo 头编译得到 GNU `_ZN6PoDoFo14PdfInputDevice4SeekExSt12_Ios_Seekdir` 与 libc++ `_ZN6PoDoFo14PdfInputDevice4SeekExNSt3__18ios_base7seekdirE`。前面的 streamoff 编码均为 `x`，剩余差异来自 seekdir。显式限定调用用来取得 UND 名称；普通虚调用的两侧 IR 均从虚表 address point 选择从零开始索引 6 的入口并间接调用。这只是调用方编译观察，不是提供方虚表或混合运行兼容性测试。[证据: SEEK_SYMBOLS.json](../R119_ENUM_RETEST/SEEK_SYMBOLS.json) — SHA256 `32ccb97b8ce8012af090b855466c334cc2eae73aae8c0cacf289cc9e1ef7f0d5` [证据: VIRTUAL_CALL.json](../R119_ENUM_RETEST/VIRTUAL_CALL.json) — SHA256 `f928bf2ead58d70a78ad55060a48aed7a3d374172e6c4414b740901001d97e41`
++
++**已排除的解释**：不是 4/8 字节宽度差；也不能由函数名不同直接推出虚表槽位不同或虚调用必失败。对已确认的 ChecksumStream::flags 两重载、open、PdfInputDevice::Seek、Clear 共 5 条公开签名（4 个身份）作函数身份查询，限定 x86_64 集合内没有对应异包 UND；bundle::Add 正向对照通过。旧索引的 61/85/87/12 个位置不是 245 条已确认公开签名。虚调用、内联和范围外产物未被这个阴性排除；已有 fmtflags/openmode 流对象成员边保留。新增边 0，仍为 18 包对 / 23 边。[证据: BOUNDARY_QUERIES.json](../R119_ENUM_RETEST/BOUNDARY_QUERIES.json) — SHA256 `ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06` [证据: BOUNDARY_CONTROL.json](../R119_ENUM_RETEST/BOUNDARY_CONTROL.json) — SHA256 `0a8d08bb6b8dddb528f55d176d7126f5c0af127a937ff4efc92c2deb67355092`
++
++**反驳需要什么**：若实际目标配置下两库完整类型编码相同，本配置的分歧结论需修正；若要判断产品影响，需真实异包调用（包括虚调用）及提供方、参数语义和对象生命周期证据。本轮没有以符号/槽位观察代替这些运行验证。
++
+ ## 四、挂账：状态和重启条件
+ 
+ | 工作项 | 状态 | 重启条件 |
+ | --- | --- | --- |
+ | 62 项函数身份/材料缺口 | 暂停，C 主因 23 项、D 主因 39 项；不是平台级阴性 | 逐项见 [缺口与重启条件](BACKLOG_zh.md) / [完整 TSV](BACKLOG.tsv)，保留本线可解性与依赖 |
+ | 65 项编译期设施的结果投影 | 0/65 完整关闭；15,793 处 RESULT_UNRESOLVED；已停 | 人工重新授权投入；先补实际模板实参、实例化上下文、名字查找或结果结构证据，不能用手选 int 样本关项 |
++| 四项流状态枚举 | 类型分歧已确认（armv7l / aarch64），已确认直接公开签名消费未闭合；独立跟踪 | 真实消费者或虚调用链材料；见枚举补充与 BACKLOG 独立条目 |
+ | 第 201–495 个候选 | 未定界，295 项 | 人工启动下一批定界并确认范围/方法；本次不继续 |
+-| 其余 572 个表达式的 armv7l 复测 | 不测，状态仍未测 | 只有人工更改范围并给出产品相关问题时重启，不因本次 13 项一致就判它们安全 |
++| 其余 568 个表达式的 armv7l 复测 | 不测，状态仍未测 | 只有人工更改范围并给出产品相关问题时重启，不因本次 13 项一致就判它们安全 |
+ 
+ 计数来源：[证据: pending](EVIDENCE.md#pending) [证据: projection](EVIDENCE.md#projection) [证据: projection-count](EVIDENCE.md#projection-count) [证据: base-count](EVIDENCE.md#base-count) [证据: measurement](EVIDENCE.md#measurement) [证据: mechanisms](EVIDENCE.md#mechanisms)。不同表的候选、命中位置及表达式不是同一单位，不相加。
+ 
+ **投影计数的最新口径**：结果位置分别为无对象 15,770、类型分歧 10、标准库对象 13、未定 15,793；“13 个对象结果位置”不等于上节“13 个内建类型表达式”。发现对象结果也不等于已确认新消费边；完整候选关闭仍为 0/65。此前少掉“两侧同一类型”的断言已在新产物纠正，旧产物保留。[证据: projection-count](EVIDENCE.md#projection-count) [证据: projection](EVIDENCE.md#projection)
+ 
+-**不测决定的理由需纠正**：剩余 572 项中，按既有 x86_64 结果分解为相同 283、仅命名空间/标签差异 114、实现类/组合类型差异 111、枚举相关差异 4、不可得 60。已知命名机制不作为新发现重复投入，是保留不测决定的背景；但不能将其余所有项改写成“全为已知实现差异”。相同项不等于 ARM 同样相同，不可得项仍缺结果。本文保留“不测”的人工范围裁决，不替剩余项补结论。[证据: measurement](EVIDENCE.md#measurement) [证据: mechanisms](EVIDENCE.md#mechanisms)
++**不测集合更新**：原 572 项中的枚举相关差异 4 项已独立复测并跟踪；其余 568 项按既有 x86_64 结果分解为相同 283、仅命名空间/标签差异 114、实现类/组合类型差异 111、不可得 60。已知命名机制不作为新发现重复投入，是保留不测决定的背景；但不能将其余所有项改写成“全为已知实现差异”。相同项不等于 ARM 同样相同，不可得项仍缺结果。本文保留“不测”的人工范围裁决，不替剩余项补结论。[证据: measurement](EVIDENCE.md#measurement) [证据: mechanisms](EVIDENCE.md#mechanisms)
+ 
+ ## 五、下一阶段逐边输入与前置
+ 
+--- a/docs/progress/RUNTIME_PHASE_SUMMARY_0921/BACKLOG_zh.md
++++ b/docs/progress/RUNTIME_PHASE_SUMMARY_0921/BACKLOG_zh.md
+@@ -66,3 +66,28 @@
+ | std::back_insert_iterator | D | 公开模板参数确有对象，但实例提供包/消费包尚未对应，不能把 header-only 调用当成已确认跨包符号边。 fmt get_container(back_insert_iterator) 等具体模板实例的 provider/consumer 和底层容器对象。 | PARTLY | [证据: pending](EVIDENCE.md#pending) |
+ | std::byte | C | MLIR 公开别名对应哪些导出函数和实际消费方未闭合；不能因 C 入口名字不带类型就判无对象。 以 MLIR AsyncRuntime 中使用 ValueStorage 的 C 导出函数身份取证，再对应 byte* 的实际 consumer。 | YES_LOCAL_RESEARCH | [证据: pending](EVIDENCE.md#pending) |
+ | std::overflow_error | C | 这些是独立源码路径，尚未证明一个实际平台调用链跨包传播该异常；运行库构造引用不补为包边。 OpenUSD 抛 overflow_error 的实际入口与 cereal/pybind11 或其他真实消费方对应。 | PARTLY | [证据: pending](EVIDENCE.md#pending) |
++
++
++## 版本 2：四项枚举独立条目
++
++原 62 项及其分类保持不变；下列是新增的类型差异跟踪，不是四条新增包边。
++
++### 流状态枚举：armv7l 上仍存在的类型身份分歧
++
++**事实链（新实测，版本 2 补入）**：fmtflags、iostate、openmode 在 GNU 中分别是 `_Ios_Fmtflags`、`_Ios_Iostate`、`_Ios_Openmode` 枚举，在 libc++ 中均是 `unsigned int`；seekdir 在 GNU 中是 `_Ios_Seekdir`，在 libc++ 中是 `ios_base::seekdir`。armv7l 与 aarch64 均 4/4 分歧，两库各五轮一致；四项两侧 size/align 均为 4/4。使用与先前目标类型测量相同的探针、目标配置和 QEMU 用户态，无板上测量。[证据: TYPES.tsv](../R119_ENUM_RETEST/TYPES.tsv) — SHA256 `f1c2e9551a6a379141ab91b462612ae5799dee1dc077e2044e5fd1816705a377`
++
++| 类型 | GNU 编码 | libc++ 编码（两架构相同） |
++| --- | --- | --- |
++| fmtflags | `St13_Ios_Fmtflags` | `j` |
++| iostate | `St12_Ios_Iostate` | `j` |
++| openmode | `St13_Ios_Openmode` | `j` |
++| seekdir | `St12_Ios_Seekdir` | `NSt3__18ios_base7seekdirE` |
++
++**与整数别名不同**：先前 13 项在已测 armv7l 配置中底层整数选择相同；这四项的枚举/内建类型或枚举身份差异仍在，不能由数据宽度相同排除。它们独立登记为已确认类型差异，不代表四个产品故障。
++
++真 ARM podofo 头编译得到 GNU `_ZN6PoDoFo14PdfInputDevice4SeekExSt12_Ios_Seekdir` 与 libc++ `_ZN6PoDoFo14PdfInputDevice4SeekExNSt3__18ios_base7seekdirE`。前面的 streamoff 编码均为 `x`，剩余差异来自 seekdir。显式限定调用用来取得 UND 名称；普通虚调用的两侧 IR 均从虚表 address point 选择从零开始索引 6 的入口并间接调用。这只是调用方编译观察，不是提供方虚表或混合运行兼容性测试。[证据: SEEK_SYMBOLS.json](../R119_ENUM_RETEST/SEEK_SYMBOLS.json) — SHA256 `32ccb97b8ce8012af090b855466c334cc2eae73aae8c0cacf289cc9e1ef7f0d5` [证据: VIRTUAL_CALL.json](../R119_ENUM_RETEST/VIRTUAL_CALL.json) — SHA256 `f928bf2ead58d70a78ad55060a48aed7a3d374172e6c4414b740901001d97e41`
++
++**已排除的解释**：不是 4/8 字节宽度差；也不能由函数名不同直接推出虚表槽位不同或虚调用必失败。对已确认的 ChecksumStream::flags 两重载、open、PdfInputDevice::Seek、Clear 共 5 条公开签名（4 个身份）作函数身份查询，限定 x86_64 集合内没有对应异包 UND；bundle::Add 正向对照通过。旧索引的 61/85/87/12 个位置不是 245 条已确认公开签名。虚调用、内联和范围外产物未被这个阴性排除；已有 fmtflags/openmode 流对象成员边保留。新增边 0，仍为 18 包对 / 23 边。[证据: BOUNDARY_QUERIES.json](../R119_ENUM_RETEST/BOUNDARY_QUERIES.json) — SHA256 `ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06` [证据: BOUNDARY_CONTROL.json](../R119_ENUM_RETEST/BOUNDARY_CONTROL.json) — SHA256 `0a8d08bb6b8dddb528f55d176d7126f5c0af127a937ff4efc92c2deb67355092`
++
++**反驳需要什么**：若实际目标配置下两库完整类型编码相同，本配置的分歧结论需修正；若要判断产品影响，需真实异包调用（包括虚调用）及提供方、参数语义和对象生命周期证据。本轮没有以符号/槽位观察代替这些运行验证。
++
+--- a/docs/progress/RUNTIME_PHASE_SUMMARY_0921/SUMMARY_en.md
++++ b/docs/progress/RUNTIME_PHASE_SUMMARY_0921/SUMMARY_en.md
+@@ -1,4 +1,6 @@
+ # Cross-package boundaries by architecture and new standard-library findings
++
++Version 2 (2026-09-21): adds only the four stream-state enum retests and related tracking; other conclusions are unchanged. See [version notes](VERSION_20260921_2.md) for the previous version, diff and current audit.
+ 
+ For human review. This document consolidates existing records only. It adds no source investigation, probes, board runs or compatibility commitments. Read every confirmation together with its evidence class and architecture.
+ 
+@@ -115,20 +117,40 @@
+ 
+ **A paragraph ready for external use:** Some standard-library names resolve to different integer types in the two implementations. In the measured x86_64 and aarch64 configurations, those integers occupy the same number of bytes, but the compiler distinguishes long from long long in function names. Parameters or template types involving them may therefore prevent a caller from finding the provider's function. This differs from an object being misread at runtime because its memory layout changed. Return types and internal members do not necessarily change the function name. This integer-selection difference is absent in the measured armv7l configuration; another architecture's finding must not be transferred to it unchanged.
+ 
++### Stream-state enums: type identities still diverge on armv7l
++
++**Fact chain — new measurements added in version 2:** GNU fmtflags, iostate and openmode are the named enums `_Ios_Fmtflags`, `_Ios_Iostate` and `_Ios_Openmode`; libc++ uses `unsigned int` for all three. GNU seekdir is `_Ios_Seekdir`, whereas libc++ uses `ios_base::seekdir`. Both armv7l and aarch64 show 4/4 divergences, with five consistent repetitions per library. All four have size/alignment 4/4 on both sides. The earlier target-type probe/configurations and QEMU user mode were reused; no board was used. [Evidence: TYPES.tsv](../R119_ENUM_RETEST/TYPES.tsv) — SHA256 `f1c2e9551a6a379141ab91b462612ae5799dee1dc077e2044e5fd1816705a377`
++
++| Type | GNU encoding | libc++ encoding (same on both architectures) |
++| --- | --- | --- |
++| fmtflags | `St13_Ios_Fmtflags` | `j` |
++| iostate | `St12_Ios_Iostate` | `j` |
++| openmode | `St13_Ios_Openmode` | `j` |
++| seekdir | `St12_Ios_Seekdir` | `NSt3__18ios_base7seekdirE` |
++
++**Unlike the integer aliases:** the earlier 13 expressions selected the same integer type on the measured armv7l configuration. These four enum/builtin or enum-identity differences remain despite equal widths. They are separately recorded type findings, not four demonstrated product failures.
++
++Compiling the real ARM podofo header produced GNU `_ZN6PoDoFo14PdfInputDevice4SeekExSt12_Ios_Seekdir` and libc++ `_ZN6PoDoFo14PdfInputDevice4SeekExNSt3__18ios_base7seekdirE`. The streamoff encoding is `x` on both sides; seekdir accounts for the remaining difference. A qualified call exposes the UND name. Both ordinary virtual-call IR bodies instead select zero-based index 6 relative to the vtable address point and call indirectly. This observes caller compilation, not provider-vtable or mixed-execution compatibility. [Evidence: SEEK_SYMBOLS.json](../R119_ENUM_RETEST/SEEK_SYMBOLS.json) — SHA256 `32ccb97b8ce8012af090b855466c334cc2eae73aae8c0cacf289cc9e1ef7f0d5` [Evidence: VIRTUAL_CALL.json](../R119_ENUM_RETEST/VIRTUAL_CALL.json) — SHA256 `f928bf2ead58d70a78ad55060a48aed7a3d374172e6c4414b740901001d97e41`
++
++**Excluded explanations:** this is not a 4/8-byte width difference. Different function names do not directly establish different virtual-table slots or inevitable virtual-call failure. Function-identity queries covered the two ChecksumStream::flags overloads, open, PdfInputDevice::Seek and Clear: 5 confirmed declarations under 4 identities. No corresponding external UND was found in the scoped x86_64 set; the bundle::Add positive control passed. The old index's 61/85/87/12 positions are not 245 confirmed public declarations. Virtual calls, inline code and out-of-scope artifacts remain open. Existing fmtflags/openmode stream-member edges are retained. New edges: 0; the total remains 18 pairs / 23 edges. [Evidence: BOUNDARY_QUERIES.json](../R119_ENUM_RETEST/BOUNDARY_QUERIES.json) — SHA256 `ffc287e4232035231ee82c88a28f0aaeb57621d5871b5b9a4021f4096d9fcf06` [Evidence: BOUNDARY_CONTROL.json](../R119_ENUM_RETEST/BOUNDARY_CONTROL.json) — SHA256 `0a8d08bb6b8dddb528f55d176d7126f5c0af127a937ff4efc92c2deb67355092`
++
++**What would overturn the finding:** equal complete type encodings under the actual target configuration would require revising the divergence claim. Product consequences require real cross-package calls, including virtual calls, actual providers, parameter semantics and object-lifetime evidence. Symbol/slot observations do not substitute for those execution tests.
++
+[
+  {
+    "library": "gnu",
+    "path": "/home/toolchain/development/libcxx_runtime_validation/tmp/API_0911/W1_CONT/arm/sdk/libstdc++-devel/usr/lib/gcc/armv7l-tizen-linux-gnueabi/14.2.0/include/c++/bits/ios_base.h",
+    "sha256": "913a82ba9de0a1591a016dc36d370ae30032ad0c1de193a3a28f6e8644e95370",
+    "excerpts": [
+      {
+        "line": 57,
+        "context": "56:   // expressions involving them are not compile-time constants.\n57:   enum _Ios_Fmtflags \n58:     { \n59:       _S_boolalpha \t= 1L << 0,\n60:       _S_dec \t\t= 1L << 1,\n61:       _S_fixed \t\t= 1L << 2,\n62:       _S_hex \t\t= 1L << 3,\n63:       _S_internal \t= 1L << 4,\n64:       _S_left \t\t= 1L << 5,\n65:       _S_oct \t\t= 1L << 6,\n66:       _S_right \t\t= 1L << 7,"
+      },
+      {
+        "line": 118,
+        "context": "117: \n118:   enum _Ios_Openmode \n119:     { \n120:       _S_app \t\t= 1L << 0,\n121:       _S_ate \t\t= 1L << 1,\n122:       _S_bin \t\t= 1L << 2,\n123:       _S_in \t\t= 1L << 3,\n124:       _S_out \t\t= 1L << 4,\n125:       _S_trunc \t\t= 1L << 5,\n126:       _S_noreplace \t= 1L << 6,\n127:       _S_ios_openmode_end = 1L << 16,"
+      },
+      {
+        "line": 168,
+        "context": "167: \n168:   enum _Ios_Iostate\n169:     { \n170:       _S_goodbit \t\t= 0,\n171:       _S_badbit \t\t= 1L << 0,\n172:       _S_eofbit \t\t= 1L << 1,\n173:       _S_failbit\t\t= 1L << 2,\n174:       _S_ios_iostate_end = 1L << 16,\n175:       _S_ios_iostate_max = __INT_MAX__,\n176:       _S_ios_iostate_min = ~__INT_MAX__\n177:     };"
+      },
+      {
+        "line": 215,
+        "context": "214: \n215:   enum _Ios_Seekdir \n216:     { \n217:       _S_beg = 0,\n218:       _S_cur = _GLIBCXX_STDIO_SEEK_CUR,\n219:       _S_end = _GLIBCXX_STDIO_SEEK_END,\n220:       _S_ios_seekdir_end = 1L << 16 \n221:     };\n222: \n223: #if __cplusplus >= 201103L\n224:   /// I/O error code"
+      },
+      {
+        "line": 367,
+        "context": "366:     */\n367:     typedef _Ios_Fmtflags fmtflags;\n368: \n369:     /// Insert/extract @c bool in alphabetic rather than numeric format.\n370:     static const fmtflags boolalpha =   _S_boolalpha;\n371: \n372:     /// Converts integer input or generates integer output in decimal base.\n373:     static const fmtflags dec =         _S_dec;\n374: \n375:     /// Generate floating-point output in fixed-point notation.\n376:     static const fmtflags fixed =       _S_fixed;"
+      },
+      {
+        "line": 442,
+        "context": "441:     */\n442:     typedef _Ios_Iostate iostate;\n443: \n444:     /// Indicates a loss of integrity in an input or output sequence (such\n445:     /// as an irrecoverable read error from a file).\n446:     static const iostate badbit =\t_S_badbit;\n447: \n448:     /// Indicates that an input operation reached the end of an input sequence.\n449:     static const iostate eofbit =\t_S_eofbit;\n450: \n451:     /// Indicates that an input operation failed to read the expected"
+      },
+      {
+        "line": 473,
+        "context": "472:     */\n473:     typedef _Ios_Openmode openmode;\n474: \n475:     /// Seek to end before each write.\n476:     static const openmode app =\t\t_S_app;\n477: \n478:     /// Open and seek to end immediately after opening.\n479:     static const openmode ate =\t\t_S_ate;\n480: \n481:     /// Perform input and output in binary mode (as opposed to text mode).\n482:     /// This is probably not what you think it is; see"
+      },
+      {
+        "line": 512,
+        "context": "511:     */\n512:     typedef _Ios_Seekdir seekdir;\n513: \n514:     /// Request a seek relative to the beginning of the stream.\n515:     static const seekdir beg =\t\t_S_beg;\n516: \n517:     /// Request a seek relative to the current position within the sequence.\n518:     static const seekdir cur =\t\t_S_cur;\n519: \n520:     /// Request a seek relative to the current end of the sequence.\n521:     static const seekdir end =\t\t_S_end;"
+      }
+    ]
+  },
+  {
+    "library": "cxx",
+    "path": "/home/toolchain/development/libcxx_runtime_validation/tmp/IMPL_0908/build-armv7l/include/c++/v1/ios",
+    "sha256": "4d9992011bb810183c607c8d44e0d35e42c8a428cc17ddcf66663689aa45cfd4",
+    "excerpts": [
+      {
+        "line": 30,
+        "context": "29: \n30:     typedef T1 fmtflags;\n31:     static constexpr fmtflags boolalpha;\n32:     static constexpr fmtflags dec;\n33:     static constexpr fmtflags fixed;\n34:     static constexpr fmtflags hex;\n35:     static constexpr fmtflags internal;\n36:     static constexpr fmtflags left;\n37:     static constexpr fmtflags oct;\n38:     static constexpr fmtflags right;\n39:     static constexpr fmtflags scientific;"
+      },
+      {
+        "line": 50,
+        "context": "49: \n50:     typedef T2 iostate;\n51:     static constexpr iostate badbit;\n52:     static constexpr iostate eofbit;\n53:     static constexpr iostate failbit;\n54:     static constexpr iostate goodbit;\n55: \n56:     typedef T3 openmode;\n57:     static constexpr openmode app;\n58:     static constexpr openmode ate;\n59:     static constexpr openmode binary;"
+      },
+      {
+        "line": 56,
+        "context": "55: \n56:     typedef T3 openmode;\n57:     static constexpr openmode app;\n58:     static constexpr openmode ate;\n59:     static constexpr openmode binary;\n60:     static constexpr openmode in;\n61:     static constexpr openmode noreplace; // since C++23\n62:     static constexpr openmode out;\n63:     static constexpr openmode trunc;\n64: \n65:     typedef T4 seekdir;"
+      },
+      {
+        "line": 65,
+        "context": "64: \n65:     typedef T4 seekdir;\n66:     static constexpr seekdir beg;\n67:     static constexpr seekdir cur;\n68:     static constexpr seekdir end;\n69: \n70:     class Init;\n71: \n72:     // 27.5.2.2 fmtflags state:\n73:     fmtflags flags() const;\n74:     fmtflags flags(fmtflags fmtfl);"
+      },
+      {
+        "line": 257,
+        "context": "256: \n257:   typedef unsigned int fmtflags;\n258:   static const fmtflags boolalpha   = 0x0001;\n259:   static const fmtflags dec         = 0x0002;\n260:   static const fmtflags fixed       = 0x0004;\n261:   static const fmtflags hex         = 0x0008;\n262:   static const fmtflags internal    = 0x0010;\n263:   static const fmtflags left        = 0x0020;\n264:   static const fmtflags oct         = 0x0040;\n265:   static const fmtflags right       = 0x0080;\n266:   static const fmtflags scientific  = 0x0100;"
+      },
+      {
+        "line": 277,
+        "context": "276: \n277:   typedef unsigned int iostate;\n278:   static const iostate badbit  = 0x1;\n279:   static const iostate eofbit  = 0x2;\n280:   static const iostate failbit = 0x4;\n281:   static const iostate goodbit = 0x0;\n282: \n283:   typedef unsigned int openmode;\n284:   static const openmode app    = 0x01;\n285:   static const openmode ate    = 0x02;\n286:   static const openmode binary = 0x04;"
+      },
+      {
+        "line": 283,
+        "context": "282: \n283:   typedef unsigned int openmode;\n284:   static const openmode app    = 0x01;\n285:   static const openmode ate    = 0x02;\n286:   static const openmode binary = 0x04;\n287:   static const openmode in     = 0x08;\n288:   static const openmode out    = 0x10;\n289:   static const openmode trunc  = 0x20;\n290: #    if _LIBCPP_STD_VER >= 23\n291:   static const openmode noreplace = 0x40;\n292: #    endif"
+      },
+      {
+        "line": 294,
+        "context": "293: \n294:   enum seekdir { beg, cur, end };\n295: \n296: #    if _LIBCPP_STD_VER <= 14\n297:   typedef iostate io_state;\n298:   typedef openmode open_mode;\n299:   typedef seekdir seek_dir;\n300: \n301:   typedef std::streamoff streamoff;\n302:   typedef std::streampos streampos;\n303: #    endif"
+      },
+      {
+        "line": 297,
+        "context": "296: #    if _LIBCPP_STD_VER <= 14\n297:   typedef iostate io_state;\n298:   typedef openmode open_mode;\n299:   typedef seekdir seek_dir;\n300: \n301:   typedef std::streamoff streamoff;\n302:   typedef std::streampos streampos;\n303: #    endif\n304: \n305:   class _LIBCPP_EXPORTED_FROM_ABI Init;\n306: "
+      },
+      {
+        "line": 298,
+        "context": "297:   typedef iostate io_state;\n298:   typedef openmode open_mode;\n299:   typedef seekdir seek_dir;\n300: \n301:   typedef std::streamoff streamoff;\n302:   typedef std::streampos streampos;\n303: #    endif\n304: \n305:   class _LIBCPP_EXPORTED_FROM_ABI Init;\n306: \n307:   // 27.5.2.2 fmtflags state:"
+      },
+      {
+        "line": 299,
+        "context": "298:   typedef openmode open_mode;\n299:   typedef seekdir seek_dir;\n300: \n301:   typedef std::streamoff streamoff;\n302:   typedef std::streampos streampos;\n303: #    endif\n304: \n305:   class _LIBCPP_EXPORTED_FROM_ABI Init;\n306: \n307:   // 27.5.2.2 fmtflags state:\n308:   [[__nodiscard__]] _LIBCPP_HIDE_FROM_ABI fmtflags flags() const;"
+      }
+    ]
+  }
+]
