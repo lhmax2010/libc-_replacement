@@ -1,0 +1,172 @@
+   478	static rpmRC writeRPM(Package pkg, unsigned char ** pkgidp,
+   479			      const char *fileName, char **cookie)
+   480	{
+   481	    FD_t fd = NULL;
+   482	    char * rpmio_flags = NULL;
+   483	    char * SHA1 = NULL;
+   484	    char * SHA256 = NULL;
+   485	    uint8_t * MD5 = NULL;
+   486	    char * pld = NULL;
+   487	    uint32_t pld_algo = PGPHASHALGO_SHA256; /* TODO: macro configuration */
+   488	    rpmRC rc = RPMRC_FAIL; /* assume failure */
+   489	    rpm_loff_t archiveSize = 0;
+   490	    off_t sigStart, hdrStart, payloadStart, payloadEnd;
+   491	
+   492	    if (pkgidp)
+   493		*pkgidp = NULL;
+   494	
+   495	    rpmio_flags = getIOFlags(pkg);
+   496	    if (!rpmio_flags)
+   497		goto exit;
+   498	
+   499	    finalizeDeps(pkg);
+   500	
+   501	    /* Create and add the cookie */
+   502	    if (cookie) {
+   503		rasprintf(cookie, "%s %d", buildHost(), (int) (*getBuildTime()));
+   504		headerPutString(pkg->header, RPMTAG_COOKIE, *cookie);
+   505	    }
+   506	
+   507	    /* Create a dummy payload digest to get the header size right */
+   508	    pld = nullDigest(pld_algo, 1);
+   509	    headerPutUint32(pkg->header, RPMTAG_PAYLOADDIGESTALGO, &pld_algo, 1);
+   510	    headerPutString(pkg->header, RPMTAG_PAYLOADDIGEST, pld);
+   511	    pld = _free(pld);
+   512	    
+   513	    /* Check for UTF-8 encoding of string tags, add encoding tag if all good */
+   514	    if (checkForEncoding(pkg->header, 1))
+   515		goto exit;
+   516	
+   517	    /* Open the output file */
+   518	    fd = Fopen(fileName, "w+.ufdio");
+   519	    if (fd == NULL || Ferror(fd)) {
+   520		rpmlog(RPMLOG_ERR, _("Could not open %s: %s\n"),
+   521			fileName, Fstrerror(fd));
+   522		goto exit;
+   523	    }
+   524	
+   525	    /* Write the lead section into the package. */
+   526	    if (rpmLeadWrite(fd, pkg->header)) {
+   527		rpmlog(RPMLOG_ERR, _("Unable to write package: %s\n"), Fstrerror(fd));
+   528		goto exit;
+   529	    }
+   530	
+   531	    /* Save the position of signature section */
+   532	    sigStart = Ftell(fd);
+   533	
+   534	    /* Generate and write a placeholder signature header */
+   535	    SHA1 = nullDigest(PGPHASHALGO_SHA1, 1);
+   536	    SHA256 = nullDigest(PGPHASHALGO_SHA256, 1);
+   537	    MD5 = nullDigest(PGPHASHALGO_MD5, 0);
+   538	    if (rpmGenerateSignature(SHA256, SHA1, MD5, 0, 0, fd))
+   539		goto exit;
+   540	    SHA1 = _free(SHA1);
+   541	    SHA256 = _free(SHA256);
+   542	    MD5 = _free(MD5);
+   543	
+   544	    /* Write a placeholder header. */
+   545	    hdrStart = Ftell(fd);
+   546	    if (writeHdr(fd, pkg->header))
+   547		goto exit;
+   548	
+   549	    /* Write payload section (cpio archive) */
+   550	    payloadStart = Ftell(fd);
+   551	    if (cpio_doio(fd, pkg, rpmio_flags, &archiveSize))
+   552		goto exit;
+   553	    payloadEnd = Ftell(fd);
+   554	
+   555	    /* Re-read payload to calculate compressed digest */
+   556	    fdInitDigestID(fd, pld_algo, RPMTAG_PAYLOADDIGEST, 0);
+   557	    if (fdConsume(fd, payloadStart, payloadEnd - payloadStart))
+   558		goto exit;
+   559	    fdFiniDigest(fd, RPMTAG_PAYLOADDIGEST, (void **)&pld, NULL, 1);
+   560	
+   561	    /* Insert the payload digest in main header */
+   562	    headerDel(pkg->header, RPMTAG_PAYLOADDIGEST);
+   563	    headerPutString(pkg->header, RPMTAG_PAYLOADDIGEST, pld);
+   644	rpmRC packageBinaries(rpmSpec spec, const char *cookie, int cheating)
+   645	{
+   646	    rpmRC rc;
+   647	    const char *errorString;
+   648	    Package pkg;
+   649	    char *pkglist = NULL;
+   650	
+   651	    for (pkg = spec->packages; pkg != NULL; pkg = pkg->next) {
+   652		char *fn;
+   653	
+   654		if (pkg->fileList == NULL)
+   655		    continue;
+   656	
+   657		if ((rc = processScriptFiles(spec, pkg)))
+   658		    return rc;
+   659		
+   660		if (cookie) {
+   661		    headerPutString(pkg->header, RPMTAG_COOKIE, cookie);
+   662		}
+   663	
+   664		/* Copy changelog from src rpm */
+   665		headerCopyTags(spec->packages->header, pkg->header, copyTags);
+   666		
+   667		headerPutString(pkg->header, RPMTAG_RPMVERSION, VERSION);
+   668		headerPutString(pkg->header, RPMTAG_BUILDHOST, buildHost());
+   669		headerPutUint32(pkg->header, RPMTAG_BUILDTIME, getBuildTime(), 1);
+   670	
+   671		if (spec->sourcePkgId != NULL) {
+   672		    headerPutBin(pkg->header, RPMTAG_SOURCEPKGID, spec->sourcePkgId,16);
+   673		}
+   674	
+   675		if (cheating) {
+   676		    (void) rpmlibNeedsFeature(pkg, "ShortCircuited", "4.9.0-1");
+   677		}
+   678		
+   679		{   char *binFormat = rpmGetPath("%{_rpmfilename}", NULL);
+   680		    char *binRpm, *binDir;
+   681		    binRpm = headerFormat(pkg->header, binFormat, &errorString);
+   682		    free(binFormat);
+   683		    if (binRpm == NULL) {
+   684			rpmlog(RPMLOG_ERR, _("Could not generate output "
+   685			     "filename for package %s: %s\n"), 
+   686			     headerGetString(pkg->header, RPMTAG_NAME), errorString);
+   687			return RPMRC_FAIL;
+   688		    }
+   689		    fn = rpmGetPath("%{_rpmdir}/", binRpm, NULL);
+   690		    if ((binDir = strchr(binRpm, '/')) != NULL) {
+   691			struct stat st;
+   692			char *dn;
+   693			*binDir = '\0';
+   694			dn = rpmGetPath("%{_rpmdir}/", binRpm, NULL);
+   695			if (stat(dn, &st) < 0) {
+   696			    switch (errno) {
+   697			    case  ENOENT:
+   698				if (mkdir(dn, 0755) == 0)
+   699				    break;
+   700			    default:
+   701				rpmlog(RPMLOG_ERR,_("cannot create %s: %s\n"),
+   702				    dn, strerror(errno));
+   703				break;
+   704			    }
+   705			}
+   706			free(dn);
+   707		    }
+   708		    free(binRpm);
+   709		}
+   710	
+   711		rc = writeRPM(pkg, NULL, fn, NULL);
+   712		if (rc == RPMRC_OK) {
+   713		    /* Do check each written package if enabled */
+   714		    char *pkgcheck = rpmExpand("%{?_build_pkgcheck} ", fn, NULL);
+   715		    if (pkgcheck[0] != ' ') {
+   716			rc = checkPackages(pkgcheck);
+   717		    }
+   718		    free(pkgcheck);
+   719		    rstrcat(&pkglist, fn);
+   720		    rstrcat(&pkglist, " ");
+   721		}
+   722		free(fn);
+   723		if (rc != RPMRC_OK) {
+   724		    pkglist = _free(pkglist);
+   725		    return rc;
+72:    *(void **)(&real_code) = dlsym(RTLD_NEXT, "lzma_code");
+74:        const char msg[] = "LZMA_TAP_SETUP_FAILED: RTLD_NEXT lzma_code unavailable\n";
+82:        (void *)&lzma_code, (void *)real_code, sbrk(0),
+93:lzma_ret lzma_code(lzma_stream *stream, lzma_action action)

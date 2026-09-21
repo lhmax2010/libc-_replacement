@@ -1,0 +1,297 @@
+     1	#define _GNU_SOURCE
+     2	#include <dlfcn.h>
+     3	#include <errno.h>
+     4	#include <fcntl.h>
+     5	#include <lzma.h>
+     6	#include <stdint.h>
+     7	#include <stdio.h>
+     8	#include <stdlib.h>
+     9	#include <sys/resource.h>
+    10	#include <sys/types.h>
+    11	#include <time.h>
+    12	#include <unistd.h>
+    13	
+    14	/* Independent diagnostic DSO. No modification of the liblzma stream or result.
+    15	 * One append write per call; no stdio file streams or per-call malloc.
+    16	 * errno after the real call is restored after every diagnostic operation.
+    17	 */
+    18	static lzma_ret (*real_code)(lzma_stream *, lzma_action);
+    19	static int trace_fd = -1;
+    20	static unsigned long long sequence;
+    21	static unsigned int error_snapshots;
+    22	static char output_base[256];
+    23	static char copy_buffer[16384];
+    24	
+    25	static void write_all(int fd, const char *p, size_t n)
+    26	{
+    27	    while (n) {
+    28	        ssize_t done = write(fd, p, n);
+    29	        if (done < 0 && errno == EINTR) continue;
+    30	        if (done <= 0) return;
+    31	        p += done; n -= (size_t)done;
+    32	    }
+    33	}
+    34	
+    35	static void snapshot_file(const char *input, const char *label, const char *part)
+    36	{
+    37	    char path[512];
+    38	    snprintf(path, sizeof(path), "%s.%s.%s", output_base, label, part);
+    39	    int source = open(input, O_RDONLY | O_CLOEXEC);
+    40	    int target = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    41	    if (source >= 0 && target >= 0) {
+    42	        ssize_t n;
+    43	        while ((n = read(source, copy_buffer, sizeof(copy_buffer))) > 0)
+    44	            write_all(target, copy_buffer, (size_t)n);
+    45	    }
+    46	    if (source >= 0) close(source);
+    47	    if (target >= 0) close(target);
+    48	}
+    49	
+    50	static void snapshot(const char *label)
+    51	{
+    52	    snapshot_file("/proc/self/status", label, "status");
+    53	    snapshot_file("/proc/self/maps", label, "maps");
+    54	    snapshot_file("/proc/self/limits", label, "limits");
+    55	}
+    56	
+    57	__attribute__((constructor)) static void initialize(void)
+    58	{
+    59	    int saved = errno;
+    60	    const char *base = getenv("LZMA_TAP_PREFIX");
+    61	    const char *va = getenv("QEMU_RESERVED_VA");
+    62	    char line[1024];
+    63	    if (!base) base = "/tmp/lzma-diag/rpmbuild-lzma";
+    64	    snprintf(output_base, sizeof(output_base), "%s", base);
+    65	    char path[512];
+    66	    snprintf(path, sizeof(path), "%s.calls.tsv", output_base);
+    67	    trace_fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    68	    if (trace_fd < 0) {
+    69	        const char msg[] = "LZMA_TAP_SETUP_FAILED: cannot create exclusive call log\n";
+    70	        write_all(2, msg, sizeof(msg)-1); _exit(125);
+    71	    }
+    72	    *(void **)(&real_code) = dlsym(RTLD_NEXT, "lzma_code");
+    73	    if (!real_code) {
+    74	        const char msg[] = "LZMA_TAP_SETUP_FAILED: RTLD_NEXT lzma_code unavailable\n";
+    75	        write_all(trace_fd, msg, sizeof(msg)-1); _exit(125);
+    76	    }
+    77	    struct rlimit as, data;
+    78	    getrlimit(RLIMIT_AS, &as); getrlimit(RLIMIT_DATA, &data);
+    79	    int n = snprintf(line, sizeof(line),
+    80	        "# pid=%ld QEMU_RESERVED_VA=%s pointer_bits=%zu tap=%p real=%p brk=%p rlimit_as=%llu rlimit_data=%llu\n",
+    81	        (long)getpid(), va ? va : "NOT_OBSERVED", 8*sizeof(void *),
+    82	        (void *)&lzma_code, (void *)real_code, sbrk(0),
+    83	        (unsigned long long)as.rlim_cur, (unsigned long long)data.rlim_cur);
+    84	    write_all(trace_fd, line, (size_t)n);
+    85	    const char header[] = "seq\tmonotonic_sec\tmonotonic_nsec\tstream\taction\tret\terrno_before\terrno_after\tin_before\tout_before\tin_after\tout_after\ttotal_in\ttotal_out\n";
+    86	    write_all(trace_fd, header, sizeof(header)-1);
+    87	    /* Scope preload to this process; do not instrument the build's children. */
+    88	    unsetenv("LD_PRELOAD"); unsetenv("QEMU_SET_ENV"); unsetenv("LZMA_TAP_PREFIX");
+    89	    snapshot("initial");
+    90	    errno = saved;
+    91	}
+    92	
+    93	lzma_ret lzma_code(lzma_stream *stream, lzma_action action)
+    94	{
+    95	    int before_errno = errno;
+    96	    size_t input = stream->avail_in, output = stream->avail_out;
+    97	    /* No logging or allocation between the saved entry state and real call. */
+    98	    lzma_ret ret = real_code(stream, action);
+    99	    int after_errno = errno;
+   100	    struct timespec now;
+   101	    clock_gettime(CLOCK_MONOTONIC, &now);
+   102	    char line[512];
+   103	    unsigned long long seq = ++sequence;
+   104	    int n = snprintf(line, sizeof(line),
+   105	        "%llu\t%lld\t%ld\t%p\t%d\t%d\t%d\t%d\t%zu\t%zu\t%zu\t%zu\t%llu\t%llu\n",
+   106	        seq, (long long)now.tv_sec, now.tv_nsec, (void *)stream,
+   107	        (int)action, (int)ret, before_errno, after_errno,
+   108	        input, output, stream->avail_in, stream->avail_out,
+   109	        (unsigned long long)stream->total_in, (unsigned long long)stream->total_out);
+   110	    write_all(trace_fd, line, (size_t)n);
+   111	    /* STREAM_END is normal termination, not an encoder error. */
+   112	    if (ret != LZMA_OK && ret != LZMA_STREAM_END && error_snapshots++ == 0)
+   113	        snapshot("first-non-ok-non-end");
+   114	    errno = after_errno;
+   115	    return ret;
+   116	}
+# pid=824601 QEMU_RESERVED_VA=0x100000000 pointer_bits=32 tap=0x40832ba8 real=0x40d86ee9 brk=0x407000 rlimit_as=18446744073709551615 rlimit_data=18446744073709551615
+seq	monotonic_sec	monotonic_nsec	stream	action	ret	errno_before	errno_after	in_before	out_before	in_after	out_after	total_in	total_out
+{
+  "time": "2026-09-21T12:57:30.893966+08:00",
+  "pid": 824601,
+  "tap_header": "# pid=824601 QEMU_RESERVED_VA=0x100000000 pointer_bits=32 tap=0x40832ba8 real=0x40d86ee9 brk=0x407000 rlimit_as=18446744073709551615 rlimit_data=18446744073709551615\n",
+  "command": [
+    "/usr/bin/qemu-arm-static",
+    "/bin/rpmbuild",
+    "--define",
+    "_binary_payload w5T1.xzdio",
+    "--rcfile",
+    "/usr/lib/rpm/rpmrc:/home/abuild/.rpmrc",
+    "--macros",
+    "/usr/lib/rpm/macros:/usr/lib/rpm/macros.d/macros.*:/usr/lib/rpm/platform/%{_target}/macros:/usr/lib/rpm/fileattrs/*.attr:/usr/lib/rpm/tizen/macros:/etc/rpm/macros.*:/etc/rpm/macros:/etc/rpm/%{_target}/macros:/home/abuild/.rpmmacros",
+    "--target",
+    "armv7l-tizen-linux",
+    "--define",
+    "_topdir /home/abuild/rpmbuild",
+    "--define",
+    "_rpmdir /tmp/task/rpm-arm-llvm/RPMS",
+    "--define",
+    "_srcrpmdir /tmp/task/rpm-arm-llvm/SRPMS",
+    "--define",
+    "_buildrootdir /tmp/task/rpm-arm-llvm/BUILDROOT",
+    "--define",
+    "_tmppath /tmp/task/rpm-arm-llvm/TMP",
+    "--define",
+    "_smp_mflags -j1",
+    "--define",
+    "_smp_build_ncpus 1",
+    "--define",
+    "jobs 1",
+    "--define",
+    "mlgo_build_jobs 1",
+    "--define",
+    "_srcdefattr (-,root,root)",
+    "--define",
+    "_build_create_debug 1",
+    "--nosignature",
+    "--noprep",
+    "--noclean",
+    "-bb",
+    "/tmp/task/specs/llvm.spec"
+  ],
+  "selected_environment": {
+    "QEMU_RESERVED_VA": "0x100000000",
+    "CMAKE_BUILD_PARALLEL_LEVEL": "1",
+    "RPM_BUILD_NCPUS": "1",
+    "MAKEFLAGS": "-j1"
+  },
+  "host_proc_status": "Name:\trpmbuild\nUmask:\t0002\nState:\tS (sleeping)\nTgid:\t824601\nNgid:\t0\nPid:\t824601\nPPid:\t824599\nTracerPid:\t824580\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nFDSize:\t64\nGroups:\t4 24 27 30 46 100 114 995 1000 \nNStgid:\t824601\nNSpid:\t824601\nNSpgid:\t824580\nNSsid:\t824580\nKthread:\t0\nVmPeak:\t 4405268 kB\nVmSize:\t 4405268 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t   23000 kB\nVmRSS:\t   21380 kB\nRssAnon:\t   10936 kB\nRssFile:\t   10444 kB\nRssShmem:\t       0 kB\nVmData:\t  152204 kB\nVmStk:\t     136 kB\nVmExe:\t    2556 kB\nVmLib:\t       8 kB\nVmPTE:\t     120 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nuntag_mask:\t0xffffffffffffffff\nThreads:\t2\nSigQ:\t0/125078\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000000000000\nSigCgt:\t00000003000004dc\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nCapAmb:\t0000000000000000\nNoNewPrivs:\t1\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tthread vulnerable\nSpeculationIndirectBranch:\tconditional enabled\nCpus_allowed:\tfffff\nCpus_allowed_list:\t0-19\nMems_allowed:\t00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001\nMems_allowed_list:\t0\nvoluntary_ctxt_switches:\t6153\nnonvoluntary_ctxt_switches:\t0\nx86_Thread_features:\t\nx86_Thread_features_locked:\t\n",
+  "host_proc_maps": "00400000-00401000 r--p 00000000 08:01 117990372                          /usr/bin/qemu-arm\n00401000-00680000 r-xp 00001000 08:01 117990372                          /usr/bin/qemu-arm\n00680000-007a1000 r--p 00280000 08:01 117990372                          /usr/bin/qemu-arm\n007a1000-007a6000 r--p 003a1000 08:01 117990372                          /usr/bin/qemu-arm\n007a6000-007d5000 rw-p 003a6000 08:01 117990372                          /usr/bin/qemu-arm\n007d5000-007e7000 rw-p 00000000 00:00 0 \n1be50000-1bfc2000 rw-p 00000000 00:00 0                                  [heap]\n40000000-40400000 ---p 00000000 00:00 0 \n40400000-40405000 r--p 00000000 08:01 117997629                          /usr/bin/rpmbuild\n40405000-40406000 r--p 00005000 08:01 117997629                          /usr/bin/rpmbuild\n40406000-40407000 rw-p 00006000 08:01 117997629                          /usr/bin/rpmbuild\n40407000-40622000 rw-p 00000000 00:00 0 \n40622000-80000000 ---p 00000000 00:00 0 \n80000000-80001000 ---p 00000000 00:00 0 \n80001000-80801000 rw-p 00000000 00:00 0 \n80801000-8082c000 r--p 00000000 08:01 117989771                          /usr/lib/ld-linux.so.3\n8082c000-8082e000 r--p 0002b000 08:01 117989771                          /usr/lib/ld-linux.so.3\n8082e000-8082f000 rw-p 0002d000 08:01 117989771                          /usr/lib/ld-linux.so.3\n8082f000-80830000 r--p 00000000 00:00 0 \n80830000-80832000 rw-p 00000000 00:00 0 \n80832000-80834000 r--p 00000000 08:01 5427124                            /tmp/lzma-diag/lzma_tap.so\n80834000-80835000 rw-p 00001000 08:01 5427124                            /tmp/lzma-diag/lzma_tap.so\n80835000-80839000 rw-p 00000000 00:00 0 \n80839000-8083b000 ---p 00000000 00:00 0 \n8083b000-80869000 r--p 00000000 08:01 117990730                          /usr/lib/librpmbuild.so.3.1.0\n80869000-8086a000 r--p 0002e000 08:01 117990730                          /usr/lib/librpmbuild.so.3.1.0\n8086a000-8086b000 rw-p 0002f000 08:01 117990730                          /usr/lib/librpmbuild.so.3.1.0\n8086b000-80aed000 r--p 00000000 08:01 117990728                          /usr/lib/librpm.so.3.1.0\n80aed000-80af0000 r--p 00282000 08:01 117990728                          /usr/lib/librpm.so.3.1.0\n80af0000-80af2000 rw-p 00285000 08:01 117990728                          /usr/lib/librpm.so.3.1.0\n80af2000-80af3000 rw-p 00000000 00:00 0 \n80af3000-80b22000 r--p 00000000 08:01 117990732                          /usr/lib/librpmio.so.3.1.0\n80b22000-80b23000 r--p 0002f000 08:01 117990732                          /usr/lib/librpmio.so.3.1.0\n80b23000-80b24000 rw-p 00030000 08:01 117990732                          /usr/lib/librpmio.so.3.1.0\n80b24000-80b27000 rw-p 00000000 00:00 0 \n80b27000-80b2e000 r--p 00000000 08:01 117989901                          /usr/lib/libpopt.so.0.0.0\n80b2e000-80b2f000 r--p 00007000 08:01 117989901                          /usr/lib/libpopt.so.0.0.0\n80b2f000-80b30000 rw-p 00008000 08:01 117989901                          /usr/lib/libpopt.so.0.0.0\n80b30000-80c8a000 r--p 00000000 08:01 117989774                          /usr/lib/libc.so.6\n80c8a000-80c8c000 r--p 0015a000 08:01 117989774                          /usr/lib/libc.so.6\n80c8c000-80c8d000 rw-p 0015c000 08:01 117989774                          /usr/lib/libc.so.6\n80c8d000-80c92000 rw-p 00000000 00:00 0 \n80c92000-80c94000 r--p 00000000 08:01 117989776                          /usr/lib/libdl.so.2\n80c94000-80c95000 r--p 00002000 08:01 117989776                          /usr/lib/libdl.so.2\n80c95000-80c96000 rw-p 00003000 08:01 117989776                          /usr/lib/libdl.so.2\n80c96000-80c9c000 r--p 00000000 08:01 117989873                          /usr/lib/libcap.so.2.73\n80c9c000-80c9d000 r--p 00006000 08:01 117989873                          /usr/lib/libcap.so.2.73\n80c9d000-80c9e000 rw-p 00007000 08:01 117989873                          /usr/lib/libcap.so.2.73\n80c9e000-80cb5000 r--p 00000000 08:01 117990578                          /usr/lib/libmagic.so.1.0.0\n80cb5000-80cb6000 r--p 00017000 08:01 117990578                          /usr/lib/libmagic.so.1.0.0\n80cb6000-80cb7000 rw-p 00018000 08:01 117990578                          /usr/lib/libmagic.so.1.0.0\n80cb7000-80cc5000 r--p 00000000 08:01 117991196                          /usr/lib/libelf-0.189.so\n80cc5000-80cc6000 r--p 0000e000 08:01 117991196                          /usr/lib/libelf-0.189.so\n80cc6000-80cc7000 rw-p 0000f000 08:01 117991196                          /usr/lib/libelf-0.189.so\n80cc7000-80cc9000 rw-p 00000000 00:00 0 \n80cc9000-80d25000 r--p 00000000 08:01 117989872                          /usr/lib/libdw-0.189.so\n80d25000-80d2a000 r--p 0005c000 08:01 117989872                          /usr/lib/libdw-0.189.so\n80d2a000-80d2b000 rw-p 00061000 08:01 117989872                          /usr/lib/libdw-0.189.so\n80d2b000-80d2f000 r--p 00000000 08:01 117990542                          /usr/lib/libacl.so.1.1.2302\n80d2f000-80d30000 r--p 00004000 08:01 117990542                          /usr/lib/libacl.so.1.1.2302\n80d30000-80d31000 rw-p 00005000 08:01 117990542                          /usr/lib/libacl.so.1.1.2302\n80d31000-80d4a000 r--p 00000000 08:01 117997448                          /usr/lib/liblua.so.5.1\n80d4a000-80d4b000 r--p 00019000 08:01 117997448                          /usr/lib/liblua.so.5.1\n80d4b000-80d4c000 rw-p 0001a000 08:01 117997448                          /usr/lib/liblua.so.5.1\n80d4c000-80d66000 r--p 00000000 08:01 117989833                          /usr/lib/libgcc_s.so.1\n80d66000-80d67000 rw-p 00019000 08:01 117989833                          /usr/lib/libgcc_s.so.1\n80d67000-80d73000 r--p 00000000 08:01 117989869                          /usr/lib/libbz2.so.1.0.8\n80d73000-80d74000 rw-p 0000c000 08:01 117989869                          /usr/lib/libbz2.so.1.0.8\n80d74000-80d82000 r--p 00000000 08:01 117989949                          /usr/lib/libz.so.1.3.1\n80d82000-80d83000 r--p 0000e000 08:01 117989949                          /usr/lib/libz.so.1.3.1\n80d83000-80d84000 rw-p 0000f000 08:01 117989949                          /usr/lib/libz.so.1.3.1\n80d84000-80da0000 r--p 00000000 08:01 117989886                          /usr/lib/liblzma.so.5.8.1\n80da0000-80da1000 r--p 0001c000 08:01 117989886                          /usr/lib/liblzma.so.5.8.1\n80da1000-80da2000 rw-p 0001d000 08:01 117989886                          /usr/lib/liblzma.so.5.8.1\n80da2000-80e3b000 r--p 00000000 08:01 117989934                          /usr/lib/libzstd.so.1.5.7\n80e3b000-80e3c000 r--p 00099000 08:01 117989934                          /usr/lib/libzstd.so.1.5.7\n80e3c000-80e3d000 rw-p 0009a000 08:01 117989934                          /usr/lib/libzstd.so.1.5.7\n80e3d000-8107f000 r--p 00000000 08:01 117989894                          /usr/lib/libcrypto.so.3\n8107f000-810b6000 r--p 00242000 08:01 117989894                          /usr/lib/libcrypto.so.3\n810b6000-810b8000 rw-p 00279000 08:01 117989894                          /usr/lib/libcrypto.so.3\n810b8000-810ba000 rw-p 00000000 00:00 0 \n810ba000-81106000 r--p 00000000 08:01 117989777                          /usr/lib/libm.so.6\n81106000-81107000 r--p 0004c000 08:01 117989777                          /usr/lib/libm.so.6\n81107000-81108000 rw-p 0004d000 08:01 117989777                          /usr/lib/libm.so.6\n81108000-8110a000 r--p 00000000 08:01 117989785                          /usr/lib/libpthread.so.0\n8110a000-8110b000 r--p 00002000 08:01 117989785                          /usr/lib/libpthread.so.0\n8110b000-8110c000 rw-p 00003000 08:01 117989785                          /usr/lib/libpthread.so.0\n8110c000-8110e000 rw-p 00000000 00:00 0 \n8110e000-81111000 r--p 00000000 08:01 117989861                          /usr/lib/libattr.so.1.1.2501\n81111000-81112000 r--p 00003000 08:01 117989861                          /usr/lib/libattr.so.1.1.2501\n81112000-81113000 rw-p 00004000 08:01 117989861                          /usr/lib/libattr.so.1.1.2501\n81113000-81117000 rw-p 00000000 00:00 0 \n81117000-8111e000 r--p 00000000 08:01 117989779                          /usr/lib/libnss_compat.so.2\n8111e000-8111f000 r--p 00007000 08:01 117989779                          /usr/lib/libnss_compat.so.2\n8111f000-81120000 rw-p 00008000 08:01 117989779                          /usr/lib/libnss_compat.so.2\n81120000-81127000 r--s 00000000 08:01 790                                /usr/lib/gconv/gconv-modules.cache\n81127000-13fff0000 ---p 00000000 00:00 0 \n13fff0000-13fff1000 r--p 00000000 00:00 0 \n13fff1000-140000000 ---p 00000000 00:00 0 \n7d2308000000-7d230ffff000 rwxp 00000000 00:00 0 \n7d230ffff000-7d2310000000 ---p 00000000 00:00 0 \n7d2310000000-7d2310021000 rw-p 00000000 00:00 0 \n7d2310021000-7d2314000000 ---p 00000000 00:00 0 \n7d23169e6000-7d2316a67000 rw-p 00000000 00:00 0 \n7d2316a67000-7d2316a68000 ---p 00000000 00:00 0 \n7d2316a68000-7d2317268000 rw-p 00000000 00:00 0 \n7d2317268000-7d231726c000 r--p 00000000 00:00 0                          [vvar]\n7d231726c000-7d231726e000 r--p 00000000 00:00 0                          [vvar_vclock]\n7d231726e000-7d2317270000 r-xp 00000000 00:00 0                          [vdso]\n7ffdb5474000-7ffdb5496000 rw-p 00000000 00:00 0                          [stack]\nffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                  [vsyscall]\n",
+  "host_proc_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/arm-lzma-0921.scope\n",
+  "memory.max": "16536457216\n",
+  "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+  "checks": [
+    {
+      "command": [
+        "ps",
+        "-p",
+        "824601",
+        "-o",
+        "pid,ppid,ni,stat,etime,comm"
+      ],
+      "exitcode": 0,
+      "stdout": "    PID    PPID  NI STAT     ELAPSED COMMAND\n 824601  824599  19 SNl        01:10 rpmbuild\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "ionice",
+        "-p",
+        "824601"
+      ],
+      "exitcode": 0,
+      "stdout": "idle\n",
+      "stderr": ""
+    }
+  ]
+}
+{
+  "failed_host_write_counts": {},
+  "failed_host_write_samples": [],
+  "stream_ends": 18,
+  "archive_comparison": [
+    {
+      "command": [
+        "rpm",
+        "-qp",
+        "--qf",
+        "%{NAME}\t%{ARCHIVESIZE}\n",
+        "tmp/WEEKEND_0918/rpm-arm-llvm/RPMS/armv7l/llvm-22.1.8-1.armv7l.rpm"
+      ],
+      "exitcode": 0,
+      "stdout": "llvm\t19222608\n",
+      "stderr": "",
+      "wrote": {
+        "line": 7542,
+        "name": "llvm-22.1.8-1.armv7l.rpm",
+        "text": "Wrote: /tmp/task/rpm-arm-llvm/RPMS/armv7l/llvm-22.1.8-1.armv7l.rpm"
+      },
+      "stream_end_in_same_order": {
+        "seq": "1247",
+        "monotonic_sec": "327663",
+        "monotonic_nsec": "61040812",
+        "stream": "0x9ac958",
+        "action": "3",
+        "ret": "1",
+        "errno_before": "38",
+        "errno_after": "38",
+        "in_before": "0",
+        "out_before": "32768",
+        "in_after": "0",
+        "out_after": "16756",
+        "total_in": "19222608",
+        "total_out": "6373016"
+      },
+      "archive_size_equals_stream_total_in": true
+    },
+    {
+      "command": [
+        "rpm",
+        "-qp",
+        "--qf",
+        "%{NAME}\t%{ARCHIVESIZE}\n",
+        "tmp/WEEKEND_0918/rpm-arm-llvm/RPMS/armv7l/llvm-debugsource-22.1.8-1.armv7l.rpm"
+      ],
+      "exitcode": 0,
+      "stdout": "llvm-debugsource\t245834696\n",
+      "stderr": "",
+      "wrote": {
+        "line": 7543,
+        "name": "llvm-debugsource-22.1.8-1.armv7l.rpm",
+        "text": "Wrote: /tmp/task/rpm-arm-llvm/RPMS/armv7l/llvm-debugsource-22.1.8-1.armv7l.rpm"
+      },
+      "stream_end_in_same_order": {
+        "seq": "67628",
+        "monotonic_sec": "327781",
+        "monotonic_nsec": "889696633",
+        "stream": "0x9ac958",
+        "action": "3",
+        "ret": "1",
+        "errno_before": "38",
+        "errno_after": "38",
+        "in_before": "0",
+        "out_before": "32768",
+        "in_after": "0",
+        "out_after": "2024",
+        "total_in": "245834696",
+        "total_out": "33971616"
+      },
+      "archive_size_equals_stream_total_in": true
+    },
+    {
+      "command": [
+        "rpm",
+        "-qp",
+        "--qf",
+        "%{NAME}\t%{ARCHIVESIZE}\n",
+        "tmp/WEEKEND_0918/rpm-arm-llvm/RPMS/armv7l/llvm-devel-22.1.8-1.armv7l.rpm"
+      ],
+      "exitcode": 0,
+      "stdout": "llvm-devel\t37226700\n",
+      "stderr": "",
+      "wrote": {
+        "line": 7544,
+        "name": "llvm-devel-22.1.8-1.armv7l.rpm",
+        "text": "Wrote: /tmp/task/rpm-arm-llvm/RPMS/armv7l/llvm-devel-22.1.8-1.armv7l.rpm"
+      },
+      "stream_end_in_same_order": {
+        "seq": "81959",
+        "monotonic_sec": "327798",
+        "monotonic_nsec": "827269377",
+        "stream": "0x9ac958",
+        "action": "3",
+        "ret": "1",
+        "errno_before": "38",
+        "errno_after": "38",
+        "in_before": "0",
+        "out_before": "32768",
