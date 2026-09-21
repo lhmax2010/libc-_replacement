@@ -1,0 +1,41 @@
+--- progress/ARM_LZMA_0921B/gdb_observer.py	2026-09-21 14:55:21.453227719 +0800
++++ progress/ARM_LZMA_MODE_0921/gdb_observer.py	2026-09-21 17:02:57.834531470 +0800
+@@ -44,13 +44,23 @@
+         if count!=18:return False
+         try:
+             p=reg('r0')
+-            if self.label=='lzopen_return':
++            if self.label=='lzopen_entry':
++                raw=bytes(gdb.selected_inferior().read_memory(p,16))
++                first=raw.find(b'\x00')
++                second=raw.find(b'\x00',first+1) if first>=0 else -1
++                tail=raw[first+1:second if second>=0 else 16] if first>=0 else b''
++                printable=lambda b: ''.join(chr(c) if 32<=c<=126 else '.' for c in b)
++                record(self.label,mode_pointer=hex(p),raw_hex=raw.hex(' '),
++                       raw_printable=printable(raw),first_nul=first,next_nul=second,
++                       after_first_nul_hex=tail.hex(' '),after_first_nul_printable=printable(tail),
++                       segment_complete=first>=0 and second>=0,contains_r_in_segment=114 in tail)
++            elif self.label=='lzopen_return':
+                 open_pointer=p;record(self.label,pointer=hex(p),**lz(p))
+             elif self.label=='lzwrite_entry':
+                 fields=lz(p)
+                 record(self.label,pointer=hex(p),length=reg('r2'),open_pointer=None if open_pointer is None else hex(open_pointer),equal_to_open=None if open_pointer is None else p==open_pointer,**fields)
+                 if open_pointer is not None and p==open_pointer and fields['encoding']==1:
+-                    arm_return_observations()
++                    record('branch_b_observed_no_extra_breakpoints',reason='current task permits entry addition only')
+             else:
+                 fd=u32(p);fps=u32(fd+12);io=u32(fps);fp=u32(fps+4)
+                 record(self.label,cpio=hex(p),fd=hex(fd),fps=hex(fps),io=hex(io),ioname=text(u32(io)),name=text(u32(io+4)),fp=hex(fp),path=text(reg('r1')),open_pointer=None if open_pointer is None else hex(open_pointer),equal_to_open=None if open_pointer is None else fp==open_pointer)
+@@ -85,10 +95,10 @@
+ gdb.execute('add-symbol-file '+str(DEBUG/'librpmio.so.3.1.0.debug')+' -o '+hex(io_base))
+ gdb.execute('add-symbol-file '+str(DEBUG/'librpm.so.3.1.0.debug')+' -o '+hex(rpm_base))
+ gdb.execute('set stop-on-solib-events 0')
+-for p,label in [(io_base+0x13840,'lzopen_return'),(io_base+0x12fe4,'lzwrite_entry'),(rpm_base+0x39cc8,'cpio_header_entry')]:
++for p,label in [(io_base+0x132b4,'lzopen_entry'),(io_base+0x13840,'lzopen_return'),(io_base+0x12fe4,'lzwrite_entry'),(rpm_base+0x39cc8,'cpio_header_entry')]:
+     observed.append(Observe(p,label))
+ CloseCounter('*'+hex(io_base+0x13154),internal=True)
+-record('observer_ready',enabled='lzclose counter only; three points enabled when counter reaches 18',no_inferior_calls=True,no_inferior_writes=True)
++record('observer_ready',enabled='lzclose counter only; four points enabled when counter reaches 18',no_inferior_calls=True,no_inferior_writes=True)
+ gdb.execute('continue')
+ record('gdb_continue_returned',inferior_pid=gdb.selected_inferior().pid)
+ if gdb.selected_inferior().pid:
