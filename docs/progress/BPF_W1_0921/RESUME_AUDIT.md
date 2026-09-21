@@ -1,5 +1,7 @@
 # 当前会话上下文恢复核对
 
+2026-09-22 01:01 +08:00 恢复核对：原 ARM GCC 构建继续运行，没有重启。以下只读命令均退出 0：`pwd`；`date -Is`；`sed -n '1,180p' progress/BPF_W1_0921/CONTINUE.md`；`sed -n '1,120p' progress/BPF_W1_0921/run.py`；`sed -n '1,100p' progress/BPF_W1_0921/HOURLY_STATUS.md`。随后执行命令由 raw/319 起记录。截止仍为 05:01，未因界面提示或会话恢复延长。
+
 2026-09-21 22:34 +08:00 恢复核对，未重启或替换正在运行的 aarch64 未定义工具链构建。执行的只读命令：`pwd`（退出 0）、`tail -n 25 progress/BPF_W1_0921/cells/bpf-aarch64-undefined/build.log`（退出 0）、`sed -n '1,220p' progress/BPF_W1_0921/CONTINUE.md`（退出 0）、`sed -n '1,260p' progress/BPF_W1_0921/report.py`（退出 0）、`sed -n '1,240p' progress/BPF_W1_0921/test_original_arm.py`（退出 0）、`date --iso-8601=seconds`（退出 0）。随后命令原文与输出继续由 raw/151 起逐项记录。
 
 raw/154 的 `sed` 返回 2，原因是误用了不存在的脚本名 `prepare_inputs.py`；经文件列表核对，真实文件为 `prepare.py`，raw/157 已读取。该技术性路径错误未执行任何安装或构建，不改变此前结果。

@@ -1,15 +1,15 @@
 # 本轮状态
 
-2026-09-21T22:51:38.575652+08:00
+2026-09-22T02:43:26.988999+08:00
 
 | 架构 | 路径 | 状态 | 本轮 RPM 数 | 未闭合 |
 |---|---|---|---:|---|
-| armv7l | libcxx | NOT_OBSERVED | 0 | NOT_OBSERVED |
-| armv7l | gcc | NOT_OBSERVED | 0 | NOT_OBSERVED |
-| armv7l | undefined | NOT_OBSERVED | 0 | NOT_OBSERVED |
+| armv7l | libcxx | RPM_COMPLETE_GATES_NOT_ALL_CLOSED | 3 | static_goal_no_extra_dynamic_deps |
+| armv7l | gcc | PASS | 3 | PASS |
+| armv7l | undefined | PASS | 3 | PASS |
 | aarch64 | libcxx | RPM_COMPLETE_GATES_NOT_ALL_CLOSED | 3 | static_goal_no_extra_dynamic_deps |
 | aarch64 | gcc | PASS | 3 | PASS |
 | aarch64 | undefined | PASS | 3 | PASS |
 
 仅记录本轮实测。没有对应执行记录的格为 NOT_OBSERVED；不是沿用前轮 PASS。
-板上验证不在本轮范围。ARM 输入替换冲突的人工确认见 DECISIONS.md；构建路径尚未启动不等于验证失败。
+板上验证不在本轮范围。ARM 输入已通过新私有副本的普通安装接入，见 INPUT_STATUS.md；尚未执行的格不冒充失败或通过。
