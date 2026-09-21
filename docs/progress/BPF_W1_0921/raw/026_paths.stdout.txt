@@ -1,0 +1,200 @@
+progress/BUILD_WEEKEND_0918/checks-aarch64-undefined/verify_bpf_rpms.py
+progress/BUILD_WEEKEND_0918/install-v3-aarch64-inputs.json
+progress/BUILD_WEEKEND_0918/install-v3-armv7l-commands.json
+progress/BUILD_WEEKEND_0918/checks-aarch64-gcc/verify_bpf_rpms.py
+progress/BUILD_WEEKEND_0918/check_bpf_cell.py
+progress/BUILD_WEEKEND_0918/bpf-private-armv7l-base.json
+progress/BUILD_WEEKEND_0918/install-v3-armv7l-inputs.json
+progress/BUILD_WEEKEND_0918/private-write.strace
+progress/BUILD_WEEKEND_0918/install-v3-aarch64-commands.json
+progress/BUILD_WEEKEND_0918/bpf-private-aarch64-base.json
+progress/BUILD_WEEKEND_0918/bpf-private-aarch64-hal-base.json
+progress/BUILD_WEEKEND_0918/cells/check-aarch64-undefined/executed-check_bpf_cell.py
+progress/BUILD_WEEKEND_0918/checks-armv7l-gcc/verify_bpf_rpms.py
+progress/BUILD_WEEKEND_0918/checks-armv7l-undefined/verify_bpf_rpms.py
+progress/BUILD_WEEKEND_0918/cells/check-armv7l-undefined/executed-check_bpf_cell.py
+progress/BUILD_WEEKEND_0918/bpf-private-aarch64-checkers-base.json
+progress/BUILD_WEEKEND_0918/diagnose_private_write.py
+progress/BUILD_WEEKEND_0918/private-write-diagnostic.json
+progress/BUILD_WEEKEND_0918/__pycache__/check_bpf_cell.cpython-312.pyc
+progress/BUILD_WEEKEND_0918/__pycache__/verify_bpf_rpms.cpython-312.pyc
+progress/BUILD_WEEKEND_0918/verify_bpf_rpms.py
+progress/BUILD_WEEKEND_0918/cells/check-aarch64-gcc/executed-check_bpf_cell.py
+progress/BUILD_WEEKEND_0918/cells/check-aarch64-libcxx/executed-check_bpf_cell.py
+progress/BUILD_WEEKEND_0918/checks-aarch64-libcxx/verify_bpf_rpms.py
+progress/BUILD_WEEKEND_0918/cells/check-armv7l-gcc/executed-check_bpf_cell.py
+progress/BUILD_WEEKEND_0918/raw/144_arm_private_permissions.exitcode
+progress/BUILD_WEEKEND_0918/raw/144_arm_private_permissions.stderr.txt
+progress/BUILD_WEEKEND_0918/raw/144_arm_private_permissions.stdout.txt
+progress/BUILD_WEEKEND_0918/raw/026_diagnose_private_write.stdout.txt
+progress/BUILD_WEEKEND_0918/raw/028_private_input_permissions.stdout.txt
+progress/BUILD_WEEKEND_0918/raw/026_diagnose_private_write.finished.txt
+progress/BUILD_WEEKEND_0918/raw/028_private_input_permissions.stderr.txt
+progress/BUILD_WEEKEND_0918/raw/026_diagnose_private_write.exitcode
+progress/BUILD_WEEKEND_0918/raw/028_private_input_permissions.started.txt
+progress/BUILD_WEEKEND_0918/raw/028_private_input_permissions.finished.txt
+progress/BUILD_WEEKEND_0918/raw/026_diagnose_private_write.started.txt
+progress/BUILD_WEEKEND_0918/raw/028_private_input_permissions.command.txt
+progress/BUILD_WEEKEND_0918/raw/144_arm_private_permissions.finished.txt
+progress/BUILD_WEEKEND_0918/raw/028_private_input_permissions.exitcode
+progress/BUILD_WEEKEND_0918/raw/026_diagnose_private_write.command.txt
+progress/BUILD_WEEKEND_0918/raw/026_diagnose_private_write.stderr.txt
+progress/BUILD_WEEKEND_0918/raw/144_arm_private_permissions.started.txt
+progress/BUILD_WEEKEND_0918/raw/144_arm_private_permissions.command.txt
+"""Verify approved RPM identities, then install build inputs in a private root."""
+import hashlib,json,shlex,subprocess,sys
+from pathlib import Path
+p=Path.cwd(); out=p/'progress/BUILD_WEEKEND_0918'; task=p/'tmp/WEEKEND_0918'
+arch=sys.argv[1]; assert arch in ('armv7l','aarch64')
+assert json.loads((out/f'copy-{arch}-result.json').read_text())['status']=='COPY_AND_PER_FILE_SHA256_PASS'
+base=json.loads((out/f'bpf-private-{arch}-base.json').read_text())
+commands=[]; inputs=[]
+def run(cmd):
+    r=subprocess.run(cmd,capture_output=True,text=True,errors='replace')
+    commands.append({'command':shlex.join(cmd),'exitcode':r.returncode,'stdout':r.stdout,'stderr':r.stderr})
+    (out/f'install-v3-{arch}-commands.json').write_text(json.dumps(commands,indent=2))
+    print(shlex.join(cmd),'exitcode',r.returncode,flush=True)
+    print(r.stdout,end='',flush=True); print(r.stderr,end='',file=sys.stderr,flush=True)
+    assert r.returncode==0,(cmd,r.stderr)
+    return r.stdout
+def sha(f):
+    with f.open('rb') as stream: return hashlib.file_digest(stream,'sha256').hexdigest()
+old=p/'progress/BUILD_STATIC_0917B/resume_0917'
+llvm=json.loads((old/f'verify_{arch}/result.json').read_text())['rpms']
+assert len(llvm)==(12 if arch=='aarch64' else 18)
+selected={'llvm','llvm-devel','llvm-static-devel','libllvm','clang','clang-devel','libomp','libomp-devel'}
+files=[]
+for row in llvm:
+    f=Path(row['path']); assert sha(f)==row['sha256']
+    run(['rpm','--checksig','--nosignature',str(f)])
+    if row['name'] in selected: files.append(f)
+(out/f'llvm-{arch}-input-status.json').write_text(json.dumps({'status':'COMPLETE_RPM_SET' if arch=='aarch64' else 'USABLE_BUT_BUILD_INCOMPLETE',
+    'verified_rpm_count':len(llvm),'source_record':str(old/f'verify_{arch}/result.json'),
+    'selected_names':sorted(selected),'note':'armv7l overall build exit 1 is not overridden by per-RPM validation.'},indent=2))
+runtime=p/'tmp/NIGHT_0917/finish_validation/rpm/RPMS/aarch64' if arch=='aarch64' else task/'rpm-arm-runtime/RPMS/armv7l'
+runtime_names={'libc++','libc++-devel','libc++abi','libc++abi-devel'}; found=set()
+for f in sorted(runtime.glob('libc++*.rpm')):
+    name=run(['rpm','-qp','--qf','%{NAME}',str(f)])
+    if name in runtime_names:
+        assert name not in found; found.add(name); files.append(f)
+assert found==runtime_names
+static=json.loads((p/'progress/BUILD_NIGHT_0916/repository_static_packages.json').read_text())['records']
+for row in static:
+    if row['arch']==arch and row['package'] in ('libbpf-static','liblzma-static','zlib-devel-static','libffi-devel-static'):
+        f=(p/row['path']).resolve(); assert sha(f)==row['sha256']; files.append(f)
+bcc=[r for r in json.loads((p/'progress/BUILD_W2C_0915/bcc_inputs_for_bpftrace.json').read_text())
+     if r['mode']=='libcxx' and r['arch']==arch and '/bcc-tools-static-' in r['path']]
+assert len(bcc)==1; f=Path(bcc[0]['path']); assert sha(f)==bcc[0]['sha256']; files.append(f)
+guest=[]
+for row in json.loads((out/'ffi-dependencies.json').read_text()):
+    if row['arch']==arch:
+        f=Path(row['path']); assert sha(f)==row['sha256']; files.append(f)
+for i,f in enumerate(files):
+    identity=run(['rpm','-qp','--qf','%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}',str(f)])
+    assert identity.endswith('\t'+arch)
+    run(['rpm','--checksig','--nosignature',str(f)])
+    g=f'/tmp/input-rpms/{i}.rpm'; guest.append(g); base+=['--ro-bind',str(f),g]
+    inputs.append({'path':str(f),'sha256':sha(f),'identity':identity,'guest':g})
+(out/f'install-v3-{arch}-inputs.json').write_text(json.dumps(inputs,indent=2))
+# Reinstall the exact declared inputs after the interrupted private transaction;
+# this does not bypass dependency or file-conflict checks.
+run(base+['--','rpm','-Uvh','--ignorearch','--oldpackage','--replacepkgs','--test',*guest])
+run(base+['--','rpm','-Uvh','--ignorearch','--oldpackage','--replacepkgs',*guest])
+run(base+['--','rpm','-qa','--qf','%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n'])
+libdir='lib64' if arch=='aarch64' else 'lib'
+run(base+['--','ls','-l',*[f'/usr/{libdir}/{x}' for x in ('libc++.a','libc++abi.a','libclang.a')]])
+(out/f'bpf-install-{arch}-result.json').write_text(json.dumps({'status':'STATIC_INPUT_RPMS_INSTALLED','arch':arch,
+    'llvm_input_status':'COMPLETE_RPM_SET' if arch=='aarch64' else 'USABLE_BUT_BUILD_INCOMPLETE',
+    'dependency_bypass':False,'sudo':False},indent=2))
+[
+  "bwrap",
+  "--unshare-user",
+  "--uid",
+  "1000",
+  "--gid",
+  "1000",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-armv7l-libcxx/local/BUILD-ROOTS/scratch.armv7l.0",
+  "/",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-armv7l-v3/usr",
+  "/usr",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-armv7l-v3/rpmdb",
+  "/var/lib/rpm",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-armv7l-libcxx/local/BUILD-ROOTS/scratch.armv7l.0/usr/sbin",
+  "/usr/sbin",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-armv7l-v3/etc",
+  "/etc",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/input-armv7l-v3/root",
+  "/root",
+  "--dev",
+  "/dev",
+  "--proc",
+  "/proc",
+  "--tmpfs",
+  "/tmp",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918",
+  "/tmp/task",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/NIGHT_0917",
+  "/tmp/night",
+  "--setenv",
+  "PATH",
+  "/bin:/usr/bin:/sbin:/usr/sbin",
+  "--setenv",
+  "CMAKE_BUILD_PARALLEL_LEVEL",
+  "1",
+  "--setenv",
+  "RPM_BUILD_NCPUS",
+  "1",
+  "--setenv",
+  "MAKEFLAGS",
+  "-j1",
+  "--setenv",
+  "QEMU_RESERVED_VA",
+  "0x100000000",
+  "--setenv",
+  "LC_ALL",
+  "C",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-armv7l-libcxx/local/BUILD-ROOTS/scratch.armv7l.0/etc/hal",
+  "/etc/hal",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-armv7l-libcxx/local/BUILD-ROOTS/scratch.armv7l.0/etc/app-rootstrap",
+  "/etc/app-rootstrap",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-armv7l-libcxx/local/BUILD-ROOTS/scratch.armv7l.0/home/abuild/rpmbuild/SOURCES",
+  "/tmp/bpf-sources",
+  "--",
+  "rpmbuild",
+  "--rcfile",
+  "/usr/lib/rpm/rpmrc:/home/abuild/.rpmrc",
+  "--macros",
+  "/usr/lib/rpm/macros:/usr/lib/rpm/macros.d/macros.*:/usr/lib/rpm/platform/%{_target}/macros:/usr/lib/rpm/fileattrs/*.attr:/usr/lib/rpm/tizen/macros:/etc/rpm/macros.*:/etc/rpm/macros:/etc/rpm/%{_target}/macros:/home/abuild/.rpmmacros",
+  "--target",
+  "armv7l-tizen-linux",
+  "--define",
+  "_topdir /tmp/task/rpm-bpf-armv7l-libcxx",
+  "--define",
+  "_sourcedir /tmp/bpf-sources",
+  "--define",
+  "_tmppath /tmp/task/rpm-bpf-armv7l-libcxx/TMP",
+  "--define",
+  "_smp_mflags -j1",
+  "--define",
+  "_smp_build_ncpus 1",
+  "--define",
+  "jobs 1",
+  "--define",
+  "_binary_payload w5T1.xzdio",
+  "--define",
+  "_srcdefattr (-,root,root)",
+  "--noclean",
+  "-bb",
+  "/tmp/task/specs/bpftrace.spec"
+]

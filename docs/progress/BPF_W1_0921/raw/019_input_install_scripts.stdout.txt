@@ -1,0 +1,153 @@
+"""Verify approved RPM identities, then install build inputs in a private root."""
+import hashlib,json,shlex,subprocess,sys
+from pathlib import Path
+p=Path.cwd(); out=p/'progress/BUILD_WEEKEND_0918'; task=p/'tmp/WEEKEND_0918'
+arch=sys.argv[1]; assert arch in ('armv7l','aarch64')
+assert json.loads((out/f'copy-{arch}-result.json').read_text())['status']=='COPY_AND_PER_FILE_SHA256_PASS'
+base=json.loads((out/f'bpf-private-{arch}-base.json').read_text())
+commands=[]; inputs=[]
+def run(cmd):
+    r=subprocess.run(cmd,capture_output=True,text=True,errors='replace')
+    commands.append({'command':shlex.join(cmd),'exitcode':r.returncode,'stdout':r.stdout,'stderr':r.stderr})
+    (out/f'install-v3-{arch}-commands.json').write_text(json.dumps(commands,indent=2))
+    print(shlex.join(cmd),'exitcode',r.returncode,flush=True)
+    print(r.stdout,end='',flush=True); print(r.stderr,end='',file=sys.stderr,flush=True)
+    assert r.returncode==0,(cmd,r.stderr)
+    return r.stdout
+def sha(f):
+    with f.open('rb') as stream: return hashlib.file_digest(stream,'sha256').hexdigest()
+old=p/'progress/BUILD_STATIC_0917B/resume_0917'
+llvm=json.loads((old/f'verify_{arch}/result.json').read_text())['rpms']
+assert len(llvm)==(12 if arch=='aarch64' else 18)
+selected={'llvm','llvm-devel','llvm-static-devel','libllvm','clang','clang-devel','libomp','libomp-devel'}
+files=[]
+for row in llvm:
+    f=Path(row['path']); assert sha(f)==row['sha256']
+    run(['rpm','--checksig','--nosignature',str(f)])
+    if row['name'] in selected: files.append(f)
+(out/f'llvm-{arch}-input-status.json').write_text(json.dumps({'status':'COMPLETE_RPM_SET' if arch=='aarch64' else 'USABLE_BUT_BUILD_INCOMPLETE',
+    'verified_rpm_count':len(llvm),'source_record':str(old/f'verify_{arch}/result.json'),
+    'selected_names':sorted(selected),'note':'armv7l overall build exit 1 is not overridden by per-RPM validation.'},indent=2))
+runtime=p/'tmp/NIGHT_0917/finish_validation/rpm/RPMS/aarch64' if arch=='aarch64' else task/'rpm-arm-runtime/RPMS/armv7l'
+runtime_names={'libc++','libc++-devel','libc++abi','libc++abi-devel'}; found=set()
+for f in sorted(runtime.glob('libc++*.rpm')):
+    name=run(['rpm','-qp','--qf','%{NAME}',str(f)])
+    if name in runtime_names:
+        assert name not in found; found.add(name); files.append(f)
+assert found==runtime_names
+static=json.loads((p/'progress/BUILD_NIGHT_0916/repository_static_packages.json').read_text())['records']
+for row in static:
+    if row['arch']==arch and row['package'] in ('libbpf-static','liblzma-static','zlib-devel-static','libffi-devel-static'):
+        f=(p/row['path']).resolve(); assert sha(f)==row['sha256']; files.append(f)
+bcc=[r for r in json.loads((p/'progress/BUILD_W2C_0915/bcc_inputs_for_bpftrace.json').read_text())
+     if r['mode']=='libcxx' and r['arch']==arch and '/bcc-tools-static-' in r['path']]
+assert len(bcc)==1; f=Path(bcc[0]['path']); assert sha(f)==bcc[0]['sha256']; files.append(f)
+guest=[]
+for row in json.loads((out/'ffi-dependencies.json').read_text()):
+    if row['arch']==arch:
+        f=Path(row['path']); assert sha(f)==row['sha256']; files.append(f)
+for i,f in enumerate(files):
+    identity=run(['rpm','-qp','--qf','%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}',str(f)])
+    assert identity.endswith('\t'+arch)
+    run(['rpm','--checksig','--nosignature',str(f)])
+    g=f'/tmp/input-rpms/{i}.rpm'; guest.append(g); base+=['--ro-bind',str(f),g]
+    inputs.append({'path':str(f),'sha256':sha(f),'identity':identity,'guest':g})
+(out/f'install-v3-{arch}-inputs.json').write_text(json.dumps(inputs,indent=2))
+# Reinstall the exact declared inputs after the interrupted private transaction;
+# this does not bypass dependency or file-conflict checks.
+run(base+['--','rpm','-Uvh','--ignorearch','--oldpackage','--replacepkgs','--test',*guest])
+run(base+['--','rpm','-Uvh','--ignorearch','--oldpackage','--replacepkgs',*guest])
+run(base+['--','rpm','-qa','--qf','%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n'])
+libdir='lib64' if arch=='aarch64' else 'lib'
+run(base+['--','ls','-l',*[f'/usr/{libdir}/{x}' for x in ('libc++.a','libc++abi.a','libclang.a')]])
+(out/f'bpf-install-{arch}-result.json').write_text(json.dumps({'status':'STATIC_INPUT_RPMS_INSTALLED','arch':arch,
+    'llvm_input_status':'COMPLETE_RPM_SET' if arch=='aarch64' else 'USABLE_BUT_BUILD_INCOMPLETE',
+    'dependency_bypass':False,'sudo':False},indent=2))
+"""Prepare full RPM builds, keeping mode selection in explicit test macros."""
+import hashlib
+import json
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+p=Path.cwd(); out=p/'progress/BUILD_WEEKEND_0918'
+task=p/'tmp/WEEKEND_0918'; arch,mode=sys.argv[1:]
+assert arch in ('armv7l','aarch64') and mode in ('libcxx','gcc','undefined')
+label=f'bpf-{arch}-{mode}'
+top=task/f'rpm-{label}'
+assert not top.exists()
+for d in ('BUILD','BUILDROOT','RPMS','SRPMS','TMP'):
+    (top/d).mkdir(parents=True,exist_ok=True)
+oldmode='libcxx' if mode=='libcxx' else 'gcc'
+root=p/f'tmp/GBS-ROOT/BUILD-W2C-bpftrace-{arch}-{oldmode}/local/BUILD-ROOTS/scratch.{arch}.0'
+source=root/'home/abuild/rpmbuild/SOURCES'
+if mode=='libcxx':
+    assert json.loads((out/f'bpf-install-{arch}-result.json').read_text())['status']=='STATIC_INPUT_RPMS_INSTALLED'
+    base=json.loads((out/f'bpf-private-{arch}-base.json').read_text())
+    # RPM input installation used namespace root. Build as the mapped ordinary
+    # user so upstream tar ownership is not restored to an unmapped uid.
+    base[base.index('--uid')+1]='1000'; base[base.index('--gid')+1]='1000'
+else:
+    base=['bwrap','--unshare-user','--uid','1000','--gid','1000',
+          '--ro-bind',str(root),'/', '--dev','/dev','--proc','/proc','--tmpfs','/tmp',
+          '--bind',str(task),'/tmp/task',
+          '--setenv','PATH','/bin:/usr/bin:/sbin:/usr/sbin',
+          '--setenv','CMAKE_BUILD_PARALLEL_LEVEL','1','--setenv','RPM_BUILD_NCPUS','1',
+          '--setenv','MAKEFLAGS','-j1','--setenv','LC_ALL','C',
+          '--setenv','QEMU_RESERVED_VA','0x100000000']
+base+=['--ro-bind',str(source),'/tmp/bpf-sources']
+if arch=='aarch64' and mode in ('gcc','undefined'):
+    # The old root's plugin points into GBS emul; pair it with that root's
+    # existing native linker, as verified by gcc-linker-repair-test.json.
+    linker=root/'emul/usr/bin/ld'
+    assert hashlib.sha256(linker.read_bytes()).hexdigest()=='6a0edaee7d7bf2659d02d963c84a9bef8af5a21fcf1d623620c0ad1d2904435b'
+    base+=['--ro-bind',str(linker),'/usr/aarch64-tizen-linux-gnu/bin/ld']
+macrofiles='/usr/lib/rpm/macros:/usr/lib/rpm/macros.d/macros.*:/usr/lib/rpm/platform/%{_target}/macros:/usr/lib/rpm/fileattrs/*.attr:/usr/lib/rpm/tizen/macros:/etc/rpm/macros.*:/etc/rpm/macros:/etc/rpm/%{_target}/macros:/home/abuild/.rpmmacros'
+args=['rpmbuild','--rcfile','/usr/lib/rpm/rpmrc:/home/abuild/.rpmrc','--macros',macrofiles,
+      '--target',arch+'-tizen-linux','--define',f'_topdir /tmp/task/{top.name}',
+      '--define','_sourcedir /tmp/bpf-sources','--define',f'_tmppath /tmp/task/{top.name}/TMP',
+      '--define','_smp_mflags -j1','--define','_smp_build_ncpus 1','--define','jobs 1',
+      '--define','_binary_payload w5T1.xzdio',
+      '--define','_srcdefattr (-,root,root)']
+if mode=='gcc':
+    args+=['--define','_toolchain_override gcc']
+elif mode=='undefined':
+    args+=['--undefine','_toolchain','--define','__cc %{_host}-gcc',
+           '--define','__cxx %{_host}-g++','--define','__ar gcc-ar',
+           '--define','__ranlib gcc-ranlib','--define','__optflags_toolchain %{__optflags_toolchain_gcc}']
+elif arch=='aarch64':
+    # Approved native aarch64 toolchain; only this architecture was authorized.
+    native=root/'emul'
+    f=native/'usr/bin/aarch64-tizen-linux-gnu-clang'
+    assert f.exists()
+    with f.open('rb') as stream: sha=hashlib.file_digest(stream,'sha256').hexdigest()
+    assert sha=='590fa22e2859a15c3d05c46aca08958949bb0cc7ab5abf293ae8ea2f338daa1b'
+    args+=['--define','__cc /emul/usr/bin/aarch64-tizen-linux-gnu-clang',
+           '--define','__cxx /emul/usr/bin/aarch64-tizen-linux-gnu-clang++']
+queries=[]
+def query(command):
+    r=subprocess.run(command,capture_output=True,text=True)
+    queries.append({'command':shlex.join(command),'exitcode':r.returncode,'stdout':r.stdout,'stderr':r.stderr})
+    (out/f'{label}-preflight.json').write_text(json.dumps(queries,indent=2))
+    assert r.returncode==0
+    return r.stdout
+identity=query(base+['--','rpm',*args[1:],'--eval','%{defined _toolchain}|%{?toolchain_is:%{toolchain_is clang}}|%{__cc}|%{__cxx}|%{optflags}'])
+fields=identity.strip().split('|')
+assert len(fields)==5
+assert fields[0:2]==(['1','1'] if mode=='libcxx' else ['1','0'] if mode=='gcc' else ['0','0'])
+version=query(base+['--',fields[3],'--version'])
+assert ('clang version 22.1.8' in version) if mode=='libcxx' else ('14.2.0' in version)
+cmd=base+['--',*args,'--noclean','-bb','/tmp/task/specs/bpftrace.spec']
+(out/'cell_commands'/f'{label}.json').write_text(json.dumps(cmd,indent=2))
+rows=[]
+for name in ('bpftrace-0.24.2.tar.gz','prebuilt-static-bpftrace.tar.gz','bpftrace.manifest'):
+    f=source/name
+    with f.open('rb') as stream: sha=hashlib.file_digest(stream,'sha256').hexdigest()
+    if name=='prebuilt-static-bpftrace.tar.gz':
+        assert sha=='3785365b768e29a2f6a31a54b5f1843b3fc64d974ecc7dd588197644d3514123'
+    rows.append({'path':str(f),'sha256':sha,'bytes':f.stat().st_size})
+(out/f'{label}-inputs.json').write_text(json.dumps({'source_files':rows,'mode':mode,
+    'spec_sha256':hashlib.sha256((task/'specs/bpftrace.spec').read_bytes()).hexdigest(),
+    'full_rpmbuild':True,'status':'PREPARED_NOT_BUILT'},indent=2))
+print(label,'prepared')

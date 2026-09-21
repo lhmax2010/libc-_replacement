@@ -1,0 +1,27 @@
+import datetime,json
+from pathlib import Path
+p=Path('progress/BPF_W1_0921'); rows=[]
+for arch in ('armv7l','aarch64'):
+    for mode in ('libcxx','gcc','undefined'):
+        label=f'bpf-{arch}-{mode}'; cell=p/'cells'/label
+        rc=(cell/'exitcode').read_text().strip() if (cell/'exitcode').exists() else None
+        state='RUNNING' if cell.exists() else 'NOT_OBSERVED'
+        if rc is not None: state='BUILD_EXIT_'+rc
+        v=p/f'verify-{label}/result.json'
+        count=0; checks='NOT_OBSERVED'
+        if v.exists():
+            data=json.loads(v.read_text()); state=data.get('status',state); count=len(data.get('rpms',[]))
+            checks=', '.join(k for k,val in data.get('checks',{}).items() if not val) or 'PASS'
+            supplemental=[]
+            for check in (p/f'audit-bpf-{arch}-{mode}/result.json',p/f'verify-{label}/all-main-elfs.json'):
+                if not check.exists(): supplemental.append(str(check.relative_to(p))+': NOT_OBSERVED')
+                elif json.loads(check.read_text()).get('status')!='PASS': supplemental.append(str(check.relative_to(p))+': FAIL')
+            if supplemental:
+                state='RPM_COMPLETE_GATES_NOT_ALL_CLOSED'
+                checks=(', '.join([checks] if checks!='PASS' else [])+', '+', '.join(supplemental)).lstrip(', ')
+        rows.append(dict(arch=arch,path=mode,status=state,build_exitcode=rc,rpm_count=count,unclosed_checks=checks,evidence=f'cells/{label}'))
+(p/'MATRIX.json').write_text(json.dumps(rows,indent=2))
+lines=['# 本轮状态','',datetime.datetime.now().astimezone().isoformat(),'','| 架构 | 路径 | 状态 | 本轮 RPM 数 | 未闭合 |','|---|---|---|---:|---|']
+lines += [f"| {r['arch']} | {r['path']} | {r['status']} | {r['rpm_count']} | {r['unclosed_checks']} |" for r in rows]
+lines+=['','仅记录本轮实测。没有对应执行记录的格为 NOT_OBSERVED；不是沿用前轮 PASS。','板上验证不在本轮范围。ARM 输入替换冲突的人工确认见 DECISIONS.md；构建路径尚未启动不等于验证失败。']
+(p/'STATUS.md').write_text('\n'.join(lines)+'\n'); print('\n'.join(lines))

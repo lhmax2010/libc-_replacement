@@ -1,0 +1,210 @@
+"""Resume the existing RPM build; enforce actual cgroup, serial jobs and I/O gates."""
+import datetime, hashlib, json, os, re, signal, subprocess, sys, threading, time
+from pathlib import Path
+
+ROOT = Path('/home/toolchain/development/libc++_replacement')
+os.chdir(ROOT)
+STAGE, LABEL = sys.argv[1:]
+assert STAGE in ('W1','W2','W3','W4')
+assert re.fullmatch(r'[a-z0-9_-]+', LABEL)
+BASE = ROOT / 'progress/BUILD_WEEKEND_0918'
+OUT = BASE / 'cells' / LABEL
+OUT.mkdir(parents=True, exist_ok=False)
+DEADLINE = datetime.datetime.fromisoformat(json.loads((BASE/'deadlines.json').read_text())[STAGE]).timestamp()
+SCOPE = 'build-weekend-0918.scope'
+MEM = int(next(x.split()[1] for x in Path('/proc/meminfo').read_text().splitlines() if x.startswith('MemTotal:'))) * 1024 // 2 // 4096 * 4096
+os.environ['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/toolchain/.local/bin'
+events = (OUT/'events.jsonl').open('a', buffering=1)
+def note(event, **kw):
+    row = dict(time=datetime.datetime.now().astimezone().isoformat(), event=event, **kw)
+    events.write(json.dumps(row)+'\n')
+    print(json.dumps(row), flush=True)
+def query(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    note('command', command=cmd, exitcode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+    if r.returncode: raise RuntimeError('resource query failed')
+    return r.stdout
+def resources(pid):
+    def state():
+        fields=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
+        return fields[0],fields[19]
+    before=state()
+    if before[0]=='Z':
+        note('resource_not_observed_exited',pid=pid,state=before)
+        return None
+    cg = next(x.split(':',2)[2] for x in query(['cat',f'/proc/{pid}/cgroup']).splitlines() if x.startswith('0::'))
+    assert SCOPE in cg
+    value = query(['cat','/sys/fs/cgroup'+cg+'/memory.max']).strip()
+    assert int(value) == MEM
+    io=query(['ionice','-p',str(pid)]).strip()
+    priority=os.getpriority(os.PRIO_PROCESS,pid)
+    after=state()
+    if after[0]=='Z' or before[1]!=after[1]:
+        note('resource_not_observed_exited',pid=pid,before=before,after=after,ionice=io)
+        return None
+    assert io == 'idle'
+    assert priority == 19
+    note('resource_verified',pid=pid,cgroup=cg,memory_max=int(value),nice=19,ionice='idle')
+    return cg
+cg = resources(os.getpid())
+cmd = json.loads((BASE/'cell_commands'/f'{LABEL}.json').read_text())
+for arg in cmd:
+    f=Path(arg)
+    if f.suffix=='.py' and f.is_file():
+        snap=OUT/('executed-'+f.name)
+        snap.write_bytes(f.read_bytes())
+        note('script_snapshot',path=str(f),snapshot=str(snap),sha256=hashlib.sha256(snap.read_bytes()).hexdigest())
+note('start',command=cmd,deadline=DEADLINE,script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+log=OUT/'build.log'
+if log.exists():
+    backup=OUT/('build.stopped-'+datetime.datetime.now().strftime('%H%M%S')+'.log')
+    log.rename(backup)
+    note('previous_log_preserved',path=str(backup))
+stream = log.open('xb',buffering=0)
+proc = subprocess.Popen(cmd,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+def send(sig):
+    try: os.killpg(proc.pid,sig)
+    except ProcessLookupError: pass
+def hard_stop():
+    send(signal.SIGTERM); send(signal.SIGCONT)
+    time.sleep(15)
+    if proc.poll() is None: send(signal.SIGKILL)
+timer = threading.Timer(max(0,DEADLINE-time.time()-20),hard_stop)
+timer.daemon=True; timer.start()
+def stop(reason):
+    send(signal.SIGTERM); send(signal.SIGCONT)
+    note('stop',reason=reason)
+    try: proc.wait(timeout=15)
+    except subprocess.TimeoutExpired: send(signal.SIGKILL); proc.wait()
+    raise SystemExit(124)
+def probe():
+    testcmd=['timeout','-k','2s','30s','python3',str(ROOT/'progress/BUILD_STATIC_0917B/io_probe.py')]
+    t=time.monotonic()
+    r=subprocess.run(testcmd,capture_output=True,text=True)
+    note('io_probe',command=testcmd,exitcode=r.returncode,seconds=time.monotonic()-t,stdout=r.stdout,stderr=r.stderr)
+    return r.returncode==0
+reader=log.open(errors='replace')
+verified=set(); target=0; next_probe=500; last=0; hourly=0
+last_ninja=0
+try:
+    while proc.poll() is None:
+        if time.time()>=DEADLINE-20: stop('stage deadline')
+        for rawpid in Path('/sys/fs/cgroup'+cg+'/cgroup.procs').read_text().split():
+            pid=int(rawpid)
+            if pid in verified: continue
+            try:
+                args=[x.decode(errors='replace') for x in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0') if x]
+                cwd=os.readlink(f'/proc/{pid}/cwd')
+            except (FileNotFoundError,ProcessLookupError,PermissionError): continue
+            if not args: continue
+            ninja=Path(args[0]).name in ('ninja','ninja.real') or ('qemu-' in args[0] and any(x.endswith('/ninja.real') for x in args))
+            make=Path(args[0]).name in ('make','gmake') or ('qemu-' in args[0] and any(Path(x).name in ('make','gmake') for x in args[1:]))
+            if not (ninja or make) or any(x in args for x in ('-t','--version','--help')): continue
+            one='-j1' in args or any(args[i:i+2]==['-j','1'] for i in range(len(args)-1))
+            makeflags=''
+            if make:
+                try:
+                    makeflags=next((x.split(b'=',1)[1].decode(errors='replace') for x in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0') if x.startswith(b'MAKEFLAGS=')), '')
+                except (FileNotFoundError, ProcessLookupError): continue
+                one=one or bool(re.search(r'(?:^|\s)-j\s*1(?:\s|$)',makeflags))
+                # CMake try_compile can invoke Make without -j. GNU Make's
+                # default is one job; do not confuse absent -j with Ninja's
+                # parallel default. Reject any jobserver/parallel request.
+                if not one and not any(x.startswith(('-j','--jobs','--jobserver')) for x in args) and not re.search(r'(?:^|\s)-?j|--jobs|jobserver',makeflags):
+                    one=True
+                    note('make_default_serial',pid=pid,command=args,makeflags=makeflags)
+            note('scheduler_arguments',pid=pid,command=args,makeflags=makeflags,serial=one)
+            if not one: stop('observed build scheduler not serial')
+            try:
+                checked=resources(pid)
+                if checked is None:
+                    verified.add(pid)
+                    continue
+            except (FileNotFoundError,ProcessLookupError):
+                note('resource_not_observed_exited',pid=pid)
+                continue
+            except RuntimeError:
+                if not Path(f'/proc/{pid}').exists():
+                    note('resource_not_observed_exited',pid=pid)
+                    continue
+                stop('actual Ninja resource query failed')
+            except AssertionError:
+                stop('actual live Ninja resource constraint failed')
+            note('build_scheduler_verified',pid=pid,command=args,cwd=cwd,makeflags=makeflags)
+            verified.add(pid)
+        for line in reader.readlines():
+            m=re.search(r'\[(\d+)/(\d+)\]',line)
+            if m:
+                current=int(m[1])
+                target += current-last_ninja if current>=last_ninja else current
+                last_ninja=current
+            elif re.search(r'\[\s*\d+%\]\s+(?:Building|Linking|Generating)',line):
+                target += 1
+            elif line.startswith('COPY_ENTRY '):
+                target += 1
+        if target>=next_probe:
+            next_probe=(target//500+1)*500
+            if not probe():
+                send(signal.SIGSTOP); note('paused',completed=target)
+                for attempt in range(1,4):
+                    end=time.time()+600
+                    while time.time()<end:
+                        if time.time()>=DEADLINE-20: stop('deadline during I/O pause')
+                        time.sleep(1)
+                    if probe():
+                        send(signal.SIGCONT); note('resumed',attempt=attempt); break
+                    note('pause_retry_failed',attempt=attempt)
+                else: stop('three consecutive I/O pause retries failed')
+        if time.time()-last>=45:
+            note('running',completed=target); last=time.time()
+        if time.time()-hourly>=3600:
+            with (OUT/'HOURLY_STATUS.md').open('a') as f:
+                f.write(f'\n- {datetime.datetime.now().astimezone().isoformat()}: {LABEL} ongoing, observed target announcements {target}; no RPM success claimed.\n')
+            hourly=time.time()
+        time.sleep(1)
+    note('finished',exitcode=proc.returncode,completed=target)
+    raise SystemExit(proc.returncode)
+finally:
+    timer.cancel()
+    if proc.poll() is None: hard_stop()
+"""Per-task disk, process and bounded I/O gates; never relax limits."""
+import datetime,json,shlex,subprocess,sys,time
+from pathlib import Path
+out=Path('progress/BUILD_WEEKEND_0918'); stage=sys.argv[1]
+assert stage in ('W2','W3','W4')
+now=datetime.datetime.now().astimezone(); clocks=json.loads((out/'deadlines.json').read_text())
+assert stage not in clocks
+deadline=min(now+datetime.timedelta(hours={'W2':6,'W3':6,'W4':3}[stage]),datetime.datetime.fromisoformat(clocks['TOTAL']))
+assert deadline>now
+clocks[stage]=deadline.isoformat(); (out/'deadlines.json').write_text(json.dumps(clocks,indent=2))
+records=[]
+def run(cmd):
+    started=time.monotonic(); r=subprocess.run(cmd,capture_output=True,text=True)
+    row={'command':shlex.join(cmd),'exitcode':r.returncode,'seconds':time.monotonic()-started,'stdout':r.stdout,'stderr':r.stderr}
+    records.append(row); (out/(stage+'-preflight-commands.json')).write_text(json.dumps(records,indent=2))
+    print(row,flush=True); return r
+r=run(['df','-h','.']); assert r.returncode==0
+r=run(['df','-B1','--output=avail','.']); assert r.returncode==0
+available=int(r.stdout.splitlines()[-1].strip())
+if available<20*1024**3: raise SystemExit('STOP_DISK_BELOW_20_GIB')
+r=run(['ps','-eo','pid,ppid,comm,etime']); assert r.returncode==0
+unexpected=[line for line in r.stdout.splitlines()[1:] if line.split()[2] in ('ninja','ninja.real','make','gmake','rpmbuild','clang','clang++','clang-22','cc1','cc1plus') or line.split()[2].startswith('qemu-')]
+assert not unexpected,('UNRESOLVED_BUILD_PROCESSES',unexpected)
+for attempt in range(6):
+    r=run(['bash','tools/resource_gate.sh','--level','medium'])
+    if r.returncode==0: break
+    if r.returncode!=21 or attempt==5:
+        (out/(stage+'-preflight-result.json')).write_text(json.dumps({'status':'RED_STOP_RESOURCE','exitcode':r.returncode,'retries':attempt},indent=2))
+        raise SystemExit(r.returncode)
+    print('Resource gate 21; pause 600 seconds, retry',attempt+1,flush=True)
+    for second in range(600):
+        if datetime.datetime.now().astimezone()>=deadline: raise SystemExit(124)
+        time.sleep(1)
+for attempt in range(4):
+    r=run(['timeout','-k','2s','30s','python3','progress/BUILD_STATIC_0917B/io_probe.py'])
+    if r.returncode==0: break
+    if attempt==3:
+        (out/(stage+'-preflight-result.json')).write_text(json.dumps({'status':'NOT_OBSERVED','reason':'I/O timeout persisted after three ten-minute waits'},indent=2))
+        raise SystemExit(124)
+    print('I/O pause 600 seconds',attempt+1,flush=True)
+    for second in range(600):
