@@ -1,0 +1,104 @@
+#include <cstdio>
+#include <cstddef>
+#include <cstdint>
+#include <cwchar>
+#include <cmath>
+#include <type_traits>
+#include <typeinfo>
+#include <limits>
+#include <ios>
+#include <string>
+#include <string_view>
+#include <vector>
+#include <deque>
+#include <list>
+#include <forward_list>
+#include <array>
+#include <map>
+#include <set>
+#include <unordered_map>
+#include <unordered_set>
+#include <stack>
+#include <queue>
+#include <iterator>
+#include <chrono>
+#include <random>
+#include <thread>
+#include <mutex>
+#include <shared_mutex>
+#include <condition_variable>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <atomic>
+#include <regex>
+#include <exception>
+#include <typeindex>
+#include <initializer_list>
+template<class T> struct TypeToken {};
+template<class T> __attribute__((used,noinline)) void abi_identity(TypeToken<T>) {}
+template<class T> const char* actual(){return __PRETTY_FUNCTION__;}
+template<class T> void emit(const char* id){
+  abi_identity(TypeToken<T>{});
+  std::printf("%s\tTYPE=%s\tTOKEN=%s\tDIRECT=%s\t",id,actual<T>(),typeid(TypeToken<T>).name(),typeid(T).name());
+  if constexpr(std::is_void<T>::value||std::is_function<T>::value) std::printf("SIZE=NA\tALIGN=NA\n");
+  else std::printf("SIZE=%zu\tALIGN=%zu\n",sizeof(T),alignof(T));
+}
+template<class C,class=void> struct Probe_T0014{static void run(){std::printf("T0014\tUNAVAILABLE=member off_type\n");}};
+template<class C> struct Probe_T0014<C,std::void_t<typename C::off_type>>{static void run(){emit<typename C::off_type>("T0014");}};
+
+template<class C,class=void> struct Probe_T0019{static void run(){std::printf("T0019\tUNAVAILABLE=member off_type\n");}};
+template<class C> struct Probe_T0019<C,std::void_t<typename C::off_type>>{static void run(){emit<typename C::off_type>("T0019");}};
+
+template<class C,class=void> struct Probe_T0024{static void run(){std::printf("T0024\tUNAVAILABLE=member off_type\n");}};
+template<class C> struct Probe_T0024<C,std::void_t<typename C::off_type>>{static void run(){emit<typename C::off_type>("T0024");}};
+
+template<class C,class=void> struct Probe_T0029{static void run(){std::printf("T0029\tUNAVAILABLE=member off_type\n");}};
+template<class C> struct Probe_T0029<C,std::void_t<typename C::off_type>>{static void run(){emit<typename C::off_type>("T0029");}};
+
+template<class C,class=void> struct Probe_T0356{static void run(){std::printf("T0356\tUNAVAILABLE=member difference_type\n");}};
+template<class C> struct Probe_T0356<C,std::void_t<typename C::difference_type>>{static void run(){emit<typename C::difference_type>("T0356");}};
+
+template<class C,class=void> struct Probe_T0365{static void run(){std::printf("T0365\tUNAVAILABLE=member rep\n");}};
+template<class C> struct Probe_T0365<C,std::void_t<typename C::rep>>{static void run(){emit<typename C::rep>("T0365");}};
+
+template<class C,class=void> struct Probe_T0369{static void run(){std::printf("T0369\tUNAVAILABLE=member rep\n");}};
+template<class C> struct Probe_T0369<C,std::void_t<typename C::rep>>{static void run(){emit<typename C::rep>("T0369");}};
+
+template<class C,class=void> struct Probe_T0373{static void run(){std::printf("T0373\tUNAVAILABLE=member rep\n");}};
+template<class C> struct Probe_T0373<C,std::void_t<typename C::rep>>{static void run(){emit<typename C::rep>("T0373");}};
+
+template<class C,class=void> struct Probe_T0378{static void run(){std::printf("T0378\tUNAVAILABLE=member rep\n");}};
+template<class C> struct Probe_T0378<C,std::void_t<typename C::rep>>{static void run(){emit<typename C::rep>("T0378");}};
+
+template<class C,class=void> struct Probe_T0380{static void run(){std::printf("T0380\tUNAVAILABLE=member rep\n");}};
+template<class C> struct Probe_T0380<C,std::void_t<typename C::rep>>{static void run(){emit<typename C::rep>("T0380");}};
+
+template<class C,class=void> struct Probe_T0382{static void run(){std::printf("T0382\tUNAVAILABLE=member rep\n");}};
+template<class C> struct Probe_T0382<C,std::void_t<typename C::rep>>{static void run(){emit<typename C::rep>("T0382");}};
+
+template<class C,class=void> struct Probe_T0384{static void run(){std::printf("T0384\tUNAVAILABLE=member rep\n");}};
+template<class C> struct Probe_T0384<C,std::void_t<typename C::rep>>{static void run(){emit<typename C::rep>("T0384");}};
+
+int main(){
+#ifdef _LIBCPP_VERSION
+ std::printf("LIBRARY=libc++ VERSION=%d\n",_LIBCPP_VERSION);
+#else
+ std::printf("LIBRARY=libstdc++ RELEASE=%d\n",_GLIBCXX_RELEASE);
+#endif
+ std::printf("TARGET_POINTER=%zu TARGET_LONG=%zu TARGET_LONG_LONG=%zu\n",sizeof(void*),sizeof(long),sizeof(long long));
+emit<int>("CONTROL_INT");emit<long>("CONTROL_LONG");emit<long long>("CONTROL_LONG_LONG");emit<const long&>("CONTROL_CONST_REF");
+emit<std::streamoff>("T0001");
+Probe_T0014<std::char_traits<char>>::run();
+Probe_T0019<std::char_traits<wchar_t>>::run();
+Probe_T0024<std::char_traits<char16_t>>::run();
+Probe_T0029<std::char_traits<char32_t>>::run();
+Probe_T0356<std::istreambuf_iterator<char>>::run();
+Probe_T0365<std::chrono::system_clock>::run();
+Probe_T0369<std::chrono::steady_clock>::run();
+Probe_T0373<std::chrono::high_resolution_clock>::run();
+Probe_T0378<std::chrono::nanoseconds>::run();
+Probe_T0380<std::chrono::microseconds>::run();
+Probe_T0382<std::chrono::milliseconds>::run();
+Probe_T0384<std::chrono::seconds>::run();
+}
