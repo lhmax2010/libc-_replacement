@@ -1,0 +1,189 @@
+   100		stat(mntPoint, &sb);
+   101		if (dev != sb.st_dev) {
+   102		    *end = '/';
+   103		    res = xstrdup(mntPoint);
+   104		    break;
+   105		}
+   106	    }
+   107	    return res;
+   108	}
+   109	
+   110	static int rpmtsInitDSI(const rpmts ts)
+   111	{
+   112	    if (rpmtsFilterFlags(ts) & RPMPROB_FILTER_DISKSPACE)
+   113		return 0;
+   114	    ts->dsi = _free(ts->dsi);
+   115	    ts->dsi = xcalloc(1, sizeof(*ts->dsi));
+   116	    return 0;
+   117	}
+   118	
+   119	static rpmDiskSpaceInfo rpmtsCreateDSI(const rpmts ts, dev_t dev,
+   120					       const char * dirName, int count)
+   121	{
+   122	    rpmDiskSpaceInfo dsi;
+   123	    struct stat sb;
+   124	    int rc;
+   125	
+   126	#if STATFS_IN_SYS_STATVFS
+   127	    struct statvfs sfb;
+   128	    memset(&sfb, 0, sizeof(sfb));
+   129	    rc = statvfs(dirName, &sfb);
+   130	#else
+   131	    struct statfs sfb;
+   132	    memset(&sfb, 0, sizeof(sfb));
+   133	#  if STAT_STATFS4
+   134	/* This platform has the 4-argument version of the statfs call.  The last two
+   135	 * should be the size of struct statfs and 0, respectively.  The 0 is the
+   136	 * filesystem type, and is always 0 when statfs is called on a mounted
+   137	 * filesystem, as we're doing.
+   138	 */
+   139	    rc = statfs(dirName, &sfb, sizeof(sfb), 0);
+   140	#  else
+   141	    rc = statfs(dirName, &sfb);
+   142	#  endif
+   143	#endif
+   144	    if (rc)
+   145		return NULL;
+   146	
+   147	    rc = stat(dirName, &sb);
+   148	    if (rc)
+   149		return NULL;
+   150	    if (sb.st_dev != dev)
+   151		return NULL;
+   152	
+   153	    ts->dsi = xrealloc(ts->dsi, (count + 2) * sizeof(*ts->dsi));
+   154	    dsi = ts->dsi + count;
+   155	    memset(dsi, 0, 2 * sizeof(*dsi));
+   156	
+   157	    dsi->dev = sb.st_dev;
+   158	    dsi->bsize = sfb.f_bsize;
+   159	    if (!dsi->bsize)
+   160		dsi->bsize = 512;       /* we need a bsize */
+   161	    dsi->bneeded = 0;
+   162	    dsi->ineeded = 0;
+   163	#ifdef STATFS_HAS_F_BAVAIL
+   164	    dsi->bavail = (sfb.f_flag & ST_RDONLY) ? 0 : sfb.f_bavail;
+   165	#else
+   166	/* FIXME: the statfs struct doesn't have a member to tell how many blocks are
+   167	 * available for non-superusers.  f_blocks - f_bfree is probably too big, but
+   168	 * it's about all we can do.
+   169	 */
+   170	    dsi->bavail = sfb.f_blocks - sfb.f_bfree;
+   171	#endif
+   172	    /* XXX Avoid FAT and other file systems that have not inodes. */
+   173	    /* XXX assigning negative value to unsigned type */
+   174	    dsi->iavail = !(sfb.f_ffree == 0 && sfb.f_files == 0)
+   175		? sfb.f_ffree : -1;
+   176	
+   177	    /* Find mount point belonging to this device number */
+   178	    dsi->mntPoint = getMntPoint(dirName, dsi->dev);
+   179	
+   180	    /* normalize block size to 4096 bytes if it is too big. */
+   181	    if (dsi->bsize > 4096) {
+   182		uint64_t old_size = dsi->bavail * dsi->bsize;
+   183		rpmlog(RPMLOG_DEBUG,
+   184			"dubious blocksize % " PRId64 " on %s, normalizing to 4096\n",
+   185			dsi->bsize, dsi->mntPoint);
+   186		dsi->bsize = 4096; /* Assume 4k block size */
+   187		dsi->bavail = old_size / dsi->bsize;
+   188	    }
+   189	
+   190	    rpmlog(RPMLOG_DEBUG,
+   191		   "0x%08x %8" PRId64 " %12" PRId64 " %12" PRId64" %s\n",
+   192		   (unsigned) dsi->dev, dsi->bsize,
+   193		   dsi->bavail, dsi->iavail,
+   194		   dsi->mntPoint);
+   195	    return dsi;
+   196	}
+   197	
+   198	static rpmDiskSpaceInfo rpmtsGetDSI(const rpmts ts, dev_t dev,
+   199					    const char *dirName) {
+   200	    rpmDiskSpaceInfo dsi;
+   250	
+   251	    default:
+   252		break;
+   253	    }
+   254	
+   255	    /* adjust bookkeeping when requirements shrink */
+   256	    if (dsi->bneeded < dsi->obneeded) dsi->obneeded = dsi->bneeded;
+   257	    if (dsi->ineeded < dsi->oineeded) dsi->oineeded = dsi->ineeded;
+   258	}
+   259	
+   260	static void rpmtsCheckDSIProblems(const rpmts ts, const rpmte te)
+   261	{
+   262	    rpmDiskSpaceInfo dsi = ts->dsi;
+   263	
+   264	    if (dsi == NULL || !dsi->bsize)
+   265		return;
+   266	
+   267	    for (; dsi->bsize; dsi++) {
+   268	
+   269		if (dsi->bavail >= 0 && adj_fs_blocks(dsi->bneeded) > dsi->bavail) {
+   270		    if (dsi->bneeded > dsi->obneeded) {
+   271			rpmteAddProblem(te, RPMPROB_DISKSPACE, NULL, dsi->mntPoint,
+   272			   (adj_fs_blocks(dsi->bneeded) - dsi->bavail) * dsi->bsize);
+   273			dsi->obneeded = dsi->bneeded;
+   274		    }
+   275		}
+   276	
+   277		if (dsi->iavail >= 0 && adj_fs_blocks(dsi->ineeded) > dsi->iavail) {
+   278		    if (dsi->ineeded > dsi->oineeded) {
+   279			rpmteAddProblem(te, RPMPROB_DISKNODES, NULL, dsi->mntPoint,
+   280				(adj_fs_blocks(dsi->ineeded) - dsi->iavail));
+   281			dsi->oineeded = dsi->ineeded;
+   282		    }
+   283		}
+   135		    _("file %s from install of %s conflicts with file from package %s"),
+   136			str1, pkgNEVR, altNEVR);
+   137		break;
+   138	    case RPMPROB_OLDPACKAGE:
+   139		rasprintf(&buf,
+   140			_("package %s (which is newer than %s) is already installed"),
+   141			altNEVR, pkgNEVR);
+   142		break;
+   143	    case RPMPROB_DISKSPACE:
+   144		rasprintf(&buf,
+   145		    _("installing package %s needs %" PRIu64 "%cB on the %s filesystem"),
+   146			pkgNEVR,
+   147			prob->num1 > (1024*1024)
+   148			    ? (prob->num1 + 1024 * 1024 - 1) / (1024 * 1024)
+   149			    : (prob->num1 + 1023) / 1024,
+   150			prob->num1 > (1024*1024) ? 'M' : 'K',
+   151			str1);
+   152		break;
+   153	    case RPMPROB_DISKNODES:
+# 小时进度
+
+- 2026-09-22 02:46 +08:00 收尾：六格整轮退出0、18份RPM核验完成；四个回退格PASS。两架构libc++的额外libbpf.so.1依赖仍未闭合，不批准替换。74项输入身份复核通过，18份RPM依赖声明导出607行。构建与核验进程均已结束，不继续上板或包仓操作；正在提交项目证据。
+
+- 2026-09-22 02:00 +08:00：ARM GCC 已整轮退出0，3份RPM核验PASS，static与Source1002逐字节一致；120条实测编译/链接命令中libc++选项0，相关BuildRequires0。最后一格ARM未定义工具链已实际配置为GNU14.2.0，正在编译（11%）；_toolchain定义计数为0。共15份RPM已核验，两个libc++候选仍额外依赖libbpf.so.1。本任务作用域内存上限16536457216字节，当前约1.17GB；未触发I/O暂停，截止05:01不变。
+
+- 2026-09-22 01:02 +08:00：ARM libc++ 整轮退出 0、3 份 RPM 核验完成，额外 libbpf.so.1 动态依赖仍未闭合。ARM GCC 正在构建（7%）；ARM 未定义路径尚未启动。两架构合计已核验 12 份 RPM，未发生本轮写包失败。原构建在界面中断期间继续，未重启；截止仍为 05:01。
+
+- 2026-09-21 22:00 +08:00：对账原样推送完成（c7aa2c5e72f78516e40b7a5423a4b83673608bad）。ARM 22 个输入 RPM 复制/校验完成，但私有副本安装 --test 返回 19，同名 llvm-static-devel 文件冲突待人工确认；未使用旧输入启动 ARM libc++。aarch64 12 个输入 RPM 安装成功；libc++ 整轮退出 0、3 RPM 摘要通过，静态载荷仅额外 libbpf.so.1 未闭合；GCC 正在编译（86%），未定义路径未启动。两架构三路径 payload 均实测 w5.xzdio。cgroup 上限 16536457216 字节、nice 19、ionice idle、单任务；磁盘最近检查 166 GiB，I/O 探测未超时。未上板、未推包仓、未修改候选 spec。
+# 23:00 补记
+
+- 2026-09-21 23:00 +08:00：aarch64 三路径整轮写包退出 0，9 份 RPM 核验完成；GCC/未定义两格 PASS，libc++ static 额外 libbpf 动态依赖仍挂账。阶段材料已推送 e44ad19ff271af0b7761b186ec49a6c0bb4b98cd。
+- ARM 从原始根独立复制后，普通安装预检与正式安装均通过；实际 libclang.a 为第五份，未使用 --replacefiles。ARM libc++ 构建正在编译早期目标。资源仍为 j1 / nice 19 / ionice idle / cgroup 16536457216 字节；截止 05:01 不变。
+# 00:25 恢复核对
+
+- 2026-09-22 00:24 +08:00：收到继续任务指令后只读核对，原 ARM 构建作用域仍 active/running，没有重启或改参数。主构建已完成 bpftrace 与 bpftrace-aotrt 目标，当前 build-static 为 89%。自动 I/O 探测 1 次，退出 0、约 0.11 秒，暂停事件 0；memory.max 实际 16536457216 字节。
+- 每小时自动构建记录见 `cells/bpf-armv7l-libcxx/HOURLY_STATUS.md`。本次只补记恢复时实际观测，不倒填中途人工监控。截止仍为 2026-09-22 05:01 +08:00。
+{"time": "2026-09-21T21:16:13.454490+08:00", "event": "running", "completed": 0}
+{"time": "2026-09-21T21:16:58.578035+08:00", "event": "running", "completed": 23}
+{"time": "2026-09-21T21:17:43.677517+08:00", "event": "running", "completed": 49}
+{"time": "2026-09-21T21:18:28.790866+08:00", "event": "running", "completed": 78}
+{"time": "2026-09-21T21:19:13.998026+08:00", "event": "running", "completed": 250}
+{"time": "2026-09-21T21:19:59.156979+08:00", "event": "running", "completed": 364}
+{"time": "2026-09-21T21:20:44.211899+08:00", "event": "running", "completed": 376}
+{"time": "2026-09-21T21:21:29.258805+08:00", "event": "running", "completed": 387}
+{"time": "2026-09-21T21:22:14.380141+08:00", "event": "running", "completed": 449}
+{"time": "2026-09-21T21:22:59.464286+08:00", "event": "running", "completed": 481}
+{"time": "2026-09-21T21:23:43.612698+08:00", "event": "io_probe", "command": ["timeout", "-k", "2s", "30s", "python3", "/home/toolchain/development/libc++_replacement/progress/BUILD_STATIC_0917B/io_probe.py"], "exitcode": 0, "seconds": 0.08783788699656725, "stdout": "{\"seconds\": 0.06242012098664418, \"bytes\": 3932160, \"deleted_only_new_probe\": true}\n", "stderr": ""}
+{"time": "2026-09-21T21:23:44.614219+08:00", "event": "running", "completed": 500}
+{"time": "2026-09-21T21:24:29.725500+08:00", "event": "running", "completed": 569}
+{"time": "2026-09-21T21:25:14.945406+08:00", "event": "running", "completed": 785}
+{"time": "2026-09-21T21:26:00.014336+08:00", "event": "running", "completed": 809}
+{"time": "2026-09-21T21:26:45.069104+08:00", "event": "running", "completed": 823}
+{"time": "2026-09-21T21:27:30.143377+08:00", "event": "running", "completed": 839}
+{"time": "2026-09-21T21:28:15.291354+08:00", "event": "running", "completed": 840}
