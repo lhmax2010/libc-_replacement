@@ -1,0 +1,269 @@
+# 编译适配线状态
+
+## 线的定位与分界
+
+本线负责 Tizen-Base-Toolchain 的 libc++ 编译适配、输入资产与 RPM 核验；运行时边界决策由运行时线负责。本轮W3R仅核查安装预检、既有构建记录，并在ARM板可写区解包测试。原spec、codes、Source1002不动；不构建、不rpm安装、不remount、不推sandbox/包仓，不起QuickBuild。
+
+## 当前位置
+
+Base 对账：73 个含 C++ 源码包中，11 个已适配推送、56 个有依据无需适配、6 个按设计排除、0 个未评估；适配推送不代表新版 static 资产已获发布批准。对账材料原样发布于 `c7aa2c5e72f78516e40b7a5423a4b83673608bad`。
+
+此前六格18份RPM与只重链接ELF材料保留。`BPF_STATIC_0922` 新配方已完成两架构6份RPM及static ELF门禁。本轮 `BPF_W3R_0922` 已完成ARM物理板可写区对照与取消探针；无需重新写包。正常RPM安装仍未验证，按本轮授权留待镜像阶段。
+
+## 本任务结论与证据
+
+**本轮只读违规需先处理**：W3R的llvm-objcopy提取.text时漏指定独立输出ELF，改写了四份既有tmp主包解包副本；未擅自恢复。原RPM校验未变，内存只读解析复核原ELF/.text比较仍成立，板测static不在受影响四份之内。路径与前后SHA见`docs/progress/BPF_W3R_0922/INCIDENT.md`。不把任务标为无违规完成。
+
+新spec仅新增Patch0及prep无条件应用；Patch只在STATIC_LINKING且LIBCLANG_STATIC_PATH分支以`${LIBBPF_LIBRARIES}`替代裸bpf。两架构RPM内static均精确依赖libm/libgcc_s/libc/架构loader，不依赖动态libbpf/libc++/LLVM；命名空间及libbpf已定义符号交集通过。ARM新RPM ELF与上轮重链接ELF SHA不同，aarch64相同，只登记不归因。完整证据：`docs/progress/BPF_STATIC_0922/FINAL_RESULT.md`。
+
+前轮正常main/common预检退出2、static预检退出1的原始记录保留。本轮确认：/var/tmp实际位于/opt的rw ext4分区，/usr与/etc位于ro根分区；固定RPM源码transaction.c:164在ST_RDONLY时按0可用块计算，再由269–272产生DISKSPACE、rpmprob.c:143–151显示92MB，故与df物理空闲并不矛盾。固定源码为上游4.14.1提交，不冒充部署4.14.1.1的源码身份证明。
+
+新RPM直接解包到可写区，ELF SHA匹配；版本/info/list和三种脚本各3次，共12对调用均退出0；info只差LLVM21.1.1→22.1.8。共享libgcc取消20/20通过，静态libgcc对照也20/20通过，不外推此前x86_64崩溃结论。完整证据：`docs/progress/BPF_W3R_0922/FINAL_RESULT.md`、`BOARD_RESULT.md`。
+
+构建时长核实：ARM119.17min→10.02min；aarch64实际13.37min→10.00min，并非两小时→十分钟。指定ccache位置/launcher未观测，当前--version trace确认/emul原生Clang分派；缺历史逐编译进程及同期连续负载，提速唯一原因仍NOT_OBSERVED。ARM主包ELF/.text均不同、aarch64均相同，差异留人工审阅，未自行归因。见`BUILD_TIMING.md`。
+
+## 挂账
+
+- 四份主包解包副本已被objcopy改写，不应继续作为原始输入；需人工批准从原RPM恢复。本轮只保存事实，不恢复、不重跑。
+
+- 正常static安装预检的ro挂载条件已与指定RPM源码对上；**rpm安装验证留待镜像阶段**，包括%post覆盖逻辑；可写区通过不冒充安装通过。主包依赖缺口仍见前轮原始记录。
+- 新RPM已包含修正后的static，不再挂“未写包”。W4仍需审阅 `SPEC_DIFF.patch`、Patch和 `-lstdc++fs`：两架构实测解析GCC14.2目录下的静态归档，本轮不改该项。
+- ARM 新 22 份 LLVM 输入已正常接入从原始根复制的新私有副本；普通预检与安装退出 0，未使用文件冲突豁免。旧冲突副本与记录保留，见 `docs/progress/BPF_W1_0921/INPUT_STATUS.md`。
+- ARM 第五份 `libclang.a` 与旧份 SHA256 不同，登记身份，不归因。
+- 本轮物理板测试通过后，先保存全部工作目录文件SHA，再按授权删除`/var/tmp/bpf_static_0922/`，独立验证不存在；本地RPM/探针仍可重新部署。无bpftrace安装、/usr/bin/bpftrace*仍ABSENT、起止挂载一致、root已恢复。
+- 仍须审阅ARM主包.text差异及构建提速的历史证据缺口；ARM静态libgcc对照通过与x86_64既有崩溃的适用范围必须分开。GCC/未定义路径本轮不重构。
+
+## 下一步
+
+停止交人工审阅。W4审阅/签字配方、-lstdc++fs与新挂账后，按人工授权进入QuickBuild及镜像阶段RPM安装验证。最新交接为 `docs/progress/BPF_W3R_0922/W4_INPUTS.md`；RPM与配方仍取 `BPF_STATIC_0922` 原六份，不用旧重链接ELF替代。本轮不推包仓、不起QuickBuild。
+--- f895f8c/packaging/bpftrace.spec
++++ verified/packaging/bpftrace.spec
+@@ -13,6 +13,7 @@
+ Source0:        %{name}-%{version}.tar.gz
+ Source1001:     %{name}.manifest
+ Source1002:     prebuilt-static-bpftrace.tar.gz
++Patch0:         static-link-libbpf.patch
+ 
+ ExclusiveArch:  armv7l aarch64
+ 
+@@ -35,6 +36,10 @@
+ %if 0%{?build_with_libcxx}
+ BuildRequires:  libc++-devel
+ BuildRequires:  libc++abi-devel
++BuildRequires:  bcc-tools-static
++BuildRequires:  libbpf-static
++BuildRequires:  liblzma-static
++BuildRequires:  zlib-devel-static
+ %endif
+ 
+ %description
+@@ -71,11 +76,19 @@
+ 
+ %prep
+ %setup -q
++%patch0 -p1
+ cp %{SOURCE1001} .
+ tar xzvf %{SOURCE1002}
++%if 0%{?build_with_libcxx}
++# Keep a single shared unwinder for glibc pthread cancellation. The C++
++# libraries remain static; GCC and undefined-toolchain paths stay unchanged.
++test "$(grep -Fc 'target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")' src/CMakeLists.txt)" = 1
++sed -i 's/target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")/target_link_options(bpftrace BEFORE PRIVATE "-shared-libgcc" "-static-libstdc++")/' src/CMakeLists.txt
++%endif
+ 
+ %build
+ %if 0%{?build_with_libcxx}
++bpftrace_original_ldflags="${LDFLAGS}"
+ export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+ export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+ %endif
+@@ -90,13 +103,36 @@
+ %make_build
+ cd ..
+ 
++%if 0%{?build_with_libcxx}
++# Keep the ordinary shared build unchanged; build the static subpackage separately.
++# CMake treats this option as source-relative, so preserve that form explicitly.
++ln -s "%{_libdir}/libclang.a" build/libclang-static-input.a
++libclang_static_relpath=build/libclang-static-input.a
++LDFLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
++cmake -S . -B build-static -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
++      -DSTATIC_LINKING=ON -DCMAKE_SKIP_RPATH:BOOL=ON \
++      -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix} \
++      -DLIBCLANG_STATIC_PATH:STRING="${libclang_static_relpath}" \
++      -DCMAKE_EXE_LINKER_FLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
++      -DCMAKE_CXX_STANDARD_LIBRARIES="-Wl,--start-group %{_libdir}/libc++.a %{_libdir}/libc++abi.a -Wl,--end-group"
++cmake --build build-static --target bpftrace -- %{?_smp_mflags}
++%endif
++
+ %install
+ cd build
+ %make_install
+ cd ..
+ 
+ # Install bpftrace static binary
++%if %{defined _toolchain}
++%if %{toolchain_is clang}
++install -m 0755 build-static/src/bpftrace %{buildroot}%{_bindir}/bpftrace-static
++%else
+ install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
++%endif
++%else
++install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
++%endif
+ 
+ %post static
+ cp -rf %{_bindir}/%{name}-static %{_bindir}/%{name}
+[
+  {
+    "order": 1,
+    "path": "tmp/BPF_W1_0921/payload-bpf-armv7l-libcxx/bpftrace/usr/bin/bpftrace",
+    "expected_original_sha256": "046115d23a6cda0bda5a38ca31bba8ed9f495fcdc7c2ae42f615d0d24dc7f3f4",
+    "expected_modified_sha256": "97ff881269249f489e95f8049d39bba11329197cc26f6bdf4e755e5f9ef1cde7",
+    "status": "RESTORED_AND_INCIDENT_PRESERVED",
+    "current_sha256": "97ff881269249f489e95f8049d39bba11329197cc26f6bdf4e755e5f9ef1cde7",
+    "rpm": "/home/toolchain/development/libc++_replacement/tmp/BPF_W1_0921/rpm-bpf-armv7l-libcxx/RPMS/armv7l/bpftrace-0.24.2-1.armv7l.rpm",
+    "rpm_sha256": "bfb90dfc923d0e9e45fcac9e2e6a611ebe7c63758b33a68a1d86ccf511d32d29",
+    "inventory": "/home/toolchain/development/libc++_replacement/docs/progress/BPF_W1_0921/RPM_INVENTORY.tsv",
+    "backup": "/home/toolchain/development/libc++_replacement/tmp/BPF_W1_0921/payload-bpf-armv7l-libcxx/bpftrace/usr/bin/bpftrace.objcopy-modified-0922",
+    "extracted_path": "/home/toolchain/development/libc++_replacement/tmp/BPF_W4_0922/restore/1/extract/usr/bin/bpftrace",
+    "extracted_sha256": "046115d23a6cda0bda5a38ca31bba8ed9f495fcdc7c2ae42f615d0d24dc7f3f4",
+    "extracted_matches_original": true,
+    "restored_sha256": "046115d23a6cda0bda5a38ca31bba8ed9f495fcdc7c2ae42f615d0d24dc7f3f4",
+    "preserved_modified_sha256": "97ff881269249f489e95f8049d39bba11329197cc26f6bdf4e755e5f9ef1cde7"
+  },
+  {
+    "order": 2,
+    "path": "tmp/BPF_STATIC_0922/payload-bpf-armv7l-libcxx-verified/bpftrace/usr/bin/bpftrace",
+    "expected_original_sha256": "44b1b04faa5e75e3a7274b651fc65d0333c0bebeeff4a0ac08d8058a74598b8b",
+    "expected_modified_sha256": "376b92e60cd88566eb55a13b8063a0297e82a98bfe840a207cf91f8ff86810da",
+    "status": "RESTORED_AND_INCIDENT_PRESERVED",
+    "current_sha256": "376b92e60cd88566eb55a13b8063a0297e82a98bfe840a207cf91f8ff86810da",
+    "rpm": "/home/toolchain/development/libc++_replacement/tmp/BPF_STATIC_0922/rpm-bpf-armv7l-libcxx/RPMS/armv7l/bpftrace-0.24.2-1.armv7l.rpm",
+    "rpm_sha256": "d6dffdeca9961d54cdeb5ceda4c1475b3ba232bedd2553604650202f5a4378bf",
+    "inventory": "/home/toolchain/development/libc++_replacement/docs/progress/BPF_STATIC_0922/RPM_INVENTORY.tsv",
+    "backup": "/home/toolchain/development/libc++_replacement/tmp/BPF_STATIC_0922/payload-bpf-armv7l-libcxx-verified/bpftrace/usr/bin/bpftrace.objcopy-modified-0922",
+    "extracted_path": "/home/toolchain/development/libc++_replacement/tmp/BPF_W4_0922/restore/2/extract/usr/bin/bpftrace",
+    "extracted_sha256": "44b1b04faa5e75e3a7274b651fc65d0333c0bebeeff4a0ac08d8058a74598b8b",
+    "extracted_matches_original": true,
+    "restored_sha256": "44b1b04faa5e75e3a7274b651fc65d0333c0bebeeff4a0ac08d8058a74598b8b",
+    "preserved_modified_sha256": "376b92e60cd88566eb55a13b8063a0297e82a98bfe840a207cf91f8ff86810da"
+  },
+  {
+    "order": 3,
+    "path": "tmp/BPF_W1_0921/payload-bpf-aarch64-libcxx/bpftrace/usr/bin/bpftrace",
+    "expected_original_sha256": "7093e7b92aacf750b0614ee0400ccbf98e983eef77e26bf38a5d293a8c9a68ec",
+    "expected_modified_sha256": "c9d09f266f0904ac0f2b4519f649da7bc6ac292c20a7edfc052f42b172679529",
+    "status": "RESTORED_AND_INCIDENT_PRESERVED",
+    "current_sha256": "c9d09f266f0904ac0f2b4519f649da7bc6ac292c20a7edfc052f42b172679529",
+    "rpm": "/home/toolchain/development/libc++_replacement/tmp/BPF_W1_0921/rpm-bpf-aarch64-libcxx/RPMS/aarch64/bpftrace-0.24.2-1.aarch64.rpm",
+    "rpm_sha256": "df465538e7635dfcf359a8ab759e8be7bed8f8ed949981938e2a3aec4f5c4fd0",
+    "inventory": "/home/toolchain/development/libc++_replacement/docs/progress/BPF_W1_0921/RPM_INVENTORY.tsv",
+    "backup": "/home/toolchain/development/libc++_replacement/tmp/BPF_W1_0921/payload-bpf-aarch64-libcxx/bpftrace/usr/bin/bpftrace.objcopy-modified-0922",
+    "extracted_path": "/home/toolchain/development/libc++_replacement/tmp/BPF_W4_0922/restore/3/extract/usr/bin/bpftrace",
+    "extracted_sha256": "7093e7b92aacf750b0614ee0400ccbf98e983eef77e26bf38a5d293a8c9a68ec",
+    "extracted_matches_original": true,
+    "restored_sha256": "7093e7b92aacf750b0614ee0400ccbf98e983eef77e26bf38a5d293a8c9a68ec",
+    "preserved_modified_sha256": "c9d09f266f0904ac0f2b4519f649da7bc6ac292c20a7edfc052f42b172679529"
+  },
+  {
+    "order": 4,
+    "path": "tmp/BPF_STATIC_0922/payload-bpf-aarch64-libcxx-verified/bpftrace/usr/bin/bpftrace",
+    "expected_original_sha256": "7093e7b92aacf750b0614ee0400ccbf98e983eef77e26bf38a5d293a8c9a68ec",
+    "expected_modified_sha256": "c9d09f266f0904ac0f2b4519f649da7bc6ac292c20a7edfc052f42b172679529",
+    "status": "RESTORED_AND_INCIDENT_PRESERVED",
+    "current_sha256": "c9d09f266f0904ac0f2b4519f649da7bc6ac292c20a7edfc052f42b172679529",
+    "rpm": "/home/toolchain/development/libc++_replacement/tmp/BPF_STATIC_0922/rpm-bpf-aarch64-libcxx/RPMS/aarch64/bpftrace-0.24.2-1.aarch64.rpm",
+    "rpm_sha256": "80720dbc175b45677d27d48b65dcc6c8c990f13c6109ac0e3e8287ac94059493",
+    "inventory": "/home/toolchain/development/libc++_replacement/docs/progress/BPF_STATIC_0922/RPM_INVENTORY.tsv",
+    "backup": "/home/toolchain/development/libc++_replacement/tmp/BPF_STATIC_0922/payload-bpf-aarch64-libcxx-verified/bpftrace/usr/bin/bpftrace.objcopy-modified-0922",
+    "extracted_path": "/home/toolchain/development/libc++_replacement/tmp/BPF_W4_0922/restore/4/extract/usr/bin/bpftrace",
+    "extracted_sha256": "7093e7b92aacf750b0614ee0400ccbf98e983eef77e26bf38a5d293a8c9a68ec",
+    "extracted_matches_original": true,
+    "restored_sha256": "7093e7b92aacf750b0614ee0400ccbf98e983eef77e26bf38a5d293a8c9a68ec",
+    "preserved_modified_sha256": "c9d09f266f0904ac0f2b4519f649da7bc6ac292c20a7edfc052f42b172679529"
+  }
+]"""Publish evidence/check staged scope; do not publish binary section copies or secrets."""
+import base64,hashlib,json,re,shutil,subprocess,sys
+from pathlib import Path
+P=Path.cwd();E=P/'progress/BPF_W3R_0922';D=P/'docs/progress/BPF_W3R_0922';secrets=[]
+for name in ('.quickbuild-credentials','password.md'):
+ f=P/name
+ if f.exists():
+  values=f.read_bytes().splitlines()
+  if name=='.quickbuild-credentials':values=values[1:]
+  for value in values:
+   if len(value)>=4:secrets.extend((value,base64.b64encode(value)))
+def safe(data,name):
+ assert not any(x in data for x in secrets),('potential credential STOP',name)
+ assert not re.search(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}',data),('potential secret STOP',name)
+def git(*args):
+ r=subprocess.run(['git',*args],capture_output=True);assert r.returncode==0;return r.stdout
+if sys.argv[1]=='publish':
+ manifest=[];excluded=[]
+ for f in sorted(E.rglob('*')):
+  if not f.is_file() or f.name=='PUBLICATION_MANIFEST.json':continue
+  rel=f.relative_to(E);assert not f.is_symlink()
+  data=f.read_bytes();h=hashlib.sha256(data).hexdigest()
+  if '__pycache__' in rel.parts or f.suffix=='.text':
+   excluded.append(dict(path=str(rel),bytes=len(data),sha256=h,reason='reproducible cache or binary section; extraction command and hash retained'));continue
+  safe(data,str(rel));assert len(data)<50000000
+  d=D/rel;d.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(f,d);assert hashlib.sha256(d.read_bytes()).hexdigest()==h
+  manifest.append(dict(path=str(rel),bytes=len(data),sha256=h))
+ result=dict(credential_scan='PASS',files=manifest,excluded=excluded)
+ (E/'PUBLICATION_MANIFEST.json').write_text(json.dumps(result,indent=2));shutil.copy2(E/'PUBLICATION_MANIFEST.json',D/'PUBLICATION_MANIFEST.json')
+ print('PUBLISHED',len(manifest),'files',sum(x['bytes'] for x in manifest),'bytes','EXCLUDED',len(excluded),'CREDENTIAL_SCAN_PASS')
+elif sys.argv[1]=='check':
+ assert git('branch','--show-current').strip()==b'codex/r5-ehabi-diagnosis'
+ files=[x.decode() for x in git('diff','--cached','--name-only','-z').split(b'\0') if x];assert files
+ assert all(x=='docs/LINE_STATUS.md' or x.startswith('docs/progress/BPF_W3R_0922/') for x in files)
+ rows=[]
+ for name in files:
+  data=git('show',':'+name);safe(data,name);rows.append(dict(path=name,sha256=hashlib.sha256(data).hexdigest()))
+ (E/'STAGED_CHECK.json').write_text(json.dumps(dict(status='PASS',files=rows,scope='task docs and LINE_STATUS only'),indent=2));print('STAGED_SCOPE_AND_CREDENTIAL_SCAN_PASS',len(rows))
+else:raise ValueError('publish/check only')
+# 二、构建时长与对象来源核对（未起构建）
+
+**只读纪律违反：** 提取.text使用的llvm-objcopy漏写独立输出ELF，改写了四份已有tmp主包解包副本；发现后未恢复、未再用它们作输入。详见INCIDENT.md与INPUT_ELF_FINAL.json。随后仅在内存从未改变的原RPM读取ELF与.text，复核下表原始SHA和.text比较全部成立（RPM_READONLY_CHECK.json）。这不消除操作违规；四份副本待人工批准恢复。
+
+| 架构/轮次 | 开始 → 结束（+08:00） | 耗时 | 进度公告 |
+|---|---|---|---|
+| armv7l / BPF_W1_0921 | 2026-09-21T22:56:12.426683+08:00 → 2026-09-22T00:55:22.771823+08:00 | 7150.345s（119.17min） | 840 |
+| armv7l / BPF_STATIC_0922 | 2026-09-22T17:03:26.886851+08:00 → 2026-09-22T17:13:28.115637+08:00 | 601.229s（10.02min） | 840 |
+| aarch64 / BPF_W1_0921 | 2026-09-21T21:16:13.453245+08:00 → 2026-09-21T21:29:35.371062+08:00 | 801.918s（13.37min） | 840 |
+| aarch64 / BPF_STATIC_0922 | 2026-09-22T17:18:47.958554+08:00 → 2026-09-22T17:28:47.966570+08:00 | 600.008s（10.00min） | 840 |
+
+**应纠正一处人工侧表述**：ARM确为约119.17分钟降至10.02分钟；aarch64上一轮实际为13.37分钟，本轮10.00分钟，并非同样从约两小时缩短。
+
+两架构各轮840是guard统计的进度公告数，不等于840份独立目标文件。本次另抽取以百分比开头的Building/Linking记录，各274行，两轮逐行相同；history/*-targets.diff为空。既有840计数未改，也不把274与840混用。
+
+## 编译器与缓存
+
+| 项 | 实测/静态核查 | 限制 |
+|---|---|---|
+| ARM clang/clang++软链接 | /usr/bin与/bin的target-prefixed入口均解析到/usr/bin/clang-22；file为ARM ELF32 | build-audit/root-tools-armv7l.out |
+| aarch64入口 | 解析到/usr/bin/clang-22；file为AArch64 ELF64 | build-audit/root-tools-aarch64.out |
+| ccache命令 | 两个只读隔离根的PATH中未找到 | 不宣称全宿主所有位置不存在 |
+| 四个指定缓存目录 | /home/abuild/.ccache、/root/.ccache、/var/tmp/ccache、$HOME/.cache/ccache均ABSENT；本次HOME=/home/toolchain | 当前根观测，不倒填历史状态；命中统计NOT_OBSERVED，不写0命中 |
+| CMake launcher | 两轮两架构main/static CMakeCache中均无CMAKE_CXX_COMPILER_LAUNCHER/ccache条目 | 所查Cache原始输出见build-audit/*-cache-* |
+| 旧ARM执行记录 | scheduler为/usr/bin/qemu-arm-static /bin/make等 | history/BPF_W1_0921-armv7l-scheduler.json |
+| 新ARM执行记录 | 出现直接/bin/make，以及/usr/bin/qemu-arm binfmt…形式 | history/BPF_STATIC_0922-armv7l-scheduler.json |
+| 当前原生加速 | /emul/usr/bin/clang-22为x86-64 ELF、Clang22.1.8；仅--version的只读execve trace实测转至/emul//usr/bin/clang-22 | compiler-read/armv7l.trace:3；不是重跑构建，也不当作历史逐目标证据 |
+| 当前QEMU | 输入根为Tizen/Tools QEMU9.2.3，/usr/bin/qemu-arm-static为qemu-arm软链接；宿主同名文件为另一个x86静态ELF | history/*-emul.out；raw/013、012 |
+| 历史其它负载 | NOT_OBSERVED：找到的全机进程审计为21:03、21:26，早于ARM22:56开始；小时记录只有本任务进度 | 不把本任务cgroup用量当全机负载；缺同期连续CPU/进程记录 |
+| I/O暂停 | 两轮各有成功的探测，均无pause记录 | history/TIMINGS.json，不能据单次探测断言全程无等待 |
+
+**对象来源一句话**：记录支持本轮对象来自新解包源码树内执行的编译/链接流程（%prep删除旧树、解包，随后Building/Linking及命令记录）；在所查路径未观测ccache，当前入口实测能转原生Clang加速。**但缺历史逐编译进程映像及缓存统计，无法把ARM约12倍提速唯一归因于某一种因素，确切原因仍为NOT_OBSERVED。** 没有为了补证而重构、改配置或清缓存。
+
+新版任务log中的%prep及编译记录来源：../BPF_STATIC_0922/cells/bpf-armv7l-libcxx/build.log:4–17及后续Building行。原生加速存在与观察到的入口变化提供解释线索，不等同于本轮已经完成同环境性能归因实验。
+
+## 两轮主包身份
+
+| 架构/轮次 | 主包ELF SHA256 | .text SHA256 |
+|---|---|---|
+| armv7l / BPF_W1_0921 | `046115d23a6cda0bda5a38ca31bba8ed9f495fcdc7c2ae42f615d0d24dc7f3f4` | `0e24a9f54f7395e963fabc881725546c5455830981f65490f703379ce936e0b2` |
+| armv7l / BPF_STATIC_0922 | `44b1b04faa5e75e3a7274b651fc65d0333c0bebeeff4a0ac08d8058a74598b8b` | `9756a28d094a7e0d7b4919e4a0ca907c103852163341d4027098fe3978abeec1` |
+| aarch64 / BPF_W1_0921 | `7093e7b92aacf750b0614ee0400ccbf98e983eef77e26bf38a5d293a8c9a68ec` | `f3032b4850f5fa85a0d0ad3252801b27fdba3ccf1fc655c76b8c9edd52a63528` |
+| aarch64 / BPF_STATIC_0922 | `7093e7b92aacf750b0614ee0400ccbf98e983eef77e26bf38a5d293a8c9a68ec` | `f3032b4850f5fa85a0d0ad3252801b27fdba3ccf1fc655c76b8c9edd52a63528` |
+
+**ARM两项均不同；aarch64两项均相同。** 这不是static ELF的SHA比较。路径、提取.text的实际llvm-objcopy命令及退出码见build-audit/commands.json、ELF_COMPARISON.json。ARM差异未归因，不能以编译目标列表相同推断字节等价，也不能仅凭不同判定功能回归。留W4人工审阅；未修改主包或配方。

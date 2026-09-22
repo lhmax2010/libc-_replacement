@@ -1,0 +1,305 @@
+
+FILE /home/toolchain/development/libc++_replacement/docs/progress/BPF_W1_0921/run.py
+1: import datetime,pathlib,shlex,subprocess,sys
+2: base=pathlib.Path(__file__).resolve().parent/'raw';base.mkdir(exist_ok=True)
+3: label,*cmd=sys.argv[1:]
+4: def save(ext,value):
+5:  p=base/(label+'.'+ext);assert not p.exists();p.write_text(value)
+6: save('command.txt',shlex.join(cmd)+'\n');save('started.txt',datetime.datetime.now().astimezone().isoformat()+'\n')
+7: with (base/(label+'.stdout.txt')).open('xb') as out,(base/(label+'.stderr.txt')).open('xb') as err:
+8:  r=subprocess.run(cmd,stdout=out,stderr=err)
+9: save('exitcode',str(r.returncode)+'\n');save('finished.txt',datetime.datetime.now().astimezone().isoformat()+'\n')
+10: print(label,'exitcode',r.returncode)
+
+FILE /home/toolchain/development/libc++_replacement/docs/progress/BPF_W1_0921/guard.py
+1: """Resume the existing RPM build; enforce actual cgroup, serial jobs and I/O gates."""
+2: import datetime, hashlib, json, os, re, signal, subprocess, sys, threading, time
+3: from pathlib import Path
+4: 
+19:     input_root=Path(prepared.get('input_root',str(ROOT/f'tmp/BPF_W1_0921/input-{arch}-v3')))
+20:     assert input_root.parent==ROOT/'tmp/BPF_W1_0921'
+21:     current_command=json.loads((BASE/'cell_commands'/f'{LABEL}.json').read_text())
+22:     for host,guest in ((input_root/'usr','/usr'),(input_root/'rpmdb','/var/lib/rpm'),(input_root/'etc','/etc'),(input_root/'root','/root')):
+23:         assert any(current_command[i:i+3]==['--bind',str(host),guest] for i in range(len(current_command)-2)), ('wrong private input binding',str(host),guest)
+37:     print(json.dumps(row), flush=True)
+38: def query(cmd):
+39:     r = subprocess.run(cmd, capture_output=True, text=True)
+40:     note('command', command=cmd, exitcode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+41:     if r.returncode: raise RuntimeError('resource query failed')
+42:     return r.stdout
+64:     return cg
+65: cg = resources(os.getpid())
+66: cmd = json.loads((BASE/'cell_commands'/f'{LABEL}.json').read_text())
+67: for arg in cmd:
+68:     f=Path(arg)
+71:         snap.write_bytes(f.read_bytes())
+72:         note('script_snapshot',path=str(f),snapshot=str(snap),sha256=hashlib.sha256(snap.read_bytes()).hexdigest())
+73: note('start',command=cmd,deadline=DEADLINE,script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+74: log=OUT/'build.log'
+75: if log.exists():
+78:     note('previous_log_preserved',path=str(backup))
+79: stream = log.open('xb',buffering=0)
+80: proc = subprocess.Popen(cmd,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+81: def send(sig):
+82:     try: os.killpg(proc.pid,sig)
+92:     note('stop',reason=reason)
+93:     try: proc.wait(timeout=15)
+94:     except subprocess.TimeoutExpired: send(signal.SIGKILL); proc.wait()
+95:     raise SystemExit(124)
+96: def probe():
+97:     testcmd=['timeout','-k','2s','30s','python3',str(ROOT/'progress/BUILD_STATIC_0917B/io_probe.py')]
+98:     t=time.monotonic()
+99:     r=subprocess.run(testcmd,capture_output=True,text=True)
+100:     note('io_probe',command=testcmd,exitcode=r.returncode,seconds=time.monotonic()-t,stdout=r.stdout,stderr=r.stderr)
+101:     return r.returncode==0
+102: reader=log.open(errors='replace')
+114:             except (FileNotFoundError,ProcessLookupError,PermissionError): continue
+115:             if not args: continue
+116:             ninja=Path(args[0]).name in ('ninja','ninja.real') or ('qemu-' in args[0] and any(x.endswith('/ninja.real') for x in args))
+117:             make=Path(args[0]).name in ('make','gmake') or ('qemu-' in args[0] and any(Path(x).name in ('make','gmake') for x in args[1:]))
+118:             if not (ninja or make) or any(x in args for x in ('-t','--version','--help')): continue
+119:             one='-j1' in args or any(args[i:i+2]==['-j','1'] for i in range(len(args)-1))
+129:                 if not one and not any(x.startswith(('-j','--jobs','--jobserver')) for x in args) and not re.search(r'(?:^|\s)-?j|--jobs|jobserver',makeflags):
+130:                     one=True
+131:                     note('make_default_serial',pid=pid,command=args,makeflags=makeflags)
+132:             note('scheduler_arguments',pid=pid,command=args,makeflags=makeflags,serial=one)
+133:             if not one: stop('observed build scheduler not serial')
+134:             try:
+147:             except AssertionError:
+148:                 stop('actual live Ninja resource constraint failed')
+149:             note('build_scheduler_verified',pid=pid,command=args,cwd=cwd,makeflags=makeflags)
+150:             verified.add(pid)
+151:         for line in reader.readlines():
+182:     (OUT/'exitcode').write_text(str(proc.returncode)+'\n')
+183:     if proc.returncode and LABEL.startswith('bpf-'):
+184:         failure_cmd=['/usr/bin/python3',str(BASE/'capture_failure.py'),LABEL]
+185:         captured=subprocess.run(failure_cmd,capture_output=True,text=True)
+186:         note('failure_capture',command=failure_cmd,exitcode=captured.returncode,stdout=captured.stdout,stderr=captured.stderr)
+187:     raise SystemExit(proc.returncode)
+188: finally:
+
+FILE /home/toolchain/development/libc++_replacement/docs/progress/BPF_W1_0921/cells/bpf-armv7l-libcxx/executed-guard.py
+1: """Resume the existing RPM build; enforce actual cgroup, serial jobs and I/O gates."""
+2: import datetime, hashlib, json, os, re, signal, subprocess, sys, threading, time
+3: from pathlib import Path
+4: 
+19:     input_root=Path(prepared.get('input_root',str(ROOT/f'tmp/BPF_W1_0921/input-{arch}-v3')))
+20:     assert input_root.parent==ROOT/'tmp/BPF_W1_0921'
+21:     current_command=json.loads((BASE/'cell_commands'/f'{LABEL}.json').read_text())
+22:     for host,guest in ((input_root/'usr','/usr'),(input_root/'rpmdb','/var/lib/rpm'),(input_root/'etc','/etc'),(input_root/'root','/root')):
+23:         assert any(current_command[i:i+3]==['--bind',str(host),guest] for i in range(len(current_command)-2)), ('wrong private input binding',str(host),guest)
+37:     print(json.dumps(row), flush=True)
+38: def query(cmd):
+39:     r = subprocess.run(cmd, capture_output=True, text=True)
+40:     note('command', command=cmd, exitcode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+41:     if r.returncode: raise RuntimeError('resource query failed')
+42:     return r.stdout
+64:     return cg
+65: cg = resources(os.getpid())
+66: cmd = json.loads((BASE/'cell_commands'/f'{LABEL}.json').read_text())
+67: for arg in cmd:
+68:     f=Path(arg)
+71:         snap.write_bytes(f.read_bytes())
+72:         note('script_snapshot',path=str(f),snapshot=str(snap),sha256=hashlib.sha256(snap.read_bytes()).hexdigest())
+73: note('start',command=cmd,deadline=DEADLINE,script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+74: log=OUT/'build.log'
+75: if log.exists():
+78:     note('previous_log_preserved',path=str(backup))
+79: stream = log.open('xb',buffering=0)
+80: proc = subprocess.Popen(cmd,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+81: def send(sig):
+82:     try: os.killpg(proc.pid,sig)
+92:     note('stop',reason=reason)
+93:     try: proc.wait(timeout=15)
+94:     except subprocess.TimeoutExpired: send(signal.SIGKILL); proc.wait()
+95:     raise SystemExit(124)
+96: def probe():
+97:     testcmd=['timeout','-k','2s','30s','python3',str(ROOT/'progress/BUILD_STATIC_0917B/io_probe.py')]
+98:     t=time.monotonic()
+99:     r=subprocess.run(testcmd,capture_output=True,text=True)
+100:     note('io_probe',command=testcmd,exitcode=r.returncode,seconds=time.monotonic()-t,stdout=r.stdout,stderr=r.stderr)
+101:     return r.returncode==0
+102: reader=log.open(errors='replace')
+114:             except (FileNotFoundError,ProcessLookupError,PermissionError): continue
+115:             if not args: continue
+116:             ninja=Path(args[0]).name in ('ninja','ninja.real') or ('qemu-' in args[0] and any(x.endswith('/ninja.real') for x in args))
+117:             make=Path(args[0]).name in ('make','gmake') or ('qemu-' in args[0] and any(Path(x).name in ('make','gmake') for x in args[1:]))
+118:             if not (ninja or make) or any(x in args for x in ('-t','--version','--help')): continue
+119:             one='-j1' in args or any(args[i:i+2]==['-j','1'] for i in range(len(args)-1))
+129:                 if not one and not any(x.startswith(('-j','--jobs','--jobserver')) for x in args) and not re.search(r'(?:^|\s)-?j|--jobs|jobserver',makeflags):
+130:                     one=True
+131:                     note('make_default_serial',pid=pid,command=args,makeflags=makeflags)
+132:             note('scheduler_arguments',pid=pid,command=args,makeflags=makeflags,serial=one)
+133:             if not one: stop('observed build scheduler not serial')
+134:             try:
+147:             except AssertionError:
+148:                 stop('actual live Ninja resource constraint failed')
+149:             note('build_scheduler_verified',pid=pid,command=args,cwd=cwd,makeflags=makeflags)
+150:             verified.add(pid)
+151:         for line in reader.readlines():
+182:     (OUT/'exitcode').write_text(str(proc.returncode)+'\n')
+183:     if proc.returncode and LABEL.startswith('bpf-'):
+184:         failure_cmd=['/usr/bin/python3',str(BASE/'capture_failure.py'),LABEL]
+185:         captured=subprocess.run(failure_cmd,capture_output=True,text=True)
+186:         note('failure_capture',command=failure_cmd,exitcode=captured.returncode,stdout=captured.stdout,stderr=captured.stderr)
+187:     raise SystemExit(proc.returncode)
+188: finally:
+
+FILE /home/toolchain/development/libc++_replacement/docs/progress/BPF_W1_0921/cell_commands/bpf-armv7l-libcxx.json
+1: [
+2:   "bwrap",
+3:   "--unshare-user",
+4:   "--uid",
+64:   "/tmp/bpf-sources",
+65:   "--",
+66:   "rpmbuild",
+67:   "--rcfile",
+68:   "/usr/lib/rpm/rpmrc:/home/abuild/.rpmrc",
+
+FILE /home/toolchain/development/libc++_replacement/docs/progress/BPF_STATIC_0922/run.py
+1: """Record command argv, output and exit status without shell interpolation."""
+2: import datetime, json, pathlib, shlex, subprocess, sys
+3: p=pathlib.Path(__file__).resolve().parent/'raw'; p.mkdir(exist_ok=True)
+4: name,*cmd=sys.argv[1:]; base=p/name
+5: assert not base.with_suffix('.command.txt').exists()
+6: for ext,value in [('command.txt',shlex.join(cmd)+'\n'),('argv.json',json.dumps(cmd,ensure_ascii=False,indent=2)),('started.txt',datetime.datetime.now().astimezone().isoformat()+'\n')]:
+7:     pathlib.Path(str(base)+'.'+ext).write_text(value)
+8: with pathlib.Path(str(base)+'.stdout.txt').open('xb') as out, pathlib.Path(str(base)+'.stderr.txt').open('xb') as err:
+9:     r=subprocess.run(cmd,stdout=out,stderr=err)
+10: pathlib.Path(str(base)+'.exitcode').write_text(str(r.returncode)+'\n')
+11: pathlib.Path(str(base)+'.finished.txt').write_text(datetime.datetime.now().astimezone().isoformat()+'\n')
+
+FILE /home/toolchain/development/libc++_replacement/docs/progress/BPF_STATIC_0922/guard.py
+1: """Resume the existing RPM build; enforce actual cgroup, serial jobs and I/O gates."""
+2: import datetime, hashlib, json, os, re, signal, subprocess, sys, threading, time
+3: from pathlib import Path
+4: 
+22:     print(json.dumps(row), flush=True)
+23: def query(cmd):
+24:     r = subprocess.run(cmd, capture_output=True, text=True)
+25:     note('command', command=cmd, exitcode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+26:     if r.returncode: raise RuntimeError('resource query failed')
+27:     return r.stdout
+49:     return cg
+50: cg = resources(os.getpid())
+51: cmd = json.loads((BASE/'cell_commands'/f'{LABEL}.json').read_text())
+52: for arg in cmd:
+53:     f=Path(arg)
+56:         snap.write_bytes(f.read_bytes())
+57:         note('script_snapshot',path=str(f),snapshot=str(snap),sha256=hashlib.sha256(snap.read_bytes()).hexdigest())
+58: note('start',command=cmd,deadline=DEADLINE,script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+59: log=OUT/'build.log'
+60: if log.exists():
+63:     note('previous_log_preserved',path=str(backup))
+64: stream = log.open('xb',buffering=0)
+65: proc = subprocess.Popen(cmd,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+66: def send(sig):
+67:     try: os.killpg(proc.pid,sig)
+76:     note('stop',reason=reason)
+77:     try: proc.wait(timeout=15)
+78:     except subprocess.TimeoutExpired: send(signal.SIGKILL); proc.wait()
+79:     raise SystemExit(124)
+80: def probe():
+81:     testcmd=['timeout','-k','2s','30s','python3',str(ROOT/'progress/BUILD_STATIC_0917B/io_probe.py')]
+82:     t=time.monotonic()
+83:     r=subprocess.run(testcmd,capture_output=True,text=True)
+84:     note('io_probe',command=testcmd,exitcode=r.returncode,seconds=time.monotonic()-t,stdout=r.stdout,stderr=r.stderr)
+85:     return r.returncode==0
+86: reader=log.open(errors='replace')
+98:             except (FileNotFoundError,ProcessLookupError,PermissionError): continue
+99:             if not args: continue
+100:             ninja=Path(args[0]).name in ('ninja','ninja.real') or ('qemu-' in args[0] and any(x.endswith('/ninja.real') for x in args))
+101:             make=Path(args[0]).name in ('make','gmake') or ('qemu-' in args[0] and any(Path(x).name in ('make','gmake') for x in args[1:]))
+102:             if not (ninja or make) or any(x in args for x in ('-t','--version','--help')): continue
+103:             one='-j1' in args or any(args[i:i+2]==['-j','1'] for i in range(len(args)-1))
+113:                 if not one and not any(x.startswith(('-j','--jobs','--jobserver')) for x in args) and not re.search(r'(?:^|\s)-?j|--jobs|jobserver',makeflags):
+114:                     one=True
+115:                     note('make_default_serial',pid=pid,command=args,makeflags=makeflags)
+116:             note('scheduler_arguments',pid=pid,command=args,makeflags=makeflags,serial=one)
+117:             if not one: stop('observed build scheduler not serial')
+118:             try:
+131:             except AssertionError:
+132:                 stop('actual live Ninja resource constraint failed')
+133:             note('build_scheduler_verified',pid=pid,command=args,cwd=cwd,makeflags=makeflags)
+134:             verified.add(pid)
+135:         for line in reader.readlines():
+166:     (OUT/'exitcode').write_text(str(proc.returncode)+'\n')
+167:     if proc.returncode and LABEL.startswith('bpf-'):
+168:         failure_cmd=['/usr/bin/python3',str(BASE/'capture_failure.py'),LABEL]
+169:         captured=subprocess.run(failure_cmd,capture_output=True,text=True)
+170:         note('failure_capture',command=failure_cmd,exitcode=captured.returncode,stdout=captured.stdout,stderr=captured.stderr)
+171:     raise SystemExit(proc.returncode)
+172: finally:
+
+FILE /home/toolchain/development/libc++_replacement/docs/progress/BPF_STATIC_0922/cells/bpf-armv7l-libcxx/executed-guard.py
+1: """Resume the existing RPM build; enforce actual cgroup, serial jobs and I/O gates."""
+2: import datetime, hashlib, json, os, re, signal, subprocess, sys, threading, time
+3: from pathlib import Path
+4: 
+22:     print(json.dumps(row), flush=True)
+23: def query(cmd):
+24:     r = subprocess.run(cmd, capture_output=True, text=True)
+25:     note('command', command=cmd, exitcode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+26:     if r.returncode: raise RuntimeError('resource query failed')
+27:     return r.stdout
+49:     return cg
+50: cg = resources(os.getpid())
+51: cmd = json.loads((BASE/'cell_commands'/f'{LABEL}.json').read_text())
+52: for arg in cmd:
+53:     f=Path(arg)
+56:         snap.write_bytes(f.read_bytes())
+57:         note('script_snapshot',path=str(f),snapshot=str(snap),sha256=hashlib.sha256(snap.read_bytes()).hexdigest())
+58: note('start',command=cmd,deadline=DEADLINE,script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+59: log=OUT/'build.log'
+60: if log.exists():
+63:     note('previous_log_preserved',path=str(backup))
+64: stream = log.open('xb',buffering=0)
+65: proc = subprocess.Popen(cmd,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+66: def send(sig):
+67:     try: os.killpg(proc.pid,sig)
+76:     note('stop',reason=reason)
+77:     try: proc.wait(timeout=15)
+78:     except subprocess.TimeoutExpired: send(signal.SIGKILL); proc.wait()
+79:     raise SystemExit(124)
+80: def probe():
+81:     testcmd=['timeout','-k','2s','30s','python3',str(ROOT/'progress/BUILD_STATIC_0917B/io_probe.py')]
+82:     t=time.monotonic()
+83:     r=subprocess.run(testcmd,capture_output=True,text=True)
+84:     note('io_probe',command=testcmd,exitcode=r.returncode,seconds=time.monotonic()-t,stdout=r.stdout,stderr=r.stderr)
+85:     return r.returncode==0
+86: reader=log.open(errors='replace')
+98:             except (FileNotFoundError,ProcessLookupError,PermissionError): continue
+99:             if not args: continue
+100:             ninja=Path(args[0]).name in ('ninja','ninja.real') or ('qemu-' in args[0] and any(x.endswith('/ninja.real') for x in args))
+101:             make=Path(args[0]).name in ('make','gmake') or ('qemu-' in args[0] and any(Path(x).name in ('make','gmake') for x in args[1:]))
+102:             if not (ninja or make) or any(x in args for x in ('-t','--version','--help')): continue
+103:             one='-j1' in args or any(args[i:i+2]==['-j','1'] for i in range(len(args)-1))
+113:                 if not one and not any(x.startswith(('-j','--jobs','--jobserver')) for x in args) and not re.search(r'(?:^|\s)-?j|--jobs|jobserver',makeflags):
+114:                     one=True
+115:                     note('make_default_serial',pid=pid,command=args,makeflags=makeflags)
+116:             note('scheduler_arguments',pid=pid,command=args,makeflags=makeflags,serial=one)
+117:             if not one: stop('observed build scheduler not serial')
+118:             try:
+131:             except AssertionError:
+132:                 stop('actual live Ninja resource constraint failed')
+133:             note('build_scheduler_verified',pid=pid,command=args,cwd=cwd,makeflags=makeflags)
+134:             verified.add(pid)
+135:         for line in reader.readlines():
+166:     (OUT/'exitcode').write_text(str(proc.returncode)+'\n')
+167:     if proc.returncode and LABEL.startswith('bpf-'):
+168:         failure_cmd=['/usr/bin/python3',str(BASE/'capture_failure.py'),LABEL]
+169:         captured=subprocess.run(failure_cmd,capture_output=True,text=True)
+170:         note('failure_capture',command=failure_cmd,exitcode=captured.returncode,stdout=captured.stdout,stderr=captured.stderr)
+171:     raise SystemExit(proc.returncode)
+172: finally:
+
+FILE /home/toolchain/development/libc++_replacement/docs/progress/BPF_STATIC_0922/cell_commands/bpf-armv7l-libcxx.json
+1: [
+2:   "bwrap",
+3:   "--unshare-user",
+4:   "--uid",
+64:   "/tmp/bpf-sources",
+65:   "--",
+66:   "rpmbuild",
+67:   "--rcfile",
+68:   "/usr/lib/rpm/rpmrc:/home/abuild/.rpmrc",

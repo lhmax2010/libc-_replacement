@@ -1,0 +1,27 @@
+--- before/build_audit.py
++++ after/build_audit.py
+@@ -1,7 +1,7 @@
+ """Read-only toolchain/cache/log and already-extracted ELF comparison."""
+ import hashlib,json,re,shlex,subprocess
+ from pathlib import Path
+-P=Path.cwd();O=P/'progress/BPF_W3R_0922/build-audit';O.mkdir(exist_ok=False);rows=[]
++P=Path.cwd();O=P/'tmp/BPF_W4_0922/build-audit-safe';O.mkdir(exist_ok=False);rows=[]
+ def run(label,argv):
+  r=subprocess.run(argv,capture_output=True);(O/(label+'.out')).write_bytes(r.stdout);(O/(label+'.err')).write_bytes(r.stderr)
+  rows.append(dict(label=label,argv=argv,command=shlex.join(argv),exitcode=r.returncode));(O/'commands.json').write_text(json.dumps(rows,indent=2));return r
+@@ -16,7 +16,14 @@
+   base=P/'progress'/roundname
+   result=json.loads((base/verify/'result.json').read_text());f=Path(result['observations']['main']['path'])
+   data=f.read_bytes();out=O/(roundname+'-'+arch+'.text')
+-  rr=run(roundname+'-'+arch+'-text',['/usr/bin/llvm-objcopy','--dump-section','.text='+str(out),str(f)])
++  rewritten=O/(roundname+'-'+arch+'.objcopy-output.elf')
++  before=f.stat()
++  assert not out.exists() and not rewritten.exists()
++  assert rewritten.resolve()!=f.resolve() and out.resolve()!=f.resolve()
++  rr=run(roundname+'-'+arch+'-text',['/usr/bin/llvm-objcopy','--dump-section','.text='+str(out),str(f),str(rewritten)])
++  after=f.stat()
++  assert f.read_bytes()==data, 'Input content changed: STOP'
++  assert (before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==(after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns), 'Input metadata changed: STOP'
+   row=dict(round=roundname,arch=arch,path=str(f),sha256=hashlib.sha256(data).hexdigest(),text_sha256=hashlib.sha256(out.read_bytes()).hexdigest() if rr.returncode==0 else 'NOT_OBSERVED')
+   log=base/'cells'/f'bpf-{arch}-libcxx'/'build.log';lines=log.read_text(errors='replace').splitlines()
+   targets=[x for x in lines if re.match(r'^\[\s*\d+%\]',x) and ('Building ' in x or 'Linking ' in x)]

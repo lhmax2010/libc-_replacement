@@ -1,0 +1,162 @@
+--- f895f8c/packaging/bpftrace.spec
++++ verified/packaging/bpftrace.spec
+@@ -13,6 +13,7 @@
+ Source0:        %{name}-%{version}.tar.gz
+ Source1001:     %{name}.manifest
+ Source1002:     prebuilt-static-bpftrace.tar.gz
++Patch0:         static-link-libbpf.patch
+ 
+ ExclusiveArch:  armv7l aarch64
+ 
+@@ -35,6 +36,10 @@
+ %if 0%{?build_with_libcxx}
+ BuildRequires:  libc++-devel
+ BuildRequires:  libc++abi-devel
++BuildRequires:  bcc-tools-static
++BuildRequires:  libbpf-static
++BuildRequires:  liblzma-static
++BuildRequires:  zlib-devel-static
+ %endif
+ 
+ %description
+@@ -71,11 +76,19 @@
+ 
+ %prep
+ %setup -q
++%patch0 -p1
+ cp %{SOURCE1001} .
+ tar xzvf %{SOURCE1002}
++%if 0%{?build_with_libcxx}
++# Keep a single shared unwinder for glibc pthread cancellation. The C++
++# libraries remain static; GCC and undefined-toolchain paths stay unchanged.
++test "$(grep -Fc 'target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")' src/CMakeLists.txt)" = 1
++sed -i 's/target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")/target_link_options(bpftrace BEFORE PRIVATE "-shared-libgcc" "-static-libstdc++")/' src/CMakeLists.txt
++%endif
+ 
+ %build
+ %if 0%{?build_with_libcxx}
++bpftrace_original_ldflags="${LDFLAGS}"
+ export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+ export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+ %endif
+@@ -90,13 +103,36 @@
+ %make_build
+ cd ..
+ 
++%if 0%{?build_with_libcxx}
++# Keep the ordinary shared build unchanged; build the static subpackage separately.
++# CMake treats this option as source-relative, so preserve that form explicitly.
++ln -s "%{_libdir}/libclang.a" build/libclang-static-input.a
++libclang_static_relpath=build/libclang-static-input.a
++LDFLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
++cmake -S . -B build-static -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
++      -DSTATIC_LINKING=ON -DCMAKE_SKIP_RPATH:BOOL=ON \
++      -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix} \
++      -DLIBCLANG_STATIC_PATH:STRING="${libclang_static_relpath}" \
++      -DCMAKE_EXE_LINKER_FLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
++      -DCMAKE_CXX_STANDARD_LIBRARIES="-Wl,--start-group %{_libdir}/libc++.a %{_libdir}/libc++abi.a -Wl,--end-group"
++cmake --build build-static --target bpftrace -- %{?_smp_mflags}
++%endif
++
+ %install
+ cd build
+ %make_install
+ cd ..
+ 
+ # Install bpftrace static binary
++%if %{defined _toolchain}
++%if %{toolchain_is clang}
++install -m 0755 build-static/src/bpftrace %{buildroot}%{_bindir}/bpftrace-static
++%else
+ install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
++%endif
++%else
++install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
++%endif
+ 
+ %post static
+ cp -rf %{_bindir}/%{name}-static %{_bindir}/%{name}
+
+PATH=/usr/bin/qemu-arm-static
+lrwxrwxrwx 1 abuild abuild 8 Sep 12 18:48 /usr/bin/qemu-arm-static -> qemu-arm
+/usr/bin/qemu-arm
+/usr/bin/qemu-arm-static: ELF 64-bit LSB executable, x86-64, version 1 (GNU/Linux), statically linked, BuildID[sha1]=aa64e2c4456eb2dcf419a405c396447dcc1ffcb5, for GNU/Linux 4.3.0, not stripped
+8ee43bc800f9d708a8606310fa9cce476ce4fb02d31cfd910fd9b50cdbba470a  /usr/bin/qemu-arm-static
+qemu-linux-user-x86_64-cross-9.2.3.1-3.2.armv7l
+
+PATH=/usr/bin/qemu-arm
+-rwxr-xr-x 1 abuild abuild 4662672 Sep 12 18:48 /usr/bin/qemu-arm
+/usr/bin/qemu-arm
+/usr/bin/qemu-arm: ELF 64-bit LSB executable, x86-64, version 1 (GNU/Linux), statically linked, BuildID[sha1]=aa64e2c4456eb2dcf419a405c396447dcc1ffcb5, for GNU/Linux 4.3.0, not stripped
+8ee43bc800f9d708a8606310fa9cce476ce4fb02d31cfd910fd9b50cdbba470a  /usr/bin/qemu-arm
+qemu-linux-user-x86_64-cross-9.2.3.1-3.2.armv7l
+
+PATH=/usr/bin/qemu-aarch64-static
+lrwxrwxrwx 1 abuild abuild 12 Sep 12 18:47 /usr/bin/qemu-aarch64-static -> qemu-aarch64
+/usr/bin/qemu-aarch64
+/usr/bin/qemu-aarch64-static: ELF 64-bit LSB executable, x86-64, version 1 (GNU/Linux), statically linked, BuildID[sha1]=114e98fbf972328a56ba9ebcd69614476ff578f1, for GNU/Linux 4.3.0, not stripped
+c7bb3320642914c90bac3ae0aab59c84c185dffa3cf630a30a4346801b06691e  /usr/bin/qemu-aarch64-static
+qemu-linux-user-x86_64-cross-9.2.3.1-3.2.armv7l
+
+PATH=/usr/bin/qemu-aarch64
+-rwxr-xr-x 1 abuild abuild 6998032 Sep 12 18:47 /usr/bin/qemu-aarch64
+/usr/bin/qemu-aarch64
+/usr/bin/qemu-aarch64: ELF 64-bit LSB executable, x86-64, version 1 (GNU/Linux), statically linked, BuildID[sha1]=114e98fbf972328a56ba9ebcd69614476ff578f1, for GNU/Linux 4.3.0, not stripped
+c7bb3320642914c90bac3ae0aab59c84c185dffa3cf630a30a4346801b06691e  /usr/bin/qemu-aarch64
+qemu-linux-user-x86_64-cross-9.2.3.1-3.2.armv7l
+drwxr-xr-x 4 65534 nogroup  4096 Sep 15 11:40 /emul
+drwxr-xr-x 2 65534 nogroup 12288 Sep 15 11:40 /emul/usr/bin
+lrwxrwxrwx 1 65534 nogroup 8 Sep 12 18:59 /emul/usr/bin/clang -> clang-22
+/emul/usr/bin/clang: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /emul/usr/lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, stripped
+590fa22e2859a15c3d05c46aca08958949bb0cc7ab5abf293ae8ea2f338daa1b  /emul/usr/bin/clang
+-rwxr-xr-x 1 65534 nogroup 240272 Sep 12 19:01 /emul/usr/bin/make
+/emul/usr/bin/make: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /emul/usr/lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, stripped
+d05a931454675cea1f3447866779fc714b3221cf32fb80a77ed6b699fed32510  /emul/usr/bin/make
+-rwxr-xr-x 1 65534 nogroup 11940056 Sep 12 19:01 /emul/usr/bin/cmake
+/emul/usr/bin/cmake: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /emul/usr/lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0, stripped
+978ad78af0a90cd9ce7dae3f0749bd1221246f6f6b05132dec41064dd8a9a7e2  /emul/usr/bin/cmake
+
+ENTRY /proc/sys/fs/binfmt_misc/arm
+enabled
+interpreter /usr/bin/qemu-arm-binfmt
+flags: P
+offset 0
+magic 7f454c4601010100000000000000000002002800
+mask ffffffffffffff00fffffffffffffffffeffffff
+
+ENTRY /proc/sys/fs/binfmt_misc/armeb
+enabled
+interpreter /usr/bin/qemu-armeb-binfmt
+flags: P
+offset 0
+magic 7f454c4601020100000000000000000000020028
+mask ffffffffffffff00fffffffffffffffffffeffff
+
+ENTRY /proc/sys/fs/binfmt_misc/qemu-arm
+enabled
+interpreter /usr/bin/qemu-arm-static
+flags: 
+offset 0
+magic 7f454c4601010100000000000000000002002800
+mask ffffffffffffff00fffffffffffffffffeffffff
+clang-accel-x86_64-armv7l 0.4-1.1
+qemu-linux-user-x86_64-cross 9.2.3.1-3.2
+qemu-accel-x86_64-armv7l 0.4-1.1
+61:-- The C compiler identification is Clang 22.1.8
+62:-- The CXX compiler identification is Clang 22.1.8
+65:-- Check for working C compiler: /bin/armv7l-tizen-linux-gnueabi-clang - skipped
+70:-- Check for working CXX compiler: /bin/armv7l-tizen-linux-gnueabi-clang++ - skipped
+392:[ 18%] Building CXX object src/arch/CMakeFiles/arch.dir/x86_64.cpp.o
+393:cd /tmp/task/rpm-bpf-armv7l-libcxx/BUILD/bpftrace-0.24.2/build/src/arch && /bin/armv7l-tizen-linux-gnueabi-clang++  -I/tmp/task/rpm-bpf-armv7l-libcxx/BUILD/bpftrace-0.24.2/src -I/tmp/task/rpm-bpf-armv7l-libcxx/BUILD/bpftrace-0.24.2/build/src -I/tmp/task/rpm-bpf-armv7l-libcxx/BUILD/bpftrace-0.24.2/build -Os -fstack-protector -Wno-unused-command-line-argument -Wno-error=unused-but-set-variable -Wno-error=unused-command-line-argument  -g2 -gdwarf-4 -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -Wformat -Wformat-security -fmessage-length=0 -frecord-gcc-switches -march=armv7-a -mtune=cortex-a8 -mlittle-endian -mfpu=neon -mfloat-abi=softfp -mthumb -Wp,-D__SOFTFP__ -D_FILE_OFFSET_BITS=64 -g -stdlib=libc++ -O3 -DNDEBUG -std=c++20   -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -D_GLIBCXX_USE_CXX11_ABI=1 -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -Wall -Wextra -Werror=missing-field-initializers -Werror=undef -Wpointer-arith -Wcast-align -Wwrite-strings -Wcast-qual -Wunreachable-code -Wdisabled-optimization -Wno-narrowing -MD -MT src/arch/CMakeFiles/arch.dir/x86_64.cpp.o -MF CMakeFiles/arch.dir/x86_64.cpp.o.d -o CMakeFiles/arch.dir/x86_64.cpp.o -c /tmp/task/rpm-bpf-armv7l-libcxx/BUILD/bpftrace-0.24.2/src/arch/x86_64.cpp
+403:/bin/llvm-ar qc libarch.a CMakeFiles/arch.dir/arm.cpp.o CMakeFiles/arch.dir/ppc64.cpp.o CMakeFiles/arch.dir/s390.cpp.o CMakeFiles/arch.dir/arch.cpp.o CMakeFiles/arch.dir/x86_64.cpp.o CMakeFiles/arch.dir/mips64.cpp.o CMakeFiles/arch.dir/riscv64.cpp.o CMakeFiles/arch.dir/loongarch64.cpp.o
+2350:-- The C compiler identification is Clang 22.1.8
+2351:-- The CXX compiler identification is Clang 22.1.8
+2354:-- Check for working C compiler: /bin/armv7l-tizen-linux-gnueabi-clang - skipped
+2359:-- Check for working CXX compiler: /bin/armv7l-tizen-linux-gnueabi-clang++ - skipped
+2503:[ 17%] Building CXX object src/arch/CMakeFiles/arch.dir/x86_64.cpp.o
+enabled
+interpreter /usr/bin/qemu-arm-static
+flags: 
+offset 0
+magic 7f454c4601010100000000000000000002002800
+mask ffffffffffffff00fffffffffffffffffeffffff
