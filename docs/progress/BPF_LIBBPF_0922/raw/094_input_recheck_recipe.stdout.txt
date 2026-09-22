@@ -1,0 +1,23 @@
+"""Recheck fixed RPM, archive and spec identities after builds; read-only inputs."""
+import hashlib,json
+from pathlib import Path
+p=Path.cwd(); out=p/'progress/BPF_W1_0921'; rows=[]
+def sha(f):
+    with f.open('rb') as s: return hashlib.file_digest(s,'sha256').hexdigest()
+for arch in ('armv7l','aarch64'):
+    for row in json.loads((out/f'llvm-{arch}-copied.json').read_text())['rpms']:
+        for kind in ('source','path'):
+            f=Path(row[kind]); actual=sha(f)
+            rows.append(dict(arch=arch,kind='llvm_rpm_'+kind,path=str(f),expected=row['sha256'],actual=actual,match=actual==row['sha256']))
+    prepared=json.loads((out/f'prepare-{arch}-result.json').read_text())
+    root=Path(prepared.get('input_root',str(p/f'tmp/BPF_W1_0921/input-{arch}-v3')))
+    f=root/('usr/lib/libclang.a' if arch=='armv7l' else 'usr/lib64/libclang.a'); actual=sha(f)
+    rows.append(dict(arch=arch,kind='installed_libclang',path=str(f),expected=prepared['libclang_sha256'],actual=actual,match=actual==prepared['libclang_sha256']))
+for row in json.loads((out/'unchanged-specs.json').read_text()):
+    for kind in ('source','copy'):
+        f=Path(row[kind]); actual=sha(f)
+        rows.append(dict(arch='both',kind='unchanged_spec_'+kind,path=str(f),expected=row['sha256'],actual=actual,match=actual==row['sha256']))
+result=dict(status='PASS' if all(x['match'] for x in rows) else 'FAIL',checks=rows)
+(out/'INPUT_IDENTITY_FINAL.json').write_text(json.dumps(result,indent=2))
+print(result['status'],len(rows),'identity checks')
+raise SystemExit(0 if result['status']=='PASS' else 1)
