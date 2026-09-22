@@ -8,6 +8,6 @@
 | 提速线索只读核查 | COMPLETE_WITH_LIMITATIONS | BUILD_DISPATCH.md | 唯一原因 NOT_OBSERVED |
 | bpftrace 本地配方提交 | BLOCKED_SCOPE_CONFIRMATION | DECISIONS.md、BASELINE_TO_VERIFIED_RECIPE.diff | 待范围裁决，未修改包仓 |
 | prep 检查 | NOT_OBSERVED | W4_SIGNOFF.md | 不替人工选择候选 |
-| 项目证据交付 | 按结尾授权提交推送 | 本目录及 docs/LINE_STATUS.md | 不推包仓 |
+| 项目证据交付 | 已提交推送并核远端 | DELIVERY_RECEIPT.md | 材料提交 1ffc05e8cf325bca60929a22da5e658d07de91d5；不推包仓 |
 
 停止交人工审阅；没有以“只加两行”冒充完整已验证配方。
