@@ -1,0 +1,132 @@
+codex/r5-ehabi-diagnosis
+2cf5432f9fa8d380d300962bca45d6e8dc4badfb
+# ARM物理板：正常安装预检阻断
+
+## 结论
+
+W3实际止于 **static RPM正常安装预检失败**。未执行正式安装，未运行候选/原件功能对照，也未运行取消探针；这些项全部 NOT_OBSERVED，实际执行次数为0，不是“0/20失败”，更不是“双方同样失败故等价”。不满足候选可替换发布资产的完整门禁。
+
+## 实际输入与环境
+
+- 物理板：192.168.108.26，`uname -a` 为 `Linux localhost 6.12.80-arm-rpi4-v7l #1 SMP Tue Jul 28 02:41:25 UTC 2026 armv7l GNU/Linux`。
+- `/proc/version` 实际含 `clang version 22.1.8, LLD 22.1.8`；原文 board/009.transport.out、010.transport.out。
+- root模式下读取 `/proc/config.gz` 或 `/boot/config-*` 未获得配置，退出1，BPF内核配置 NOT_OBSERVED（board/kernel_config.json），不按版本猜测。
+- static RPM传输前后 SHA相同：`672279ea1e93f896c6b82cd1d1b5d557ef6c8a8dcc9079793b2a2efe11f9e756`，22,338,628字节。
+- 原ARM资产也已传输，SHA `ade7530b3824dd83eebba837928d3919dcb4cd7708212a8607c3629cb5c55f5b`；没有覆盖系统文件。全部传输见 board/transfers.json。
+
+## 正常预检的实际结果
+
+主包/common预检：
+
+```sh
+rpm -ivh --test /var/tmp/bpf_static_0922/bpftrace-0.24.2-1.armv7l.rpm /var/tmp/bpf_static_0922/bpftrace-common-0.24.2-1.armv7l.rpm
+```
+
+远端退出2，报告缺少 libbcc_bpf.so.0、libc++.so.1、libc++abi.so.1、libclang-cpp.so.22.1、libclang.so.22.1 及相应版本依赖。这是主包预检结果，不能记成static ELF失败。未安装主包或common。
+
+static预检：
+
+```sh
+rpm -ivh --test /var/tmp/bpf_static_0922/bpftrace-static-0.24.2-1.armv7l.rpm
+```
+
+远端退出1，实际输出末尾为：
+
+```text
+error: Unable to write device security policy to /etc/device-sec-policy
+warning: Plugin msm: hook tsm_post failed
+        installing package bpftrace-static-0.24.2-1.armv7l needs 92MB on the / filesystem
+```
+
+完整原始输出（含RPM进度控制字符）在 board/INSTALL_PREFLIGHT.json 及 board/commands.json 对应stdout文件。没有关闭MSM插件、没有 `--nodeps`、没有修改安全策略/权限/挂载、没有重试预检。
+
+只读收尾观测：`df -Pk / /etc /usr/bin /var/tmp` 报 `/` 可用 1,393,876 KiB；`/etc/device-sec-policy` 为 root:root、0644、65,379字节。预检时 `id` 是 uid0，安全上下文原文为 `User::Shell`。这些观测与“需92MB”的错误一并保留，**不足以断言根因是磁盘不足、只读挂载或某种MAC权限问题**；本轮未继续归因，根因记 NOT_OBSERVED。
+
+## 对照与取消：未执行清单
+
+| 项 | 候选 | 原件/对照 | 原因 |
+|---|---|---|---|
+| --version | NOT_OBSERVED | NOT_OBSERVED | 正常安装预检未通过 |
+| --info逐行对照 | NOT_OBSERVED | NOT_OBSERVED | 同上 |
+| -l前50行与实际探针选择 | NOT_OBSERVED | NOT_OBSERVED | 同上，不按包名或旧结果选探针 |
+| BEGIN脚本，各3次 | NOT_OBSERVED | NOT_OBSERVED | 同上 |
+| 实际kprobe/tracepoint脚本，各3次 | NOT_OBSERVED | NOT_OBSERVED | 同上 |
+| interval脚本，各3次 | NOT_OBSERVED | NOT_OBSERVED | 同上 |
+| 共享libgcc取消，计划20次 | NOT_OBSERVED（0次执行） | — | 未进入探针阶段 |
+| 静态libgcc取消，计划20次 | — | NOT_OBSERVED（0次执行） | 未进入探针阶段 |
+
+两份探针的本地SHA仍与既有W3_REFERENCE_INPUTS一致；本地身份匹配不是本轮板测结果。
+
+## 板端收尾与保留现场
+
+- 未安装任何bpftrace相关包，无包需要卸载。失败后rpm包名检查仍无bpftrace/main/common/static。
+- 预检前后五个受影响路径均为 ABSENT：`/usr/bin/bpftrace`、`/usr/bin/bpftrace-static`、`/usr/bin/bpftrace-aotrt`、`/usr/share/licenses/bpftrace-static`及其LICENSE。board/before.json与after.json逐项相同。
+- 已把本轮开启的SDB root模式关闭，恢复装前非root模式；PC sudo调用为0。root操作、命令与退出码完整保存在board/commands.json及board/failure-state/commands.json。
+- 按“失败现场保留”要求，**没有删除** `/var/tmp/bpf_static_0922/`：保留主包/common/static三个RPM、run-bounded、original，共五个文件；各文件SHA收尾再次核对一致。完整路径与SHA在board/CLEANUP.json。
+- 因目录保留，清理状态是 `PRESERVED_FAILURE_SCENE`，不能写成“全部清理完成”。没有修改原Source1002，没有推包仓。
+- 包预检本身曾调用MSM插件；本轮未保存预检前全系统文件快照，不宣称全系统所有文件均未改变。已核实的是上述包和五个bpftrace相关路径未变、SDB root模式恢复。
+
+下一步需人工先裁决如何查清正常安装预检阻断；不得借本轮W2R成功直接跳过W3或启动QuickBuild。后续仍为补齐W3 → W4审阅配方/签字 → 经授权推包仓与QuickBuild。
+# 当前状态
+
+更新：2026-09-22T17:39:37.207697+08:00
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| armv7l 整轮/三RPM | PASS | 退出0；三份RPM核验见verify-armv7l/commands.json |
+| armv7l RPM内static ELF | PASS | verify-armv7l/result.json；不是旧ELF |
+| aarch64 整轮/三RPM | PASS | 退出0；三份RPM核验见verify-aarch64/commands.json |
+| aarch64 RPM内static ELF | PASS | verify-aarch64/result.json；不是旧ELF |
+| ARM static正常安装预检 | FAIL（已停止） | board/INSTALL_PREFLIGHT.json；不绕过、不重试 |
+| ARM正常安装static与%post | NOT_OBSERVED | board/INSTALL_PREFLIGHT.json；正式安装未执行时无INSTALL_RESULT.json |
+| ARM候选/原件成对功能 | NOT_OBSERVED | board/pairs.json仅实际执行后才生成；本轮未执行 |
+| ARM主包安装预检 | FAIL（非static失败） | 仅预检，未安装主包；board/INSTALL_PREFLIGHT.json |
+| ARM取消 shared-gcc | NOT_OBSERVED | 物理板；共享为主证据，静态为对照；不预设崩溃 |
+| ARM取消 static-gcc | NOT_OBSERVED | 物理板；共享为主证据，静态为对照；不预设崩溃 |
+| 板端恢复与清理 | PRESERVED_FAILURE_SCENE | board/before.json、after.json、CLEANUP.json |
+
+全表与限制见FINAL_RESULT.md。
+# W4 输入（未授权推包仓）
+
+- 完整候选spec：recipe/bpftrace.spec
+- 完整spec差异：SPEC_DIFF.patch
+- 新Patch：recipe/static-link-libbpf.patch
+- 配方/补丁身份：recipe/IDENTITY.json
+- 六份RPM路径、SHA、大小：RPM_INVENTORY.tsv
+- RPM依赖：RPM_REQUIRES.tsv
+- RPM内新ELF验收：verify-armv7l/result.json、verify-aarch64/result.json
+- 物理板证据/恢复：board/；不得引用旧ELF当成本轮输入
+- -lstdc++fs解析：STDCXXFS_RESOLUTION.json、link-audit-*/；本轮未改
+
+当前：W2R_COMPLETE，W3=BLOCKED_AT_NORMAL_INSTALL_PREFLIGHT。详细功能差异与尚存门禁见FINAL_RESULT.md与BOARD_ANALYSIS.md（若已生成）。未获得W4人工签字，不推sandbox或包仓，不启动QuickBuild。
+当前阻断是正常static安装预检退出1（MSM策略写入报错及文件系统92MB提示），不是已证明的候选执行失败。功能对照和两组取消均未执行，须先补齐W3，不能直接以W2R通过签发替换。板上五个上传文件按要求保留，root模式已恢复。
+# 编译适配线状态
+
+## 线的定位与分界
+
+本线负责 Tizen-Base-Toolchain 的 libc++ 编译适配、输入资产与 RPM 核验；运行时边界决策由运行时线负责。本轮获授权在 tmp spec 副本中加入静态 libbpf Patch、完整写包并做 ARM 板测。原 spec、codes、Source1002 不动；不推 sandbox/包仓，不起 QuickBuild。
+
+## 当前位置
+
+Base 对账：73 个含 C++ 源码包中，11 个已适配推送、56 个有依据无需适配、6 个按设计排除、0 个未评估；适配推送不代表新版 static 资产已获发布批准。对账材料原样发布于 `c7aa2c5e72f78516e40b7a5423a4b83673608bad`。
+
+此前六格18份RPM与只重链接ELF材料保留，不冒充本轮结果。本轮 `BPF_STATIC_0922` 用加Patch的新配方串行完成 armv7l/aarch64 两个libc++格，各main/common/static三份，共6份新RPM；构建退出0，三份RPM摘要/Requires/清单核验及RPM内static ELF门禁均通过。ARM正常安装预检失败，W3未闭合。
+
+## 本任务结论与证据
+
+新spec仅新增Patch0及prep无条件应用；Patch只在STATIC_LINKING且LIBCLANG_STATIC_PATH分支以`${LIBBPF_LIBRARIES}`替代裸bpf。两架构RPM内static均精确依赖libm/libgcc_s/libc/架构loader，不依赖动态libbpf/libc++/LLVM；命名空间及libbpf已定义符号交集通过。ARM新RPM ELF与上轮重链接ELF SHA不同，aarch64相同，只登记不归因。完整证据：`docs/progress/BPF_STATIC_0922/FINAL_RESULT.md`。
+
+物理板正常main/common预检退出2，缺BCC/libc++/Clang动态库；static预检退出1，报告无法写`/etc/device-sec-policy`、MSM插件失败及根文件系统需92MB。未正式安装，未运行成对功能和取消探针，全部NOT_OBSERVED，不能称为功能等价或候选执行失败。未绕过、未修复、未重试。详见同目录 `BOARD_ANALYSIS.md`。
+
+## 挂账
+
+- 正常static安装预检阻断未归因：df记录根文件系统可用1,393,876 KiB，却同时出现92MB不足提示；不据此自行判断权限、挂载或容量根因。须人工裁决后才能补W3。
+- 新RPM已包含修正后的static，不再挂“未写包”。W4仍需审阅 `SPEC_DIFF.patch`、Patch和 `-lstdc++fs`：两架构实测解析GCC14.2目录下的静态归档，本轮不改该项。
+- ARM 新 22 份 LLVM 输入已正常接入从原始根复制的新私有副本；普通预检与安装退出 0，未使用文件冲突豁免。旧冲突副本与记录保留，见 `docs/progress/BPF_W1_0921/INPUT_STATUS.md`。
+- ARM 第五份 `libclang.a` 与旧份 SHA256 不同，登记身份，不归因。
+- 板端未安装bpftrace相关包，五个受影响路径与装前一致，SDB root模式已恢复。失败现场五个上传文件保留在`/var/tmp/bpf_static_0922/`，清理状态为PRESERVED_FAILURE_SCENE，不写“全部清理完成”。
+- 本轮ARM取消与功能未执行；不得复用旧轮20/20或x86_64结果冒充本轮物理板实测。GCC/未定义路径本轮不重构，既有结果仍在前轮。
+
+## 下一步
+
+停止交人工审阅。先裁决正常安装预检阻断并补齐W3，再由W4审阅/签字决定sandbox配方，随后按人工授权进入QuickBuild；不得跳过板测门禁。最新输入为 `docs/progress/BPF_STATIC_0922/W4_INPUTS.md`、`RPM_INVENTORY.tsv`与`RPM_REQUIRES.tsv`，旧ELF或旧RPM不可替代。本轮不推包仓、不起QuickBuild。
