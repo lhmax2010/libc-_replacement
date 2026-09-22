@@ -9,6 +9,6 @@
 | bpftrace 本地配方提交 | COMPLETE_LOCAL_ONLY | LOCAL_COMMIT_RESULT.json、SANDBOX_COMMIT.diff | 72fda9941031fc35d8825e73446ca43153c4b69b，ahead 1 / behind 0；未推包仓 |
 | prep 检查 | PASS | PREP_RESULT.md、prep-check/ | 只到 %prep；test 1=1，sed 实际执行 |
 | 条件组合 | COMPLETE_WITH_LIMITATIONS | CONDITION_COMBINATIONS.md | 默认 Clang 条件同步；两个不一致组合未测 |
-| 项目证据交付 | 原轮已推，续轮追加提交推送 | DELIVERY_RECEIPT.md | 续轮回执另列；不推包仓 |
+| 项目证据交付 | 续轮已提交推送并核远端 | RESUME_DELIVERY.md | 内容提交 3dc38c50adc29a16d1db1bbd32cebaa95f2d7559；不推包仓 |
 
 停止交人工审阅。最新状态：**本地提交已备好，待人工签字后推送**。已按人工新裁决纳入完整已验证配方；未修改 recipe 内容，未运行 %build、未上板、不起 QuickBuild。
