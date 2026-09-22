@@ -1,0 +1,106 @@
+diff --git a/packaging/bpftrace.spec b/packaging/bpftrace.spec
+index 804ec6c..7e4a200 100644
+--- a/packaging/bpftrace.spec
++++ b/packaging/bpftrace.spec
+@@ -13,6 +13,7 @@ License:        Apache-2.0
+ Source0:        %{name}-%{version}.tar.gz
+ Source1001:     %{name}.manifest
+ Source1002:     prebuilt-static-bpftrace.tar.gz
++Patch0:         static-link-libbpf.patch
+ 
+ ExclusiveArch:  armv7l aarch64
+ 
+@@ -35,6 +36,10 @@ BuildRequires:  libomp
+ %if 0%{?build_with_libcxx}
+ BuildRequires:  libc++-devel
+ BuildRequires:  libc++abi-devel
++BuildRequires:  bcc-tools-static
++BuildRequires:  libbpf-static
++BuildRequires:  liblzma-static
++BuildRequires:  zlib-devel-static
+ %endif
+ 
+ %description
+@@ -71,11 +76,19 @@ This package is the bpftrace static binary.
+ 
+ %prep
+ %setup -q
++%patch0 -p1
+ cp %{SOURCE1001} .
+ tar xzvf %{SOURCE1002}
++%if 0%{?build_with_libcxx}
++# Keep a single shared unwinder for glibc pthread cancellation. The C++
++# libraries remain static; GCC and undefined-toolchain paths stay unchanged.
++test "$(grep -Fc 'target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")' src/CMakeLists.txt)" = 1
++sed -i 's/target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")/target_link_options(bpftrace BEFORE PRIVATE "-shared-libgcc" "-static-libstdc++")/' src/CMakeLists.txt
++%endif
+ 
+ %build
+ %if 0%{?build_with_libcxx}
++bpftrace_original_ldflags="${LDFLAGS}"
+ export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+ export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+ %endif
+@@ -90,13 +103,36 @@ cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -DBUILD_TESTING=
+ %make_build
+ cd ..
+ 
++%if 0%{?build_with_libcxx}
++# Keep the ordinary shared build unchanged; build the static subpackage separately.
++# CMake treats this option as source-relative, so preserve that form explicitly.
++ln -s "%{_libdir}/libclang.a" build/libclang-static-input.a
++libclang_static_relpath=build/libclang-static-input.a
++LDFLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
++cmake -S . -B build-static -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
++      -DSTATIC_LINKING=ON -DCMAKE_SKIP_RPATH:BOOL=ON \
++      -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix} \
++      -DLIBCLANG_STATIC_PATH:STRING="${libclang_static_relpath}" \
++      -DCMAKE_EXE_LINKER_FLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
++      -DCMAKE_CXX_STANDARD_LIBRARIES="-Wl,--start-group %{_libdir}/libc++.a %{_libdir}/libc++abi.a -Wl,--end-group"
++cmake --build build-static --target bpftrace -- %{?_smp_mflags}
++%endif
++
+ %install
+ cd build
+ %make_install
+ cd ..
+ 
+ # Install bpftrace static binary
++%if %{defined _toolchain}
++%if %{toolchain_is clang}
++install -m 0755 build-static/src/bpftrace %{buildroot}%{_bindir}/bpftrace-static
++%else
+ install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
++%endif
++%else
++install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
++%endif
+ 
+ %post static
+ cp -rf %{_bindir}/%{name}-static %{_bindir}/%{name}
+ccb538d077451c8be004948115ae6a20c68bb4269459a12d4507b450253c0db2  tmp/BUILD_NIGHT_0916.h4taGY/bpftrace-push/packaging/bpftrace.spec
+ccb538d077451c8be004948115ae6a20c68bb4269459a12d4507b450253c0db2  docs/progress/BPF_STATIC_0922/recipe/bpftrace.spec
+total 200316
+-rw-rw-r-- 1 toolchain toolchain 102882277 Sep 15 19:36 bpftrace-0.24.2.tar.gz
+-rw-rw-r-- 1 toolchain toolchain        67 Sep 15 19:36 bpftrace.manifest
+-rw-r--r-- 1 toolchain toolchain      3609 Sep 15 19:40 bpftrace.spec
+-rw-rw-r-- 1 toolchain toolchain 102216246 Sep 15 19:36 prebuilt-static-bpftrace.tar.gz
+-rw-rw-r-- 1 toolchain toolchain       674 Sep 22 13:28 static-link-libbpf.patch
+docs/progress/BPF_STATIC_0922/raw/018_build_arm.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/guard.py W1 bpf-armv7l-libcxx
+docs/progress/BPF_STATIC_0922/raw/069_link_audit_aarch.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/link_audit.py aarch64
+docs/progress/BPF_STATIC_0922/raw/015_precheck_arm.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/guard.py W1 precheck-armv7l
+docs/progress/BPF_STATIC_0922/raw/068_verify_aarch.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/verify.py aarch64
+docs/progress/BPF_STATIC_0922/raw/055_build_aarch.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/guard.py W1 bpf-aarch64-libcxx
+docs/progress/BPF_STATIC_0922/raw/092_refresh_report.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/report.py
+docs/progress/BPF_STATIC_0922/raw/011_setup.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/setup.py
+docs/progress/BPF_STATIC_0922/raw/039_verify_arm.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/verify.py armv7l
+docs/progress/BPF_STATIC_0922/raw/049_link_audit_arm.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/link_audit.py armv7l
+docs/progress/BPF_STATIC_0922/raw/053_precheck_aarch.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/guard.py W1 precheck-aarch64
+docs/progress/BPF_STATIC_0922/raw/086_report.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/report.py
+docs/progress/BPF_STATIC_0922/raw/046_verify_arm_corrected.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/verify.py armv7l
+docs/progress/BPF_STATIC_0922/raw/074_board.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/guard.py W3 board-armv7l
+docs/progress/BPF_STATIC_0922/raw/083_preserve_board.command.txt:1:systemd-run --user --scope --expand-environment=no --unit=bpf-static-0922 -p MemoryMax=16536457216 nice -n 19 ionice -c 3 /usr/bin/python3 progress/BPF_STATIC_0922/board_preserve.py
+1:MemTotal:       32297772 kB
+config/gbs.conf
+config/gbs_llvm.conf
+bash -c $'set -eu\nsed -n "1,220p" docs/progress/R84/base_project_config.patch\nprintf "R84_ORDERING\\n"\nsed -n "1,240p" docs/progress/R84/QUICKBUILD_ORDERING.md\nprintf "SPEC_BUILD_CONTEXTS\\n"\nfor f in progress/R101/inputs/source_git/{abseil-cpp,bcc-tools,boost,bpftrace,icu,jsoncpp,libsigc++,llvm,pcre,taglib}/packaging/*.spec; do\n  printf "===== %s =====\\n" "$f"\n  awk "BEGIN{p=0} /^%build/{p=1} /^%install/{if(p){print; p=0}} p{print}" "$f"\ndone\n' 

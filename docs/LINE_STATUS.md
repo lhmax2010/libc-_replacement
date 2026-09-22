@@ -2,7 +2,7 @@
 
 ## 线的定位与分界
 
-本线负责 Tizen-Base-Toolchain 的 libc++ 编译适配、输入资产与 RPM 核验；运行时边界决策由运行时线负责。本轮 W4 仅按批准恢复四份误改 tmp 副本、修正审计脚本、只读核查构建提速线索及包仓基线。因配方范围冲突，未修改包仓。原 spec、codes、Source1002 不动；不构建、不上板、不推 sandbox/包仓、不起 QuickBuild；只交付项目材料。
+本线负责 Tizen-Base-Toolchain 的 libc++ 编译适配、输入资产与 RPM 核验；运行时边界决策由运行时线负责。本轮 W4 续已获完整配方授权，在 tmp 包克隆创建一个本地提交并完成 ARM %prep 检查、只读条件组合核查。codes、Source1002 不动；不运行 %build、不上板、不推 sandbox/包仓、不起 QuickBuild；只推项目材料。
 
 ## 当前位置
 
@@ -16,7 +16,9 @@ Base 对账：73 个含 C++ 源码包中，11 个已适配推送、56 个有依�
 
 相对**前轮 tmp static 候选 spec**，BPF_STATIC 新 spec 仅新增 Patch0 及 prep 无条件应用；这不是相对包仓 f895f8c 的全部差异。Patch 只在 STATIC_LINKING 且 LIBCLANG_STATIC_PATH 分支以 `${LIBBPF_LIBRARIES}` 替代裸 bpf。两架构 RPM 内 static 均精确依赖 libm/libgcc_s/libc/架构 loader，不依赖动态 libbpf/libc++/LLVM；命名空间及 libbpf 已定义符号交集通过。ARM 新 RPM ELF 与上轮重链接 ELF SHA 不同，aarch64 相同，只登记不归因。完整证据：`docs/progress/BPF_STATIC_0922/FINAL_RESULT.md`。
 
-**W4 包提交阻断：待人工确认范围。** 远端基线仍为 `f895f8c0373d224847fc7d3ecbeaac3bf926a1a1`，但缺完整已验证 recipe 的 static BuildRequires、共享 libgcc 切换、独立 static 构建/安装段等。不能同时满足“仅两行及 patch、不改其他行”和“完整等于已验证配方”。未创建包提交，工作树干净、相对 FETCH_HEAD 为 0/0；不能标“提交已备好待签字推送”。完整差异和待裁决项见 `docs/progress/BPF_W4_0922/DECISIONS.md`。
+**W4：本地提交已备好，待人工签字后推送。** 人工已取消“两行”限制，允许完整已验证 recipe。再次核远端基线 `f895f8c0373d224847fc7d3ecbeaac3bf926a1a1` 后，本地创建 `72fda9941031fc35d8825e73446ca43153c4b69b`；仅 spec 和新 patch，两文件与 recipe 逐字节一致，工作树干净、ahead 1 / behind 0；远端仍旧基线，未推包仓。ARM 新独立 prep 树退出 0，setup、Patch0、Source1002 解包、test 1=1 和 sed 均通过，未运行 %build。审阅见 `docs/progress/BPF_W4_0922/W4_SIGNOFF.md`。
+
+条件组合：Base-Toolchain 项目宏默认 `_toolchain=clang`、支持 override；`build_with_libcxx` 不是项目/GBS 全局宏，而是本包 spec:1–5 在 Clang 路径派生为 1。W1 两架构各覆盖 clang/1、gcc/未定义、未定义/未定义；构建阶段 clang/未定义、gcc/1 两种组合均 NOT_OBSERVED。已核配置默认路径两条件同步，但实际 QuickBuild 服务端最终宏集未取得，外部强制宏不能由正常六格外推通过。见 `CONDITION_COMBINATIONS.md`。
 
 前轮正常main/common预检退出2、static预检退出1的原始记录保留。本轮确认：/var/tmp实际位于/opt的rw ext4分区，/usr与/etc位于ro根分区；固定RPM源码transaction.c:164在ST_RDONLY时按0可用块计算，再由269–272产生DISKSPACE、rpmprob.c:143–151显示92MB，故与df物理空闲并不矛盾。固定源码为上游4.14.1提交，不冒充部署4.14.1.1的源码身份证明。
 
@@ -29,7 +31,7 @@ W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake
 ## 挂账
 
 - 四份主包解包副本：**已恢复，事故文件保留于 *.objcopy-modified-0922**，本项恢复挂账关闭；事故历史保留。
-- W4 完整 recipe 与基线差异超出“只加两行”的限制，待人工批准范围；包提交及 prep 核验尚未做。
+- W4 完整 recipe 范围已获批准、本地提交与 prep 完成；待人工签字推包仓。条件组合的两种未覆盖形态及实际 QuickBuild 最终宏集仍需签字时审阅。
 
 - 正常static安装预检的ro挂载条件已与指定RPM源码对上；**rpm安装验证留待镜像阶段**，包括%post覆盖逻辑；可写区通过不冒充安装通过。主包依赖缺口仍见前轮原始记录。
 - 新RPM已包含修正后的static，不再挂“未写包”。W4仍需审阅 `SPEC_DIFF.patch`、Patch和 `-lstdc++fs`：两架构实测解析GCC14.2目录下的静态归档，本轮不改该项。
@@ -40,4 +42,4 @@ W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake
 
 ## 下一步
 
-停止交人工审阅。先裁决 W4 包提交范围，再准备实际本地提交与 prep 核验；人工审阅 spec 完整差异、patch、提交信息、-lstdc++fs 与 Source1002 回退后，另行授权推送包仓及 QuickBuild；RPM 安装验证留待镜像阶段。最新审阅单为 `docs/progress/BPF_W4_0922/W4_SIGNOFF.md`。RPM 与配方仍取 `BPF_STATIC_0922` 原六份，不用旧重链接 ELF 替代。本轮未推包仓、不起 QuickBuild。
+停止交人工审阅。**人工签字、人工推送并核对包仓远端 SHA → 人工批准 QuickBuild**；未 amend 时远端预期为 `72fda9941031fc35d8825e73446ca43153c4b69b`。需审完整 diff、format-patch、英文提交信息、条件组合、-lstdc++fs 与 Source1002 回退。RPM 安装/%post 验证留待镜像阶段。最新审阅单为 `docs/progress/BPF_W4_0922/W4_SIGNOFF.md`。RPM 仍取 `BPF_STATIC_0922` 原六份；本轮未重构产物、未推包仓、不起 QuickBuild。

@@ -1,0 +1,162 @@
+commit 72fda9941031fc35d8825e73446ca43153c4b69b
+Author:     He Fangyu <fangyu.he@samsung.com>
+AuthorDate: Tue Sep 22 21:05:20 2026 +0800
+Commit:     He Fangyu <fangyu.he@samsung.com>
+CommitDate: Tue Sep 22 21:05:20 2026 +0800
+
+    Build the static subpackage from source under libc++
+    
+    When build_with_libcxx is set, build bpftrace-static from the same
+    source tree instead of installing the prebuilt Source1002 binary:
+    
+    - add static BuildRequires (bcc-tools-static, libbpf-static,
+      liblzma-static, zlib-devel-static);
+    - switch the static link to -shared-libgcc so glibc pthread
+      cancellation uses a single unwinder; the C++ runtime stays static;
+    - preserve the original LDFLAGS and configure a separate build-static
+      tree with STATIC_LINKING=ON and the static libclang archive, keeping
+      the ordinary shared build unchanged;
+    - install the new static binary when the toolchain is clang, and keep
+      the prebuilt Source1002 binary for GCC and undefined-toolchain builds.
+    
+    Add static-link-libbpf.patch and apply it in prep: the local
+    LIBCLANG_STATIC_PATH extension linked -lbpf although libbpf.a was
+    available. Use ${LIBBPF_LIBRARIES} so that the static binary depends
+    only on glibc and libgcc_s.
+    
+    Verified: armv7l/aarch64 static DT_NEEDED exactly libm, libgcc_s, libc
+    and the loader; armv7l board paired tests 12/12 against the prebuilt
+    binary; shared-libgcc cancellation probes 20/20. GCC and
+    undefined-toolchain build paths retain their existing behavior.
+
+diff --git a/packaging/bpftrace.spec b/packaging/bpftrace.spec
+index 804ec6c..7e4a200 100644
+--- a/packaging/bpftrace.spec
++++ b/packaging/bpftrace.spec
+@@ -13,6 +13,7 @@ License:        Apache-2.0
+ Source0:        %{name}-%{version}.tar.gz
+ Source1001:     %{name}.manifest
+ Source1002:     prebuilt-static-bpftrace.tar.gz
++Patch0:         static-link-libbpf.patch
+ 
+ ExclusiveArch:  armv7l aarch64
+ 
+@@ -35,6 +36,10 @@ BuildRequires:  libomp
+ %if 0%{?build_with_libcxx}
+ BuildRequires:  libc++-devel
+ BuildRequires:  libc++abi-devel
++BuildRequires:  bcc-tools-static
++BuildRequires:  libbpf-static
++BuildRequires:  liblzma-static
++BuildRequires:  zlib-devel-static
+ %endif
+ 
+ %description
+@@ -71,11 +76,19 @@ This package is the bpftrace static binary.
+ 
+ %prep
+ %setup -q
++%patch0 -p1
+ cp %{SOURCE1001} .
+ tar xzvf %{SOURCE1002}
++%if 0%{?build_with_libcxx}
++# Keep a single shared unwinder for glibc pthread cancellation. The C++
++# libraries remain static; GCC and undefined-toolchain paths stay unchanged.
++test "$(grep -Fc 'target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")' src/CMakeLists.txt)" = 1
++sed -i 's/target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")/target_link_options(bpftrace BEFORE PRIVATE "-shared-libgcc" "-static-libstdc++")/' src/CMakeLists.txt
++%endif
+ 
+ %build
+ %if 0%{?build_with_libcxx}
++bpftrace_original_ldflags="${LDFLAGS}"
+ export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+ export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+ %endif
+@@ -90,13 +103,36 @@ cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON -DBUILD_TESTING=
+ %make_build
+ cd ..
+ 
++%if 0%{?build_with_libcxx}
++# Keep the ordinary shared build unchanged; build the static subpackage separately.
++# CMake treats this option as source-relative, so preserve that form explicitly.
++ln -s "%{_libdir}/libclang.a" build/libclang-static-input.a
++libclang_static_relpath=build/libclang-static-input.a
++LDFLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
++cmake -S . -B build-static -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
++      -DSTATIC_LINKING=ON -DCMAKE_SKIP_RPATH:BOOL=ON \
++      -DCMAKE_INSTALL_PREFIX:PATH=%{_prefix} \
++      -DLIBCLANG_STATIC_PATH:STRING="${libclang_static_relpath}" \
++      -DCMAKE_EXE_LINKER_FLAGS="${bpftrace_original_ldflags} -stdlib=libc++" \
++      -DCMAKE_CXX_STANDARD_LIBRARIES="-Wl,--start-group %{_libdir}/libc++.a %{_libdir}/libc++abi.a -Wl,--end-group"
++cmake --build build-static --target bpftrace -- %{?_smp_mflags}
++%endif
++
+ %install
+ cd build
+ %make_install
+ cd ..
+ 
+ # Install bpftrace static binary
++%if %{defined _toolchain}
++%if %{toolchain_is clang}
++install -m 0755 build-static/src/bpftrace %{buildroot}%{_bindir}/bpftrace-static
++%else
+ install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
++%endif
++%else
++install -m 0755 prebuilt-static-bpftrace/%{_arch}%{_bindir}/bpftrace %{buildroot}%{_bindir}/bpftrace-static
++%endif
+ 
+ %post static
+ cp -rf %{_bindir}/%{name}-static %{_bindir}/%{name}
+diff --git a/packaging/static-link-libbpf.patch b/packaging/static-link-libbpf.patch
+new file mode 100644
+index 0000000..c71d13b
+--- /dev/null
++++ b/packaging/static-link-libbpf.patch
+@@ -0,0 +1,11 @@
++--- a/src/ast/CMakeLists.txt
+++++ b/src/ast/CMakeLists.txt
++@@ -83,7 +83,7 @@
++   if(LIBCLANG_STATIC_PATH)
++     get_filename_component(LIBCLANG_STATIC_ABS_PATH "${CMAKE_SOURCE_DIR}/${LIBCLANG_STATIC_PATH}" ABSOLUTE)
++     message(STATUS "Using custom libclang absolute path: ${LIBCLANG_STATIC_ABS_PATH}")
++-    target_link_libraries(ast PUBLIC ${LIBCLANG_STATIC_ABS_PATH} bpf clangIndex clangDriver clangFrontend clangCodeGen)
+++    target_link_libraries(ast PUBLIC ${LIBCLANG_STATIC_ABS_PATH} ${LIBBPF_LIBRARIES} clangIndex clangDriver clangFrontend clangCodeGen)
++   else()
++     target_link_libraries(ast PUBLIC libclang_static clangDriver clangFrontend clangCodeGen)
++   endif()
+     1	+ umask 022
+     2	+ cd /tmp/task/rpm-bpf-armv7l-libcxx/BUILD
+     3	+ cd /tmp/task/rpm-bpf-armv7l-libcxx/BUILD
+     4	+ rm -rf bpftrace-0.24.2
+     5	+ /bin/tar -xof -
+     6	+ /bin/gzip -dc /tmp/bpf-sources/bpftrace-0.24.2.tar.gz
+     7	+ STATUS=0
+     8	+ '[' 0 -ne 0 ']'
+     9	+ cd bpftrace-0.24.2
+    10	+ /bin/chmod -Rf a+rX,u+w,g-w,o-w .
+    11	+ echo 'Patch #0 (static-link-libbpf.patch):'
+    12	+ /bin/patch --no-backup-if-mismatch -p1 --fuzz=2
+    13	+ cp /tmp/bpf-sources/bpftrace.manifest .
+    14	+ tar xzvf /tmp/bpf-sources/prebuilt-static-bpftrace.tar.gz
+    15	x prebuilt-static-bpftrace/
+    16	x prebuilt-static-bpftrace/aarch64/
+    17	x prebuilt-static-bpftrace/aarch64/usr/
+    18	x prebuilt-static-bpftrace/aarch64/usr/bin/
+    19	x prebuilt-static-bpftrace/aarch64/usr/bin/bpftrace
+    20	x prebuilt-static-bpftrace/arm/
+    21	x prebuilt-static-bpftrace/arm/usr/
+    22	x prebuilt-static-bpftrace/arm/usr/bin/
+    23	x prebuilt-static-bpftrace/arm/usr/bin/bpftrace
+    24	++ grep -Fc 'target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")' src/CMakeLists.txt
+    25	+ test 1 = 1
+    26	+ sed -i 's/target_link_options(bpftrace BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")/target_link_options(bpftrace BEFORE PRIVATE "-shared-libgcc" "-static-libstdc++")/' src/CMakeLists.txt
+    27	+ exit 0
+{
+  "pid": 1571798,
+  "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/bpf-w4-prep-verified-0922.scope\n",
+  "memory_max": "16536457216",
+  "nice": 19
+}0	1
+f895f8c0373d224847fc7d3ecbeaac3bf926a1a1	refs/heads/sandbox/lhmax2025/libcxx-migration
