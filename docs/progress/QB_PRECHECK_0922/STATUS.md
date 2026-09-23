@@ -8,7 +8,7 @@
 | 四个静态BR | 来源及判定4/4核对；服务端可用性未观测 | STATIC_DEPENDENCIES.tsv |
 | OBS payload | 当前宏NOT_OBSERVED；源码确认w5T不触发，现有三份RPM均xz/5T，QuickBuild无需payload对策 | PAYLOAD.md、RPM_PAYLOAD_HEADERS.json |
 | 失败清单/五项挂账 | 已按证据范围整理，不修复 | EXPECTED_FAILURES.md、OPEN_ITEMS.md |
-| 状态备案 | 人工已确认公开Git标识允许入库，恢复安全检查及项目材料提交 | FINAL_RESULT.md、docs/LINE_STATUS.md、交付记录 |
+| 状态备案 | 安全检查PASS，项目材料已提交并普通推送，远端核对一致 | DELIVERY.md、raw/035–038；回执追加提交见最终回复 |
 
 没有启动构建、板测或QuickBuild；没有包仓推送。当前任务是核查完成、前置仍有未观测项，不标全量构建已就绪。
 
