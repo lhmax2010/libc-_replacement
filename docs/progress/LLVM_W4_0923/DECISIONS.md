@@ -1,5 +1,15 @@
 # 自行判断、边界与技术性记录
 
+## R3追加（当前状态见 FINAL_RESULT_R3.md）
+
+- 按人工裁决忽略纯空行，除此以外严格比较；runtime四组PASS，三个非默认组合全部OFF且无.a文件项。第二笔db5b49afa…已本地提交，作者Hao Lin、无signoff；候选字节完全一致。
+- ARM prep独立目录退出0；nice19/ionice idle，memory.max实测16536457216。无build、无板、无包仓push。
+- R2全根表及FAIL全部原样保留，不再查全根输入。改扫本地spec，补充旧轮次的command/stdout命名；7例解析阳性/阴性自校准通过，不外推任意包装器可解析。
+- 当前比较只忽略VCS与纯空行；不忽略Release、注释或参数。有26条额外历史差异，已保留完整diff并停，不自动排除测试/旧基线，也不把它们全部声称为QuickBuild漏推。
+- 清单SHA为当前保留文件；最早/最近无可靠时间戳时记NOT_OBSERVED；无唯一原仓参照时记NOT_AVAILABLE，不强行归类。
+- 原仓两份参照spec经只读git status确认为干净，HEAD及SHA在raw/R3_031；不据spec相同推断整个包源码相同。
+- 起始过宽指令文件索引主动结束；服务管理器degraded查询退出1但scope与资源实测通过。原始输出均保留。
+
 ## R2 追加（当前状态见 FINAL_RESULT_R2.md）
 
 - 旧GCC override门禁按裁决撤销；LLVM四组全PASS。第一笔只改正文为617a210064c4559fe1152728f7c9cf5e1ab99a9f，与旧2cba97e5的tree相同。

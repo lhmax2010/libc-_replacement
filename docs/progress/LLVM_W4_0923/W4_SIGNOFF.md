@@ -1,4 +1,34 @@
-# 签字单 R2：未齐备，当前不要推送
+# 签字单 R3：两笔本地提交已备好，额外历史 spec 差异待人工裁决
+
+| 顺序 | 本地提交 | 内容 |
+| --- | --- | --- |
+| 1 | 617a210064c4559fe1152728f7c9cf5e1ab99a9f | 条件产出libclang.a，正文已纠正 |
+| 2 | db5b49afa7836db0414140208b2d3ab4f4aa7293 | 条件产出/安装/打包libc++.a与libc++abi.a |
+
+当前干净，ahead2/behind0；作者均Hao Lin；无Signed-off-by；包仓未推。
+
+人工审阅：
+
+1. `SANDBOX_COMMITS_R3.diff`、两份 `0001/0002-local-recipe_R3.patch` 与提交正文。
+2. runtime四组忽略纯空行后的严格等价性PASS；原始diff及R2 FAIL保留；ARM `%prep`退出0，未build。
+3. `spec-audit_R3/LOCAL_SPECS_R3.md`及`EXTRA_DIFFERENCES_R3.diff`：有26条本轮两项以外的历史配方差异，27项缺唯一原仓参照，不能自动视为当前QuickBuild需要推送的改动；按指令已停报，需人工裁决后再闭合清单。
+4. runtime与指定c5358237…候选逐字节一致，共享库/ABI脚本/展开器设置不改。
+5. Source1002、-lstdc++fs不动；正常RPM安装验证仍留待镜像阶段。
+
+仅在上述审阅完成、人工决定推送后，在 `tmp/BUILD_W1BC_0911/target-fetch` 中执行：
+
+```sh
+git config user.name "Hao Lin"
+git config user.email hao.lin@samsung.com
+git rebase --signoff f203923a1508c9344f5fc6b17bd8822f011655c4
+git push origin HEAD:refs/heads/sandbox/lhmax2025/libcxx-ehabi-backport
+git ls-remote origin refs/heads/sandbox/lhmax2025/libcxx-ehabi-backport
+git rev-parse HEAD
+```
+
+签字后两SHA会变化；远端须等于人工签字后的HEAD。普通推送拒绝即停，不force。该流程由人工执行，本轮不代签、不推包仓、不启动QuickBuild。
+
+## R2历史签字单（已由R3取代，不作为当前操作指令）
 
 第一笔已只改正文为 `617a210064c4559fe1152728f7c9cf5e1ab99a9f`，无Signed-off-by。第二笔未创建；当前ahead1/behind0。
 

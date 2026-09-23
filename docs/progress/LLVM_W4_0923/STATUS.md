@@ -1,4 +1,16 @@
-# 状态：R2 PARTIAL / 展开空行口径待确认
+# 状态：R3 PARTIAL / 两笔完成，额外历史 spec 差异停报
+
+| R3部分 | 结果 | 证据 |
+| --- | --- | --- |
+| runtime四组 | 新口径全PASS，R2原始FAIL保留 | prep-check/runtime_R3/ |
+| 第二笔 | db5b49afa…，与指定候选逐字节一致 | LOCAL_COMMITS_R3.json |
+| 两笔/包仓 | 干净，ahead2/behind0，不推、无signoff | SANDBOX_COMMITS_R3.diff |
+| ARM prep | 退出0；31.98秒；未build | prep-check/runtime_R3/prep-command_R3.json |
+| 本地spec扫描 | 112路径；38 sandbox一致、15原仓一致、32差异（6获准）、27未判定 | spec-audit_R3/LOCAL_SPECS_R3.tsv |
+| 门禁 | 两项之外26历史差异，按指令STOP_FOR_REVIEW | spec-audit_R3/EXTRA_DIFFERENCES_R3.diff |
+| R2全根表 | 原样保留，不继续 | raw/R3_030 |
+
+## R2历史状态（以下不替代R3）
 
 | R2部分 | 结果 | 证据 |
 | --- | --- | --- |

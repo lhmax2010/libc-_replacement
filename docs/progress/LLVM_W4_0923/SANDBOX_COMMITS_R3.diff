@@ -1,0 +1,121 @@
+commit 617a210064c4559fe1152728f7c9cf5e1ab99a9f
+Author:     Hao Lin <hao.lin@samsung.com>
+AuthorDate: Wed Sep 23 13:25:57 2026 +0800
+Commit:     hao.lin <hao.lin@samsung.com>
+CommitDate: Wed Sep 23 13:52:01 2026 +0800
+
+    Build the static libclang archive for libc++ consumers
+    
+    Build libclang.a when build_with_libcxx is set, as required by the
+    bpftrace static subpackage built from source (bpftrace 7831fb34).
+    
+    Place LIBCLANG_BUILD_STATIC alongside LLVM_ENABLE_LIBCXX under the
+    existing build_with_libcxx condition. Apart from this option, spec
+    expansion is identical to the baseline under the default configuration,
+    _toolchain_override gcc, _toolchain gcc and undefined _toolchain.
+    llvm.spec already forces clang through _toolchain_override when
+    _toolchain is defined; this is not a new GCC override guarantee.
+    
+    Verified by full LLVM RPM builds on armv7l (22 RPMs) and aarch64
+    (12 RPMs), with the libclang archives using libc++ symbols and no
+    observed std::__cxx11 symbols.
+
+diff --git a/packaging/llvm.spec b/packaging/llvm.spec
+index 15a4f7367..75d830e99 100644
+--- a/packaging/llvm.spec
++++ b/packaging/llvm.spec
+@@ -236,6 +236,7 @@ cmake \
+ %if %{defined _toolchain}
+ %if 0%{?build_with_libcxx}
+     -DLLVM_ENABLE_LIBCXX=ON \
++    -DLIBCLANG_BUILD_STATIC=ON \
+     -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
+     -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--no-as-needed -lc++abi -Wl,--as-needed" \
+ %else
+
+commit db5b49afa7836db0414140208b2d3ab4f4aa7293
+Author:     Hao Lin <hao.lin@samsung.com>
+AuthorDate: Wed Sep 23 14:13:15 2026 +0800
+Commit:     hao.lin <hao.lin@samsung.com>
+CommitDate: Wed Sep 23 14:13:15 2026 +0800
+
+    Build static libc++ and libc++abi archives for clang toolchains
+    
+    Build and install the static libc++ and libc++abi archives when the
+    toolchain is clang, as required by the bpftrace static subpackage built
+    from source (bpftrace 7831fb34). Package the archives only under the
+    same condition.
+    
+    Keep the shared libraries, ABI linker script and unwinder settings
+    unchanged. With the GCC override, a literal GCC toolchain or an undefined
+    toolchain, all four static build/install switches remain OFF and the
+    archive file entries are absent.
+    
+    Verify the four macro combinations against the baseline in the retained
+    ARM build root, ignoring pure blank lines left by macro definitions.
+
+diff --git a/packaging/libcxx-runtimes.spec b/packaging/libcxx-runtimes.spec
+index 2c842ae27..433e0a863 100644
+--- a/packaging/libcxx-runtimes.spec
++++ b/packaging/libcxx-runtimes.spec
+@@ -1,6 +1,18 @@
+ %define llvm_major 22
+ %define llvm_version 22.1.8
+ 
++%define build_static_libcxx 0
++%if %{defined _toolchain}
++%if %{toolchain_is clang}
++%define build_static_libcxx 1
++%endif
++%endif
++%if %{build_static_libcxx}
++%define libcxx_static ON
++%else
++%define libcxx_static OFF
++%endif
++
+ Name:           libcxx-runtimes
+ Version:        22.1.8
+ Release:        1
+@@ -93,17 +105,17 @@ cmake -G Ninja \
+   -DLLVM_INCLUDE_TESTS=OFF \
+   -DLIBCXX_ENABLE_SHARED=ON \
+   -DLIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS=ON \
+-  -DLIBCXX_ENABLE_STATIC=OFF \
++  -DLIBCXX_ENABLE_STATIC=%{libcxx_static} \
+   -DLIBCXX_INSTALL_SHARED_LIBRARY=ON \
+-  -DLIBCXX_INSTALL_STATIC_LIBRARY=OFF \
++  -DLIBCXX_INSTALL_STATIC_LIBRARY=%{libcxx_static} \
+   -DLIBCXX_CXX_ABI=libcxxabi \
+   -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF \
+   -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=ON \
+   -DLIBCXX_USE_COMPILER_RT=OFF \
+   -DLIBCXXABI_ENABLE_SHARED=ON \
+-  -DLIBCXXABI_ENABLE_STATIC=OFF \
++  -DLIBCXXABI_ENABLE_STATIC=%{libcxx_static} \
+   -DLIBCXXABI_INSTALL_SHARED_LIBRARY=ON \
+-  -DLIBCXXABI_INSTALL_STATIC_LIBRARY=OFF \
++  -DLIBCXXABI_INSTALL_STATIC_LIBRARY=%{libcxx_static} \
+   -DLIBCXXABI_USE_COMPILER_RT=OFF \
+   -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
+   -DLIBCXXABI_ENABLE_STATIC_UNWINDER=OFF \
+@@ -137,6 +149,9 @@ install -m 0644 ../SOURCE_PROVENANCE \
+ %{_includedir}/c++/v1
+ %{_libdir}/libc++.so
+ %{_libdir}/libc++experimental.a
++%if %{build_static_libcxx}
++%{_libdir}/libc++.a
++%endif
+ %{_libdir}/libc++.modules.json
+ %{_datadir}/libc++/v1
+ %{_datadir}/doc/%{name}/SOURCE_PROVENANCE
+@@ -151,6 +166,9 @@ install -m 0644 ../SOURCE_PROVENANCE \
+ %manifest %{name}.manifest
+ %defattr(-,root,root,-)
+ %{_libdir}/libc++abi.so
++%if %{build_static_libcxx}
++%{_libdir}/libc++abi.a
++%endif
+ 
+ %changelog
+ * Tue Aug 04 2026 Toolchain ABI Team <toolchain@example.invalid> 22.1.8-1

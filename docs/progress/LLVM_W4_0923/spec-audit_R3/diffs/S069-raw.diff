@@ -1,0 +1,186 @@
+--- codes/R104/pcre:09a5bfc9a96c4235628ce800db3b95bf28ef2f23:packaging/pcre.spec
++++ tmp/GBS-ROOT/R29-pcre-x86_64-20260812-02/local/sources/r29/pcre-8.45-1.13/pcre.spec
+@@ -1,13 +1,9 @@
+ %define keepstatic 1
+-%if %{defined _toolchain}
+-%if %{toolchain_is clang}
+-%define build_with_libcxx 1
+-%endif
+-%endif
+-
++%global __provides_exclude_from ^%{_libdir}/libcxx-pkgconfig/.*$
+ Name:           pcre
++VCS:            #26eb44d968983b3f221ede8212398ce9aa61e0e5-dirty
+ Version:        8.45
+-Release:        0
++Release:        1.13
+ License:        BSD-3-Clause
+ Summary:        A library for Perl-compatible regular expressions
+ Url:            ftp://ftp.csx.cam.ac.uk/pub/software/programming/pcre/
+@@ -19,10 +15,10 @@
+ BuildRequires:  gcc-c++
+ BuildRequires:  libtool
+ BuildRequires:  pkg-config
+-%if 0%{?build_with_libcxx}
++BuildRequires:  clang
+ BuildRequires:  libc++-devel
+ BuildRequires:  libc++abi-devel
+-%endif
++BuildRequires:  patchelf
+ 
+ %description
+ The PCRE library is a set of functions that implement regular
+@@ -35,11 +31,7 @@
+ Requires:       libpcre = %{version}
+ Requires:       libpcrecpp = %{version}
+ Requires:       libpcreposix = %{version}
+-%if 0%{?build_with_libcxx}
+-Requires:       libc++-devel
+-%else
+ Requires:       libstdc++-devel
+-%endif
+ 
+ %description devel
+ The PCRE library is a set of functions that implement regular
+@@ -85,6 +77,32 @@
+ The PCRE library is a set of functions that implement regular
+ expression pattern matching using the same syntax and semantics
+ as Perl 5.
++
++%package -n libpcrecpp-libcxx
++Summary:        libc++ build of the PCRE C++ wrapper
++Group:          System/Libraries
++Requires:       libpcre = %{version}
++
++%description -n libpcrecpp-libcxx
++The PCRE C++ wrapper built with LLVM libc++, with an isolated SONAME.
++
++%package        libcxx-devel
++Summary:        Development files for the libc++ PCRE C++ wrapper
++Group:          System/Libraries
++Requires:       libpcrecpp-libcxx = %{version}-%{release}
++Requires:       libc++-devel
++Provides:       pkgconfig(libpcrecpp-libcxx) = %{version}
++
++%description libcxx-devel
++Private headers and pkg-config overlay for the libc++ PCRE C++ wrapper.
++
++%package        libcxx-devel-static
++Summary:        Static libc++ PCRE C++ wrapper
++Group:          System/Libraries
++Requires:       pcre-libcxx-devel = %{version}-%{release}
++
++%description libcxx-devel-static
++Static library for the libc++ PCRE C++ wrapper.
+ 
+ %package doc
+ Summary:        A library for Perl-compatible regular expressions
+@@ -112,10 +130,6 @@
+ 
+ %build
+ export CFLAGS="${CFLAGS} -fPIC"
+-%if 0%{?build_with_libcxx}
+-export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
+-export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
+-%endif
+ 
+ # Available JIT archs see sljit/sljitConfig.h
+ autoreconf -fiv
+@@ -131,6 +145,24 @@
+         --enable-unicode-properties
+ make %{?_smp_mflags}
+ 
++mkdir build-libcxx
++pushd build-libcxx
++CXX=clang++ \
++CXXFLAGS="${CXXFLAGS} -stdlib=libc++" \
++LDFLAGS="${LDFLAGS} -stdlib=libc++ -lc++abi" \
++../configure \
++%ifarch %ix86 x86_64 %arm ppc ppc64 mips
++            --enable-jit \
++%endif
++            --enable-static \
++            --with-link-size=2 \
++            --with-match-limit=10000000 \
++            --enable-newline-is-lf \
++            --enable-utf8 \
++            --enable-unicode-properties
++make %{?_smp_mflags}
++popd
++
+ 
+ # %check
+ # export LANG=POSIX
+@@ -143,6 +175,28 @@
+ rm -f %{buildroot}%{_libdir}/*.la
+ %{remove_docs}
+ 
++rm -rf libcxx-install
++make -C build-libcxx DESTDIR="$PWD/libcxx-install" install
++install -d %{buildroot}%{_libdir}
++install -m 0755 libcxx-install%{_libdir}/libpcrecpp.so.0.0.2 \
++  %{buildroot}%{_libdir}/libpcrecpp-libcxx.so.0.0.2
++patchelf --set-soname libpcrecpp-libcxx.so.0 \
++  %{buildroot}%{_libdir}/libpcrecpp-libcxx.so.0.0.2
++ln -s libpcrecpp-libcxx.so.0.0.2 %{buildroot}%{_libdir}/libpcrecpp-libcxx.so.0
++ln -s libpcrecpp-libcxx.so.0 %{buildroot}%{_libdir}/libpcrecpp-libcxx.so
++install -m 0644 libcxx-install%{_libdir}/libpcrecpp.a \
++  %{buildroot}%{_libdir}/libpcrecpp-libcxx.a
++install -d %{buildroot}%{_includedir}/pcre-libcxx
++install -m 0644 libcxx-install%{_includedir}/*.h \
++  %{buildroot}%{_includedir}/pcre-libcxx/
++install -d %{buildroot}%{_libdir}/libcxx-pkgconfig/pcre
++install -m 0644 libcxx-install%{_libdir}/pkgconfig/libpcrecpp.pc \
++  %{buildroot}%{_libdir}/libcxx-pkgconfig/pcre/libpcrecpp.pc
++sed -i \
++  -e 's|-lpcrecpp|-lpcrecpp-libcxx|' \
++  -e 's|^includedir=.*|includedir=%{_includedir}/pcre-libcxx|' \
++  %{buildroot}%{_libdir}/libcxx-pkgconfig/pcre/libpcrecpp.pc
++
+ %post -n libpcre -p /sbin/ldconfig
+ 
+ %postun -n libpcre -p /sbin/ldconfig
+@@ -151,6 +205,10 @@
+ 
+ %postun -n libpcrecpp -p /sbin/ldconfig
+ 
++%post -n libpcrecpp-libcxx -p /sbin/ldconfig
++
++%postun -n libpcrecpp-libcxx -p /sbin/ldconfig
++
+ %post -n libpcreposix -p /sbin/ldconfig
+ 
+ %postun -n libpcreposix -p /sbin/ldconfig
+@@ -164,6 +222,12 @@
+ %manifest %{name}.manifest
+ %license LICENCE
+ %{_libdir}/libpcrecpp.so.*
++
++%files -n libpcrecpp-libcxx
++%manifest %{name}.manifest
++%license LICENCE
++%{_libdir}/libpcrecpp-libcxx.so.0
++%{_libdir}/libpcrecpp-libcxx.so.0.0.2
+ 
+ %files -n libpcreposix
+ %manifest %{name}.manifest
+@@ -186,7 +250,19 @@
+ %{_libdir}/pkgconfig/libpcrecpp.pc
+ %{_libdir}/pkgconfig/libpcreposix.pc
+ 
++%files libcxx-devel
++%license LICENCE
++%manifest %{name}.manifest
++%{_includedir}/pcre-libcxx/
++%{_libdir}/libpcrecpp-libcxx.so
++%{_libdir}/libcxx-pkgconfig/pcre/libpcrecpp.pc
++
+ %files devel-static
+ %license LICENCE
+ %manifest %{name}.manifest
+ %{_libdir}/*.a
++
++%files libcxx-devel-static
++%license LICENCE
++%manifest %{name}.manifest
++%{_libdir}/libpcrecpp-libcxx.a

@@ -12,6 +12,10 @@ Base 对账：73 个含 C++ 源码包中，11 个已适配推送、56 个有依�
 
 ## 本任务结论与证据
 
+**2026-09-23 LLVM W4 R3：两笔本地提交与ARM prep完成，本地spec历史差异门禁停报。** 人工允许纯空行忽略后，runtime四组严格比较全PASS，三种非默认组合全部静态OFF且无.a项。第二笔`db5b49afa7836db0414140208b2d3ab4f4aa7293`已追加在`617a210064c4559fe1152728f7c9cf5e1ab99a9f`之后；干净、ahead2/behind0、无signoff、包仓未推；runtime与指定c5358237…候选逐字节一致。ARM `%prep`退出0，未build。
+
+按新裁决停止全根逐包溯源，R2表及NOT_OBSERVED原样保留。改扫实际命令记录的本地spec：112个路径，38与sandbox一致、15与原仓一致、32差异（其中6个路径对应获准两项），27个缺唯一原仓参照。额外26条含旧配方与GCC验证开关，已列完整diff并按指令停报，不能自动说都是当前QuickBuild漏推，也不能自行豁免。详见`docs/progress/LLVM_W4_0923/FINAL_RESULT_R3.md`及`spec-audit_R3/`。目标“每处所需本地改动都已在sandbox”尚不能宣告成立。
+
 **2026-09-23 LLVM W4 R2：PARTIAL。** 人工撤销旧GCC override门禁、授权同仓runtime静态配方。LLVM新四组展开全PASS；第一笔仅改正文为`617a210064c4559fe1152728f7c9cf5e1ab99a9f`，tree不变。runtime默认组除获准四个开关和两条归档记录外多12个开头空行，严格比较未通过；已询问是否可单列非功能差异，未自行豁免。第二笔与runtime prep未做，当前干净、ahead1/behind0、包仓未推。下述R1门禁记录为历史，不再将旧GCC override条件作为阻断。
 
 BPF实际两输入根每架构19份追加RPM已重算SHA并核对包头：各6 A / 1 B / 12获准C（待推送后转B）。全根为133/134项，LLVM为126/127项；仍有未归类历史输入，不能将19份当全量、不能宣称无C类。证据：`docs/progress/LLVM_W4_0923/FINAL_RESULT_R2.md`、`inputs_R2/ALL_INPUTS_R2.tsv`。
@@ -42,7 +46,7 @@ W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake
 
 ## 挂账
 
-- **QuickBuild新增前置：LLVM仓两个提交推送 + 输入溯源无C类，并闭合未归类项。** 两项功能范围已获准；runtime展开空行口径待确认，第二笔未创建，全量输入尚未闭合。
+- **QuickBuild前置（R3修订）：人工裁决本地spec清单中的额外历史/测试配方差异并闭合所需配方清单 → 签字推LLVM两笔并核远端SHA → 人工批准QuickBuild。** 两笔已备好，包仓未推；不再要求继续R2全根逐包溯源，旧表仅保留。
 
 - 四份主包解包副本：**已恢复，事故文件保留于 *.objcopy-modified-0922**，本项恢复挂账关闭；事故历史保留。
 - W4 人工推送与远端登记已关闭；条件组合两种未覆盖形态、实际QuickBuild最终宏集仍未观测，不能由本地六格外推。payload按源码/包头与本次人工裁决无需对策，不再挂为启动阻断。
@@ -56,4 +60,4 @@ W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake
 
 ## 下一步
 
-停止交人工确认runtime展开空行口径。**继续runtime四组与%prep → 补齐第二笔及输入全量溯源 → 人工签字推LLVM两笔并核远端 → 输入无C类且未归类项闭合 → 人工起Tizen-Base-Toolchain QuickBuild → 与预期失败清单对账。** 候选未推，不当作已发布SHA；payload无需对策，正常RPM安装/%post仍留待镜像阶段。
+停止交人工审阅额外历史spec差异和未判定参照范围。**闭合本地所需配方清单 → 人工按W4_SIGNOFF签字推LLVM两笔、核远端SHA → 人工起Tizen-Base-Toolchain QuickBuild → 与预期失败清单对账。** 本轮不推包仓、不自动排除历史测试项；payload无需对策，正常RPM安装/%post仍留待镜像阶段。R2全根表保留，不继续。
