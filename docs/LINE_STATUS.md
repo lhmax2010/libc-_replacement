@@ -2,7 +2,7 @@
 
 ## 线的定位与分界
 
-本线负责 Tizen-Base-Toolchain 的 libc++ 编译适配、输入资产与 RPM 核验；运行时边界决策由运行时线负责。本轮登记人工 W4 推送，并只读核查 QuickBuild 前置。codes、Source1002 不动；不构建、不上板、不推 sandbox/包仓、不起 QuickBuild；按人工澄清只推项目材料。
+本线负责 Tizen-Base-Toolchain 的 libc++ 编译适配、输入资产与 RPM 核验；运行时边界决策由运行时线负责。本轮LLVM_W4_0923补本地libclang.a配方提交并核对11包已验证配方与sandbox。codes、Source1002不动；不构建（仅%prep）、不上板、不推sandbox/包仓、不起QuickBuild；只推项目材料。
 
 ## 当前位置
 
@@ -11,6 +11,12 @@ Base 对账：73 个含 C++ 源码包中，11 个已适配推送、56 个有依�
 此前六格18份RPM与只重链接ELF材料保留。`BPF_STATIC_0922` 新配方已完成两架构6份RPM及static ELF门禁。本轮 `BPF_W3R_0922` 已完成ARM物理板可写区对照与取消探针；无需重新写包。正常RPM安装仍未验证，按本轮授权留待镜像阶段。
 
 ## 本任务结论与证据
+
+**2026-09-23 LLVM配方W4：PARTIAL，当前不得推包仓。** ARM22份与aarch6412份完整RPM的llvm.spec同SHA `cde49c78e71ed52f99cb9c7691b2cc04c407a98ae4a5b353b5d58efcc4882c68`；相对f203923a只有条件内 `-DLIBCLANG_BUILD_STATIC=ON`，没有VCS/Release差异。已在原可写克隆目标sandbox分支创建本地提交 `2cba97e503d506cc184c34b6a4301087b6fa4bb7`，仅一行、工作树干净、ahead1/behind0、未推。libclang.a由两架构llvm-static-devel提供，bpftrace直接BR对应；ARM独立%prep退出0。
+
+**新门禁问题：指定 `_toolchain_override gcc` 宏展开仍选Clang，新增static开关出现1次。** 原spec:12强制override=clang，平台_toolchain宏动态引用它；远端基线同条件也有LLVM_ENABLE_LIBCXX，只是没有静态开关。本轮严格不换为字面_toolchain gcc、不修旧逻辑，故该格FAIL判据（命令本身退出0）；Clang与未定义两格符合。提交正文的GCC保持原状不能外推到此override组合，签字前须人工裁决，不能称可推候选。
+
+11包主spec/patch比对：9个只有GBS的VCS字段差异，bpftrace一致，LLVM有已授权但未推的一行。patch集9份均匹配；完整表、原文与哈希见 `docs/progress/LLVM_W4_0923/RECIPE_AUDIT.tsv`。另发现本地验证输入的 `libcxx-runtimes.spec` 开启静态库及安装文件，而同一LLVM sandbox仍关闭libc++.a/libc++abi.a；这是主llvm.spec之外的供给缺口，未自行纳入提交。QuickBuild是否另有提供这两份归档的runtime来源NOT_OBSERVED，不能只补libclang.a便宣布输入齐备。详见 `FINAL_RESULT.md`、`UNPUSHED_LIBCXX_RUNTIME.diff`、`W4_SIGNOFF.md`。
 
 **W3R 事故副本已按本轮批准恢复**：4/4 原 RPM SHA 与原清单一致，重新独立解包得到的主包 ELF SHA 与 INCIDENT 改前值一致，复制回原路径后再次一致；四份事故文件保留于原路径 `*.objcopy-modified-0922`。修正脚本明确新输出 ELF 并核对输入不变，一次性副本验证通过。证据 `docs/progress/BPF_W4_0922/RESTORE_RESULT.md`。旧 INCIDENT 和原始事故记录保留，不抹去违规事实；不得再运行 W3R 的旧提取脚本。
 
@@ -32,6 +38,8 @@ W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake
 
 ## 挂账
 
+- **QuickBuild新增前置：LLVM libclang.a配方获人工审阅并推送、11包配方一致性核对闭合。** 本轮一行本地提交已备好但GCC override门禁FAIL；静态runtime供给另有未推功能配方，须人工裁决范围，不擅自修。
+
 - 四份主包解包副本：**已恢复，事故文件保留于 *.objcopy-modified-0922**，本项恢复挂账关闭；事故历史保留。
 - W4 人工推送与远端登记已关闭；条件组合两种未覆盖形态、实际QuickBuild最终宏集仍未观测，不能由本地六格外推。payload按源码/包头与本次人工裁决无需对策，不再挂为启动阻断。
 
@@ -44,4 +52,4 @@ W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake
 
 ## 下一步
 
-停止交人工审阅。**人工起 Tizen-Base-Toolchain QuickBuild（指向11个sandbox分支，SHA见本轮 `docs/progress/QB_PRECHECK_0922/REMOTE_BRANCHES.tsv`）→ 结果与预期失败清单对账**。实际OBS配置与静态输入可用性在构建记录中继续核对，不再要求先作payload对策；已确认tensorflow2/armv7l/GCC条件性历史失败不能当默认Clang失败豁免，六个GCC包仅有全局注入driver风险证据。清单见 `docs/progress/QB_PRECHECK_0922/EXPECTED_FAILURES.md`，五项挂账影响见 `OPEN_ITEMS.md`。正常RPM安装/%post仍留待镜像阶段；RPM沿用BPF_STATIC_0922原六份，本轮未重构产物、未起QuickBuild。
+停止交人工审阅。**先裁决LLVM的GCC override门禁与静态runtime供给范围 → LLVM libclang.a配方审阅/人工推送并核远端SHA → 11包配方一致性及输入供给闭合 → 人工起Tizen-Base-Toolchain QuickBuild → 与预期失败清单对账。** 最新远端清单见 `docs/progress/LLVM_W4_0923/RECIPE_AUDIT.tsv`，本地LLVM候选未推，不能作为已发布SHA使用。payload无需对策的结论不变；正常RPM安装/%post仍留待镜像阶段。当前不执行签字单推送命令，不推进QuickBuild。

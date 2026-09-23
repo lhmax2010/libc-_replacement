@@ -1,0 +1,114 @@
+# LLVM 提交与推送核对
+
+推送前：
+
+```text
+REMOTE_IMMEDIATELY_BEFORE_PUSH=c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13
+LOCAL_TO_PUSH=f203923a1508c9344f5fc6b17bd8822f011655c4
+FINAL_SPEC_MATCH_EXIT=0
+PRE_PUSH_STATUS=
+```
+
+提交：
+
+```text
+f203923a1508c9344f5fc6b17bd8822f011655c4
+parent c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13
+author hao.lin <hao.lin@samsung.com>
+subject packaging: add libc++ MLGO AOT assets
+4 files changed, 33 insertions(+)
+```
+
+推送命令：
+
+```bash
+git push origin HEAD:refs/heads/sandbox/lhmax2025/libcxx-ehabi-backport
+```
+
+输出终态与退出码：
+
+```text
+remote: commit f203923: warning: too many message lines longer than 72 characters; manually wrap lines
+To ssh://review.tizen.org:29418/platform/upstream/llvm
+   c68f376fb..f203923a1  HEAD -> sandbox/lhmax2025/libcxx-ehabi-backport
+EXIT_CODE=0
+```
+
+推送后核对：
+
+```text
+LOCAL_SHA=f203923a1508c9344f5fc6b17bd8822f011655c4
+REMOTE_SHA=f203923a1508c9344f5fc6b17bd8822f011655c4
+REMOTE_EQUALS_LOCAL=PASS
+OLD_HEAD_IS_PARENT=0
+```
+完整构建：`7148/7148`，12 个 RPM 全部写出，GBS 退出码 0，耗时
+7188 秒。基线同样使用 GCC/G++ 14.2.0，以下字符串在完整日志中的命中数
+均为 0：`-stdlib=libc++`、`-lc++abi`、`libc++-devel`、
+`libc++abi-devel`。
+
+第一次比较直接指向构建仓目录，误把该目录中旧 release 108.2 的 10 个
+debuginfo RPM 纳入基线，得到 packages diff 24 行、file lists diff
+11654 行，退出码 20；标准库 Requires、ELF 依赖和动态符号当时已是
+0 差异。确认差异全部来自旧 RPM 后，将本次 release 109.3 的 12 个 RPM
+隔离到独立目录，保持脚本判定逻辑不变并重新比较：
+
+| 比较项 | 候选行数 | 基线行数 | diff 行数 |
+| --- | ---: | ---: | ---: |
+| RPM 集合 | 12 | 12 | 0 |
+| 包内文件记录 | 5644 | 5644 | 0 |
+| RPM 标准库 Requires | 149 | 149 | 0 |
+| ELF `DT_NEEDED` | 718 | 718 | 0 |
+| 动态符号集合 | 654705 | 654705 | 0 |
+
+修正输入集合后的比较输出 `SAME_ENVIRONMENT_RPM_COMPARE=PASS`，退出码 0。
+旧 debuginfo 被纳入的第一次结果仍原样归档，没有删除或覆盖。
+
+## 目标分支冲突与提交核对
+
+直接从远端浅取目标分支后确认：
+
+- 推送前远端 HEAD 为用户给定的 `c68f376f...`；
+- 目标分支 `packaging/llvm.spec` 与验证基线 spec 的 SHA256 均为
+  `7962d176484920de6138d70c7e8a8e1764dfada6655abf0332e9748167e889fd`；
+- 因此目标分支五个运行时实施提交没有造成 spec 重叠；
+- 重放后的 spec 与已验证候选逐字节一致；
+- 三份 TF 2.18/libc++ 资产的 SHA256 分别为：
+  - aarch64：`d50d874bab843ea96c3a282d34f172b87a16aefe5aa8309871e4d328c8b2f17c`；
+  - armv7l：`3c0a04d193eb4b3a601036a6ee7217303fddb44bca5adcd13c67066c37a1c87c`；
+  - x86_64：`858031bbfddf385ac859320f40f91dd0cf51bd1d4414b5cd55e36308ab616636`。
+
+提交相对目标分支只修改 `packaging/llvm.spec` 并新增上述三份资产。
+普通 push 返回退出码 0；远端从 `c68f376f...` 快进到 `f203923a...`。
+服务端只报告 commit message 存在超过 72 字符的行这一警告，没有拒绝。
+
+## 技术性非零与修正
+
+- 首次启动 x86_64 基线时，日志目录按错误的相对工作目录创建，`script`
+  在构建开始前退出 1；改为绝对路径后原参数重跑。
+- 常规 fetch 会要求约 681 万对象，接收约 160 MiB 时人工中止，退出 1；
+  删除两个明确的未完成 `tmp_pack_*` 文件后，改用 `--depth=1 --no-tags`
+  单分支 fetch，成功取得 `c68f376f...`。
+- armv7l 第一次比较的退出 20 是输入目录混入旧 debuginfo RPM，不是候选
+  与基线产品差异；隔离同 release 12 个 RPM 后同一脚本退出 0。
+- 一次只读收尾命令末尾的路径被错误截断为 `MultiN`，在已取得完整构建
+  终态后额外返回 `command not found`；随后用独立命令取得 RPM 计数与
+41:Release:   1
+98:%package static-devel
+102:%description static-devel
+239:    -DLIBCLANG_BUILD_STATIC=ON \
+251:    -DCMAKE_BUILD_TYPE=Release \
+260:    -DCMAKE_BUILD_TYPE=Release \
+265:    -DCMAKE_BUILD_TYPE=Release \
+544:%files static-devel
+docs/progress/BPF_W4_0922/prep_only.py
+docs/progress/BPF_W4_0922/prepare_commit.py
+
+docs/progress/BPF_W4_0922/prep-check:
+commands.json
+macro-eval.stderr.txt
+macro-eval.stdout.txt
+resources.json
+result.json
+rpmbuild-bp.stderr.txt
+rpmbuild-bp.stdout.txt
