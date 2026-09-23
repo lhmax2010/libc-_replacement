@@ -1,4 +1,30 @@
-# 签字单：BLOCKED，当前不要推送
+# 签字单 R2：未齐备，当前不要推送
+
+第一笔已只改正文为 `617a210064c4559fe1152728f7c9cf5e1ab99a9f`，无Signed-off-by。第二笔未创建；当前ahead1/behind0。
+
+R2人工审阅项：
+
+1. `SANDBOX_COMMITS_R2.diff`及`0001-Build-static-libclang_R2.patch`当前只有第一笔；旧2cba97e5已被替代，tree不变。
+2. LLVM新四组展开PASS；旧GCC override门禁已依裁决作废。
+3. `prep-check/runtime_R2/default.diff`的12个开头空行能否单列为非功能差异；未豁免、未创建第二笔、未执行runtime prep。
+4. 第二笔完成后审与指定c5358237…候选的功能一致性。
+5. `inputs_R2/ALL_INPUTS_R2.tsv`仍有未归类项；两项获准C也须真正推送才转B。
+6. -lstdc++fs、Source1002不动，RPM安装验证留待镜像阶段。
+
+仅在两笔与输入门禁都齐备后，人工在`tmp/BUILD_W1BC_0911/target-fetch`执行（本轮不执行）：
+
+```sh
+git config user.name "Hao Lin"
+git config user.email hao.lin@samsung.com
+git rebase --signoff f203923a1508c9344f5fc6b17bd8822f011655c4
+git push origin HEAD:refs/heads/sandbox/lhmax2025/libcxx-ehabi-backport
+git ls-remote origin refs/heads/sandbox/lhmax2025/libcxx-ehabi-backport
+git rev-parse HEAD
+```
+
+签字会改变SHA，核对签字后的HEAD；拒绝即停，不force。**当前不执行上述命令。**
+
+## R1历史签字单（已被R2取代，不作为当前操作指令）
 
 本地候选 `2cba97e503d506cc184c34b6a4301087b6fa4bb7` 已准备，未签字、未推送。不能标记“所有门禁通过”：
 

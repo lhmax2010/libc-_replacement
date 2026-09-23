@@ -1,0 +1,125 @@
+# bcc-tools 与 bpftrace 的 libc++ 适配验证报告
+
+## 1. 结论
+
+结论为 **`PARTIAL`**。
+
+`bcc-tools` 的 aarch64 与 x86_64 四格通过；armv7l 的 libc++ LLVM 输入
+不可用，重建又被异常缓慢的构建根 I/O 清理阻断，因此两格为
+`NOT_OBSERVED`。六格未闭合，候选未提交、未推送。依赖顺序要求
+`llvm → bcc-tools → bpftrace`，故没有越过门禁实施 `bpftrace`。
+
+## 2. 前置与断点恢复
+
+- LLVM 远端前置：
+  `sandbox/lhmax2025/libcxx-ehabi-backport` =
+  `f203923a1508c9344f5fc6b17bd8822f011655c4`；见 `raw/003_*` 与
+  `raw/021_*`。
+- 该 LLVM 提交的三架构 libc++、MLGO 执行、GCC 与非 libc++ 同环境对照
+  十二格已在上一轮闭合，本轮不重跑。
+- 首次运行在 aarch64/GCC 构建中被系统崩溃打断，`raw/019_*` 没有自动
+  退出码，也没有 release 112.2 RPM。2026-09-14 续跑时先执行资源门禁、
+  进程与产物审计；见 `raw/020_*`、`raw/021_*`。
+- 初始门禁与恢复门禁均为 `PASS`。
+
+## 3. bcc-tools 改动候选
+
+只修改 `packaging/bcc-tools.spec`，共增加 15 行：
+
+```diff
++%if %{defined _toolchain}
++%if %{toolchain_is clang}
++%define build_with_libcxx 1
++%endif
++%endif
+ ...
++%if 0%{?build_with_libcxx}
++BuildRequires:  libc++-devel
++BuildRequires:  libc++abi-devel
++%endif
+ ...
++%if 0%{?build_with_libcxx}
++export CXXFLAGS="${CXXFLAGS} -stdlib=libc++"
++export LDFLAGS="${LDFLAGS} -stdlib=libc++ -Wl,--no-as-needed -lc++abi -Wl,--as-needed"
++%endif
+```
+
+启用条件与既定设计一致：仅 `_toolchain` 已定义且
+`%{toolchain_is clang}` 为真时启用；GCC 路径不引入 libc++ 选项；未定义
+`_toolchain` 的配置保持现状。
+
+本地仓状态：分支 `sandbox/lhmax2025/libcxx-migration`，HEAD
+`dd26ba03fc8109396bf841f1bbf7b4df0a8ed9d2`，只有上述未提交 spec 修改。
+远端目标分支仍为同一 SHA；见 `raw/050_*`。
+
+## 4. bcc-tools 验证结果
+
+| 架构 | libc++ | GCC | LLVM 边界 | 结果 |
+| --- | --- | --- | --- | --- |
+| aarch64 | PASS | PASS | 两端 libc++ | 2/2 格闭合 |
+| x86_64 | PASS | PASS | 两端 libc++ | 2/2 格闭合 |
+| armv7l | NOT_OBSERVED | NOT_OBSERVED | NOT_OBSERVED | 0/2 格闭合 |
+
+### 4.1 aarch64
+
+libc++ 格：
+
+- 完整构建退出 0，release 112.1；
+- 编译器为 Clang 22.1.8；
+- 3 个非调试 RPM；其中 2 个 ELF 记录 `libc++.so.1`，0 个记录
+  `libstdc++.so.6`；
+- 未定义动态符号含 `std::__1` 151 处，`std::__cxx11` 0 处；
+- 配套 `libLLVM.so.22.1` 依赖 libc++、libc++abi 与 libgcc_s，不依赖
+  libstdc++。
+
+证据：`raw/016_*`、`raw/018_*`、`checks/bcc_aarch64_libcxx/`。
+
+GCC 格：
+
+- 完整构建退出 0，release 112.2；
+- 实际编译器 GNU 14.2.0；
+- 构建日志中 `-stdlib=libc++` 与 `-lc++abi` 为 0；
+- 3 个非调试 RPM；其中 2 个 ELF 记录 `libstdc++.so.6`，0 个记录
+  `libc++.so.1`；
+- `std::__cxx11` 69 处，`std::__1` 0 处。
+
+证据：`raw/029_*`、`raw/030_*`、`checks/bcc_aarch64_gcc/`。
+
+### 4.2 x86_64
+
+libc++ 格：
+
+- 完整构建退出 0，release 112.3；
+- 编译器为 Clang 22.1.8；
+- 3 个非调试 RPM；2 个 ELF 依赖 libc++、0 个依赖 libstdc++；
+- `std::__1` 151 处，`std::__cxx11` 0 处；
+- 配套 `libLLVM.so.22.1` 依赖 libc++、libc++abi、libgcc_s，不依赖
+  libstdc++。
+
+证据：`raw/033_*`、`raw/034_*`、`checks/bcc_x86_64_libcxx/`。
+
+10:[    0s] init_buildsystem --configdir /usr/lib/build/configs --cachedir /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/cache --define _smp_mflags -j2 --define mlgo_build_jobs 2 --repository /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/repos/tizen_base_standard/armv7l/RPMS --repository /home/toolchain/development/libc++_replacement/tmp/BUILD_W2_0912/gcc-support-repo/ --repository https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/ /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/sources/tizen_base_standard/llvm-22.1.8-1/llvm.spec ...
+11:[    0s] initializing /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/.srcfiles.cache ...
+12:[    0s] /usr/lib/build/createdirdeps --oldfile /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/.srcfiles.cache /home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/repos/tizen_base_standard/armv7l/RPMS
+14:[    0s] /usr/lib/build/createrepomddeps --cachedir=/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/cache https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/
+22:[    2s] [1/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/app-rootstrap-checker-1.0.0-1.1.armv7l.rpm ... 
+23:[    3s] [2/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/noarch/autoconf-2.71-1.11.noarch.rpm ... 
+24:[    5s] [3/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/noarch/automake-1.16.5-1.11.noarch.rpm ... 
+25:[    6s] [4/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/bash-3.2.57-1.9.armv7l.rpm ... 
+26:[    8s] [5/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/binutils-2.43-1.10.armv7l.rpm ... 
+27:[    9s] [6/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/binutils-devel-2.43-1.10.armv7l.rpm ... 
+28:[   11s] [7/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/binutils-libs-2.43-1.10.armv7l.rpm ... 
+29:[   13s] [8/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/noarch/build-20120927-1.1.noarch.rpm ... 
+30:[   14s] [9/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/noarch/build-compare-2023.06.18-1.2.noarch.rpm ... 
+31:[   15s] [10/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/noarch/build-mkbaselibs-20120927-1.1.noarch.rpm ... 
+32:[   16s] [11/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/bzip2-1.0.8-1.9.armv7l.rpm ... 
+33:[   17s] [12/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/clang-22.1.8-1.7.armv7l.rpm ... 
+34:[   21s] [13/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/clang-accel-x86_64-armv7l-0.4-1.1.armv7l.rpm ... 
+35:[   29s] [14/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/cmake-3.31.2-1.5.armv7l.rpm ... 
+36:[   31s] [15/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/coreutils-6.9-14.1.armv7l.rpm ... 
+37:[   33s] [16/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/cpio-2.8-1.1.armv7l.rpm ... 
+38:[   34s] [17/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/cpp-14.2.0-1.10.armv7l.rpm ... 
+39:[   37s] [18/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/diffutils-3.10-1.1.armv7l.rpm ... 
+40:[   38s] [19/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/elfutils-0.189-1.10.armv7l.rpm ... 
+41:[   40s] [20/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/file-5.46-1.8.armv7l.rpm ... 
+42:[   41s] [21/122] downloading https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/repos/standard/packages/armv7l/filesystem-3.1-1.1.armv7l.rpm ... 

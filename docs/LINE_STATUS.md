@@ -12,6 +12,10 @@ Base 对账：73 个含 C++ 源码包中，11 个已适配推送、56 个有依�
 
 ## 本任务结论与证据
 
+**2026-09-23 LLVM W4 R2：PARTIAL。** 人工撤销旧GCC override门禁、授权同仓runtime静态配方。LLVM新四组展开全PASS；第一笔仅改正文为`617a210064c4559fe1152728f7c9cf5e1ab99a9f`，tree不变。runtime默认组除获准四个开关和两条归档记录外多12个开头空行，严格比较未通过；已询问是否可单列非功能差异，未自行豁免。第二笔与runtime prep未做，当前干净、ahead1/behind0、包仓未推。下述R1门禁记录为历史，不再将旧GCC override条件作为阻断。
+
+BPF实际两输入根每架构19份追加RPM已重算SHA并核对包头：各6 A / 1 B / 12获准C（待推送后转B）。全根为133/134项，LLVM为126/127项；仍有未归类历史输入，不能将19份当全量、不能宣称无C类。证据：`docs/progress/LLVM_W4_0923/FINAL_RESULT_R2.md`、`inputs_R2/ALL_INPUTS_R2.tsv`。
+
 **2026-09-23 LLVM配方W4：PARTIAL，当前不得推包仓。** ARM22份与aarch6412份完整RPM的llvm.spec同SHA `cde49c78e71ed52f99cb9c7691b2cc04c407a98ae4a5b353b5d58efcc4882c68`；相对f203923a只有条件内 `-DLIBCLANG_BUILD_STATIC=ON`，没有VCS/Release差异。已在原可写克隆目标sandbox分支创建本地提交 `2cba97e503d506cc184c34b6a4301087b6fa4bb7`，仅一行、工作树干净、ahead1/behind0、未推。libclang.a由两架构llvm-static-devel提供，bpftrace直接BR对应；ARM独立%prep退出0。
 
 **新门禁问题：指定 `_toolchain_override gcc` 宏展开仍选Clang，新增static开关出现1次。** 原spec:12强制override=clang，平台_toolchain宏动态引用它；远端基线同条件也有LLVM_ENABLE_LIBCXX，只是没有静态开关。本轮严格不换为字面_toolchain gcc、不修旧逻辑，故该格FAIL判据（命令本身退出0）；Clang与未定义两格符合。提交正文的GCC保持原状不能外推到此override组合，签字前须人工裁决，不能称可推候选。
@@ -38,7 +42,7 @@ W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake
 
 ## 挂账
 
-- **QuickBuild新增前置：LLVM libclang.a配方获人工审阅并推送、11包配方一致性核对闭合。** 本轮一行本地提交已备好但GCC override门禁FAIL；静态runtime供给另有未推功能配方，须人工裁决范围，不擅自修。
+- **QuickBuild新增前置：LLVM仓两个提交推送 + 输入溯源无C类，并闭合未归类项。** 两项功能范围已获准；runtime展开空行口径待确认，第二笔未创建，全量输入尚未闭合。
 
 - 四份主包解包副本：**已恢复，事故文件保留于 *.objcopy-modified-0922**，本项恢复挂账关闭；事故历史保留。
 - W4 人工推送与远端登记已关闭；条件组合两种未覆盖形态、实际QuickBuild最终宏集仍未观测，不能由本地六格外推。payload按源码/包头与本次人工裁决无需对策，不再挂为启动阻断。
@@ -52,4 +56,4 @@ W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake
 
 ## 下一步
 
-停止交人工审阅。**先裁决LLVM的GCC override门禁与静态runtime供给范围 → LLVM libclang.a配方审阅/人工推送并核远端SHA → 11包配方一致性及输入供给闭合 → 人工起Tizen-Base-Toolchain QuickBuild → 与预期失败清单对账。** 最新远端清单见 `docs/progress/LLVM_W4_0923/RECIPE_AUDIT.tsv`，本地LLVM候选未推，不能作为已发布SHA使用。payload无需对策的结论不变；正常RPM安装/%post仍留待镜像阶段。当前不执行签字单推送命令，不推进QuickBuild。
+停止交人工确认runtime展开空行口径。**继续runtime四组与%prep → 补齐第二笔及输入全量溯源 → 人工签字推LLVM两笔并核远端 → 输入无C类且未归类项闭合 → 人工起Tizen-Base-Toolchain QuickBuild → 与预期失败清单对账。** 候选未推，不当作已发布SHA；payload无需对策，正常RPM安装/%post仍留待镜像阶段。

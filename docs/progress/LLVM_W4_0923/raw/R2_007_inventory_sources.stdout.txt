@@ -1,0 +1,961 @@
+"""Read existing W1 RPM databases and macro files; bind every existing input read-only."""
+import json,shlex,subprocess
+from pathlib import Path
+P=Path.cwd();E=P/'progress/QB_PRECHECK_0922/roots';E.mkdir(parents=True,exist_ok=False);records=[]
+def run(label,argv):
+ r=subprocess.run(argv,stdin=subprocess.DEVNULL,capture_output=True,timeout=90)
+ (E/(label+'.out')).write_bytes(r.stdout);(E/(label+'.err')).write_bytes(r.stderr)
+ records.append(dict(label=label,command=shlex.join(argv),argv=argv,exitcode=r.returncode));(E/'commands.json').write_text(json.dumps(records,indent=2))
+ print(label,r.returncode,r.stdout.decode(errors='replace')[:6000])
+for arch in ('armv7l','aarch64'):
+ cmd=json.loads((P/f'docs/progress/BPF_W1_0921/cell_commands/bpf-{arch}-libcxx.json').read_text());i=cmd.index('--');bw=cmd[:i]
+ bw=['--ro-bind' if x=='--bind' else x for x in bw]+['--']
+ args=cmd[i+2:];rpmargs=[]
+ for opt in ('--rcfile','--macros','--target'):
+  j=args.index(opt);rpmargs+=args[j:j+2]
+ run(arch+'-static-packages',bw+['rpm','-q','--qf','%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\t%{SOURCERPM}\t%{VENDOR}\t%{DISTRIBUTION}\t%{BUILDTIME:date}\n','bcc-tools-static','libbpf-static','liblzma-static','zlib-devel-static'])
+ run(arch+'-payload-effective',bw+['rpm',*rpmargs,'--eval','%{_binary_payload}'])
+ run(arch+'-payload-files',bw+['/bin/sh','-c',r'''for f in /usr/lib/rpm/macros /etc/rpm/macros* /usr/lib/rpm/tizen/macros /home/abuild/.rpmmacros; do
+ if test -f "$f"; then
+  printf 'FILE %s\n' "$f"
+  sha256sum "$f"
+  grep -n '_binary_payload' "$f"
+  printf 'GREP_EXIT=%s\n' "$?"
+ else printf 'NOT_REGULAR_OR_ABSENT %s\n' "$f"; fi
+done'''])
+[
+  "bwrap",
+  "--unshare-user",
+  "--uid",
+  "1000",
+  "--gid",
+  "1000",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/STATIC_0917B/llvm-root-minimal",
+  "/",
+  "--dev",
+  "/dev",
+  "--proc",
+  "/proc",
+  "--tmpfs",
+  "/tmp",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/STATIC_0917B",
+  "/tmp/task",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/NIGHT_0917",
+  "/tmp/night",
+  "--setenv",
+  "PATH",
+  "/bin:/usr/bin:/sbin:/usr/sbin",
+  "--setenv",
+  "CMAKE_BUILD_PARALLEL_LEVEL",
+  "1",
+  "--setenv",
+  "LC_ALL",
+  "C",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W1-0908-llvm-aarch64/local/repos/tizen_unified_standard/aarch64/RPMS/clang-22.1.8-108.2.aarch64.rpm",
+  "/tmp/llvm-resolved-inputs/clang.rpm",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W1-0908-llvm-aarch64/local/repos/tizen_unified_standard/aarch64/RPMS/libllvm-22.1.8-108.2.aarch64.rpm",
+  "/tmp/llvm-resolved-inputs/libllvm.rpm",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W1-0908-llvm-aarch64/local/repos/tizen_unified_standard/aarch64/RPMS/llvm-22.1.8-108.2.aarch64.rpm",
+  "/tmp/llvm-resolved-inputs/llvm.rpm",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W1-0908-llvm-aarch64/local/repos/tizen_unified_standard/aarch64/RPMS/lldb-22.1.8-108.2.aarch64.rpm",
+  "/tmp/llvm-resolved-inputs/lldb.rpm",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2C-bpftrace-aarch64-libcxx/local/BUILD-ROOTS/scratch.aarch64.0/emul",
+  "/emul",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/STATIC_0917B/llvm-root-minimal/usr/bin/ninja",
+  "/usr/bin/ninja.real",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/STATIC_0917B/ninja-serial",
+  "/usr/bin/ninja",
+  "--",
+  "rpmbuild",
+  "-bb",
+  "--noprep",
+  "--target",
+  "aarch64",
+  "--define",
+  "_topdir /tmp/task/rpm-aarch64",
+  "--define",
+  "_tmppath /tmp/task/rpm-aarch64",
+  "--define",
+  "_smp_mflags -j1",
+  "--define",
+  "_smp_build_ncpus 1",
+  "--define",
+  "mlgo_build_jobs 1",
+  "--define",
+  "_host aarch64-tizen-linux-gnu",
+  "--define",
+  "__cc /emul/usr/bin/aarch64-tizen-linux-gnu-clang",
+  "--define",
+  "__cxx /emul/usr/bin/aarch64-tizen-linux-gnu-clang++",
+  "--define",
+  "_toolchain clang",
+  "--define",
+  "toolchain_is() %((echo \"%_toolchain\" | %{__grep} -qE \"%{1}\") && echo 1 || echo 0)",
+  "/tmp/task/rpm-aarch64/SPECS/llvm.spec"
+][
+  "strace",
+  "-f",
+  "-yy",
+  "-e",
+  "trace=%file,read,pread64,write,pwrite64,lseek,ioctl,copy_file_range,sendfile",
+  "-e",
+  "status=failed",
+  "-s",
+  "160",
+  "-o",
+  "/home/toolchain/development/libc++_replacement/progress/BUILD_WEEKEND_0918/llvm-arm-rpm-failed-syscalls.strace",
+  "bwrap",
+  "--unshare-user",
+  "--uid",
+  "1000",
+  "--gid",
+  "1000",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0",
+  "/",
+  "--dev",
+  "/dev",
+  "--proc",
+  "/proc",
+  "--tmpfs",
+  "/tmp",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/home/abuild/rpmbuild/BUILD",
+  "/home/abuild/rpmbuild/BUILD",
+  "--bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918",
+  "/tmp/task",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/GBS-ROOT/BUILD-W2B-llvm-armv7l/local/BUILD-ROOTS/scratch.armv7l.0/usr/bin/ninja",
+  "/tmp/ninja.real",
+  "--ro-bind",
+  "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/ninja-serial-arm",
+  "/usr/bin/ninja",
+  "--setenv",
+  "PATH",
+  "/bin:/usr/bin:/sbin:/usr/sbin",
+  "--setenv",
+  "QEMU_RESERVED_VA",
+  "0x100000000",
+  "--setenv",
+  "CMAKE_BUILD_PARALLEL_LEVEL",
+  "1",
+  "--setenv",
+  "RPM_BUILD_NCPUS",
+  "1",
+  "--setenv",
+  "MAKEFLAGS",
+  "-j1",
+  "--setenv",
+  "LC_ALL",
+  "C",
+  "--chdir",
+  "/home/abuild/rpmbuild",
+  "--",
+  "rpmbuild",
+  "--define",
+  "_binary_payload w5.xzdio",
+  "--rcfile",
+  "/usr/lib/rpm/rpmrc:/home/abuild/.rpmrc",
+  "--macros",
+  "/usr/lib/rpm/macros:/usr/lib/rpm/macros.d/macros.*:/usr/lib/rpm/platform/%{_target}/macros:/usr/lib/rpm/fileattrs/*.attr:/usr/lib/rpm/tizen/macros:/etc/rpm/macros.*:/etc/rpm/macros:/etc/rpm/%{_target}/macros:/home/abuild/.rpmmacros",
+  "--target",
+  "armv7l-tizen-linux",
+  "--define",
+  "_topdir /home/abuild/rpmbuild",
+  "--define",
+  "_rpmdir /tmp/task/rpm-arm-llvm/RPMS",
+  "--define",
+  "_srcrpmdir /tmp/task/rpm-arm-llvm/SRPMS",
+  "--define",
+  "_buildrootdir /tmp/task/rpm-arm-llvm/BUILDROOT",
+  "--define",
+  "_tmppath /tmp/task/rpm-arm-llvm/TMP",
+  "--define",
+  "_smp_mflags -j1",
+  "--define",
+  "_smp_build_ncpus 1",
+  "--define",
+  "jobs 1",
+  "--define",
+  "mlgo_build_jobs 1",
+  "--define",
+  "_srcdefattr (-,root,root)",
+  "--define",
+  "_build_create_debug 1",
+  "--nosignature",
+  "--noprep",
+  "--noclean",
+  "-bb",
+  "/tmp/task/specs/llvm.spec"
+]
+docs/progress/BUILD_STATIC_0917B/rpm_spec_hashes.json
+docs/progress/BUILD_STATIC_0917B/private_root_rpm_inputs.json
+docs/progress/BUILD_STATIC_0917B/v6-private-root-input-architectures.json
+docs/progress/BUILD_WEEKEND_0918/w1/bpf-aarch64-libcxx-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/install-v3-aarch64-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/hal-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w1/install-v3-armv7l-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/ffi-dependencies.json
+docs/progress/BUILD_WEEKEND_0918/w1/install-aarch64-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/llvm-armv7l-input-status.json
+docs/progress/BUILD_WEEKEND_0918/w1/app-rootstrap-armv7l-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w1/copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w1/llvm-aarch64-input-status.json
+docs/progress/BUILD_WEEKEND_0918/w1/bpf-armv7l-undefined-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/app-rootstrap-aarch64-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w1/gcc-arm-linker-input.json
+docs/progress/BUILD_WEEKEND_0918/w1/verify_runtime_armv7l/commands.json.gz
+docs/progress/BUILD_WEEKEND_0918/w1/gcc-linker-input.json
+docs/progress/BUILD_WEEKEND_0918/w1/install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w1/spec_input_identity.json
+docs/progress/BUILD_WEEKEND_0918/w2/bpf-aarch64-libcxx-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w2/install-v3-aarch64-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/install-v2-aarch64-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w2/ffi-dependencies.json
+docs/progress/BUILD_WEEKEND_0918/w2/hal-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w2/install-v3-armv7l-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w2/install-aarch64-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/prepare_input_permissions.py
+docs/progress/BUILD_WEEKEND_0918/w1/input-armv7l-directory-permission-changes.json
+docs/progress/BUILD_WEEKEND_0918/w1/input-aarch64-directory-permission-changes.json
+docs/progress/BUILD_WEEKEND_0918/w1/hal-armv7l-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w1/bpf-aarch64-gcc-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/bpf-aarch64-undefined-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/bpf-armv7l-libcxx-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/bpf-armv7l-gcc-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w2/llvm-armv7l-input-status.json
+docs/progress/BUILD_WEEKEND_0918/w2/app-rootstrap-armv7l-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w2/copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w2/llvm-aarch64-input-status.json
+docs/progress/BUILD_STATIC_0917B/private_root_rpm_inputs.executed_072.json
+docs/progress/BUILD_WEEKEND_0918/w2/llvm-arm-retry-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w2/app-rootstrap-aarch64-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w2/gcc-arm-linker-input.json
+docs/progress/BUILD_WEEKEND_0918/w2/install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w2/verify_runtime_armv7l/commands.json.gz
+docs/progress/BUILD_STATIC_0917B/private_root_rpm_inputs.executed_083.json
+docs/progress/BUILD_WEEKEND_0918/w2/gcc-linker-input.json
+docs/progress/BUILD_WEEKEND_0918/w1/cells/copy-aarch64-v3/executed-copy_inputs.py
+docs/progress/BUILD_STATIC_0917B/private_root_rpm_inputs.executed_087.json
+docs/progress/BUILD_WEEKEND_0918/w2/install-v2-aarch64-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w2/input-aarch64-directory-permission-changes.json
+docs/progress/BUILD_WEEKEND_0918/w2/bpf-aarch64-undefined-inputs.json
+docs/progress/BUILD_STATIC_0917B/private_root_rpm_inputs.executed_079.json
+docs/progress/BUILD_STATIC_0917B/w1_probe_input.json
+docs/progress/BUILD_STATIC_0917B/native-equivalence-inputs.json
+docs/progress/BUILD_STATIC_0917B/raw/187_pending_inputs.exitcode
+docs/progress/BUILD_STATIC_0917B/v5-private-root-input-architectures.json
+docs/progress/BUILD_STATIC_0917B/raw/109_scope_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w2/input-armv7l-directory-permission-changes.json
+docs/progress/BUILD_WEEKEND_0918/w2/hal-armv7l-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w2/bpf-aarch64-gcc-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w2/bpf-armv7l-libcxx-inputs.json
+docs/progress/BUILD_STATIC_0917B/raw/013_packaging_inputs.stderr.txt
+docs/progress/BUILD_STATIC_0917B/raw/080_install_dependency_diagnostic.resources.txt
+docs/progress/BUILD_STATIC_0917B/raw/187_pending_inputs.started.txt
+docs/progress/BUILD_STATIC_0917B/raw/080_install_dependency_diagnostic.stderr.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_partial_1547/prepare_input_jobs.py
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_partial_1547/runtime_arm_inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/cells/install-aarch64-v3/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w2/bpf-armv7l-gcc-inputs.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_partial_1547/cell_commands/install-inputs-armv7l.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_partial_1547/cell_commands/copy-inputs-aarch64.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_partial_1547/cell_commands/install-inputs-aarch64.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_partial_1547/cell_commands/copy-inputs-armv7l.json
+docs/progress/BUILD_WEEKEND_0918/w1/cells/copy-armv7l/executed-copy_inputs.py
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/prepare_input_jobs.py
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/runtime_arm_inputs.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cell_commands/copy-inputs-aarch64-resume.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cell_commands/install-inputs-armv7l.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cell_commands/copy-inputs-aarch64.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cell_commands/copy-inputs-aarch64-resume2.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cell_commands/install-inputs-aarch64.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cell_commands/copy-inputs-armv7l.json
+docs/progress/BUILD_WEEKEND_0918/w2/cells/copy-aarch64-v3/executed-copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w1/cells/install-armv7l/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/bpf-aarch64-libcxx-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/cells/copy-aarch64-v2/executed-copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/install-v3-aarch64-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/cells/install-aarch64-v2/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w1/cells/install-aarch64/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/hal-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w3/install-v3-armv7l-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w3/ffi-dependencies.json
+docs/progress/BUILD_WEEKEND_0918/w1/cells/copy-aarch64/executed-copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/llvm-aarch64-input-status.json
+docs/progress/BUILD_WEEKEND_0918/w3/install-aarch64-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w2/cells/install-aarch64-v3/executed-install_inputs.py
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cells/copy-inputs-aarch64/HOURLY_STATUS.md
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cells/copy-inputs-aarch64/events.jsonl
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cells/copy-inputs-aarch64/build.log
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cells/copy-inputs-aarch64-resume/events.jsonl
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cells/copy-inputs-aarch64-resume2/HOURLY_STATUS.md
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cells/copy-inputs-aarch64-resume2/events.jsonl
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/cells/copy-inputs-aarch64-resume2/build.log
+docs/progress/BUILD_WEEKEND_0918/w2/cells/copy-armv7l/executed-copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/llvm-armv7l-input-status.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/install_bpf_inputs.py
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/interrupted_raw/269_copy_aarch_inputs.stderr.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/interrupted_raw/269_copy_aarch_inputs.stdout.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/interrupted_raw/269_copy_aarch_inputs.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/resume_stop_1909/interrupted_raw/269_copy_aarch_inputs.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_partial_1547/install_bpf_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/app-rootstrap-armv7l-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w3/copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/llvm-arm-retry-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w3/app-rootstrap-aarch64-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w3/gcc-arm-linker-input.json
+docs/progress/BUILD_WEEKEND_0918/w2/cells/install-armv7l/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/verify_runtime_armv7l/commands.json.gz
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_packaging_stopped_1459/prepare_input_jobs.py
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_packaging_stopped_1459/runtime_arm_inputs.json
+docs/progress/BUILD_WEEKEND_0918/w2/cells/copy-aarch64-v2/executed-copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/gcc-linker-input.json
+docs/progress/BUILD_WEEKEND_0918/w3/install_inputs.py
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_packaging_stopped_1459/cell_commands/install-inputs-armv7l.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_packaging_stopped_1459/cell_commands/copy-inputs-aarch64.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_packaging_stopped_1459/cell_commands/install-inputs-aarch64.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_packaging_stopped_1459/cell_commands/copy-inputs-armv7l.json
+docs/progress/BUILD_WEEKEND_0918/w4/hal-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w4/install-v3-armv7l-inputs.json
+docs/progress/BUILD_STATIC_0917B/resume_0917/arm_packaging_stopped_1459/install_bpf_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w2/bpf-armv7l-undefined-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w2/prepare_input_permissions.py
+docs/progress/BUILD_WEEKEND_0918/w2/spec_input_identity.json
+docs/progress/BUILD_WEEKEND_0918/w4/llvm-aarch64-input-status.json
+docs/progress/BUILD_WEEKEND_0918/w4/app-rootstrap-aarch64-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w4/gcc-arm-linker-input.json
+docs/progress/BUILD_WEEKEND_0918/w2/cells/install-aarch64-v2/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w4/verify_runtime_armv7l/commands.json.gz
+docs/progress/BUILD_WEEKEND_0918/w4/gcc-linker-input.json
+docs/progress/BUILD_WEEKEND_0918/w4/install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w2/cells/install-aarch64/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w2/cells/copy-aarch64/executed-copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w4/bpf-armv7l-undefined-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w4/prepare_input_permissions.py
+docs/progress/BUILD_WEEKEND_0918/w4/spec_input_identity.json
+docs/progress/BUILD_WEEKEND_0918/w1/raw/378_spec_inputs_identity.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/131_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/042_existing_compatibility_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/053_runtime_spec_review.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/378_spec_inputs_identity.exitcode
+docs/progress/BUILD_WEEKEND_0918/w1/raw/146_arm_input_install_progress.stderr.txt
+docs/progress/BUILD_STATIC_0917B/raw/046_monitor_inputs.resources.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/123_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/378_spec_inputs_identity.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/007_old_input_records.exitcode
+docs/progress/BUILD_WEEKEND_0918/w1/raw/139_copy_armv7l_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w4/llvm-arm-retry-inputs.json
+docs/progress/BUILD_STATIC_0917B/raw/187_pending_inputs.resources.txt
+docs/progress/BUILD_STATIC_0917B/raw/002_input_identity.resources.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/145_install_arm_inputs.stdout.txt
+docs/progress/BUILD_STATIC_0917B/raw/109_scope_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w4/cells/install-aarch64-v2/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w1/raw/146_arm_input_install_progress.started.txt
+docs/progress/BUILD_STATIC_0917B/raw/084_dependency_v3_diagnostic.started.txt
+docs/progress/BUILD_STATIC_0917B/raw/096_copy_report_inputs.command.txt
+docs/progress/BUILD_STATIC_0917B/raw/096_copy_report_inputs.started.txt
+docs/progress/BUILD_STATIC_0917B/raw/013_packaging_inputs.resources.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/042_existing_compatibility_inputs.stdout.txt
+docs/progress/BUILD_STATIC_0917B/raw/002_input_identity.command.txt
+docs/progress/BUILD_STATIC_0917B/raw/109_scope_inputs.resources.txt
+docs/progress/BUILD_WEEKEND_0918/w4/cells/install-aarch64/executed-install_inputs.py
+docs/progress/BUILD_STATIC_0917B/raw/084_dependency_v3_diagnostic.stdout.txt
+docs/progress/BUILD_STATIC_0917B/raw/084_dependency_v3_diagnostic.command.txt
+docs/progress/BUILD_STATIC_0917B/raw/013_packaging_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/cells/copy-aarch64-v3/executed-copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w4/bpf-aarch64-libcxx-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w4/install-v3-aarch64-inputs.json
+docs/progress/BUILD_STATIC_0917B/raw/013_packaging_inputs.finished.txt
+docs/progress/BUILD_STATIC_0917B/raw/013_packaging_inputs.started.txt
+docs/progress/BUILD_STATIC_0917B/raw/046_monitor_inputs.stdout.txt
+docs/progress/BUILD_STATIC_0917B/raw/002_input_identity.exitcode
+docs/progress/BUILD_STATIC_0917B/raw/096_copy_report_inputs.exitcode
+docs/progress/BUILD_STATIC_0917B/raw/109_scope_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/cells/copy-aarch64/executed-copy_inputs.py
+docs/progress/BUILD_STATIC_0917B/raw/187_pending_inputs.finished.txt
+docs/progress/BUILD_STATIC_0917B/raw/080_install_dependency_diagnostic.command.txt
+docs/progress/BUILD_STATIC_0917B/raw/002_input_identity.started.txt
+docs/progress/BUILD_STATIC_0917B/raw/013_packaging_inputs.exitcode
+docs/progress/BUILD_STATIC_0917B/raw/096_copy_report_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/127_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/raw/084_dependency_v3_diagnostic.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/ffi-dependencies.json
+docs/progress/BUILD_STATIC_0917B/raw/002_input_identity.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w4/cells/copy-aarch64-v2/executed-copy_inputs.py
+docs/progress/BUILD_STATIC_0917B/raw/046_monitor_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/112_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/378_spec_inputs_identity.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w4/cells/install-armv7l/executed-install_inputs.py
+docs/progress/BUILD_STATIC_0917B/raw/109_scope_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/install-aarch64-inputs.json
+docs/progress/BUILD_STATIC_0917B/raw/096_copy_report_inputs.finished.txt
+docs/progress/BUILD_STATIC_0917B/raw/002_input_identity.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/llvm-armv7l-input-status.json
+docs/progress/BUILD_WEEKEND_0918/w1/raw/042_existing_compatibility_inputs.command.txt
+docs/progress/BUILD_STATIC_0917B/raw/109_scope_inputs.command.txt
+docs/progress/BUILD_STATIC_0917B/raw/046_monitor_inputs.stderr.txt
+docs/progress/BUILD_STATIC_0917B/raw/096_copy_report_inputs.stdout.txt
+docs/progress/BUILD_STATIC_0917B/raw/187_pending_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/cells/copy-armv7l/executed-copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w4/app-rootstrap-armv7l-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w4/copy_inputs.py
+docs/progress/BUILD_STATIC_0917B/raw/046_monitor_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/007_old_input_records.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/146_arm_input_install_progress.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/113_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/raw/187_pending_inputs.stdout.txt
+docs/progress/BUILD_STATIC_0917B/raw/084_dependency_v3_diagnostic.finished.txt
+docs/progress/BUILD_STATIC_0917B/raw/096_copy_report_inputs.resources.txt
+docs/progress/BUILD_WEEKEND_0918/w4/install-v2-aarch64-inputs.json
+docs/progress/BUILD_STATIC_0917B/raw/013_packaging_inputs.stdout.txt
+docs/progress/BUILD_STATIC_0917B/raw/002_input_identity.stderr.txt
+docs/progress/BUILD_STATIC_0917B/raw/084_dependency_v3_diagnostic.resources.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/028_private_input_permissions.stdout.txt
+docs/progress/BUILD_STATIC_0917B/raw/046_monitor_inputs.exitcode
+docs/progress/BUILD_STATIC_0917B/raw/084_dependency_v3_diagnostic.stderr.txt
+docs/progress/BUILD_STATIC_0917B/raw/080_install_dependency_diagnostic.started.txt
+docs/progress/BUILD_STATIC_0917B/raw/187_pending_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/145_install_arm_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/121_prior_static_dependency_scope.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/bpf-armv7l-libcxx-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w4/arm_cancel_probe_inputs.json
+docs/progress/BUILD_WEEKEND_0918/w4/input-aarch64-directory-permission-changes.json
+docs/progress/BUILD_WEEKEND_0918/w4/bpf-aarch64-undefined-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w4/bpf-armv7l-gcc-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w4/input-armv7l-directory-permission-changes.json
+docs/progress/BUILD_WEEKEND_0918/w4/hal-armv7l-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w4/bpf-aarch64-gcc-inputs.json
+docs/progress/BUILD_STATIC_0917B/raw/080_install_dependency_diagnostic.exitcode
+docs/progress/BUILD_WEEKEND_0918/w1/raw/120_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/bpf-armv7l-undefined-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/raw/121_prior_static_dependency_scope.exitcode
+docs/progress/BUILD_STATIC_0917B/raw/080_install_dependency_diagnostic.finished.txt
+docs/progress/BUILD_STATIC_0917B/raw/080_install_dependency_diagnostic.stdout.txt
+docs/progress/BUILD_STATIC_0917B/raw/046_monitor_inputs.started.txt
+docs/progress/BUILD_STATIC_0917B/raw/109_scope_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w3/cells/copy-aarch64-v3/executed-copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/cells/copy-aarch64-v2/executed-copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/prepare_input_permissions.py
+docs/progress/BUILD_WEEKEND_0918/w3/spec_input_identity.json
+docs/progress/BUILD_WEEKEND_0918/w3/cells/install-aarch64-v2/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/cells/install-aarch64/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/cells/install-armv7l/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w2/raw/131_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/378_spec_inputs_identity.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/053_runtime_spec_review.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/042_existing_compatibility_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w3/input-aarch64-directory-permission-changes.json
+docs/progress/BUILD_WEEKEND_0918/w3/bpf-aarch64-undefined-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w3/cells/copy-aarch64/executed-copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/cells/copy-armv7l/executed-copy_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/cells/install-aarch64-v3/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w3/install-v2-aarch64-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w3/input-armv7l-directory-permission-changes.json
+docs/progress/BUILD_WEEKEND_0918/w3/hal-armv7l-input-identities.json
+docs/progress/BUILD_WEEKEND_0918/w3/bpf-aarch64-gcc-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w3/bpf-armv7l-libcxx-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w3/arm_cancel_probe_inputs.json
+docs/progress/BUILD_WEEKEND_0918/w1/raw/139_copy_armv7l_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/180_review_runtime_and_bpf_verifier.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/092_runtime_arm_macro_preflight.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/146_arm_input_install_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/bpf-armv7l-gcc-inputs.json
+docs/progress/BUILD_WEEKEND_0918/w2/raw/123_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/378_spec_inputs_identity.exitcode
+docs/progress/BUILD_WEEKEND_0918/w1/raw/379_runtime_spec_preflight_record.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/138_runtime_verified_result.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/146_arm_input_install_progress.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/139_copy_armv7l_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/378_spec_inputs_identity.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/146_arm_input_install_progress.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/cells/install-aarch64-v3/executed-install_inputs.py
+docs/progress/BUILD_WEEKEND_0918/w1/raw/139_copy_armv7l_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/145_install_arm_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/139_copy_armv7l_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w1/raw/145_install_arm_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/124_runtime_resource_snapshot.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/130_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/122_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/007_old_input_records.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/121_prior_static_dependency_scope.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/101_arm_complete_macro_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/145_install_arm_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/125_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/131_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/007_old_input_records.exitcode
+docs/progress/BUILD_WEEKEND_0918/w2/raw/446_review_board_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/028_private_input_permissions.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/146_arm_input_install_progress.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/145_install_arm_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/133_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/139_copy_armv7l_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/146_arm_input_install_progress.started.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/042_existing_compatibility_inputs.exitcode
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/161_private_input_design.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/378_spec_inputs_identity.finished.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/101_arm_complete_macro_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/042_existing_compatibility_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/132_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/116_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/121_prior_static_dependency_scope.stderr.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/255_runtime_spec_inspect.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/378_spec_inputs_identity.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/053_runtime_spec_review.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/042_existing_compatibility_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/204_review_runtime_payload_checks.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/109_build_arm_runtime.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/007_old_input_records.started.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/139_copy_armv7l_inputs.stdout.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/187_prepare_input_jobs.exitcode
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/184_probe_inputs.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/178_input_installer_syntax.started.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/081_reference_runtime_scripts.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/121_prior_static_dependency_scope.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/042_existing_compatibility_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/135_arm_runtime_finish_log.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/101_arm_complete_macro_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/131_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/101_arm_complete_macro_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w1/raw/007_old_input_records.stdout.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/161_private_input_design.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/378_spec_inputs_identity.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/028_private_input_permissions.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/101_arm_complete_macro_inputs.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/126_bpftrace_dependency_strategy.exitcode
+docs/progress/BUILD_WEEKEND_0918/w1/raw/126_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/178_input_installer_syntax.stderr.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/126_bpftrace_dependency_strategy.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/127_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/085_arm_macro_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w1/raw/028_private_input_permissions.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/123_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/082_next_stage_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/378_spec_inputs_identity.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/112_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/145_install_arm_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w1/raw/007_old_input_records.finished.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/156_runtime_root_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/146_arm_input_install_progress.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/121_prior_static_dependency_scope.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/378_spec_inputs_identity.exitcode
+docs/progress/BUILD_WEEKEND_0918/w1/raw/028_private_input_permissions.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/136_verify_arm_runtime.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/157_prepare_runtime_arm.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/042_existing_compatibility_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/134_runtime_arch_check.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/156_runtime_root_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/446_review_board_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w1/raw/114_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/129_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/446_review_board_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/042_existing_compatibility_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/007_old_input_records.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w1/raw/028_private_input_permissions.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/028_private_input_permissions.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/113_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/146_arm_input_install_progress.finished.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/085_arm_macro_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/053_runtime_spec_review.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/178_input_installer_syntax.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/378_spec_inputs_identity.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/378_spec_inputs_identity.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/162_rpm_input_scripts.stderr.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/082_next_stage_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w3/raw/042_existing_compatibility_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/446_review_board_inputs.finished.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/085_arm_macro_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/145_install_arm_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/139_copy_armv7l_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/121_prior_static_dependency_scope.finished.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/126_bpftrace_dependency_strategy.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/007_old_input_records.exitcode
+docs/progress/BUILD_WEEKEND_0918/w2/raw/120_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/121_prior_static_dependency_scope.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/145_install_arm_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/139_copy_armv7l_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/146_arm_input_install_progress.started.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/146_arm_input_install_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/092_runtime_arm_macro_preflight.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/180_review_runtime_and_bpf_verifier.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/184_probe_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/138_runtime_verified_result.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/042_existing_compatibility_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/146_arm_input_install_progress.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/378_spec_inputs_identity.exitcode
+docs/progress/BUILD_WEEKEND_0918/w3/raw/123_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/379_runtime_spec_preflight_record.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/378_spec_inputs_identity.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/184_probe_inputs.finished.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/162_rpm_input_scripts.stdout.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/064_arm_input_inventory.stderr.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/178_input_installer_syntax.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/139_copy_armv7l_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/146_arm_input_install_progress.exitcode
+docs/progress/BUILD_WEEKEND_0918/w2/raw/125_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/082_next_stage_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/139_copy_armv7l_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/028_private_input_permissions.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/146_arm_input_install_progress.stdout.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/187_prepare_input_jobs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/446_review_board_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/127_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/139_copy_armv7l_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/007_old_input_records.exitcode
+docs/progress/BUILD_WEEKEND_0918/w2/raw/042_existing_compatibility_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w3/raw/446_review_board_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/112_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/378_spec_inputs_identity.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/378_spec_inputs_identity.started.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/145_install_arm_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/204_review_runtime_payload_checks.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/121_prior_static_dependency_scope.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/042_existing_compatibility_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/116_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/146_arm_input_install_progress.started.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/121_prior_static_dependency_scope.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/139_copy_armv7l_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/378_spec_inputs_identity.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/028_private_input_permissions.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/162_rpm_input_scripts.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/042_existing_compatibility_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/446_review_board_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w2/raw/007_old_input_records.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/042_existing_compatibility_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/126_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/162_rpm_input_scripts.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/446_review_board_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/007_old_input_records.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/007_old_input_records.stderr.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/187_prepare_input_jobs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/146_arm_input_install_progress.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/113_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/145_install_arm_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w2/raw/134_runtime_arch_check.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/028_private_input_permissions.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/136_verify_arm_runtime.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/156_runtime_root_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/028_private_input_permissions.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/114_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/042_existing_compatibility_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/129_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/028_private_input_permissions.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/127_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/121_prior_static_dependency_scope.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/101_arm_complete_macro_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/028_private_input_permissions.exitcode
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/082_next_stage_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/081_reference_runtime_scripts.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/135_arm_runtime_finish_log.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/109_build_arm_runtime.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/007_old_input_records.started.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/132_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/446_review_board_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/112_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/378_spec_inputs_identity.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/145_install_arm_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/133_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/042_existing_compatibility_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/446_review_board_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/446_review_board_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/121_prior_static_dependency_scope.finished.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/184_probe_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/007_old_input_records.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/113_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/146_arm_input_install_progress.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/028_private_input_permissions.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/145_install_arm_inputs.finished.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/126_bpftrace_dependency_strategy.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/121_prior_static_dependency_scope.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/145_install_arm_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/120_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/120_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/446_review_board_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/121_prior_static_dependency_scope.exitcode
+docs/progress/BUILD_WEEKEND_0918/w2/raw/121_prior_static_dependency_scope.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/163_rpm_input_dependencies.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/184_probe_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/007_old_input_records.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/139_copy_armv7l_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/121_prior_static_dependency_scope.exitcode
+docs/progress/BUILD_WEEKEND_0918/w3/raw/180_review_runtime_and_bpf_verifier.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/146_arm_input_install_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/092_runtime_arm_macro_preflight.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/379_runtime_spec_preflight_record.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/138_runtime_verified_result.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/184_probe_inputs.exitcode
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/085_arm_macro_inputs.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/161_private_input_design.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/187_prepare_input_jobs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/139_copy_armv7l_inputs.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/064_arm_input_inventory.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/146_arm_input_install_progress.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/139_copy_armv7l_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/139_copy_armv7l_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/125_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/028_private_input_permissions.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/122_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/187_prepare_input_jobs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/130_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/146_arm_input_install_progress.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/446_review_board_inputs.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/042_existing_compatibility_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/180_review_runtime_and_bpf_verifier.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/121_prior_static_dependency_scope.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/204_review_runtime_payload_checks.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/378_spec_inputs_identity.started.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/116_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/121_prior_static_dependency_scope.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/042_existing_compatibility_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/124_runtime_resource_snapshot.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/139_copy_armv7l_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/092_runtime_arm_macro_preflight.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/378_spec_inputs_identity.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/007_old_input_records.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/028_private_input_permissions.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/146_arm_input_install_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/161_private_input_design.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/126_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/007_old_input_records.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/145_install_arm_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/138_runtime_verified_result.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/379_runtime_spec_preflight_record.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/163_rpm_input_dependencies.exitcode
+docs/progress/BUILD_WEEKEND_0918/w2/raw/145_install_arm_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/139_copy_armv7l_inputs.exitcode
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/163_rpm_input_dependencies.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/082_next_stage_inputs.finished.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/187_prepare_input_jobs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w2/raw/145_install_arm_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/139_copy_armv7l_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/028_private_input_permissions.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/136_verify_arm_runtime.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/134_runtime_arch_check.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/114_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/196_runtime_verifier_syntax.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/163_rpm_input_dependencies.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/042_existing_compatibility_inputs.finished.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/064_arm_input_inventory.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/146_arm_input_install_progress.exitcode
+docs/progress/BUILD_WEEKEND_0918/w3/raw/129_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/126_bpftrace_dependency_strategy.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/139_copy_armv7l_inputs.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/162_rpm_input_scripts.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/163_rpm_input_dependencies.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/028_private_input_permissions.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/028_private_input_permissions.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/082_next_stage_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/125_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/121_prior_static_dependency_scope.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/146_arm_input_install_progress.stdout.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/211_runtime_serial_packaging.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/161_private_input_design.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/028_private_input_permissions.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/446_review_board_inputs.stderr.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/156_runtime_root_inputs.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/161_private_input_design.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/042_existing_compatibility_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w3/raw/135_arm_runtime_finish_log.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/163_rpm_input_dependencies.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/081_reference_runtime_scripts.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/085_arm_macro_inputs.stderr.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/156_runtime_root_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/109_build_arm_runtime.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/007_old_input_records.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/064_arm_input_inventory.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/204_review_runtime_payload_checks.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/132_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/446_review_board_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/378_spec_inputs_identity.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/121_prior_static_dependency_scope.stderr.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/116_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/042_existing_compatibility_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/121_prior_static_dependency_scope.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/139_copy_armv7l_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/133_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/064_arm_input_inventory.exitcode
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/064_arm_input_inventory.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/145_install_arm_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/028_private_input_permissions.started.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/178_input_installer_syntax.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/378_spec_inputs_identity.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/007_old_input_records.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/446_review_board_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/121_prior_static_dependency_scope.started.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/007_old_input_records.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/156_runtime_root_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/126_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/122_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/130_arm_runtime_progress.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/126_bpftrace_dependency_strategy.started.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/124_runtime_resource_snapshot.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/162_rpm_input_scripts.exitcode
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/155_runtime_recipe.command.txt
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/178_input_installer_syntax.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/007_old_input_records.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/145_install_arm_inputs.exitcode
+docs/progress/BUILD_STATIC_0917B/resume_0917/raw/085_arm_macro_inputs.stdout.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/145_install_arm_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/139_copy_armv7l_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/028_private_input_permissions.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/134_runtime_arch_check.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/136_verify_arm_runtime.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/114_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w3/raw/145_install_arm_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/042_existing_compatibility_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/129_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/028_private_input_permissions.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/121_prior_static_dependency_scope.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/028_private_input_permissions.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/081_reference_runtime_scripts.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/135_arm_runtime_finish_log.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/109_build_arm_runtime.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/007_old_input_records.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/446_review_board_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/132_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/133_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/145_install_arm_inputs.finished.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/007_old_input_records.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/121_prior_static_dependency_scope.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/446_review_board_inputs.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/130_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/122_arm_runtime_progress.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/124_runtime_resource_snapshot.command.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/145_install_arm_inputs.started.txt
+docs/progress/BUILD_WEEKEND_0918/w4/raw/139_copy_armv7l_inputs.exitcode
+docs/progress/BUILD_WEEKEND_0918/w4/raw/145_install_arm_inputs.command.txt
+[
+  {
+    "source": "/home/toolchain/development/libc++_replacement/tmp/STATIC_0917B/rpm-aarch64/RPMS/aarch64/clang-22.1.8-1.aarch64.rpm",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BPF_W1_0921/llvm-rpms/aarch64/clang-22.1.8-1.aarch64.rpm",
+    "sha256": "c89a0099f56847e14cdc1705b1aed7aa7ab5c6c356c7cd5c7d48052faa7de3ef",
+    "bytes": 283155399,
+    "identity": "clang\t22.1.8-1\taarch64"
+  },
+  {
+    "source": "/home/toolchain/development/libc++_replacement/tmp/STATIC_0917B/rpm-aarch64/RPMS/aarch64/clang-devel-22.1.8-1.aarch64.rpm",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BPF_W1_0921/llvm-rpms/aarch64/clang-devel-22.1.8-1.aarch64.rpm",
+    "sha256": "529cf07c353d5c2e9f9c0dd65bbe46d3c81d1aa39b2de89195708b2275aafb95",
+    "bytes": 4057287,
+    "identity": "clang-devel\t22.1.8-1\taarch64"
+  },
+  {
+    "source": "/home/toolchain/development/libc++_replacement/tmp/STATIC_0917B/rpm-aarch64/RPMS/aarch64/libllvm-22.1.8-1.aarch64.rpm",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BPF_W1_0921/llvm-rpms/aarch64/libllvm-22.1.8-1.aarch64.rpm",
+    "sha256": "0db4bf9a25f1ea01da8b1d73bb0f999cfa3a4775f470d1d0f75ef9cff3cb1a72",
+    "bytes": 221546728,
+    "identity": "libllvm\t22.1.8-1\taarch64"
+  },
+  {
+    "source": "/home/toolchain/development/libc++_replacement/tmp/STATIC_0917B/rpm-aarch64/RPMS/aarch64/libomp-22.1.8-1.aarch64.rpm",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BPF_W1_0921/llvm-rpms/aarch64/libomp-22.1.8-1.aarch64.rpm",
+    "sha256": "5cb2e859b5fcbe6da81183c1e84ae793a89fa2cf5ad812bf15c8f3ab7ffecdad",
+    "bytes": 1593863,
+    "identity": "libomp\t22.1.8-1\taarch64"
+  },
+  {
+    "source": "/home/toolchain/development/libc++_replacement/tmp/STATIC_0917B/rpm-aarch64/RPMS/aarch64/libomp-devel-22.1.8-1.aarch64.rpm",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BPF_W1_0921/llvm-rpms/aarch64/libomp-devel-22.1.8-1.aarch64.rpm",
+    "sha256": "f15eb22aa7add71c5e51753319e8adaca39ff272b6faf4fc5cba29f92e872823",
+    "bytes": 30401,
+    "identity": "libomp-devel\t22.1.8-1\taarch64"
+  },
+  {
+    "source": "/home/toolchain/development/libc++_replacement/tmp/STATIC_0917B/rpm-aarch64/RPMS/aarch64/llvm-22.1.8-1.aarch64.rpm",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BPF_W1_0921/llvm-rpms/aarch64/llvm-22.1.8-1.aarch64.rpm",
+    "sha256": "98de67e07b8922b8537c4b4b7bac0c593d500d72bd6931ce4afe0fd47b7755d1",
+    "bytes": 16483920,
+    "identity": "llvm\t22.1.8-1\taarch64"
+  },
+  {
+    "source": "/home/toolchain/development/libc++_replacement/tmp/STATIC_0917B/rpm-aarch64/RPMS/aarch64/llvm-devel-22.1.8-1.aarch64.rpm",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BPF_W1_0921/llvm-rpms/aarch64/llvm-devel-22.1.8-1.aarch64.rpm",
+    "sha256": "2cdaa858537440d949288f65b59bb6ebb15abd47de7919af158ffd9171aa2725",
+    "bytes": 5723421,
+    "identity": "llvm-devel\t22.1.8-1\taarch64"
+  },
+  {
+    "source": "/home/toolchain/development/libc++_replacement/tmp/STATIC_0917B/rpm-aarch64/RPMS/aarch64/llvm-static-devel-22.1.8-1.aarch64.rpm",
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BPF_W1_0921/llvm-rpms/aarch64/llvm-static-devel-22.1.8-1.aarch64.rpm",
+    "sha256": "38a572af0e5083f853bbff59f8d4256d1842b3ab17cfdfbda40b0eab69537f49",
+    "bytes": 59341380,
+    "identity": "llvm-static-devel\t22.1.8-1\taarch64"
+  },
+  {
+    "path": "/home/toolchain/development/libc++_replacement/tmp/NIGHT_0917/finish_validation/rpm/RPMS/aarch64/libc++-22.1.8-1.aarch64.rpm",
+    "sha256": "5b956cdbc3de684a89caca110ad6cccbb5a8f4a3df66a189b3292142408d5d42",
+    "identity": "libc++\t22.1.8-1\taarch64",
+    "guest": "/tmp/input-rpms/8.rpm"
+  },
+  {
+    "path": "/home/toolchain/development/libc++_replacement/tmp/NIGHT_0917/finish_validation/rpm/RPMS/aarch64/libc++-devel-22.1.8-1.aarch64.rpm",
+    "sha256": "9940c30569cd816c97a6a206b805d7652418b1843860efb87d2f02a273262fab",
+    "identity": "libc++-devel\t22.1.8-1\taarch64",
+    "guest": "/tmp/input-rpms/9.rpm"
+  },
+  {
+    "path": "/home/toolchain/development/libc++_replacement/tmp/NIGHT_0917/finish_validation/rpm/RPMS/aarch64/libc++abi-22.1.8-1.aarch64.rpm",
+    "sha256": "3ca974d1a47883dcfe5c0635043df68a6b457164df38aaeb17f092c0d45e3cf6",
+    "identity": "libc++abi\t22.1.8-1\taarch64",
+    "guest": "/tmp/input-rpms/10.rpm"
+  },
+  {
+    "path": "/home/toolchain/development/libc++_replacement/tmp/NIGHT_0917/finish_validation/rpm/RPMS/aarch64/libc++abi-devel-22.1.8-1.aarch64.rpm",
+    "sha256": "82fcba540e31a0105fe37a524bf16d0f65e7bd7838486c781d6f609025b0265a",
+    "identity": "libc++abi-devel\t22.1.8-1\taarch64",
+    "guest": "/tmp/input-rpms/11.rpm"
+  },
+  {
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BUILD_NIGHT_0916.h4taGY/dependency-rpms/libbpf-static-1.6.2-1.1.aarch64.rpm",
+    "sha256": "c5a78560984800d28a1271fc297d9a4857ced84cd5d43d9347e5e11fed743ea7",
+    "identity": "libbpf-static\t1.6.2-1.1\taarch64",
+    "guest": "/tmp/input-rpms/12.rpm"
+  },
+  {
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BUILD_NIGHT_0916.h4taGY/dependency-rpms/liblzma-static-5.8.1-1.10.aarch64.rpm",
+    "sha256": "dfbce2ada838f81cc2e1ad70d2c2fe230a8b95a3f44e33a7ac9eaf6ffadd317f",
+    "identity": "liblzma-static\t5.8.1-1.10\taarch64",
+    "guest": "/tmp/input-rpms/13.rpm"
+  },
+  {
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BUILD_NIGHT_0916.h4taGY/dependency-rpms/zlib-devel-static-1.3.1-1.11.aarch64.rpm",
+    "sha256": "aa9a827d7934c68b08502486b0fc98f9820cc292b8e73fd7aef579baeef3f325",
+    "identity": "zlib-devel-static\t1.3.1-1.11\taarch64",
+    "guest": "/tmp/input-rpms/14.rpm"
+  },
+  {
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BUILD_NIGHT_0916.h4taGY/dependency-rpms/libffi-devel-static-3.4.7-1.11.aarch64.rpm",
+    "sha256": "9c58e9327c81801d7077d98e62d46573cad72a145f026bc0cc7185f53e0e8429",
+    "identity": "libffi-devel-static\t3.4.7-1.11\taarch64",
+    "guest": "/tmp/input-rpms/15.rpm"
+  },
+  {
+    "path": "/home/toolchain/development/libc++_replacement/tmp/BUILD_W2_0912/bcc-local-repo/aarch64/bcc-tools-static-0.35.0-112.1.aarch64.rpm",
+    "sha256": "0ed804e7ea2499604c2b59127a4f24a2d98fccf30be98bb7d84c628c21910a82",
+    "identity": "bcc-tools-static\t0.35.0-112.1\taarch64",
+    "guest": "/tmp/input-rpms/16.rpm"
+  },
+  {
+    "path": "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/dependencies/libffi-3.4.7-1.11.aarch64.rpm",
+    "sha256": "58477ddbffd558fb2a40ec309edf56f0e44d61c0f1c2895fa9b099e1e1e7ece2",
+    "identity": "libffi\t3.4.7-1.11\taarch64",
+    "guest": "/tmp/input-rpms/17.rpm"
+  },
+  {
+    "path": "/home/toolchain/development/libc++_replacement/tmp/WEEKEND_0918/dependencies/libffi-devel-3.4.7-1.11.aarch64.rpm",
+    "sha256": "8303e253ef61f2eaa7acea380eea5471f9bf2d0d319415f9bbb0f332ccc3a4d2",
+    "identity": "libffi-devel\t3.4.7-1.11\taarch64",
+    "guest": "/tmp/input-rpms/18.rpm"
+  }
+]

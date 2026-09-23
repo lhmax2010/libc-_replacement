@@ -1,0 +1,153 @@
+"""Bounded W2 copy only: inventory, size gate, limited cp, I/O pause control.
+
+No credential input is opened here. sudo alone consumes stdin. Ownership
+restoration and credential removal are performed by separate recorded commands.
+"""
+import datetime
+import json
+import os
+from pathlib import Path
+import resource
+import selectors
+import shlex
+import signal
+import subprocess
+import sys
+import time
+
+workspace=Path('/home/toolchain/development/libc++_replacement')
+source=workspace/'tmp/GBS-ROOT/BUILD-W1B-llvm-aarch64/local/BUILD-ROOTS/scratch.aarch64.0'
+dest=workspace/'tmp/STATIC_0917B/llvm-root-minimal'
+names=['usr','etc','var','.build','emul','bin','sbin','lib','lib64']
+paths=[str(source/name) for name in names]
+limit_kib=int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemTotal:')))//2
+limit_bytes=limit_kib*1024
+deadline=datetime.datetime.fromisoformat((workspace/'progress/BUILD_STATIC_0917B/raw/037_sudo_copy.started.txt').read_text().strip()).timestamp()+4*3600
+
+def note(event,**fields):
+    print(json.dumps(dict(time=datetime.datetime.now().astimezone().isoformat(),event=event,**fields)),flush=True)
+
+def run(command):
+    note('command',command=shlex.join(command))
+    r=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=max(1,deadline-time.time()))
+    print(r.stdout,end='',flush=True)
+    print(r.stderr,end='',file=sys.stderr,flush=True)
+    note('exit',exitcode=r.returncode)
+    if r.returncode:
+        raise SystemExit(r.returncode)
+    return r.stdout
+
+assert os.geteuid()==0
+assert resource.getrlimit(resource.RLIMIT_AS)==(limit_bytes,limit_bytes)
+assert os.getpriority(os.PRIO_PROCESS,0)==19
+assert not dest.exists() and not dest.is_symlink(), 'Never overwrite an existing destination'
+assert source.resolve()==source
+note('limits_after_sudo',method='prlimit RLIMIT_AS',bytes=limit_bytes,soft=resource.getrlimit(resource.RLIMIT_AS)[0],hard=resource.getrlimit(resource.RLIMIT_AS)[1])
+run(['/usr/bin/ionice','-p',str(os.getpid())])
+run(['/usr/bin/du','-sh','--',*paths])
+sizes=run(['/usr/bin/du','-s','--block-size=1','--',*paths])
+total=sum(int(line.split()[0]) for line in sizes.splitlines())
+note('size_gate',allocated_bytes=total,maximum_bytes=3*1024**3,excluded=['home','tmp','root','installed-pkg','opt','apps','boot','product','vendor','history/source/cache files'])
+if total>3*1024**3:
+    note('stop',reason='More than 3 GiB; no copy started')
+    raise SystemExit(30)
+if time.time()>=deadline:
+    raise SystemExit(124)
+
+dest.mkdir(mode=0o755)
+for name in ['home/abuild','root','dev','proc','sys','tmp','run']:
+    (dest/name).mkdir(parents=True,exist_ok=True)
+probe_code="""import hashlib,json,os,sys,tempfile,time
+from pathlib import Path
+t=time.monotonic(); fd,name=tempfile.mkstemp(prefix='copy-io-',dir=sys.argv[1]); p=Path(name)
+try:
+ data=b'io-calibration\\n'*262144
+ with os.fdopen(fd,'wb') as f: f.write(data); f.flush(); os.fsync(f.fileno())
+ assert hashlib.sha256(p.read_bytes()).digest()==hashlib.sha256(data).digest()
+ seconds=time.monotonic()-t; print(json.dumps(dict(seconds=seconds,bytes=len(data))),flush=True)
+finally: p.unlink(missing_ok=True)
+raise SystemExit(0 if seconds<=30 else 30)
+"""
+pending_probe=None
+def probe():
+    global pending_probe
+    if pending_probe is not None and pending_probe.poll() is None:
+        note('probe_still_exiting',pid=pending_probe.pid)
+total 28
+drwxrwxr-x 7 toolchain toolchain 4096 Sep 15 13:03 .
+drwxrwxr-x 3 toolchain toolchain 4096 Sep 15 13:02 ..
+drwxr-xr-x 3 root      root      4096 Sep 15 13:03 BUILD-ROOTS
+drwxrwxr-x 3 toolchain toolchain 4096 Sep 15 13:03 cache
+drwxrwxr-x 2 toolchain toolchain 4096 Sep 15 13:03 order
+drwxrwxr-x 3 toolchain toolchain 4096 Sep 15 13:02 repos
+drwxrwxr-x 3 toolchain toolchain 4096 Sep 15 13:02 sources
+total 1648
+drwxr-xr-x 22 root root    4096 Sep 15 13:20 .
+drwxr-xr-x  3 root root    4096 Sep 15 13:03 ..
+drwxr-xr-x  2 root root    4096 Sep 15 13:03 .build
+-rwxr-xr-x  1 root root     257 Sep 15 13:07 .build.command
+-rw-r--r--  1 root root  258637 Sep 15 13:20 .build.log
+lrwxrwxrwx  1 root root      20 Sep 15 13:07 .build.packages -> home/abuild/rpmbuild
+-rw-r--r--  1 root root      20 Sep 15 13:03 .buildenv
+-rw-r--r--  1 root root      48 Sep 15 13:06 .guessed_dist
+-rw-r--r--  1 root root 1313547 Sep 15 13:03 .srcfiles.cache
+-rw-r--r--  1 root root     315 Sep 15 13:03 .srcfiles.cache.id
+drwxr-xr-x  2 root root    4096 Sep 12 22:16 apps
+lrwxrwxrwx  1 root root       7 Sep 12 22:16 bin -> usr/bin
+dr-xr-xr-x  2 root root    4096 Sep 12 22:16 boot
+drwxr-xr-x  4 root root    4096 Sep 12 22:16 dev
+drwxr-xr-x  4 root root    4096 Sep 15 13:07 emul
+drwxr-xr-x 18 root root    4096 Sep 15 15:10 etc
+drwxr-xr-x  3 root root    4096 Sep 15 13:07 home
+drwxr-xr-x  2 root root    4096 Sep 15 13:07 installed-pkg
+lrwxrwxrwx  1 root root       7 Sep 12 22:16 lib -> usr/lib
+lrwxrwxrwx  1 root root       9 Sep 12 22:16 media -> opt/media
+drwxr-xr-x  2 root root    4096 Sep 12 22:16 mnt
+drwxr-xr-x 10 root root    4096 Sep 15 13:06 opt
+drwxr-xr-x  2 root root    4096 Sep 15 13:03 proc
+drwxr-xr-x  2 root root    4096 Sep 12 22:16 product
+dr-xr-x---  2 root root    4096 Sep 15 13:07 root
+drwxr-xr-x  4 root root    4096 Sep 12 22:16 run
+lrwxrwxrwx  1 root root       8 Sep 12 22:16 sbin -> usr/sbin
+drwxr-xr-x  2 root root    4096 Sep 12 22:16 srv
+drwxr-xr-x  2 root root    4096 Sep 15 13:03 sys
+import hashlib
+import json
+import subprocess
+import time
+from pathlib import Path
+
+p=Path('progress/BUILD_STATIC_0917B')
+t=Path('tmp/STATIC_0917B').resolve()
+root=t/'llvm-root-minimal'
+old=Path('tmp/NIGHT_0917').resolve()
+assert root.is_dir()
+assert not Path('password.md').exists(), 'Credential must be removed after copy/chown.'
+base=['bwrap','--unshare-user','--uid','0','--gid','0','--bind',str(root),'/',
+      '--dev','/dev','--proc','/proc','--tmpfs','/tmp',
+      '--bind',str(t),'/tmp/task','--ro-bind',str(old),'/tmp/night',
+      '--setenv','PATH','/bin:/usr/bin:/sbin:/usr/sbin',
+      '--setenv','CMAKE_BUILD_PARALLEL_LEVEL','1','--setenv','LC_ALL','C']
+for name in ['clang','libllvm','llvm','lldb']:
+    payload=Path(f'tmp/BUILD_W2_0912/llvm-local-repo/aarch64/{name}-22.1.8-108.2.aarch64.rpm').resolve(strict=True)
+    base+=['--ro-bind',str(payload),'/tmp/llvm-resolved-inputs/'+name+'.rpm']
+(p/'private_root_command.json').write_text(json.dumps(base,indent=2))
+
+def run(name,command,timeout=300):
+    name='v6-'+name
+    started=time.time()
+    r=subprocess.run(command,capture_output=True,text=True,errors='replace',timeout=timeout)
+    (p/(name+'.json')).write_text(json.dumps(dict(command=command,exitcode=r.returncode,stdout=r.stdout,stderr=r.stderr,seconds=time.time()-started),indent=2))
+    print(name,r.returncode,flush=True)
+    if r.returncode:
+        raise SystemExit(r.returncode)
+    return r
+
+run('private-root-id',base+['--','id'])
+run('private-root-packages',base+['--','rpm','-qa','--qf','%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n'])
+rpms=[]
+for q in sorted((old/'finish_validation/rpm/RPMS/aarch64').glob('*.rpm')):
+    rpms.append((q,'/tmp/night/'+str(q.relative_to(old))))
+for name in ['clang','libllvm','llvm','lldb']:
+    q=Path(f'tmp/BUILD_W2_0912/llvm-local-repo/aarch64/{name}-22.1.8-108.2.aarch64.rpm').resolve(strict=True)
+    rpms.append((q,'/tmp/llvm-resolved-inputs/'+name+'.rpm'))

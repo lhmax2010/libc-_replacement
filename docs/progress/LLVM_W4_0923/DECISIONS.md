@@ -1,5 +1,17 @@
 # 自行判断、边界与技术性记录
 
+## R2 追加（当前状态见 FINAL_RESULT_R2.md）
+
+- 旧GCC override门禁按裁决撤销；LLVM四组全PASS。第一笔只改正文为617a210064c4559fe1152728f7c9cf5e1ab99a9f，与旧2cba97e5的tree相同。
+- runtime默认组多12个开头空行，严格比较未通过；已询问能否登记为非功能差异，未自行忽略。第二笔、其余三组与runtime prep未做。
+- 38份追加RPM重算SHA并核对当前rpmdb包头；全根为133/134/126/127项，19份不代表全量，当前查询不冒充历史瞬间身份。
+- A/B/C与未能归类分开，RPM重算SHA与仓元数据SHA分开，不据VCS单独推定来源。全量门禁未闭合。
+- raw/R2_006等路径查询技术性非零保留；R2_016跨全GBS树索引主动停止，转查明确历史路径，未运行或中止构建。
+- 报告apply_patch首次因同一补丁对W4_SIGNOFF同时Delete/Add被工具拒绝，未应用；改为分别更新文档，未涉及平台文件。
+- 仅提交本目录与LINE_STATUS，保留无关脏工作树；包仓不推，无Signed-off-by。
+
+## R1 历史记录（以下不替代 R2 状态）
+
 - light资源门禁退出0；无构建、无板操作、无QuickBuild、无包仓推送。只允许%prep，独立输出tmp/LLVM_W4_0923/prep，原根与packaging只读绑定。prep为nice19/ionice idle，cgroup MemoryMax=16536457216（总内存50%向页下取整），实际cgroup见prep-resources.json；磁盘264GiB。
 - 两份最终写包spec实测同SHA，完整diff只有新增一行；历史VCS/Release说法不强行套入这两份。只读查询34份RPM，未提取或修改原RPM。
 - 原可写克隆在本地w1b-push分支、HEAD=f203923a且干净。本轮从该HEAD新建本地目标sandbox同名分支，旧分支未改变。fetch只取目标ref。作者按授权Hao Lin；committer保留克隆现有hao.lin身份，Git提交无法没有该字段，人工amend再确定。提交时仅本次命令禁用hooks，避免自动追加未审文本；未改仓库配置、无Signed-off-by。

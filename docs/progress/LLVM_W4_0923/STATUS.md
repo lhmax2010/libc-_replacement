@@ -1,4 +1,16 @@
-# 状态：PARTIAL / 人工裁决前不要推包仓
+# 状态：R2 PARTIAL / 展开空行口径待确认
+
+| R2部分 | 结果 | 证据 |
+| --- | --- | --- |
+| LLVM四组 | 全PASS | prep-check/equivalence_R2/ |
+| 第一笔 | 已改正文，tree不变，617a2100… | LOCAL_COMMITS_R2.json |
+| runtime | 默认组严格比较因12个开头空行未通过；第二笔未创建 | prep-check/runtime_R2/default.diff |
+| runtime prep | NOT_OBSERVED | FINAL_RESULT_R2.md |
+| 追加输入 | 每架构19份重算SHA：6 A / 1 B / 12获准C | inputs_R2/introduced_R2.json |
+| 全根输入 | 未闭合 | inputs_R2/ALL_INPUTS_R2.tsv |
+| 包仓 | ahead1/behind0，干净，未推 | export_commands_R2.json |
+
+## R1 历史状态（保留）
 
 | 部分 | 结果 | 证据 |
 | --- | --- | --- |
