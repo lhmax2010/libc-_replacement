@@ -1,0 +1,188 @@
+     1	# 编译适配线状态
+     2	
+     3	## 线的定位与分界
+     4	
+     5	本线负责 Tizen-Base-Toolchain 的 libc++ 编译适配、输入资产与 RPM 核验；运行时边界决策由运行时线负责。本轮 W4 续已获完整配方授权，在 tmp 包克隆创建一个本地提交并完成 ARM %prep 检查、只读条件组合核查。codes、Source1002 不动；不运行 %build、不上板、不推 sandbox/包仓、不起 QuickBuild；只推项目材料。
+     6	
+     7	## 当前位置
+     8	
+     9	Base 对账：73 个含 C++ 源码包中，11 个已适配推送、56 个有依据无需适配、6 个按设计排除、0 个未评估；适配推送不代表新版 static 资产已获发布批准。对账材料原样发布于 `c7aa2c5e72f78516e40b7a5423a4b83673608bad`。
+    10	
+    11	此前六格18份RPM与只重链接ELF材料保留。`BPF_STATIC_0922` 新配方已完成两架构6份RPM及static ELF门禁。本轮 `BPF_W3R_0922` 已完成ARM物理板可写区对照与取消探针；无需重新写包。正常RPM安装仍未验证，按本轮授权留待镜像阶段。
+    12	
+    13	## 本任务结论与证据
+    14	
+    15	**W3R 事故副本已按本轮批准恢复**：4/4 原 RPM SHA 与原清单一致，重新独立解包得到的主包 ELF SHA 与 INCIDENT 改前值一致，复制回原路径后再次一致；四份事故文件保留于原路径 `*.objcopy-modified-0922`。修正脚本明确新输出 ELF 并核对输入不变，一次性副本验证通过。证据 `docs/progress/BPF_W4_0922/RESTORE_RESULT.md`。旧 INCIDENT 和原始事故记录保留，不抹去违规事实；不得再运行 W3R 的旧提取脚本。
+    16	
+    17	相对**前轮 tmp static 候选 spec**，BPF_STATIC 新 spec 仅新增 Patch0 及 prep 无条件应用；这不是相对包仓 f895f8c 的全部差异。Patch 只在 STATIC_LINKING 且 LIBCLANG_STATIC_PATH 分支以 `${LIBBPF_LIBRARIES}` 替代裸 bpf。两架构 RPM 内 static 均精确依赖 libm/libgcc_s/libc/架构 loader，不依赖动态 libbpf/libc++/LLVM；命名空间及 libbpf 已定义符号交集通过。ARM 新 RPM ELF 与上轮重链接 ELF SHA 不同，aarch64 相同，只登记不归因。完整证据：`docs/progress/BPF_STATIC_0922/FINAL_RESULT.md`。
+    18	
+    19	**W4：本地提交已备好，待人工签字后推送。** 人工已取消“两行”限制，允许完整已验证 recipe。再次核远端基线 `f895f8c0373d224847fc7d3ecbeaac3bf926a1a1` 后，本地创建 `72fda9941031fc35d8825e73446ca43153c4b69b`；仅 spec 和新 patch，两文件与 recipe 逐字节一致，工作树干净、ahead 1 / behind 0；远端仍旧基线，未推包仓。ARM 新独立 prep 树退出 0，setup、Patch0、Source1002 解包、test 1=1 和 sed 均通过，未运行 %build。审阅见 `docs/progress/BPF_W4_0922/W4_SIGNOFF.md`。
+    20	
+    21	条件组合：Base-Toolchain 项目宏默认 `_toolchain=clang`、支持 override；`build_with_libcxx` 不是项目/GBS 全局宏，而是本包 spec:1–5 在 Clang 路径派生为 1。W1 两架构各覆盖 clang/1、gcc/未定义、未定义/未定义；构建阶段 clang/未定义、gcc/1 两种组合均 NOT_OBSERVED。已核配置默认路径两条件同步，但实际 QuickBuild 服务端最终宏集未取得，外部强制宏不能由正常六格外推通过。见 `CONDITION_COMBINATIONS.md`。
+    22	
+    23	前轮正常main/common预检退出2、static预检退出1的原始记录保留。本轮确认：/var/tmp实际位于/opt的rw ext4分区，/usr与/etc位于ro根分区；固定RPM源码transaction.c:164在ST_RDONLY时按0可用块计算，再由269–272产生DISKSPACE、rpmprob.c:143–151显示92MB，故与df物理空闲并不矛盾。固定源码为上游4.14.1提交，不冒充部署4.14.1.1的源码身份证明。
+    24	
+    25	新RPM直接解包到可写区，ELF SHA匹配；版本/info/list和三种脚本各3次，共12对调用均退出0；info只差LLVM21.1.1→22.1.8。共享libgcc取消20/20通过，静态libgcc对照也20/20通过，不外推此前x86_64崩溃结论。完整证据：`docs/progress/BPF_W3R_0922/FINAL_RESULT.md`、`BOARD_RESULT.md`。
+    26	
+    27	构建时长核实：ARM119.17min→10.02min；aarch64实际13.37min→10.00min，并非两小时→十分钟。指定ccache位置/launcher未观测，当前--version trace确认/emul原生Clang分派；缺历史逐编译进程及同期连续负载，提速唯一原因仍NOT_OBSERVED。ARM主包ELF/.text均不同、aarch64均相同，差异留人工审阅，未自行归因。见`BUILD_TIMING.md`。
+    28	
+    29	W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake；当前两轮根的 QEMU SHA 相同且均有 /emul 原生工具。当前宿主同时存在 arm（qemu-arm-binfmt，flags P）与 qemu-arm（qemu-arm-static，空 flags）注册，不据当前注册推断历史分派。原 GBS 保留根具备平台 accel 组件，但缺正式 OBS 执行记录；历史 W1 编译器分派差异及本轮与正式构建同形性仍 NOT_OBSERVED。见 `docs/progress/BPF_W4_0922/BUILD_DISPATCH.md`。
+    30	
+    31	## 挂账
+    32	
+    33	- 四份主包解包副本：**已恢复，事故文件保留于 *.objcopy-modified-0922**，本项恢复挂账关闭；事故历史保留。
+    34	- W4 完整 recipe 范围已获批准、本地提交与 prep 完成；待人工签字推包仓。条件组合的两种未覆盖形态及实际 QuickBuild 最终宏集仍需签字时审阅。
+    35	
+    36	- 正常static安装预检的ro挂载条件已与指定RPM源码对上；**rpm安装验证留待镜像阶段**，包括%post覆盖逻辑；可写区通过不冒充安装通过。主包依赖缺口仍见前轮原始记录。
+    37	- 新RPM已包含修正后的static，不再挂“未写包”。W4仍需审阅 `SPEC_DIFF.patch`、Patch和 `-lstdc++fs`：两架构实测解析GCC14.2目录下的静态归档，本轮不改该项。
+    38	- ARM 新 22 份 LLVM 输入已正常接入从原始根复制的新私有副本；普通预检与安装退出 0，未使用文件冲突豁免。旧冲突副本与记录保留，见 `docs/progress/BPF_W1_0921/INPUT_STATUS.md`。
+    39	- ARM 第五份 `libclang.a` 与旧份 SHA256 不同，登记身份，不归因。
+    40	- 本轮物理板测试通过后，先保存全部工作目录文件SHA，再按授权删除`/var/tmp/bpf_static_0922/`，独立验证不存在；本地RPM/探针仍可重新部署。无bpftrace安装、/usr/bin/bpftrace*仍ABSENT、起止挂载一致、root已恢复。
+    41	- 仍须审阅ARM主包.text差异及构建提速的历史证据缺口；ARM静态libgcc对照通过与x86_64既有崩溃的适用范围必须分开。GCC/未定义路径本轮不重构。
+    42	
+    43	## 下一步
+    44	
+    45	停止交人工审阅。**人工签字、人工推送并核对包仓远端 SHA → 人工批准 QuickBuild**；未 amend 时远端预期为 `72fda9941031fc35d8825e73446ca43153c4b69b`。需审完整 diff、format-patch、英文提交信息、条件组合、-lstdc++fs 与 Source1002 回退。RPM 安装/%post 验证留待镜像阶段。最新审阅单为 `docs/progress/BPF_W4_0922/W4_SIGNOFF.md`。RPM 仍取 `BPF_STATIC_0922` 原六份；本轮未重构产物、未推包仓、不起 QuickBuild。
+     1	# 11 包最终状态
+     2	
+     3	11/11 已发布源码适配；本轮未推包仓。历史验证沿用，不重计为本轮新构建。bpftrace static 候选仍不可作为已验收替换件。
+     4	
+     5	| package | branch | commit | published_status | prior_validation_reused | spec_guard_check | remote_head_match | candidate_notes |
+     6	| --- | --- | --- | --- | --- | --- | --- | --- |
+     7	| abseil-cpp | sandbox/lhmax2025/libcxx-migration | 7a4f04dad6d30ba09c406837cdd23ad779a69210 | 已完成并推送 | 三架构×libc++/GCC 六格完整通过 | PASS（字面条件审计） | MATCH | 不涉及本轮 static 候选；历史构建结果沿用，不是本轮重编 |
+     8	| boost | sandbox/lhmax2025/libcxx-migration | 4168e873584ae50a12733262026c007dce18ec89 | 已完成并推送 | 三架构×libc++/GCC 六格完整通过；全部子包一致 | PASS（字面条件审计） | MATCH | 不涉及本轮 static 候选；历史构建结果沿用，不是本轮重编 |
+     9	| icu | sandbox/lhmax2025/libcxx-migration | dcbb3fb476b4d57c4c7e5770f1ed55d43f6f6330 | 已完成并推送 | 三架构×libc++/GCC 六格完整通过 | PASS（字面条件审计） | MATCH | 不涉及本轮 static 候选；历史构建结果沿用，不是本轮重编 |
+    10	| jsoncpp | sandbox/lhmax2025/libcxx-migration | 9cbab147f44097d5b8da2b3ef38f75376a282d01 | 已完成并推送 | 三架构×libc++/GCC 六格完整通过 | PASS（字面条件审计） | MATCH | 不涉及本轮 static 候选；历史构建结果沿用，不是本轮重编 |
+    11	| libsigc++ | sandbox/lhmax2025/libcxx-migration | 4f2f592d2f88eb6a3a949cec8970a4cd5d40165b | 已完成并推送 | 三架构×libc++/GCC 六格完整通过；libc++ 以编译命令和 std::__1 痕迹确认 | PASS（字面条件审计） | MATCH | 不涉及本轮 static 候选；历史构建结果沿用，不是本轮重编 |
+    12	| pcre | sandbox/lhmax2025/libcxx-migration | 09a5bfc9a96c4235628ce800db3b95bf28ef2f23 | 已完成并推送 | 三架构×libc++/GCC 六格完整通过 | PASS（字面条件审计） | MATCH | 不涉及本轮 static 候选；历史构建结果沿用，不是本轮重编 |
+    13	| taglib | sandbox/lhmax2025/libcxx-migration | 8b552bdf27c913a93bca664c41c3fafb214962a1 | 已完成并推送 | 三架构×libc++/GCC 六格完整通过 | PASS（字面条件审计） | MATCH | 不涉及本轮 static 候选；历史构建结果沿用，不是本轮重编 |
+    14	| tensorflow2 | sandbox/lhmax2025/libcxx-migration | 6d76139029ca4162249667f0db65a73387a94cfe | 已完成并推送 | libc++ 三格及 aarch64/x86_64 GCC 两格通过；armv7l GCC 与未改基线同点同因失败，按相对基线无回归判据通过 | PASS（字面条件审计） | MATCH | 不涉及本轮 static 候选；历史构建结果沿用，不是本轮重编 |
+    15	| llvm | sandbox/lhmax2025/libcxx-ehabi-backport | f203923a1508c9344f5fc6b17bd8822f011655c4 | 已完成并推送 | 三架构 libc++、MLGO 执行、GCC、非 libc++ 同环境对照十二格通过 | PASS（字面条件审计） | MATCH | 已发布适配状态不变；本轮新增ARM静态开发包整轮退出1，18份RPM单独核验通过，不能标完整构建 |
+    16	| bcc-tools | sandbox/lhmax2025/libcxx-migration | 5bd0654e24bb231035ea684d278f674aa95a2cd2 | 已完成并推送 | aarch64/x86_64 的 libc++/GCC 四格通过，沿用；本轮armv7l libc++/GCC完整构建及各五次核查通过 | PASS（字面条件审计） | MATCH | 不涉及本轮 static 候选；历史构建结果沿用，不是本轮重编 |
+    17	| bpftrace | sandbox/lhmax2025/libcxx-migration | f895f8c0373d224847fc7d3ecbeaac3bf926a1a1 | 已完成并推送（源码适配）；static 资产替代另列待处理 | armv7l/aarch64 × libc++/GCC 源码四格完整通过；static 未重编、内嵌标准库 NOT_OBSERVED，按本轮人工批准单列；x86_64 不在 ExclusiveArch | PASS（字面条件审计） | MATCH | 源码适配已发布；新static替换未获验收：ARM libc++ RPM未完成，aarch64多出libbpf动态依赖，板上功能未验；GCC/未定义四格完整RPM已核验 |
+     5	| 项目 | 状态 | 证据 / 边界 |
+     6	| --- | --- | --- |
+     7	| 磁盘、资源、同一读写探针 | PASS | 001–004；251 GiB；medium=0；3,932,160 字节探针 0.760745 秒 |
+     8	| 五对象原生等价抽查 | 沿用 PASS | 上轮 native-equivalence-summary.json；不是逐目标证明 |
+     9	| 历史未上传日志补齐 | 完成并推送 | cc22d4c2296b974a029fa73758668c392c08e62b；269 个归档文件 |
+    10	| LLVM aarch64 完整 RPM | PASS | 14:17:21 最终完整 rpmbuild 返回 0；12 个 RPM 全部摘要校验通过；从 RPM 提取的 libclang.a 有 libc++ 痕迹，libLLVM 依赖 libc++、不依赖 libstdc++；见 AARCH64_RPM_RESULT.md |
+    11	| LLVM armv7l 静态开发 RPM | PARTIAL / 等待裁决 | 15:47:27 完整 rpmbuild 退出 1（cpio write failed / Function not implemented）；18 个已写出 RPM 单独校验通过，含 libclang.a；不将整轮记 PASS，不自动用于后续 |
+    12	| armv7l/aarch64 bpftrace 三路径 RPM | NOT_STARTED / 输入准备中止 | armv7l LLVM 完整写包失败待裁决；aarch64 私有输入根复制校验遇到 EPERM，未将部分复制输入用于构建 |
+    13	| armv7l 物理板验证 | NOT_STARTED（已做预检） | raw/222–226 开启板上 root 做只读能力检查，随后恢复 owner；raw/237 保存装包前清单。尚未上传探针、安装 RPM 或执行功能测试 |
+    14	
+    15	## 本轮技术性处理与限制
+    16	
+    17	1. 第一次启动使用上轮较低的内存值，严格相等校验退出 1，尚未启动构建。重新计算并用 16,536,461,312 字节启动。
+    18	2. 第二次运行在配置临时 Ninja 的 ionice 返回 `none: prio 0` 时主动中止，不能声称该次资源验收通过。随后独立探针复现活进程为 idle、退出未回收进程为 none。原 PID 当时的存活状态未被采集，故不能将这个解释确认为原 PID 的事实。
+    19	3. 新监控同时核对 PID 启动时间与存活状态；退出中进程仅记 NOT_OBSERVED，活 Ninja 仍严格要求 -j1、nice19、idle 和实际 memory.max。失败时仍停止，不放宽任何资源判据。
+    20	4. 两次旧脚本快照与旧构建输出均保留。新脚本 SHA256：c93f008a4a3dd23caa7fb21336636a662f190f647a7d5ade40bf04ec4eb84db9。
+    21	5. 每 500 目标 I/O 探测、慢时暂停十分钟并最多三次重试；硬截止线程独立发出停止信号。配置准备阶段另有读写复测均未超 30 秒。
+    22	6. 此处不把 CMake 可选特性的 Failed/not found 当作构建失败；也不把 CMake 检测 Ninja 的资源证明当作主 Ninja 的证明。
+    23	
+    24	原始输出：raw/、events.jsonl、llvm-aarch64.log。每小时进度：HOURLY_STATUS.md。
+    25	
+    26	## 主构建实测
+    27	
+    28	CMake 配置完成：415.7 秒；生成后主构建实际开始。raw/055、056 记录主 Ninja PID 42296：`-j1 -j 1`，实际 cgroup 为 `.../build-static-0917-resume.scope`，memory.max=16536461312，nice=19，ionice=idle。raw/057 抓到实际 `/emul/usr/bin/aarch64-tizen-linux-gnu-clang++` 编译 LLVMCore/Support 对象命令含 `-stdlib=libc++`，不是只读取 CMake 意图。
+    29	
+    30	当前 aarch64 对象由原生交叉工具集编译；正确性的工具切换依据仍仅是上轮五对象抽查，不作逐目标等价声明。14:17 已取得并核查 LLVM 完整 RPM，但 bpftrace RPM 与板上门禁尚未闭合，不能替换发布资产。
+    31	
+    32	## 10:07 附记
+    33	
+    34	第二个自动 I/O 检查点（1000 目标）通过：实际校验 0.168131 秒，退出 0。读取其摘要的 raw/065 因记录器 PATH 未包含 rg 退出 127；补入已经实际定位的 rg 目录后，raw/067 成功。旧记录器另存 run_logged.before_rg_fix.sh。只改报告记录器的 PATH，不改正在执行的构建脚本、编译参数或隔离根 PATH。
+    35	
+    36	复核发现 raw/043 中进程筛选也受相同 PATH 问题影响；该复合命令最后的压力统计返回 0，不能把其空筛选结果作为“无进程”证据。原 stderr 保留；后续 raw/044、045 已直接查询 scope 和 PID，确认进程存在。本轮开工的 raw/004 为未经过滤的完整 ps 输出，不受此问题影响。
+    37	
+    38	## 12:26 附记
+    39	
+    40	- 已完成十次定期 I/O 探测（500 至 5000 目标），均退出 0，实际读写校验耗时均低于 1 秒；没有触发 I/O 暂停。
+    41	- 原 armv7l 构建树仍在，且构建目录归当前用户所有。原 spec 与候选的构建配置差异为条件内打开 LIBCLANG_BUILD_STATIC；另外有 VCS/Release 字段差异。尚未在该树上配置或构建，不将其当作已通过。
+    42	- 两份 llvm 源码 tar 的整体 SHA256 不同（raw/086），SOURCE_PROVENANCE 文本相同（raw/087）。随后逐条比较 184,839 个条目的类型、模式、大小、链接目标和常规文件 SHA256：独有条目 0、差异条目 0（raw/092；source_payload_comparison.json）。该比较忽略时间戳、所有者、归档顺序与压缩表示，证明输入有效载荷相同，不声称压缩包逐字节相同。
+    43	- 本轮没有新增 sudo、板上操作或包仓推送。只读检查中有个别历史路径猜测错误：原 arm spec 实际位于 SOURCES，CMake 目录为 3.31.2，历史报告文件为 FINAL_REPORT.md；均保留失败输出并定位重查。读取 raw/081 的退出码时误用 .exitcode.txt 后缀，实际文件为 .exitcode（内容 0），不是资源检查失败。
+    44	
+    45	有效载荷检查第一次在 json.dumps 生成大字符串时触发其自设 512 MiB 虚拟内存上限（MemoryError，退出 1）。改成 json.dump 流式写文件后以相同上限重跑通过，耗时 15.25 秒。第一版脚本与输出保留；完整大清单放 tmp/STATIC_0917B/source-payload-audit，报告保留差异结论及清单 SHA256，不把约 80 MiB 的完整清单默认提交。LLVM 构建未被停止或修改。
+    46	
+    47	## 13:44 记录器事故及处置
+    48	
+    49	1. `events.jsonl` 明确记录首轮于 13:37:01.115 返回 0，完成 7546/7546。完整日志自动保留为 `llvm-aarch64.stopped-133701.log`，其中实际写出 12 个 RPM。
+    50	2. 13:37:01.279，同一外层记录进程又启动相同 Python 构建监控，监控脚本 SHA256 未变。重复执行到 99 个增量目标后进入打包；13:42:57 对该重复执行的 PGID 115778 发 TERM，退出 -15。外层 `raw/033_build.exitcode` 为 241，**不能把这个外层退出码写成 0**。首轮成功只引用单独的 finished 事件与首轮完整日志。
+    51	3. 本轮此前在长命令未结束时改写了正在运行的 Bash 记录器 PATH，这是不应做的。重复执行的直接观测成立；Bash 读取被改写脚本时的具体字节偏移机制尚未另作受控复现，不将其写成已实测机制。今后只用运行前固定的一次性 Python 记录器，任何修改另存新版本，不编辑正在执行的文件。
+    52	4. 重复执行已改写 llvm 与 llvm-devel 两个 RPM 文件，且现存集合因此混有两次执行。事后逐条计数进一步澄清：日志只确认 llvm 的 Wrote；llvm-devel 当时还在写入，不能称两个完整包。全部 12 个文件可恢复地移至 `tmp/STATIC_0917B/rpm-aarch64/RPMS_prior_mixed_1343`，不作为最终验收输入。移动前逐个 SHA256 与时间记录于 raw/113、112；未删除任何包或 Source1002。
+    53	5. 新记录器 `run_logged_v2.py` 只调用子进程一次。新一轮完整 rpmbuild（仍 --noprep -bb，无 short-circuit）于 13:44:23 启动，复用已经完成的编译树；raw/116 保存独立命令、输出与退出码。重新检查 medium=0（raw/114），memory.max 仍为 16536461312，nice19/idle、-j1 均不放宽。
+    54	6. 重复执行约 5 分 56 秒；有意重写包耗时约 32 分 58 秒。首轮结束到最终结束共额外约 40 分 20 秒（包括排查与准备），不能仅报编译用时。重复/最终两轮分别公告 99/98 个增量目标，各含 5 次对象编译公告，合计额外 10 次对象编译，而非 197 个重新编译的对象。14 小时截止仍为 22:48:19，不顺延。首轮打包期间 memory.events 的 oom/oom_kill 均为 0；补做 I/O 探测 1.358 秒通过（raw/106、107）。
+    55	7. 截至该附记的 13:44，armv7l 仅准备命令；随后于 14:22:59 启动。用显式原 .rpmrc 与 .rpmmacros 后，展开编译 flags 与保留树 CMAKE_CXX_FLAGS 逐字一致；未加载原 .rpmrc 的前置查询曾返回默认 flags，因此没有用那个不完整环境启动构建。--load 不被该 RPM 支持（raw/096），改用实际支持的 --rcfile/--macros（raw/101），不更改平台宏文件。
+    56	
+    57	## 14:46 附记
+    58	
+    59	- armv7l 123 个增量目标已经完成，正在完整写包；实际编译器仍是 QEMU 入口的目标 Clang，未把仅对 aarch64 获准的原生替换擅自外推到 armv7l。memory.max=16536461312、nice19/idle、Ninja -j1 已核查，当前 oom/oom_kill=0。
+    60	- OpenMP 安装的两条符号链接命令报只读文件系统。原 spec:382 将 buildroot 填入 CMAKE_INSTALL_PREFIX，而生成的 openmp/runtime/src/cmake_install.cmake:63–79 将链接工作目录写成 $ENV{DESTDIR}/usr/lib。该轮没有设置 DESTDIR，故被只读旧根阻止。原始输出保留；未擅自修平台打包行为，不以编译完成代替 RPM 检查。
+    61	- 为寻找历史脚本而对 tmp/NIGHT_0917 的文件列表检索耗时偏长；确认是本轮只读 rg PID 167188 后停止（raw/160 退出 0），改为检索具体 progress 目录。组合记录 raw/154 的最终退出 0 不表示其中被中止的 rg 完成了全目录扫描。
+    62	- 两架构 GCC 与未定义 _toolchain 宏路径已实际展开（bpf_mode_queries.json）：未定义路径确为 defined=0，通过显式指定 GCC 的通用编译器/归档器宏保留 GCC flags；与 GCC 路径 flags 相同，不含 libc++ 参数。这是测试环境定义，不改 spec，不是完整构建通过证明。
+    63	- sdb 初次列表为空，直接查询返回 target not found（raw/174=1）；显式 connect 成功（raw/175=0），随后只读板上预检完成（raw/177=0）。任务目录不存在，当前预检身份是 owner；未做板上安装/root 操作，尚无功能验证结论。
+    64	
+    65	## 15:00 压缩并行度纠正
+    66	
+    67	1. armv7l 首轮编译确为 -j1，但 RPM 使用原 .rpmmacros:17 的 `%_binary_payload w5T.xzdio`。14:58 日志实际显示 XZ 请求 20 线程、按内存预算降到 15。**这是本轮资源控制遗漏，不能声称整条流水线均为单并行**。
+    68	2. 立即停止该轮 PGID 164290（raw/198 退出 0）；监控/记录器最终退出 241（其构建子进程被 TERM，非正常成功）。原始 arm_llvm/ 日志保留。停止时有 6 个 RPM 文件，其中日志只确认 5 次 Wrote，不能当成完整集合。
+    69	3. 这 6 个文件带 SHA256 可恢复地移至 tmp/STATIC_0917B/rpm-arm-llvm/RPMS_stopped_parallel_1459，未删除，也不作为后续输入。
+    70	4. 按构建根 usr/lib/rpm/macros:403 的实际说明，命令行覆盖为 `_binary_payload w5T1.xzdio`，保留原 XZ 压缩级别 5，明确线程 1；不修改任何 spec 或平台宏文件。相同隔离环境下 rpm --eval 实际输出 w5T1.xzdio（serial_packaging_correction.json）。后续新 RPM 单元均采用显式单线程压缩。
+    71	5. medium 复查退出 0，负载 1.64；15:00:14 重启完整 rpmbuild --noprep --noclean -bb（raw/202），不使用 short-circuit。新的独立日志在 cells/llvm-arm-rpm-serial/，旧日志不覆盖。
+    72	6. 新 scope memory.max=16536461312、nice19、idle 已实际核对；截至此附记仍在配置阶段，不能提前写包通过。14 小时截止不顺延。aarch64 先前产物的正确性核查保留；该轮压缩工作线程未单独捕获，记 NOT_OBSERVED，不能用“无 XZ 警告”证明压缩并行度。
+    73	
+    74	## 15:43 进度与验证准备
+    75	
+    76	- 单线程重试已写出主包及部分调试包，正在写 clang-debuginfo；未取得完整退出码前不宣布完成。raw/250、251 记录 memory.current=5052358656，oom/oom_kill=0，磁盘可用 229 GiB。实测 rpmbuild 有三个宿主线程，其中两个睡眠、一个工作；不将宿主线程总数写成一。
+    77	- 板上 /usr/bin/bpftrace 与 /usr/bin/bpftrace-static 均不存在，已保存完整安装包清单供恢复核对。/proc/config.gz 与 /boot/config-* 不可得；BTF 和 tracing 列表存在不等于功能测试通过。没有新增 PC sudo。
+    78	- 准备取消探针与功能脚本，已做 Python 语法检查，尚未执行。取消脚本逐次核对远端退出码与清理/join 断言；static-libgcc 的 ARM 对照只记录实测，不以 x86_64 结果代替。功能脚本不安装 RPM，只检查已安装且 SHA256 固定的二进制。
+    79	- armv7l 仍使用 QEMU 工具入口。aarch64 的原生工具授权与五对象抽查不外推至 armv7l；是否允许 ARM 原生工具抽查的问题已提出，未答复前不切换。
+    80	
+    81	## 15:51 armv7l 写包失败与单独产物核查
+    82	
+    83	- raw/202 实际退出 1；监控 finished 时间为 15:47:27。最后错误为 `create archive failed: cpio: write failed - Function not implemented`。18 次 Wrote 后没有完整结束，不能以 18 个文件替代整轮成功。
+    84	- raw/259、260：磁盘可用 229 GiB，inode 可用 88,417,614；该 BUILDROOT 没有大于 1 GiB 的常规文件。具体产生 ENOSYS 的系统调用/源代码位置 NOT_OBSERVED；不能把错误直接归因于磁盘不足、大文件或 QEMU。
+    85	- raw/261 是只读产物核查，退出 0：18 个现存 RPM 摘要及 xz/5T1 头字段通过；实际 RPM 提取的 libclang.a SHA256 为 9884348bb092f3d550d2485de9a83dcb130f8b1540e0c4f115b82686e42bc374，std::__1 字符串行 1062、std::__cxx11 0；libLLVM 的动态依赖含 libc++，不含 libstdc++。该检查只说明这些具体 RPM，不关闭整轮门禁。
+    86	- 已询问是否允许将独立核验的静态开发 RPM 用于 bpftrace、同时保留 LLVM 整体写包失败。未收到答复前不沿用 armv7l 输入；aarch64 的已通过输入不受该问题影响。
+    87	- 未执行的安装脚本从文件名前缀选择改为 RPM NAME 精确选择 libc++、libc++-devel、libc++abi、libc++abi-devel 四包，防止将额外的调试子包误计入四包。只是输入选择工具修正，不改任何 spec/包内容，尚未执行安装。
+    88	
+    89	## 18:52 中断后续跑
+    90	
+    91	- 用户要求继续；原截止 22:48:19 不重置。raw/274 盘点没有旧构建/复制进程，磁盘 227 GiB；原 copy-inputs-aarch64 的最后事件为 15:58:36，raw/269 没有 finished/exitcode，结束原因与退出码均记 NOT_OBSERVED，不补记成成功或某个推测退出码。
+    92	- 新 medium 门禁退出 0（raw/275），开工同一读写探针退出 0（raw/276）。系统 uptime 表明系统启动时间已变化，不把这单独作为原中断原因的证明。
+    93	- 旧内存上限启动检查 raw/279 退出 1，尚未调用复制子进程。重读 MemTotal=32297772 KiB，50% 按页向下取整为 16536457216 字节，比旧值少 4096 字节。raw/281 以新上限启动，实际 cgroup 与 memory.max、nice19/idle 已核验。
+    94	- 复制脚本新增显式 --resume，仅允许当前 aarch64 私有目录；以 rsync --checksum 校验已有文件后补齐，保留原始复制日志。新命令记录另存 -resume-commands.json，不覆盖旧输出。脚本哈希 raw/282。
+    95	- 目录盘点 du 较慢且处于 D 状态，补做同一 I/O 探针 raw/284：6.991 秒、退出 0，尚未达到 30 秒暂停阈值。当前未启动新的编译，不以此声称所有 I/O 都正常。
+    96	
+    97	## 19:08 复制校验失败，中止并交人工确认
+    98	
+    99	- du 最终完成，来源 usr=1607950336 字节、RPM 数据库=5455872 字节，合计 1613406208，仍低于 3 GiB。第二次额外 I/O 探针 raw/286 为 1.311 秒、退出 0；没有触发“超 30 秒暂停十分钟”条件。
+   100	- rsync --checksum 对旧根 usr/bin/llvm-opt-report 报 `read errors mapping ... Operation not permitted (1)`，两次更新均被其校验拒绝。raw/289 对本轮已核定 PGID 13095 发 TERM，退出 0；raw/281 最终记录器退出 241、监控子进程退出 -15。未把此次中止计为复制成功。
+   101	- 源文件 mode=0755、root:root、40896 字节。raw/290 的源文件 SHA256 读取成功，目标不存在，组合命令退出 1。不能将该组合退出 1 解释成源文件 SHA256 失败。
+   102	- raw/292 受控单文件诊断：rsync 退出 23，strace 实际 `openat(... O_RDONLY|O_NOFOLLOW)=3` 后 `read(...,40896)=-1 EPERM`；cp 退出 0。普通读取、cp 的 SHA256 均为 55629940b16d1ca7c100f17a41f3e1677f7ec3726449d9d8fa0f462f9b941a35。诊断仅写 tmp/STATIC_0917B/rsync_read_probe 的任务文件，不改源文件，不使用 sudo。
+   103	- 产生读取差异的机制仍为 NOT_OBSERVED；未将它推断成普通 I/O 超时、损坏、权限位问题或安全控制。未自行改用 cp 复制整个根，未降低输入校验要求，等待人工确认如何处理。
+   104	- 本轮最终 PARTIAL。aarch64 LLVM 的 12 个完整 RPM 及核查结果保留；bpftrace 两架构三路径 RPM、安装及板上功能/取消验证未完成，候选不能据本轮结果替换发布资产。没有推包仓或改 Source1002；没有新增 PC sudo。
+"""Read the public Base-Toolchain reference index; no authentication/config changes."""
+import hashlib,json,shlex,subprocess
+from html.parser import HTMLParser
+from pathlib import Path
+from urllib.parse import urljoin
+P=Path.cwd();E=P/'progress/QB_PRECHECK_0922/public-repository';E.mkdir(exist_ok=False)
+url='https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base-Toolchain/reference/'
+argv=['curl','-sS','--max-time','30','-L','-D',str(E/'reference.headers'),'-o',str(E/'reference.html'),'-w','%{http_code} %{url_effective}\n',url]
+r=subprocess.run(argv,capture_output=True,text=True);(E/'request.json').write_text(json.dumps(dict(command=shlex.join(argv),exitcode=r.returncode,stdout=r.stdout,stderr=r.stderr),indent=2));print(r.returncode,r.stdout)
+class Links(HTMLParser):
+ def __init__(self):super().__init__();self.links=[]
+ def handle_starttag(self,tag,attrs):
+  if tag=='a':
+   h=dict(attrs).get('href','')
+   if h:self.links.append(urljoin(url,h))
+if r.returncode==0:
+ data=(E/'reference.html').read_bytes();x=Links();x.feed(data.decode(errors='replace'));(E/'links.json').write_text(json.dumps(x.links,indent=2));print('\n'.join(x.links));(E/'sha256').write_text(hashlib.sha256(data).hexdigest()+'\n')
+arch	binary	version_release	source_rpm	source	r101_line	r101_decision	current_status	vendor	distribution	repository_limit
+armv7l	bcc-tools-static	0.35.0-115.2	bcc-tools-0.35.0-115.2.src.rpm	bcc-tools	14	需要改	ADAPTED_PUSHED	None (open source)	(none)	RPM metadata only; current OBS availability NOT_OBSERVED
+armv7l	libbpf-static	1.6.2-1.1	libbpf-1.6.2-1.1.src.rpm	libbpf	91	不需要改	NO_CHANGE_NEEDED	tizen	Tizen-Base-Toolchain	RPM metadata only; current OBS availability NOT_OBSERVED
+armv7l	liblzma-static	5.8.1-1.9	xz-5.8.1-1.9.src.rpm	xz	251	不需要改	NO_CHANGE_NEEDED	tizen	Tizen-Base-Toolchain	RPM metadata only; current OBS availability NOT_OBSERVED
+armv7l	zlib-devel-static	1.3.1-1.10	zlib-1.3.1-1.10.src.rpm	zlib	254	不需要改	NO_CHANGE_NEEDED	tizen	Tizen-Base-Toolchain	RPM metadata only; current OBS availability NOT_OBSERVED
+aarch64	bcc-tools-static	0.35.0-112.1	bcc-tools-0.35.0-112.1.src.rpm	bcc-tools	14	需要改	ADAPTED_PUSHED	None (open source)	(none)	RPM metadata only; current OBS availability NOT_OBSERVED
+aarch64	libbpf-static	1.6.2-1.1	libbpf-1.6.2-1.1.src.rpm	libbpf	91	不需要改	NO_CHANGE_NEEDED	tizen	Tizen-Base-Toolchain	RPM metadata only; current OBS availability NOT_OBSERVED
+aarch64	liblzma-static	5.8.1-1.10	xz-5.8.1-1.10.src.rpm	xz	251	不需要改	NO_CHANGE_NEEDED	tizen	Tizen-Base-Toolchain	RPM metadata only; current OBS availability NOT_OBSERVED
+aarch64	zlib-devel-static	1.3.1-1.11	zlib-1.3.1-1.11.src.rpm	zlib	254	不需要改	NO_CHANGE_NEEDED	tizen	Tizen-Base-Toolchain	RPM metadata only; current OBS availability NOT_OBSERVED

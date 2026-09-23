@@ -2,7 +2,7 @@
 
 ## 线的定位与分界
 
-本线负责 Tizen-Base-Toolchain 的 libc++ 编译适配、输入资产与 RPM 核验；运行时边界决策由运行时线负责。本轮 W4 续已获完整配方授权，在 tmp 包克隆创建一个本地提交并完成 ARM %prep 检查、只读条件组合核查。codes、Source1002 不动；不运行 %build、不上板、不推 sandbox/包仓、不起 QuickBuild；只推项目材料。
+本线负责 Tizen-Base-Toolchain 的 libc++ 编译适配、输入资产与 RPM 核验；运行时边界决策由运行时线负责。本轮登记人工 W4 推送，并只读核查 QuickBuild 前置。codes、Source1002 不动；不构建、不上板、不推 sandbox/包仓、不起 QuickBuild；按人工澄清只推项目材料。
 
 ## 当前位置
 
@@ -16,7 +16,9 @@ Base 对账：73 个含 C++ 源码包中，11 个已适配推送、56 个有依�
 
 相对**前轮 tmp static 候选 spec**，BPF_STATIC 新 spec 仅新增 Patch0 及 prep 无条件应用；这不是相对包仓 f895f8c 的全部差异。Patch 只在 STATIC_LINKING 且 LIBCLANG_STATIC_PATH 分支以 `${LIBBPF_LIBRARIES}` 替代裸 bpf。两架构 RPM 内 static 均精确依赖 libm/libgcc_s/libc/架构 loader，不依赖动态 libbpf/libc++/LLVM；命名空间及 libbpf 已定义符号交集通过。ARM 新 RPM ELF 与上轮重链接 ELF SHA 不同，aarch64 相同，只登记不归因。完整证据：`docs/progress/BPF_STATIC_0922/FINAL_RESULT.md`。
 
-**W4：本地提交已备好，待人工签字后推送。** 人工已取消“两行”限制，允许完整已验证 recipe。再次核远端基线 `f895f8c0373d224847fc7d3ecbeaac3bf926a1a1` 后，本地创建 `72fda9941031fc35d8825e73446ca43153c4b69b`；仅 spec 和新 patch，两文件与 recipe 逐字节一致，工作树干净、ahead 1 / behind 0；远端仍旧基线，未推包仓。ARM 新独立 prep 树退出 0，setup、Patch0、Source1002 解包、test 1=1 和 sed 均通过，未运行 %build。审阅见 `docs/progress/BPF_W4_0922/W4_SIGNOFF.md`。
+**W4 关闭：人工已推送，远端登记完成。** bpftrace 远端 `7831fb34c6881b5cff0b8bdd0dac27a1829290fa` 与本地已验证候选 `72fda9941031fc35d8825e73446ca43153c4b69b` 的 tree 均为 `0cd67fd05efc0a16d7e2463695f1f2b040bbf2fe`，内容零差异。Author 为 Hao Lin <hao.lin@samsung.com>；Committer、Signed-off-by 为 He Fangyu <fangyu.he@samsung.com>，签字人与作者不同，仅登记不修改。历史 ARM prep 退出0、setup/Patch0/Source1002/test与sed通过的证据仍沿用。见 `docs/progress/QB_PRECHECK_0922/FINAL_RESULT.md`。本轮仅fetch/查询，没有包仓推送；W4关闭不等于安装或QuickBuild已通过。
+
+**QuickBuild 无需 payload 对策；OBS 当前实际宏值仍为 NOT_OBSERVED。** `ARM_RPM_DIAG/upstream-rpmio.c:765–777`：T后无数字走else（threads=-1），分支内指针不前移，不越界；只有T<数字>进入if，while停在终止符，再由外层for的mode++越过终止符。本地Base-Toolchain project_config:61与W1两个保留根的 `w5T.xzdio` 因而不触发。09-17 armv7l LLVM失败是为限制xz线程而本地CLI覆盖 `w5T1.xzdio` 引入（BUILD_STATIC_0917B/resume_0917/STATUS.md:67–70），与libc++无关，不在任何spec或sandbox提交中。后续本地构建继续用单线程 `w5.xzdio`，禁止T<数字>形式。补查固定Base-Toolchain快照20260828.101647的armv7l libllvm/libicu/boost-devel，三份RPM SHA匹配原下载清单，包头均xz/5T；不把历史包头冒充当前服务端宏。11个已适配包远端SHA均MATCH；4个静态BR源码均在R101范围内（bcc-tools已适配、libbpf/xz/zlib无需改），OBS当前静态输入可用性未观测。详见 `docs/progress/QB_PRECHECK_0922/PAYLOAD.md`、`RPM_PAYLOAD_HEADERS.json`、`STATIC_DEPENDENCIES.tsv`。
 
 条件组合：Base-Toolchain 项目宏默认 `_toolchain=clang`、支持 override；`build_with_libcxx` 不是项目/GBS 全局宏，而是本包 spec:1–5 在 Clang 路径派生为 1。W1 两架构各覆盖 clang/1、gcc/未定义、未定义/未定义；构建阶段 clang/未定义、gcc/1 两种组合均 NOT_OBSERVED。已核配置默认路径两条件同步，但实际 QuickBuild 服务端最终宏集未取得，外部强制宏不能由正常六格外推通过。见 `CONDITION_COMBINATIONS.md`。
 
@@ -31,10 +33,10 @@ W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake
 ## 挂账
 
 - 四份主包解包副本：**已恢复，事故文件保留于 *.objcopy-modified-0922**，本项恢复挂账关闭；事故历史保留。
-- W4 完整 recipe 范围已获批准、本地提交与 prep 完成；待人工签字推包仓。条件组合的两种未覆盖形态及实际 QuickBuild 最终宏集仍需签字时审阅。
+- W4 人工推送与远端登记已关闭；条件组合两种未覆盖形态、实际QuickBuild最终宏集仍未观测，不能由本地六格外推。payload按源码/包头与本次人工裁决无需对策，不再挂为启动阻断。
 
 - 正常static安装预检的ro挂载条件已与指定RPM源码对上；**rpm安装验证留待镜像阶段**，包括%post覆盖逻辑；可写区通过不冒充安装通过。主包依赖缺口仍见前轮原始记录。
-- 新RPM已包含修正后的static，不再挂“未写包”。W4仍需审阅 `SPEC_DIFF.patch`、Patch和 `-lstdc++fs`：两架构实测解析GCC14.2目录下的静态归档，本轮不改该项。
+- 新RPM及人工已推配方包含修正后的static，不再挂“未写包/未推送”。`-lstdc++fs` 仍挂账：两架构实测解析GCC14.2目录下的静态归档，本轮不改该项。
 - ARM 新 22 份 LLVM 输入已正常接入从原始根复制的新私有副本；普通预检与安装退出 0，未使用文件冲突豁免。旧冲突副本与记录保留，见 `docs/progress/BPF_W1_0921/INPUT_STATUS.md`。
 - ARM 第五份 `libclang.a` 与旧份 SHA256 不同，登记身份，不归因。
 - 本轮物理板测试通过后，先保存全部工作目录文件SHA，再按授权删除`/var/tmp/bpf_static_0922/`，独立验证不存在；本地RPM/探针仍可重新部署。无bpftrace安装、/usr/bin/bpftrace*仍ABSENT、起止挂载一致、root已恢复。
@@ -42,4 +44,4 @@ W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake
 
 ## 下一步
 
-停止交人工审阅。**人工签字、人工推送并核对包仓远端 SHA → 人工批准 QuickBuild**；未 amend 时远端预期为 `72fda9941031fc35d8825e73446ca43153c4b69b`。需审完整 diff、format-patch、英文提交信息、条件组合、-lstdc++fs 与 Source1002 回退。RPM 安装/%post 验证留待镜像阶段。最新审阅单为 `docs/progress/BPF_W4_0922/W4_SIGNOFF.md`。RPM 仍取 `BPF_STATIC_0922` 原六份；本轮未重构产物、未推包仓、不起 QuickBuild。
+停止交人工审阅。**人工起 Tizen-Base-Toolchain QuickBuild（指向11个sandbox分支，SHA见本轮 `docs/progress/QB_PRECHECK_0922/REMOTE_BRANCHES.tsv`）→ 结果与预期失败清单对账**。实际OBS配置与静态输入可用性在构建记录中继续核对，不再要求先作payload对策；已确认tensorflow2/armv7l/GCC条件性历史失败不能当默认Clang失败豁免，六个GCC包仅有全局注入driver风险证据。清单见 `docs/progress/QB_PRECHECK_0922/EXPECTED_FAILURES.md`，五项挂账影响见 `OPEN_ITEMS.md`。正常RPM安装/%post仍留待镜像阶段；RPM沿用BPF_STATIC_0922原六份，本轮未重构产物、未起QuickBuild。

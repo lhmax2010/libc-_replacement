@@ -1,0 +1,107 @@
+   149	## 6. XNNPACK 问题的性质与影响边界
+   150	
+   151	基线 spec 默认 `USE_CLANG="ON"`、`USE_XNNPACK="ON"`；只有验证宏才让
+   152	armv7l 进入现有 GCC 分支。该 GCC 分支显式关闭 ARM BF16 和 I8MM，却没有关闭
+   153	ARM dot-product/FP16 微内核。最终 XNNPACK 仍生成带 `vsdot.s8` 等指令的
+   154	AArch32 汇编，而当前 armv7l GCC/assembler 组合拒绝这些指令。
+   155	
+   156	因此：
+   157	
+   158	- 当前正常 armv7l 包路径由 spec 选择 Clang，R105 的 armv7l libc++ 完整构建
+   159	  已通过；本次失败不影响这条当前产品构建路径。
+   160	- 如果要求该 revision 支持 armv7l 的完整 GCC 构建，则问题会直接阻止产包；
+   161	  没有 armv7l GCC 产物可供判断运行时行为，所以运行时影响是
+   162	  `NOT_OBSERVED`。
+   163	- 该问题应作为独立的“tensorflow2/XNNPACK armv7l GCC 构建路径”待处理项
+   164	  登记。它不属于 libc++/`std::abs` 候选改动，也不应为通过本任务而顺手修改
+   165	  XNNPACK 配置。
+   166	
+   167	## 7. 提交、推送与分支核验
+    17	需要改的 10 包：`abseil-cpp`、`bcc-tools`、`boost`、`bpftrace`、`icu`、
+    18	`jsoncpp`、`libsigc++`、`llvm`、`pcre`、`taglib`。
+    19	
+    20	## 为什么采用逐包方式
+    21	
+    22	- 逐包方式只触及 10 个已由实际符号边证实需要迁移的 spec。
+    23	- 全局方式会把定义暴露给全部 254 包，并额外触及 55 个已判定不需要迁移的
+    24	  C++ 包、6 个当前 GCC 包和 2 个未定包。
+    25	- GCC 14.2.0 在 armv7l/x86_64 实测明确拒绝 `-stdlib=libc++`，不是静默忽略；
+    26	  这 6 个当前 GCC 包会形成明确失败暴露面。aarch64 GCC driver 环境自身退出
+    27	  139，故该架构的同项实测是 `NOT_OBSERVED`。
+    28	- Clang 22.1.8 会无诊断接受该选项，但 `-###` 证明它实际选择 `-lc++`，不是
+    29	  “编过但选项没作用”。对 55 个不需要迁移的 C++ 包，全局注入会真实改变标准库。
+    30	
+    31	## Base 内部边补查
+    32	
+   108	
+   109	### 4.1 已证实需要改用 libc++：10
+   110	
+   111	`abseil-cpp`、`bcc-tools`、`boost`、`bpftrace`、`icu`、`jsoncpp`、
+   112	`libsigc++`、`llvm`、`pcre`、`taglib`。
+   113	
+   114	其中 `abseil-cpp`、`boost`、`icu`、`jsoncpp`、`libsigc++`、`llvm`、
+   115	`pcre`、`taglib` 具有精确 Unified→Base C++ 符号边；`bcc-tools` 与
+   116	`bpftrace` 通过 Base 内部的布局敏感 LLVM C++ 边进入同一迁移闭包。
+   117	
+   118	### 4.2 当前不能切换：6
+   119	
+   120	`gcc`、`gcc-aarch64`、`gcc-armv7hl`、`gcc-armv7l`、`gcc-riscv64`、
+   121	`glibc`。
+   122	
+   123	依据是 R98 已从精确 spec 与构建日志确认它们当前使用 GCC；其中 `gcc`
+   124	还承担 libstdc++ provider 角色。该标签只描述当前配置/角色，未来若能改用
+   125	Clang 或重构角色，必须重新判定。
+   126	
+   168	实际结果：
+   169	
+   170	- armv7l 与 x86_64 的 GCC/G++ 均明确报
+   171	  `unrecognized command-line option '-stdlib=libc++'`；不是静默忽略。
+   172	- Clang++ 在三个架构都无诊断接受 `-stdlib=libc++`，但这不是“静默
+   173	  忽略”：`-###` 显示它选择 `-lc++`，并把 `--no-as-needed -lc++abi
+   174	  --as-needed` 传给链接器。
+   175	- Clang C driver 的编译探针对 `-stdlib=libc++` 给出
+   176	  `argument unused during compilation` 警告，因此也不是静默忽略。
+   177	- aarch64 GCC buildroot 中驱动器启动即退出 139，连 `--version` 都失败，
+   178	  该格记 `NOT_OBSERVED`，不能把 139 解释为选项拒绝。GCC 选项语义由
+   179	  armv7l 与 x86_64 两个实际 GCC 14.2.0 格确认。
+   180	- 部分真实链接动作受复用 buildroot 的动态加载器/`ld` 依赖缺失影响；
+   181	  选项是否被解析及转发以不执行链接器的 `-###` 为准，不把环境故障写成
+   182	  编译器语义。
+   183	
+   184	因此本次没有发现“驱动器悄悄丢弃整组选项然后产物仍是 libstdc++”的格：
+   185	GCC 明确失败，Clang++ 实际改变库选择，Clang C 给警告。至于某个包的构建
+   186	系统是否完全丢弃环境变量，本轮没有逐包完整构建，记 `NOT_OBSERVED`。
+   187	
+   188	摘要见 `tables/driver_option_probe.tsv`，完整命令和输出见 `raw/040_*`。
+   189	
+   190	## 6. 两种配置形态的事实对照
+   191	
+     1	# 判断、边界与待办
+     2	
+     3	- 本轮是新配方整轮写包：临时 spec 只增加 Patch0 与 `%prep` 中无条件 `%patch0 -p1`；不复用上轮 ELF。CMake 改动确在 STATIC_LINKING 与 LIBCLANG_STATIC_PATH 嵌套分支，普通主包关闭 STATIC_LINKING，GCC/未定义路径不构建 static，故沿用人工批准的无条件应用，不加开关。
+     4	- 两架构都使用前轮原隔离 argv/输入根；仅将 /tmp/task 与 SOURCES 绑定指向本轮新目录，追加 Patch 文件。前轮两格实际 payload 都为 w5.xzdio，本轮保持，并分别在隔离环境预检。原 spec、来源 tar 与历史产物保留。
+     5	- 本轮用户明确允许跨工作窗口续跑，没有新总时限；不沿用已经结束的前轮截止时刻。串行、nice19、ionice idle、cgroup MemoryMax=16536457216 字节（50%）、I/O 门禁不变。每小时状态和 CONTINUE 记录断点；任何失败保留现场，不覆盖重试。
+     6	- `-lstdc++fs` 来自 bpftrace `src/CMakeLists.txt:188-191` 的 Clang/旧 GCC 文件系统支持分支，不是 spec 直接添加。实际解析文件待以 linker 或 driver 实测；不删除、不替换。W4 待办。
+     7	- raw/014 的 diff 退出1表示存在预期两处新增；raw/016 的退出1来自进程匹配无命中，不是 payload/spec 预检失败。raw/013 一个历史路径不存在，保留错误，已在现存周末脚本找到板端连接方式；未连接板子。
+     8	- 新RPM SHA与上轮ELF只登记身份，不归因；板上环境相同失败要保留并标为环境受限的成对等价，不冒充功能成功；候选独有失败单列。
+     9	- 包仓、sandbox、Source1002、QuickBuild 均不动；板上只允许本轮明确授权的安装/对照/清理，先记装前状态再操作。
+    10	- ARM首次核验器的 `Class:\\s+` 正则双重转义误判 ELF32，实际readelf明确ELF32/ARM，其余检查通过。raw/039退出1完整保留；首次目录移动为 verify-armv7l-initial-parser-error，旧脚本另存 verify-initial-parser-error.py，旧解包文件不删除。只修正验证器转义，在新的 `payload-...-verified` 目录重新解包核验，不重跑构建、不覆盖原始失败记录。该错误属于本轮工具错误，不是RPM/ELF失败。
+    11	- ARM核验时符号交集文本的换行被写为字面 `\\n`，不影响内存集合计算、770交集计数或门禁；原文件保留，输出可读副本供审阅。aarch64运行前修正显示分隔符；ARM实际执行脚本保留为 verify-corrected-executed.py。
+    12	- -lstdc++fs 的 ARM 实际解析已由独立输出的诊断重链接 `-Wl,--trace` 确认：`/usr/bin/../lib/gcc/armv7l-tizen-linux-gnueabi/14.2.0/libstdc++fs.a`。诊断链接不修改配方、原构建ELF、RPM或原dependency文件。不据此推断归档的每个成员都被拉入；W4审阅该项。aarch64同项待测。
+    13	- aarch64同项已测，解析 `/usr/bin/../lib64/gcc/aarch64-tizen-linux-gnu/14.2.0/libstdc++fs.a`。两架构均为静态归档；实际trace、SHA与完整命令保留。
+    14	- 板上正常static安装预检退出1：MSM插件报告无法写 `/etc/device-sec-policy`，同时报告根文件系统需要92MB。df记录却有约1.3GiB可用；本轮不判原因、不修权限/策略/空间、不关闭插件、不用--nodeps、不重试预检。仅在失败后只读核对包/文件状态，恢复我们开启的SDB root模式；五个上传文件按“失败现场保留”要求留板，不清理。功能对照与取消探针不再运行，记NOT_OBSERVED。
+docs/progress/ARM_W5_0921/PLAN.md:29:pwd; date -Is; git branch --show-current; ls progress/ARM_REPRO_0920; sed -n '1,220p' progress/ARM_REPRO_0920/original-argv.json; rg -n '四份|第五份|9884348b|6b5e306d|Threads|线程数' progress/ARM_RPM_DIAG progress/ALIGN_0920 progress/ARM_REPRO_0920 progress/ARM_LZMA_0921B --glob '*.md' --glob '*.json' --glob '*.py'
+docs/progress/ARM_W5_0921/FINAL_RESULT.md:42:## 第五份 libclang.a 身份
+docs/progress/ARM_W5_0921/FINAL_RESULT.md:48:- **第五份归档 SHA256：`5deb3c6c662c73865e8a38f4f8df8d6e672af2ae8a6a8faae7700b5909c1524a`**。
+docs/progress/ARM_W5_0921/FINAL_RESULT.md:51:| 身份（历史表标签） | libclang.a SHA256 | 与第五份相同 |
+docs/progress/ARM_W5_0921/FINAL_RESULT.md:57:| w5_full_success_fifth | `5deb3c6c662c73865e8a38f4f8df8d6e672af2ae8a6a8faae7700b5909c1524a` | 是 |
+docs/progress/ARM_W5_0921/FINAL_RESULT.md:59:此前四份身份引用 `progress/ALIGN_0920/static-identities/summary.json`，本轮未重新定义它们的状态。历史表中的输出路径有被后续轮复用的情况，应以该表已记录的哈希与取证时间识别，不能将历史路径的当前内容等同于历史身份。详见 `FIVE_STATIC_IDENTITIES.json/.tsv`。**第五份与前四份的二进制差异原因本轮未归因，记 NOT_OBSERVED；压缩参数变化本身不能解释归档内部字节变化。**
+docs/progress/ARM_W5_0921/FINAL_RESULT.md:71:- 自行判断仅为：严格 argv 不变要求下，先备份再恢复原 strace 路径以保护证据；线程计数区分宿主总数与压缩 worker；把第五份登记为新的实测身份，不猜差异原因。均已向人工申报。
+docs/progress/ARM_W5_0921/README.md:4:完整写包记录在 cells/w5-original/；22 包校验见 RPM_RESULTS.json，归档身份对照见 FIVE_STATIC_IDENTITIES.tsv。
+docs/progress/ARM_W5_0921/README.md:7:RPM、提取的静态归档与旧失败树保留在本机 tmp/，不提交大型二进制；报告列出路径和身份。
+[
+  {
+    "package": "abseil-cpp",
+    "url": "ssh://lhmax2025@review.tizen.org:29418/platform/upstream/abseil-cpp",
+    "ref": "refs/heads/sandbox/lhmax2025/libcxx-migration",
+    "argv": [
