@@ -9,6 +9,6 @@
 | 三路径宏门禁 | Clang/未定义符合；指定GCC override不符合 | macro-result.json、gcc-baseline-result.json |
 | 11包主配方对账 | 9仅VCS、1一致、LLVM1行待推 | RECIPE_AUDIT.tsv |
 | 静态runtime供给 | 同仓runtime候选功能差异未推，其他服务端来源未观测 | UNPUSHED_LIBCXX_RUNTIME.diff |
-| 项目材料 | 待提交推送回执；包仓始终不推 | DELIVERY.md（收尾生成） |
+| 项目材料 | 内容提交已推、远端核对一致；回执追加归档；包仓始终不推 | DELIVERY.md、raw/044–046 |
 
 当前不进入修复、不推进QuickBuild。待人工裁决GCC门禁与runtime输入范围。
