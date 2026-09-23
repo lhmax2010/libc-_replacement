@@ -2,7 +2,7 @@
 
 ## 线的定位与分界
 
-本线负责 Tizen-Base-Toolchain 的 libc++ 编译适配、输入资产与 RPM 核验；运行时边界决策由运行时线负责。本轮LLVM_W4_0923补本地libclang.a配方提交并核对11包已验证配方与sandbox。codes、Source1002不动；不构建（仅%prep）、不上板、不推sandbox/包仓、不起QuickBuild；只推项目材料。
+本线负责 Tizen-Base-Toolchain 的 libc++ 编译适配、输入资产与 RPM 核验；运行时边界决策由运行时线负责。本轮LLVM_W4_0923 R4登记人工推送、依裁决关闭配方审计并交付QuickBuild分支清单。codes、Source1002不动；不构建、不上板、不推sandbox/包仓、不起QuickBuild；只推项目材料。
 
 ## 当前位置
 
@@ -11,6 +11,12 @@ Base 对账：73 个含 C++ 源码包中，11 个已适配推送、56 个有依�
 此前六格18份RPM与只重链接ELF材料保留。`BPF_STATIC_0922` 新配方已完成两架构6份RPM及static ELF门禁。本轮 `BPF_W3R_0922` 已完成ARM物理板可写区对照与取消探针；无需重新写包。正常RPM安装仍未验证，按本轮授权留待镜像阶段。
 
 ## 本任务结论与证据
+
+**2026-09-23 LLVM W4 R4：关闭。配方审计关闭，QuickBuild配方与分支前置已满足。** 人工已推`5c169afc97945bfb88786d9f38477f6973fe5285`（父`da14498e07fa4c841b5a6bc7f88766d993982a16`，再上级f203923a）；两笔作者、提交人、Signed-off-by均Hao Lin <hao.lin@samsung.com>，与本地db5b49af候选完整树一致。26项历史差异按本轮人工裁决逐项关闭，27项测试/Unified实验排除当前Base-Toolchain范围；旧R2/R3记录不改。**QuickBuild所需的全部本地配方改动均已进入sandbox。**
+
+分支清单`docs/progress/LLVM_W4_0923/QUICKBUILD_BRANCHES_R4.tsv`共12个构建包/11仓，逐行远端MATCH。固定20260828.101647快照SOURCERPM证明libcxx-runtimes是独立源码构建单元，因此与llvm分别列行、同指5c169afc与libcxx-ehabi-backport，须选择同仓各自spec。实时OBS采用_link/_multibuild/_service哪种机制仍NOT_OBSERVED；当前reference为20260914.073422，公开metadata未列runtime及四类二进制，原因未观测。历史证据不冒充当前服务端配置；人工起QuickBuild应覆盖两份spec。本轮不执行任何包仓push或QuickBuild。
+
+以下R1–R3为保留的历史过程，原停报/未推送表述不再作为当前结论；最终详见`FINAL_RESULT_R4.md`与`LOCAL_SPECS_R4.md`。
 
 **2026-09-23 LLVM W4 R3：两笔本地提交与ARM prep完成，本地spec历史差异门禁停报。** 人工允许纯空行忽略后，runtime四组严格比较全PASS，三种非默认组合全部静态OFF且无.a项。第二笔`db5b49afa7836db0414140208b2d3ab4f4aa7293`已追加在`617a210064c4559fe1152728f7c9cf5e1ab99a9f`之后；干净、ahead2/behind0、无signoff、包仓未推；runtime与指定c5358237…候选逐字节一致。ARM `%prep`退出0，未build。
 
@@ -46,7 +52,7 @@ W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake
 
 ## 挂账
 
-- **QuickBuild前置（R3修订）：人工裁决本地spec清单中的额外历史/测试配方差异并闭合所需配方清单 → 签字推LLVM两笔并核远端SHA → 人工批准QuickBuild。** 两笔已备好，包仓未推；不再要求继续R2全根逐包溯源，旧表仅保留。
+- **QuickBuild配方与分支前置（R4）已满足：LLVM两笔已由人工签字推送并核实，历史配方审计依裁决关闭。** 清单见QUICKBUILD_BRANCHES_R4.tsv；不再继续R2全根溯源。实时OBS接入形式未观测，runtime须作为独立构建单元覆盖；当前reference缺runtime的观测保留，不推测原因。
 
 - 四份主包解包副本：**已恢复，事故文件保留于 *.objcopy-modified-0922**，本项恢复挂账关闭；事故历史保留。
 - W4 人工推送与远端登记已关闭；条件组合两种未覆盖形态、实际QuickBuild最终宏集仍未观测，不能由本地六格外推。payload按源码/包头与本次人工裁决无需对策，不再挂为启动阻断。
@@ -60,4 +66,4 @@ W4 追加只读核查：两轮启动脚本均未显式用 QEMU 包裹 make/cmake
 
 ## 下一步
 
-停止交人工审阅额外历史spec差异和未判定参照范围。**闭合本地所需配方清单 → 人工按W4_SIGNOFF签字推LLVM两笔、核远端SHA → 人工起Tizen-Base-Toolchain QuickBuild → 与预期失败清单对账。** 本轮不推包仓、不自动排除历史测试项；payload无需对策，正常RPM安装/%post仍留待镜像阶段。R2全根表保留，不继续。
+**人工起 Tizen-Base-Toolchain QuickBuild → 结果与 QB_PRECHECK_0922/EXPECTED_FAILURES.md 对账。** 按QUICKBUILD_BRANCHES_R4.tsv覆盖12个构建包（11仓，llvm/runtime共用同一sandbox）。本轮不代起QuickBuild、不推包仓；payload无需对策，正常RPM安装/%post仍留待镜像阶段。R2全根表及R3审计历史保留，不继续。

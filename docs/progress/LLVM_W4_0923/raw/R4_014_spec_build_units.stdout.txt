@@ -1,0 +1,270 @@
+     1	%define keepstatic 1
+     2	
+     3	# MLGO AOT support for LLVM MLGO (Ahead-of-Time compilation)
+     4	# TODO: switch back to a project_config-controlled macro after MLGO is enabled
+     5	# for all required arches.
+     6	# %%bcond_with mlgo
+     7	%ifarch armv7l aarch64 x86_64
+     8	%bcond_without mlgo
+     9	%endif
+    10	
+    11	%if %{defined _toolchain}
+    12	%define _toolchain_override clang
+    13	%define llvm_release_build 0
+    14	%else
+    15	%define llvm_release_build 1
+    16	%endif
+    17	
+    18	%if %{defined _toolchain}
+    19	%if %{toolchain_is clang}
+    20	%define build_with_libcxx 1
+    21	%endif
+    22	%endif
+    23	
+    24	%define llvm_version 22
+    25	
+    26	%define sdk_install_prefix /home/owner/share/tmp/sdk_tools/lldb
+    27	%define sdk_bin_dir %{sdk_install_prefix}/bin
+    28	%define sdk_lib_dir %{sdk_install_prefix}/%{_lib}
+    29	
+    30	%if 0%{llvm_release_build}
+    31	# Disable debug packages building
+    32	%define debug_package %{nil}
+    33	%define __debug_install_post %{_rpmconfigdir}/find-debuginfo.sh %{?_find_debuginfo_opts} %{?_find_debuginfo_strip_opts} %{?_find_debuginfo_ko_strip_opts} "%{_builddir}/%{?buildsubdir}"\
+    34		rm -rf "%{buildroot}/usr/lib/debug"\
+    35		rm -rf "%{buildroot}/usr/src/debug"
+    36	%endif
+    37	
+    38	Name:      llvm
+    39	Summary:   The LLVM Project is a collection of modular and reusable compiler and toolchain technologies
+    40	Version:   22.1.8
+    41	Release:   1
+    42	Group:     Development/Toolchain
+    43	License:   NCSA
+    44	Source0:   %{name}-%{version}.tar.gz
+    45	Source1001: llvm.manifest
+    46	
+    47	# Bundled MLGO AOT assets for the inliner and regalloc models.
+    48	# These override build-time AOT compilation, avoiding the need for TensorFlow
+    49	# Python in GBS.
+    50	Source1002: mlgo_arm_model.tar.gz
+    51	Source1003: mlgo_aarch_model.tar.gz
+    52	Source1004: mlgo_x86_model.tar.gz
+    53	# TensorFlow 2.18 AOT assets rebuilt with libc++ for the toolchain build.
+    54	# The original TensorFlow 2.15/libstdc++ assets remain the default elsewhere.
+    55	Source1005: mlgo_arm_model_libcxx_tf218.tar.gz
+    56	Source1006: mlgo_aarch_model_libcxx_tf218.tar.gz
+    57	Source1007: mlgo_x86_model_libcxx_tf218.tar.gz
+    58	
+    59	%{!?mlgo_build_jobs: %define mlgo_build_jobs 6}
+    60	%{!?mlgo_verify_configure_only: %define mlgo_verify_configure_only 0}
+    61	
+    62	BuildRequires: cmake
+    63	BuildRequires: python3
+    64	BuildRequires: python3-devel
+    65	BuildRequires: patchelf
+    66	BuildRequires: binutils-devel
+    67	BuildRequires: libxml2-devel
+    68	%if 0%{llvm_release_build}
+    69	BuildRequires: sed
+    70	%endif
+    71	BuildRequires: ninja
+    72	%if 0%{?build_with_libcxx}
+    73	BuildRequires: libc++-devel
+    74	BuildRequires: libc++abi-devel
+    75	%endif
+    76	
+    77	
+    78	Requires: libllvm = %{version}-%{release}
+    79	
+    80	%description
+    81	LLVM is a compiler infrastructure designed for compile-time, link-time, runtime,
+    82	and idle-time optimization of programs from arbitrary programming languages.
+    83	LLVM is written in C++ and has been developed since 2000 at the University of
+    84	Illinois and Apple. It currently supports compilation of C and C++ programs,
+    85	using front-ends derived from GCC 4.0.1. A new front-end for the C family of
+    86	languages is in development. The compiler infrastructure
+    87	includes mirror sets of programming tools as well as libraries with equivalent
+    88	functionality.
+    89	
+    90	%package devel
+    91	Summary: Libraries and Header Files for LLVM %{version}
+    92	Requires: %{name} = %{version}
+    93	
+    94	%description devel
+    95	This package contains library and header files needed to develop
+    96	new native programs that use the LLVM infrastructure.
+    97	
+    98	%package static-devel
+    99	Summary: Static libraries for LLVM
+   100	Requires: %{name} = %{version}
+   101	
+   102	%description static-devel
+   103	This package contains static libraries needed to develop new
+   104	native programs that use the LLVM infrastructure.
+   105	
+   106	%package -n libllvm
+   107	Summary: LLVM shared libraries
+   108	
+   109	%description -n libllvm
+   110	Shared libraries for the LLVM compiler infrastructure.
+   111	
+   112	%package -n clang
+   113	Summary: Clang %{version} (C Language family frontend for LLVM)
+   114	License: NCSA
+   115	Requires: llvm = %{version}-%{release}
+   116	Provides: libclang.so.%{version}
+   117	
+   118	%description -n clang
+   119	A new front-end for the C family of languages is in development.
+   120	
+   121	%package -n clang-devel
+   122	Summary: Clang %{version} Development Library
+   123	Requires: clang = %{version}-%{release}
+   124	
+   125	%description -n clang-devel
+   126	This package contains the clang (C language) frontend for LLVM.
+   127	(development files)
+   128	
+   129	%package -n lldb
+   130	Summary: LLDB
+   131	License: NCSA
+   132	
+   133	%description -n lldb
+   134	LLDB is a next generation, high-performance debugger. It is built as a set
+   135	of reusable components which highly leverage existing libraries in the
+   136	larger LLVM Project, such as the Clang expression parser and LLVM
+   137	disassembler.
+   138	
+   139	%package -n lldb-devel
+   140	Summary: Development header files for LLDB
+   141	Requires: lldb = %{version}-%{release}
+   142	
+   143	%description -n lldb-devel
+   144	The package contains header files for the LLDB debugger.
+   145	
+   146	%package -n compiler-rt
+   147	Summary: Compiler runtime libraries
+   148	
+   149	%description -n compiler-rt
+   150	Compiler runtime libraries
+   151	
+   152	%package -n libomp
+   153	Summary:    OpenMP runtime
+   154	
+   155	%description -n libomp
+   156	OpenMP runtime.
+   157	
+   158	%package -n libomp-devel
+   159	Summary:    Development files for the OpenMP runtime
+   160	
+     1	%define llvm_major 22
+     2	%define llvm_version 22.1.8
+     3	
+     4	%define build_static_libcxx 0
+     5	%if %{defined _toolchain}
+     6	%if %{toolchain_is clang}
+     7	%define build_static_libcxx 1
+     8	%endif
+     9	%endif
+    10	%if %{build_static_libcxx}
+    11	%define libcxx_static ON
+    12	%else
+    13	%define libcxx_static OFF
+    14	%endif
+    15	
+    16	Name:           libcxx-runtimes
+    17	Version:        22.1.8
+    18	Release:        1
+    19	ExclusiveArch:  armv7l aarch64 x86_64
+    20	Summary:        LLVM libc++ and libc++abi runtimes
+    21	Group:          Development/Toolchain
+    22	License:        Apache-2.0 WITH LLVM-exception
+    23	URL:            https://llvm.org/
+    24	Source0:        llvm-%{version}.tar.gz
+    25	Source1:        libcxx-llvm22.map
+    26	Source2:        libcxx-runtimes.manifest
+    27	Source3:        SOURCE_PROVENANCE
+    28	
+    29	BuildRequires:  clang = %{version}
+    30	BuildRequires:  cmake
+    31	BuildRequires:  ninja
+    32	BuildRequires:  python3
+    33	BuildRequires:  glibc-devel
+    34	BuildRequires:  libgcc
+    35	
+    36	%description
+    37	Source package for the LLVM libc++ standard library and libc++abi runtime.
+    38	The libraries use libgcc_s as the unwinder. Existing interfaces retain LLVM_22;
+    39	condition-variable waits also provide unwind-capable LLVM_22_TIZEN_1 defaults.
+    40	
+    41	%package -n libc++
+    42	Summary:        LLVM C++ standard library runtime
+    43	Requires:       libc++abi = %{version}-%{release}
+    44	
+    45	%description -n libc++
+    46	Shared LLVM libc++ runtime, built against libc++abi and libgcc_s.
+    47	
+    48	%package -n libc++-devel
+    49	Summary:        LLVM C++ standard library headers and development files
+    50	Requires:       libc++ = %{version}-%{release}
+    51	Requires:       libc++abi-devel = %{version}-%{release}
+    52	
+    53	%description -n libc++-devel
+    54	Headers, ABI linker script, module metadata, and development files for LLVM
+    55	libc++.
+    56	
+    57	%package -n libc++abi
+    58	Summary:        LLVM C++ ABI runtime
+    59	
+    60	%description -n libc++abi
+    61	Shared LLVM libc++abi runtime using libgcc_s rather than LLVM libunwind.
+    62	
+    63	%package -n libc++abi-devel
+    64	Summary:        LLVM C++ ABI development files
+    65	Requires:       libc++abi = %{version}-%{release}
+    66	
+    67	%description -n libc++abi-devel
+    68	Linker name for LLVM libc++abi.  Its public headers are installed in the
+    69	common c++/v1 tree shipped by libc++-devel.
+    70	
+    71	%prep
+    72	%setup -q -n llvm-%{version}
+    73	cp %{SOURCE2} .
+    74	cp %{SOURCE3} .
+    75	
+    76	%build
+    77	%ifarch aarch64
+    78	CFLAGS="$(printf '%%s\n' "$CFLAGS" | sed 's/-mtune=cortex-a57\.cortex-a53/-mtune=cortex-a53/g')"
+    79	CXXFLAGS="$(printf '%%s\n' "$CXXFLAGS" | sed 's/-mtune=cortex-a57\.cortex-a53/-mtune=cortex-a53/g')"
+    80	export CFLAGS CXXFLAGS
+    81	%endif
+    82	
+    83	mkdir -p build
+    84	cd build
+    85	
+    86	cmake -G Ninja \
+    87	  -DCMAKE_BUILD_TYPE=Release \
+    88	  -DCMAKE_C_COMPILER=%{_host}-clang \
+    89	  -DCMAKE_CXX_COMPILER=%{_host}-clang++ \
+    90	  -DCMAKE_ASM_COMPILER=%{_host}-clang \
+    91	  -DCMAKE_C_COMPILER_TARGET=%{_host} \
+    92	  -DCMAKE_CXX_COMPILER_TARGET=%{_host} \
+    93	  -DCMAKE_ASM_COMPILER_TARGET=%{_host} \
+    94	  -DCMAKE_C_FLAGS="$CFLAGS --rtlib=libgcc" \
+    95	  -DCMAKE_CXX_FLAGS="$CXXFLAGS --rtlib=libgcc" \
+    96	  -DCMAKE_ASM_FLAGS="$CFLAGS" \
+    97	  -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--version-script=%{SOURCE1} -Wl,-z,now --rtlib=libgcc" \
+    98	  -DCMAKE_EXE_LINKER_FLAGS="--rtlib=libgcc" \
+    99	  -DCMAKE_INSTALL_PREFIX=%{_prefix} \
+   100	  -DCMAKE_INSTALL_LIBDIR=%{_lib} \
+   101	  -DLIBCXX_INSTALL_LIBRARY_DIR=%{_lib} \
+   102	  -DLIBCXXABI_INSTALL_LIBRARY_DIR=%{_lib} \
+   103	  -DLLVM_ENABLE_RUNTIMES="libcxxabi;libcxx" \
+   104	  -DLLVM_DEFAULT_TARGET_TRIPLE=%{_host} \
+   105	  -DLLVM_INCLUDE_TESTS=OFF \
+   106	  -DLIBCXX_ENABLE_SHARED=ON \
+   107	  -DLIBCXX_ENABLE_TIZEN_CONDVAR_VERSIONS=ON \
+   108	  -DLIBCXX_ENABLE_STATIC=%{libcxx_static} \
+   109	  -DLIBCXX_INSTALL_SHARED_LIBRARY=ON \
+   110	  -DLIBCXX_INSTALL_STATIC_LIBRARY=%{libcxx_static} \

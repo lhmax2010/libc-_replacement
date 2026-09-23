@@ -1,4 +1,15 @@
-# 状态：R3 PARTIAL / 两笔完成，额外历史 spec 差异停报
+# 状态：R4 CLOSED / 推送已核实、当前配方审计关闭
+
+| R4部分 | 结果 | 证据 |
+| --- | --- | --- |
+| LLVM人工推送 | 5c169afc→da14498e→f203923a；两笔作者/提交人/签字均Hao Lin；与db5b49af树一致 | raw/R4_004–006、010 |
+| 历史配方 | 26项按裁决关闭、27项排除范围、6个获准副本已推；旧记录不改 | LOCAL_SPECS_R4.md |
+| runtime构建单元 | 历史固定快照证实独立SRPM，同llvm仓两份spec；实时OBS接入形式NOT_OBSERVED | HISTORICAL_METADATA_R4.json、FINAL_RESULT_R4.md |
+| 当前reference差异 | 20260914.073422未列runtime及四类二进制，原因NOT_OBSERVED | METADATA_IDENTITIES_R4.json |
+| 分支清单 | 12行/11仓，逐行远端MATCH | QUICKBUILD_BRANCHES_R4.tsv |
+| 下一步 | 人工起QuickBuild，再与既有预期失败清单对账 | docs/LINE_STATUS.md |
+
+## R3历史状态（已由R4裁决关闭，不作为当前阻断）
 
 | R3部分 | 结果 | 证据 |
 | --- | --- | --- |
