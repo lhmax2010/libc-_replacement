@@ -1,10 +1,10 @@
 # 运行时验证线：计划与进度备案
 
-更新日期：2026-09-21。材料分支：`codex/runtime-validation`。
+更新日期：2026-09-27。材料分支：`codex/runtime-validation`。
 
-本文件是本线交接的单一状态入口；详细实验事实仍以链接的原始材料为准，不复制替代原始记录。历史状态通过 `git log -- docs/LINE_STATUS.md` 查看。逐节来源见 [来源索引](LINE_STATUS_INDEX.md)。本次只汇编，不增加测量、不复核当前产品产物或板子在线状态。
+本文件是本线交接的单一状态入口；详细实验事实仍以链接的原始材料为准，不复制替代原始记录。历史状态通过 `git log -- docs/LINE_STATUS.md` 查看。逐节来源见 [来源索引](LINE_STATUS_INDEX.md)。本次按授权补入 x86_64 GNU 夹具基线；不用板子、不构建平台包，未测混合组合。
 
-**证据版本约定**：本次所有证据链接均固定到材料提交 **`093286888441e9b3f6d817d90eabb48ae434c8df`** 的文件内容；下文写作“证据提交 `093286888`”。这是可用 `git show <提交>:<路径>` 复核的归档版本，不声称每份材料首次写于此提交，也不是平台实施提交。索引区分材料版本与实施源码身份。
+**证据版本约定**：既有结论仍固定到材料提交 **`093286888441e9b3f6d817d90eabb48ae434c8df`**；下文写作“证据提交 `093286888`”。2026-09-27 新增夹具材料位于 `progress/EDGE_FIXTURE_0927/`，与本次备案更新同提交，按维护惯例先用路径，交付 SHA 见该目录 DELIVERY.md；不编造自引用 SHA。索引区分材料版本与实施源码身份。
 
 ## 1. 这条线是什么
 
@@ -18,21 +18,23 @@
 | 不抛边界及状态修复 | 处理等待边界、写者状态、析构同步及旧新入口 → 人工裁决、基础补丁、相关消费方重编 → 已实施、两架构定向及官方套件材料齐备；发布验收另行处理 |
 | 接口盘点与 adaptor | 定界应用/组件边界并验证转换和错误契约 → 真实 provider、接口语义、调用路由 → 已有机制和限定场景实测，整体 PARTIAL；生产方向等见挂账 |
 | 跨包面定界与类型复审 | 候选归类、结构链、按架构引用和新发现 → 冻结头/ELF、正向对照 → 已汇编 18 包对/23 符号边及三类发现；未定项暂停，不代表全平台清查完成 |
-| 逐边混合运行验证 | 断言实际值、状态、生命周期和错误 → 每条匹配的 libc++ provider、GNU 控制及初始化条件 → 下一阶段输入已列，尚未获本次启动授权 |
+| 逐边混合运行验证 | 断言实际值、状态、生命周期和错误 → 每条匹配的 libc++ provider、GNU 控制及初始化条件 → 已获 GNU 夹具准备授权，16/23 条五轮控制通过、7 条缺前置；混合组合未测 |
 | 产品支持与发布 | 合并验证结果、限定承诺、部署/回退验收 → 逐边结果、外部材料、业务与组件方裁决 → 待前置，不以材料推送替代验收 |
 
-以上阶段是既有工作和下一阶段清单的组织，不是新授权或新排期。依据：[支持范围](progress/IMPL_0909/W3/SUPPORT_SCOPE_ZH.md)、[adaptor 当前结论](progress/P13_0917/FINAL.md)、[阶段汇编版本 2](progress/RUNTIME_PHASE_SUMMARY_0921/SUMMARY_zh.md)；证据提交 `093286888`。
+以上阶段不构成额外授权或新排期。历史依据：[支持范围](progress/IMPL_0909/W3/SUPPORT_SCOPE_ZH.md)、[adaptor 当前结论](progress/P13_0917/FINAL.md)、[阶段汇编版本 2](progress/RUNTIME_PHASE_SUMMARY_0921/SUMMARY_zh.md)，证据提交 `093286888`；新增限定基线见 [逐边结果](progress/EDGE_FIXTURE_0927/FINAL_RESULT.md)，与本次更新同提交。
 
 ## 3. 当前位置
 
-**处于“定界与发现汇编完成，等待逐边验证启动”的交接点。** 版本 2 汇编与枚举补充已提交；本次用户要求建立固定备案，不继续候选关闭或跨包运行。
+**处于“GNU 对照与夹具准备 PARTIAL，等待 libc++ 输入和剩余初始化条件”的交接点。** 已按夜间授权，仅在 x86_64 本机编译小夹具；不继续候选关闭、不构建平台包。
 
 - 已有下一阶段输入是 **x86_64 的 18 包对/23 符号边**；其中 **2 条**另有真实 armv7l ELF 引用实证。不是“23 条已测跨库失败”。[完整边表](progress/RUNTIME_PHASE_SUMMARY_0921/EDGES.tsv)
-- 卡在每条边的匹配 **libc++ 构建提供包**、依赖/头/来源 SHA 和可触发真实调用的夹具；本轮未重新盘点哪些新版包已经生成，不能写成全部不可得或全部就绪。[逐边前置](progress/RUNTIME_PHASE_SUMMARY_0921/NEXT_STAGE.tsv)
-- 等人工明确启动批次与范围；等编译线/组件方提供或确认产物及初始化条件；正式 SDK/外部应用分母仍由业务与材料持有方确认，不把它升级为所有机制实验的前置。
+- **16/23 条**完成真实当前 GNU provider + GNU 夹具五轮，共 **80 个有效轮次**；19 个夹具编译、最终 95 轮尝试，其余 15 轮为图形前置终止或仅错误路径。每轮精确 UND、maps/SHA、目标绑定和具体值/生命周期断言；不是原消费方产品端到端通过。[逐轮计数](progress/EDGE_FIXTURE_0927/COUNTS.json)、[逐边结果](progress/EDGE_FIXTURE_0927/RESULTS.tsv)
+- **7 条 NOT_AVAILABLE**：GetMatches 新旧签名不同；两条图形/页面回调缺实际运行上下文；Delta 缺成功文档契约；签名检查缺可隔离信任环境（样本已取得）；推理缺后端/模型；私有文件共享缺真实服务/身份。没有用空操作或模拟 provider 凑通过。[具体缺口](progress/EDGE_FIXTURE_0927/DETAILS.json)
+- 待编译线提供或确认逐边 **libc++ 构建提供包、-devel 与辅助 C++ 依赖**，精确清单已按当前 RPM 拆包名称列出；本轮只取 GNU 包，不宣称新版 libc++ 全部不可得或全部就绪。[libc++ 输入](progress/EDGE_FIXTURE_0927/LIBCXX_INPUTS.tsv)
+- 后续混合运行仍需授权/输入身份与同侧控制；正式 SDK/外部应用分母仍由业务与材料持有方确认，不升级为所有机制实验的前置。
 - 本次不用板子。板子现在是否空闲/在线为 `NOT_OBSERVED`，不能沿用历史“已释放”判断实时状态。
 
-本节数字的证据提交为 `093286888`。本文件建立后停止，待人工下一任务。
+历史跨包面数字的证据提交为 `093286888`；本次 GNU 基线材料与备案同提交。收尾推送后停止，交人工审阅；不把 GNU 控制升级为混合运行结论。
 
 ## 4. 已闭合的结论
 
@@ -58,6 +60,10 @@
 - **【三架构类型实测】13 项内建整数选择差异仅在已测 LP64 两架构出现。** x86_64/aarch64 为 GNU long(`l`)/libc++ long long(`x`)，同为 8 字节；armv7l 两侧 long long(`x`)，该类别消失。不是外推所有 LP64 配置，也不是宽度冲突。ARM WaitUntil 仍受 chrono 类型名称差异影响；Reader 名称相同但对象边仍在。证据：[逐项三架构表](progress/RUNTIME_PHASE_SUMMARY_0921/BUILTIN_TYPES.tsv)、[ARM 与 aarch64 实测/函数符号](progress/R119_ARM_RETEST/FINAL.md)；证据提交 `093286888`。
 - **【三架构类型实测＋ARM 调用方编译观察】四项流状态类型身份仍分歧。** fmtflags/iostate/openmode 为 GNU 枚举对 libc++ unsigned int；seekdir 为两套不同枚举，已测三架构均不同、大小均 4。ARM/aarch64 补测两侧 size/align 均 4/4；真实 ARM podofo 头生成的 Seek 名称不同，普通虚调用却同取索引 6，不能由名称推槽位/产品结论。复用的四个函数身份、五条公开签名在限定 x86_64 集合内未找到异包 UND，有 bundle::Add 正向对照；不排除虚调用/内联，新增确认边为 0，原成员边保留。证据：[x86_64 类型表](progress/R119_DIVERGENT/TYPE_RESULTS.tsv)、[两目标补测、编码和暴露](progress/R119_ENUM_RETEST/FINAL.md)、[汇编版本说明](progress/RUNTIME_PHASE_SUMMARY_0921/VERSION_20260921_2.md)；证据提交 `093286888`。
 
+### 逐边 GNU 夹具的有限基线
+
+- **【实测，x86_64 本机】登记 23 边中 16 条的公开 API 小夹具完成 GNU/GNU 五轮，共 80 有效轮次。** 固定当前 Unified/Base 快照的真实 provider，逐轮精确 UND、目标绑定、maps/SHA、实际值与适用生命周期断言。GNU 指 libstdc++ 14.2.0，前端 Clang 22.1.8。单例初始化动态加载三份宿主 C 图形库，身份已公开；隔离目录不是产品镜像。其余七条尚缺条件，原 18 包对/23 边计数不变；没有 libc++、ARM 或原应用端到端结果。证据：[最终报告](progress/EDGE_FIXTURE_0927/FINAL_RESULT.md)、[逐轮记录](progress/EDGE_FIXTURE_0927/SELECTED_RUNS.json)、[输入身份](progress/EDGE_FIXTURE_0927/RPM_PROVENANCE.tsv)、[宿主依赖](progress/EDGE_FIXTURE_0927/HOST_DEPENDENCIES.json)；与本次备案同提交，交付 SHA 见 [回执](progress/EDGE_FIXTURE_0927/DELIVERY.md)。
+
 ## 5. 人工已裁决的前提
 
 日期是裁决时间而非实验时间；无独立日期记录的写 `NOT_OBSERVED`，不拿文件名或 git 提交日补成裁决日。以下来源均可在证据提交 `093286888` 复核；本次任务书本身另作为 2026-09-21 的新维护指令。
@@ -81,7 +87,7 @@
 
 | 项 | 状态与范围 | 重启条件/待谁提供 | 证据 |
 | --- | --- | --- | --- |
-| 23 条边的混合运行 | 未完成逐边真实双向运行；现有表是引用证据，不能改称兼容/失败矩阵 | 人工选定批次；编译线/组件方提供逐行 libc++ provider、匹配头/依赖/构建身份；本线建真实夹具 | [逐边输入](progress/RUNTIME_PHASE_SUMMARY_0921/NEXT_STAGE.tsv) |
+| 23 条边的混合运行 | GNU 准备 PARTIAL：16 条五轮控制有效、7 条缺条件；混合方向仍未测，不称兼容/失败矩阵 | 编译线提供逐行 libc++ provider/-devel/依赖与身份；组件方补图形/数据/信任/模型/服务条件；旧 GetMatches 签名需匹配包或人工确认范围；获授权后实测 | [逐边输入包](progress/EDGE_FIXTURE_0927/LIBCXX_INPUTS.tsv)、[具体缺口](progress/EDGE_FIXTURE_0927/DETAILS.json)、[当前 GNU 结果](progress/EDGE_FIXTURE_0927/FINAL_RESULT.md) |
 | 62 项 C/D 未定 | 主因 C 23、D 39；原条目保留，不按缺材料补阴性 | 逐项取得函数身份、实例化/调用链/绑定/异常等证据；本线可解性逐项见表，不一概要求人工提供 | [原 62 项缺口表](progress/R119_RECLASSIFY/CD_GAPS_62.tsv)、[方法评估](progress/R119_RECLASSIFY/CD_ASSESSMENT.md) |
 | 65 项编译期设施投影 | 0/65 完整关闭、15,793 处未定；已停；无对象位置须两侧类型相同 | 人工重新授权，再补真实实参、实例化上下文与结果结构；不以手选样本代替平台实例 | [当前计数与范围](progress/RUNTIME_PHASE_SUMMARY_0921/SUMMARY_zh.md) |
 | 第 201–495 个候选 | 295 项未定界；不自动续做 | 人工启动并确认方法、范围与资源 | [挂账](progress/RUNTIME_PHASE_SUMMARY_0921/BACKLOG_zh.md)、[阶段范围](progress/RUNTIME_PHASE_SUMMARY_0921/SUMMARY_zh.md) |
@@ -92,7 +98,7 @@
 | provider 泄漏修复 | 已定位并有候选 patch；修后编译/运行、泄漏归零 NOT_OBSERVED | 组件方确认局部 GN 草案，补产品生成头/参数/依赖闭包；重建真实 provider 后复验 | [复现/候选及阻塞](progress/P14_0917/W2/REPORT.md) |
 | 取消支持发布及外部组件 | aarch64 实施动态矩阵、任意 Clock/回调、异步取消等未覆盖；外部组件分母/重建策略不可得 | 人工单独启动；外部材料持有方提供清单和重建政策；产品运行库/包身份验收 | [支持范围](progress/IMPL_0909/W3/SUPPORT_SCOPE_ZH.md)、[外部材料需求](progress/R110/W1_REPORT.md) |
 
-本节证据提交 `093286888`。这里没有把“本线可研究”写成“必能关闭”，也没有把已停止的工作排成自动待办。
+本节历史证据提交 `093286888`；首行新材料与本次备案同提交。这里没有把“本线可研究”写成“必能关闭”，也没有把已停止的工作排成自动待办。
 
 ## 7. 常设约束
 
@@ -107,14 +113,14 @@
 
 ## 8. 下一步
 
-**等待人工选定 23 条已登记边中的启动批次，在逐行 libc++ provider、GNU 对照、头/依赖/构建身份及初始化条件就绪后开展逐边验证；本次不启动。** 输入为 [NEXT_STAGE.tsv](progress/RUNTIME_PHASE_SUMMARY_0921/NEXT_STAGE.tsv)，证据提交 `093286888`；不给总工时，不默认产物已就绪。
+**交付 GNU 夹具与精确包清单，等待编译线 libc++ 输入及七条缺失前置，在新授权和对应同侧控制就绪后开展混合运行。** 23 边选择仍取 [NEXT_STAGE.tsv](progress/RUNTIME_PHASE_SUMMARY_0921/NEXT_STAGE.tsv)（证据提交 `093286888`）；当前交接用 [LIBCXX_INPUTS.tsv](progress/EDGE_FIXTURE_0927/LIBCXX_INPUTS.tsv)、[重放说明](progress/EDGE_FIXTURE_0927/README.md)（与备案同提交）。不承诺缺上下文的边只换库即可通过，不默认包已就绪。
 
 ## 9. 给新 Session 的开场核对清单
 
 开始前复述以下事实，任一项与任务或证据不符，先纠正再工作：
 
 1. 我在运行时材料分支，不把编译线的写包/GDB 状态当成本线进度；先检查分支、HEAD、暂存区和脏文件。
-2. 当前停止于汇编/备案交接，下一阶段未自动授权；读第 3、6、8 节和最新人工指令。
+2. 当前 GNU 夹具准备 PARTIAL：16/23 条各五轮有效、7 条缺前置；混合运行未测且未自动授权，读第 3、6、8 节和最新人工指令。
 3. 四基础补丁、五处站点、四类实施、五个实施提交是不同计数；产品验收未由材料交付完成。
 4. 18 包对/23 符号边仅及登记的 x86_64 范围；ARM 只另证实两条真实引用，不是完整 ARM 跨包面，更不是混合运行通过。
 5. 13 项整数选择分歧在已测 ARM 消失，不删除对象边；WaitUntil 名称仍异，Reader 名称相同不代表内部对象安全。

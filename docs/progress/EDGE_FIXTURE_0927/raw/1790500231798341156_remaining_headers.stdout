@@ -1,0 +1,374 @@
+     * \todo Implement RelaxNG and W3C XSD
+     **/
+    struct Validate
+    {
+      static Validate none()
+      { return Validate(); }
+    };
+    ///////////////////////////////////////////////////////////////////
+
+    ///////////////////////////////////////////////////////////////////
+    //
+    //	CLASS NAME : Reader
+    //
+    /** xmlTextReader based interface to iterate xml streams.
+     *
+     * \code
+     * // Consume a node.
+     * bool consumeNode( xml::Reader & reader_r )
+     * {
+     *   DBG << *reader_r << endl;
+     *   return true;
+     * }
+     *
+     * // Consume all nodes (omitting attributes)
+     * void example()
+     * {
+     *   try
+     *     {
+     *       xml::Reader reader( "/Local/repodata/repomd.xml" );
+     *       reader.foreachNode( consumeNode );
+     *     }
+     *   catch ( const Exception & )
+     *     { ; } // parse error
+     * }
+     * \endcode
+     *
+     * \code
+     * // Consume a node.
+     * bool consumeNodeAndAttribute( xml::Reader & reader_r )
+     * {
+     *   consumeNode( reader_r );
+     *   return reader_r.foreachNodeAttribute( consumeNode );
+     * }
+     *
+     * // Consume all nodes and their attributes.
+     * void example()
+     * {
+     *   Pathname repodata( "/Local/repodata/repomd.xml" );
+     *   try
+     *     {
+     *       xml::Reader reader( "/Local/repodata/repomd.xml" );
+     *       reader.foreachNode( consumeNodeAndAttribute );
+     *       // or:
+     *       // reader.foreachNodeOrAttribute( consumeNode )
+     *     }
+     *   catch ( const Exception & )
+     *     { ; } // parse error
+     * }
+     * \endcode
+     **/
+    class Reader : private zypp::base::NonCopyable
+    {
+    public:
+      /** Ctor. Setup xmlTextReader and advance to the 1st Node. */
+      Reader( const InputStream & stream_r,
+              const Validate & validate_r = Validate::none() );
+
+      /** Dtor. */
+      ~Reader();
+
+    public:
+
+      /**
+       *  If the current node is not empty, advances the reader to the next
+       *  node, and returns the value
+       *
+       * \note if the node has a xml subtree you will probably jump to that node
+       * and get a empty text value back. Use it only if you are sure the node
+       * has no XML subtree.
+       */
+      XmlString nodeText();
+
+      /** */
+      bool nextNode();
+
+      /** */
+      bool nextNodeAttribute();
+
+      /** */
+      bool nextNodeOrAttribute()
+      { return( nextNodeAttribute() || nextNode() ); }
+
+      /** */
+      bool atEnd() const
+      { return( _node.readState() == XML_TEXTREADER_MODE_CLOSED ); }
+
+      /** */
+      const Node & operator*() const
+      { return _node; }
+
+      /** */
+      const Node * operator->() const
+      { return &_node; }
+
+    public:
+      /** */
+      typedef function<bool( Reader & )> ProcessNode;
+
+      /** */
+      bool foreachNode( ProcessNode fnc_r )
+      {
+        if ( _node.isAttribute() )
+          nextNode();
+        for ( ; ! atEnd(); nextNode() )
+          {
+            if ( ! fnc_r( *this ) )
+              return false;
+          }
+        return true;
+      }
+
+      /** */
+      bool foreachNodeAttribute( ProcessNode fnc_r )
+      {
+        if ( _node.isAttribute() && ! fnc_r( *this ) )
+          return false;
+        while( nextNodeAttribute() )
+          {
+            if ( ! fnc_r( *this ) )
+              return false;
+          }
+        return true;
+      }
+
+      /** */
+      bool foreachNodeOrAttribute( ProcessNode fnc_r )
+       * Returns \ref Repository::noRepository if there is no such \ref Repository.
+       */
+      Repository reposFind( const std::string & alias_r ) const;
+
+      Iterable<repository_iterator> knownRepositories() const
+      { return makeIterable( knownRepositoriesBegin(), knownRepositoriesEnd() ); }
+      //@}
+
+    public:
+      /** \name Handle locale support.
+       *
+       * A \ref filter::ByLocaleSupport is provided to iterate over
+       * all items supporting a specific locale.
+       *
+       * \see \ref sat::LocaleSupport for a more convenient interface.
+       *
+       * \code
+       * ResPool pool( ResPool::instance() );
+       *
+       * filter::ByLocaleSupport f( Locale("de") );
+       * for_( it, pool.filterBegin(f), pool.filterEnd(f) )
+       * {
+       *   MIL << *it << endl; // supporting "de"
+       * }
+       *
+       * f = filter::ByLocaleSupport( pool.getRequestedLocales() );
+       * for_( it, pool.filterBegin(f), pool.filterEnd(f) )
+       * {
+       *   MIL << *it << endl; // supporting any requested locale
+       * }
+       * \endcode
+       */
+      //@{
+      /** Set the requested locales.
+       * Languages to be supported by the system, e.g. language specific
+       * packages to be installed.
+       */
+      void setRequestedLocales( const LocaleSet & locales_r );
+
+      /** Add one \ref Locale to the set of requested locales.
+       * Return \c true if \c locale_r was newly added to the set.
+      */
+      bool addRequestedLocale( const Locale & locale_r );
+
+      /** Erase one \ref Locale from the set of requested locales.
+      * Return \c false if \c locale_r was not found in the set.
+       */
+      bool eraseRequestedLocale( const Locale & locale_r );
+
+      /** Return the requested locales.
+       * \see \ref setRequestedLocales
+      */
+      const LocaleSet & getRequestedLocales() const;
+
+      /** Whether this \ref Locale is in the set of requested locales. */
+      bool isRequestedLocale( const Locale & locale_r ) const;
+
+      /** Get the set of available locales.
+       * This is computed from the package data so it actually
+       * represents all locales packages claim to support.
+       */
+      const LocaleSet & getAvailableLocales() const;
+
+      /** Whether this \ref Locale is in the set of available locales. */
+      bool isAvailableLocale( const Locale & locale_r ) const;
+      //@}
+
+    public:
+      /** \name Handle hard locks (e.g set from /etc/zypp/locks).
+       *
+       * As this kind of lock is query based, it's quite expensive.
+       *
+       * These queries are re-evaluated when adding new repos to the pool.
+       */
+      //@{
+      typedef pool::PoolTraits::HardLockQueries           HardLockQueries;
+      typedef pool::PoolTraits::hardLockQueries_iterator  hardLockQueries_iterator;
+
+      bool hardLockQueriesEmpty() const;
+      size_type hardLockQueriesSize() const;
+      hardLockQueries_iterator hardLockQueriesBegin() const;
+64:      static ZConfig & instance();
+446:      const std::set<std::string> & multiversionSpec() const;
+447:      void multiversionSpec( std::set<std::string> new_r );
+496:       * ZConfig.instance().rpmInstallFlags().testFlag( target::rpm::RPMINST_EXCLUDEDOCS );
+
+#undef EXPORT_API
+#define EXPORT_API __attribute__((visibility("default")))
+
+namespace tizen_cpp {
+
+class EXPORT_API AppCoreBase : public IAppCore, public IMainLoop {
+ public:
+  enum RotationState {
+    ROTATION_UNKNOWN,
+    ROTATION_PORTRAIT_NORMAL,
+    ROTATION_PORTRAIT_REVERSE,
+    ROTATION_LANDSCAPE_NORMAL,
+    ROTATION_LANDSCAPE_REVERSE,
+  };
+
+  enum SuspendedState {
+    SUSPENDED_STATE_WILL_ENTER_SUSPEND = 0,
+    SUSPENDED_STATE_DID_EXIT_FROM_SUSPEND
+  };
+
+  enum DisplayState {
+    DISPLAY_STATE_UNKNOWN,
+    DISPLAY_STATE_ON,
+    DISPLAY_STATE_OFF
+  };
+
+  enum Feature {
+    FEATURE_BACKGROUND_MANAGEMENT = 0x1,
+    FEATURE_CHARGER_STATUS = 0x2
+  };
+
+  class EventBase : public IEvent {
+   public:
+    explicit EventBase(Type type);
+    virtual ~EventBase();
+    Type GetType() const override;
+    std::string GetVal(std::string cur) const;
+    int GetVal(int cur) const;
+    void SetVal(std::string val);
+    void SetVal(int val);
+
+   private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+  };
+
+  AppCoreBase();
+  virtual ~AppCoreBase();
+  static AppCoreBase* GetContext();
+
+  virtual void Run(int argc, char** argv);
+  virtual void Exit();
+  virtual void Dispose();
+  virtual void PluginInit(int argc, char** argv);
+  virtual void PluginFini();
+  void Init(int argc, char** argv);
+  void Fini();
+  int OnReceive(aul_type type, tizen_base::Bundle b) override;
+  int OnCreate() override;
+  int OnControl(tizen_base::Bundle b) override;
+  int OnTerminate() override;
+  int OnSetI18n() override;
+  int OnSetEvent(IEvent::Type event) override;
+  int OnUnsetEvent(IEvent::Type event) override;
+  int OnTrimMemory() override;
+  void AddEvent(std::shared_ptr<EventBase> event);
+  bool RemoveEvent(std::shared_ptr<EventBase> event);
+  void RaiseEvent(int event, IEvent::Type type);
+  void RaiseEvent(const std::string& event, IEvent::Type type);
+  void FlushMemory();
+  bool IsBgAllowed();
+  bool IsSuspended();
+  void ToggleSuspendedState();
+  void SetAppLanguage(const std::string& lang);
+  std::string GetAppLanguage();
+  std::string GetSystemLanguage();
+  int SetI18n(std::string domain_name, std::string dir_name);
+  void AddSuspendTimer();
+  void RemoveSuspendTimer();
+  void AddAutoDisposeTimer();
+  void RemoveAutoDisposeTimer();
+  void SetFeature(int feature);
+  int GetFeature() const;
+  static RotationState GetRotationState();
+  static void SetDisplayState(DisplayState state);
+  static DisplayState GetDisplayState();
+  static int EnableWatchdog();
+  static int DisableWatchdog();
+  static int KickWatchdog();
+  static void SetRotationState(RotationState state);
+
+ protected:
+  void SetCoreDelegator(IAppCore* delegator);
+  void SetLoopDelegator(IMainLoop* delegator);
+  static AppCoreBase* context_;
+
+ private:
+  class Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+}  // namespace tizen_cpp
+
+#endif  // TIZEN_CPP_APP_CORE_CPP_APP_CORE_BASE_HH_
+// Copyright (c) 2015 Samsung Electronics Co., Ltd All Rights Reserved
+// Use of this source code is governed by an apache-2.0 license that can be
+// found in the LICENSE file.
+
+#ifndef DELTA_DELTA_PARSER_H_
+#define DELTA_DELTA_PARSER_H_
+
+#include <filesystem>
+#include <memory>
+#include <string>
+
+#include "manifest_parser/manifest_parser.h"
+
+namespace delta {
+
+/**
+ * @brief The DeltaParser class
+ *        Parser class of delta info file.
+ *
+ * Instance of this class may be used to parse delta file.
+ * Depending on boolean result of @ref ParseManifest method, client code may
+ * call:
+ *  - on success -> @ref GetManifestData(), passing the key of ManifestData
+ *                  instance that it is interested in.
+ *  - on failure -> @ref GetErrorMessage(), to get value of error which was set
+ *                  during the processing of config.xml
+ *
+ * To investigate which key do you need to get certain parsed piece of data,
+ * check the key reported by handler's @ref ManifestHandler::Key() method.
+ * Key returned by this method is the key to access data set by handler.
+ */
+class DeltaParser {
+ public:
+  DeltaParser();
+
+  std::shared_ptr<const parser::ManifestData> GetManifestData(
+      const std::string& key);
+  const std::string& GetErrorMessage() const;
+  bool ParseManifest(const std::filesystem::path& path);
+
+ private:
+  std::unique_ptr<parser::ManifestParser> parser_;
+  std::string error_;
+};
+
+}  // namespace delta
+
+#endif  // DELTA_DELTA_PARSER_H_

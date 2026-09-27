@@ -1,10 +1,10 @@
 # 运行时状态备案：逐节来源索引
 
-更新日期：2026-09-21。对应 [LINE_STATUS.md](LINE_STATUS.md)。只索引已有材料及本次人工维护指令；未重新扫描接口、执行探针或使用开发板。
+更新日期：2026-09-27。对应 [LINE_STATUS.md](LINE_STATUS.md)。历史索引保留；本次增补 x86_64 GNU 夹具准备结果的来源，不用开发板、不构建平台包。
 
 ## 证据版本及取用方式
 
-下表所有仓内证据固定采用材料提交 **`093286888441e9b3f6d817d90eabb48ae434c8df`**。使用 `git show 093286888441e9b3f6d817d90eabb48ae434c8df:docs/<下表相对路径>` 可取当时原文；Markdown 链接用于浏览当前工作树，若以后文件改动，应以固定提交解释本版状态。该提交包含版本 2 汇编及枚举补测，并可读取所有更早证据，不是声称各项在同一天完成。
+历史来源表固定采用材料提交 **`093286888441e9b3f6d817d90eabb48ae434c8df`**。使用 `git show 093286888441e9b3f6d817d90eabb48ae434c8df:docs/<下表相对路径>` 可取当时原文；Markdown 链接用于浏览当前工作树，若以后文件改动，应以固定提交解释本版状态。该提交包含版本 2 汇编及枚举补测，并可读取所有更早证据，不是声称各项在同一天完成。新增 2026-09-27 材料另表列于下文，与当前备案同 commit；下次维护再补已知 SHA，交付回执不作为产品验收。
 
 平台实施 HEAD **`c68f376fbeb1bc0cbb93f2569bb1eedb22e90d13`** 是另一个源码仓在归并时的身份，不能当作本材料仓提交或当前远端实时状态。相关五个实施 SHA、tree 和 Change-Id 在归并报告中逐项列明。
 
@@ -50,13 +50,24 @@
 | 7 自检 | [progress/R119_ENUM_RETEST/AUDIT.json](progress/R119_ENUM_RETEST/AUDIT.json) | 原材料摘要/正向对照/限定改动验证，不在本轮重跑实验 |
 | 9 开场核对 | 第 1–8 节上述所有相关来源 | 提炼既有事实，不增加计数或产品结论 |
 
+## 2026-09-27 新增来源（与本次备案同提交）
+
+| 状态节 | 来源文件（相对 docs/） | 用途与界限 |
+| --- | --- | --- |
+| 2、3、4、6、8、9 | [progress/EDGE_FIXTURE_0927/FINAL_RESULT.md](progress/EDGE_FIXTURE_0927/FINAL_RESULT.md) | 16 条 GNU 五轮控制、7 条缺口，不能称混合兼容或原应用端到端通过 |
+| 3、4 | [progress/EDGE_FIXTURE_0927/COUNTS.json](progress/EDGE_FIXTURE_0927/COUNTS.json)、[RESULTS.tsv](progress/EDGE_FIXTURE_0927/RESULTS.tsv)、[SELECTED_RUNS.json](progress/EDGE_FIXTURE_0927/SELECTED_RUNS.json) | 23 条覆盖、19 个已编译夹具、95 次最终采用尝试、80 个有效轮次，精确 UND/绑定/值/生命周期证据 |
+| 3、4 | [progress/EDGE_FIXTURE_0927/RPM_PROVENANCE.tsv](progress/EDGE_FIXTURE_0927/RPM_PROVENANCE.tsv)、[HOST_DEPENDENCIES.json](progress/EDGE_FIXTURE_0927/HOST_DEPENDENCIES.json) | 固定快照包版本/URL/SHA，三份宿主 C 图形依赖；非 chroot |
+| 3、6、8 | [progress/EDGE_FIXTURE_0927/DETAILS.json](progress/EDGE_FIXTURE_0927/DETAILS.json)、[LIBCXX_INPUTS.tsv](progress/EDGE_FIXTURE_0927/LIBCXX_INPUTS.tsv)、[DATA_FOLLOWUP.md](progress/EDGE_FIXTURE_0927/DATA_FOLLOWUP.md) | 每条前置、确切 provider/-devel/辅助包；签名样本可得但信任环境未建立 |
+| 8 | [progress/EDGE_FIXTURE_0927/README.md](progress/EDGE_FIXTURE_0927/README.md)、[DECISIONS.md](progress/EDGE_FIXTURE_0927/DECISIONS.md) | 参数化重放、待确认口径、只换输入的适用边界；不伪造未来 libc++ 结果 |
+| 3、4、6、8 的交付身份 | [progress/EDGE_FIXTURE_0927/DELIVERY.md](progress/EDGE_FIXTURE_0927/DELIVERY.md) | 内容提交和远端确认；不编造当前文件自身 SHA |
+
 ## 人工原文与日期缺口
 
 本线程的明确裁决是状态文件第 5、7 节的授权来源：其他包使用 libcxx-migration、不新建 sandbox、运行库调用单列、结构与限定阴性、停止投影、原不测集合及枚举例外、串行/内存/Git 规则、有限 root 清理和每任务收尾维护。已有文件能核其执行或结论，但没有统一保存全部原消息的独立时间戳；因此未知日期明确记 NOT_OBSERVED，不推断日期。
 
 任务包上的日期范围只是任务标签；部分目录名与实际交付日期不同。归并文件明确标注的 2026-09-11 是实施/记录日期，不自动成为人工发出裁决的日期。本次 2026-09-21 的固定备案指令按当前会话日期记录。
 
-## 本次文档自检范围
+## 2026-09-21 建档时的自检范围（历史记录）
 
 自检结果：固定九节齐全；两份新文档的本地链接全部存在；去重后 38 份引用源文件逐字节匹配上述固定材料提交。这里只校验文档来源和结构，没有重跑任何实验。未留存独立裁决时间戳的条目仍如实标为 NOT_OBSERVED。
 
@@ -66,3 +77,7 @@
 - 572 的旧范围与 4 项例外、568 的当前不测范围分别记录；整数仅“已测两种 LP64 配置”不同，不宣称所有 LP64。
 - 时钟错值是推断；真实 provider 修后验证及 adaptor 生产验收未完成，均进入挂账而不写成闭合成果。
 - 维护时同步更新来源和证据版本；仅记录现存可复核提交，不预填将来 SHA。
+
+## 2026-09-27 更新自检
+
+本次状态第 3/4/6/8 节与任务结果同步；第 2 节、第 9 节和顶部日期/版本说明作一致性维护，历史实验结论不改。新链接、数字与逐轮证据的检查见 [AUDIT.json](progress/EDGE_FIXTURE_0927/AUDIT.json)。未修改历史源文件；仍保留另一任务两份原有日志修改，不纳入提交。
