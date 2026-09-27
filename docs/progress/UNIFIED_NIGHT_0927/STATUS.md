@@ -7,4 +7,4 @@
 | 本地输入盘点 | DONE / GATE_BLOCKED | BASE_INPUT_SUMMARY.tsv、ARCH_INPUT_GATE.json | 三架构均缺符合要求的输入 |
 | project_config 副本 | PREPARED | raw/038_prepare_configs.* | 补丁直接成功；未形成可启动的完整 gbs 配置/优先仓 |
 | 逐包构建与 ELF 核验 | NOT_OBSERVED | RESULTS.tsv | 不满足第 3 条，未启动 |
-| 收尾 | 报告已备，提交回执另列 | FINAL_RESULT.md、CONTINUE.md | 仅项目仓推送，包仓不推 |
+| 收尾 | DONE：材料已普通推送、远端核对一致 | PUSH_RECEIPT.md、raw/076–079 | 材料 SHA acbf43be9223a6a79c406c988f8743399f6ff6c2；仅项目仓，包仓不推 |
