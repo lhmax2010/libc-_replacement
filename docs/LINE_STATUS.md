@@ -2,11 +2,13 @@
 
 ## Base project_config 评审上传（2026-10-12）
 
+**当前 R3：已压为单笔评审 356690 patchset 3，356689 已作废。** [356690](https://review.tizen.org/gerrit/c/scm/meta/qb/+/356690/3) 新 SHA `e13ce91df74fe79237a3b6afe2e1443b8a8e8d00`，保留 Change-Id I0403eb61…，作者/提交人/Signed-off-by 均 Hao Lin。新 tree 与 R2 最终 tree `04f46636709cd42b7967e3c7bd40cb6098d61cfa` 相同，直接以原 master 为父节点；配置内容未改变。Gerrit 返回 updated: 1，远端 /3 引用一致，356689 查询确认为 ABANDONED；master 仍为 0bb6ff…。证据 `docs/progress/PRJCONF_REVIEW_1012/FINAL_RESULT_R3.md`。以下 R1/R2 段落仅为历史，不再表示当前需合入两项。
+
 **UPLOADED_FOR_REVIEW：两个叠加评审已上传，未合入。** 人工确认 SSH `ssh://lhmax2025@review.tizen.org:29418/scm/meta/qb` 后，SSH 与只读镜像 master 均为 `0bb6ff66506574606cf4d636aaa8974ff4c779b8`。在 tmp 新克隆基于此 HEAD 完整撤销 bae4ebdd 的唯一 `-fuse-ld=lld`，再加 R84 三行 libc++ Support/Keep。评审：[356689 撤 lld](https://review.tizen.org/gerrit/c/scm/meta/qb/+/356689)、[356690 加 libc++](https://review.tizen.org/gerrit/c/scm/meta/qb/+/356690)；提交分别 db671bec…、0e9fb65c…，作者/提交人/Signed-off-by 均 Hao Lin <hao.lin@samsung.com>。推前 fetch 未变，唯一 qb push 为 refs/for/master，退出 0；推后 master 仍未变。只改 Base-Toolchain 一份配置，lldb 保留。完整 diff、身份与回执见 `docs/progress/PRJCONF_REVIEW_1012/FINAL_RESULT.md`；初次地址阻断已解除，原记录保留于 INITIAL_BLOCKER.md。
 
 **R2：上述两笔现均已更新到 patchset 2。** 356689 新 SHA `2c5b5af89ce1a001f7acea9d8355fe5bc1e91137`，只修正正文为实际撤销 `-fuse-ld=lld`；356690 新 SHA `f385421f72c3daf28ddb60b5b04d051cbd2fdbad`，仅随父提交改变，完整正文不变。两笔 tree 与 patchset 1 分别完全相同，作者/提交人/签字仍均 Hao Lin，Change-Id 不变。Gerrit 返回 updated: 2，两条远端 /2 引用已核对；未新建 change，master 仍为 0bb6ff…。证据 `docs/progress/PRJCONF_REVIEW_1012/FINAL_RESULT_R2.md`。
 
-下一步：人工审阅两个评审的 patchset 2；**libcxx-runtimes 已构建并发布后，libc++ Support 才能生效**，否则新增 Support 包不可解析。按先撤 lld、再加 libc++ 顺序两项一起合入；lld 验收后重提；Unified 全局 libc++ 等 Base 出包后另提。R2 未改任何配置内容，codes/ 只读，未构建/上板/推 sandbox 或包仓分支/起 QuickBuild。最新 master 原本已无 undefined-version 与 Support/Keep lld，实际撤销只是一处 fuse-ld 标志。
+下一步：人工审阅唯一保留的 **356690 patchset 3**，其中同时撤 lld 并加 libc++；不再合入已作废的 356689。**libcxx-runtimes 已构建并发布后，libc++ Support 才能生效**，否则新增 Support 包不可解析。lld 验收后重提；Unified 全局 libc++ 等 Base 出包后另提。R3 未改任何配置内容，codes/ 只读，未构建/上板/推 sandbox 或包仓分支/起 QuickBuild。实际撤销仍只是一处 fuse-ld 标志。
 
 ## Unified 默认 libc++ 试编（2026-09-27）
 
