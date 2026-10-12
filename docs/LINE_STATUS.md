@@ -4,7 +4,9 @@
 
 **UPLOADED_FOR_REVIEW：两个叠加评审已上传，未合入。** 人工确认 SSH `ssh://lhmax2025@review.tizen.org:29418/scm/meta/qb` 后，SSH 与只读镜像 master 均为 `0bb6ff66506574606cf4d636aaa8974ff4c779b8`。在 tmp 新克隆基于此 HEAD 完整撤销 bae4ebdd 的唯一 `-fuse-ld=lld`，再加 R84 三行 libc++ Support/Keep。评审：[356689 撤 lld](https://review.tizen.org/gerrit/c/scm/meta/qb/+/356689)、[356690 加 libc++](https://review.tizen.org/gerrit/c/scm/meta/qb/+/356690)；提交分别 db671bec…、0e9fb65c…，作者/提交人/Signed-off-by 均 Hao Lin <hao.lin@samsung.com>。推前 fetch 未变，唯一 qb push 为 refs/for/master，退出 0；推后 master 仍未变。只改 Base-Toolchain 一份配置，lldb 保留。完整 diff、身份与回执见 `docs/progress/PRJCONF_REVIEW_1012/FINAL_RESULT.md`；初次地址阻断已解除，原记录保留于 INITIAL_BLOCKER.md。
 
-下一步：人工审阅两个评审；**libcxx-runtimes 已构建并发布后，libc++ Support 才能生效**，否则新增 Support 包不可解析。按先撤 lld、再加 libc++ 顺序两项一起合入；lld 验收后重提；Unified 全局 libc++ 等 Base 出包后另提。本轮只在 tmp 修改获授权的 project_config，codes/ 只读，未构建/上板/推 sandbox 或包仓分支/起 QuickBuild。最新 master 原本已无 undefined-version 与 Support/Keep lld，实际撤销只是一处 fuse-ld 标志。
+**R2：上述两笔现均已更新到 patchset 2。** 356689 新 SHA `2c5b5af89ce1a001f7acea9d8355fe5bc1e91137`，只修正正文为实际撤销 `-fuse-ld=lld`；356690 新 SHA `f385421f72c3daf28ddb60b5b04d051cbd2fdbad`，仅随父提交改变，完整正文不变。两笔 tree 与 patchset 1 分别完全相同，作者/提交人/签字仍均 Hao Lin，Change-Id 不变。Gerrit 返回 updated: 2，两条远端 /2 引用已核对；未新建 change，master 仍为 0bb6ff…。证据 `docs/progress/PRJCONF_REVIEW_1012/FINAL_RESULT_R2.md`。
+
+下一步：人工审阅两个评审的 patchset 2；**libcxx-runtimes 已构建并发布后，libc++ Support 才能生效**，否则新增 Support 包不可解析。按先撤 lld、再加 libc++ 顺序两项一起合入；lld 验收后重提；Unified 全局 libc++ 等 Base 出包后另提。R2 未改任何配置内容，codes/ 只读，未构建/上板/推 sandbox 或包仓分支/起 QuickBuild。最新 master 原本已无 undefined-version 与 Support/Keep lld，实际撤销只是一处 fuse-ld 标志。
 
 ## Unified 默认 libc++ 试编（2026-09-27）
 
