@@ -1,10 +1,10 @@
 # 编译适配线状态
 
-## Base project_config 评审准备（2026-10-12）
+## Base project_config 评审上传（2026-10-12）
 
-**BLOCKED_ORIGIN_FORMAT：两个评审尚未创建、尚未上传。** `git -C codes/qb remote get-url origin` 实测为 `git://review.tizen.org/git/scm/meta/qb`，不满足任务第 1 条要求的 `ssh://…:29418/…`；按要求停止，没有自行改写地址或尝试其它路径。codes/qb 本地 HEAD 为 `63d0d4ace65a45ac6da21b1577346c1d6cace7a0`，最新远端 master 未取得，lld 引入历史与候选 diff 均 NOT_OBSERVED。证据：`docs/progress/PRJCONF_REVIEW_1012/FINAL_RESULT.md` 与 raw/001、002。
+**UPLOADED_FOR_REVIEW：两个叠加评审已上传，未合入。** 人工确认 SSH `ssh://lhmax2025@review.tizen.org:29418/scm/meta/qb` 后，SSH 与只读镜像 master 均为 `0bb6ff66506574606cf4d636aaa8974ff4c779b8`。在 tmp 新克隆基于此 HEAD 完整撤销 bae4ebdd 的唯一 `-fuse-ld=lld`，再加 R84 三行 libc++ Support/Keep。评审：[356689 撤 lld](https://review.tizen.org/gerrit/c/scm/meta/qb/+/356689)、[356690 加 libc++](https://review.tizen.org/gerrit/c/scm/meta/qb/+/356690)；提交分别 db671bec…、0e9fb65c…，作者/提交人/Signed-off-by 均 Hao Lin <hao.lin@samsung.com>。推前 fetch 未变，唯一 qb push 为 refs/for/master，退出 0；推后 master 仍未变。只改 Base-Toolchain 一份配置，lldb 保留。完整 diff、身份与回执见 `docs/progress/PRJCONF_REVIEW_1012/FINAL_RESULT.md`；初次地址阻断已解除，原记录保留于 INITIAL_BLOCKER.md。
 
-下一步：人工确认准确 SSH URL 与按该地址克隆的授权 → 获取最新 master → 在允许干净撤销时先撤 Base-Toolchain 的 lld、再叠加 libc++ 三行 → 核对后仅上传 refs/for/master。合入顺序及前提是计划而非已完成状态：先撤 lld 再加 libc++，两项一起合；libcxx-runtimes 已构建并发布后，libc++ Support 才能生效；lld 待验收后重提。Unified 全局 libc++ 本轮不提。未改 codes/spec/config，未构建/上板/起 QuickBuild；只提交推送项目仓阻断材料。
+下一步：人工审阅两个评审；**libcxx-runtimes 已构建并发布后，libc++ Support 才能生效**，否则新增 Support 包不可解析。按先撤 lld、再加 libc++ 顺序两项一起合入；lld 验收后重提；Unified 全局 libc++ 等 Base 出包后另提。本轮只在 tmp 修改获授权的 project_config，codes/ 只读，未构建/上板/推 sandbox 或包仓分支/起 QuickBuild。最新 master 原本已无 undefined-version 与 Support/Keep lld，实际撤销只是一处 fuse-ld 标志。
 
 ## Unified 默认 libc++ 试编（2026-09-27）
 
