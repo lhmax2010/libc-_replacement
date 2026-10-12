@@ -1,5 +1,11 @@
 # 编译适配线状态
 
+## Base project_config 评审准备（2026-10-12）
+
+**BLOCKED_ORIGIN_FORMAT：两个评审尚未创建、尚未上传。** `git -C codes/qb remote get-url origin` 实测为 `git://review.tizen.org/git/scm/meta/qb`，不满足任务第 1 条要求的 `ssh://…:29418/…`；按要求停止，没有自行改写地址或尝试其它路径。codes/qb 本地 HEAD 为 `63d0d4ace65a45ac6da21b1577346c1d6cace7a0`，最新远端 master 未取得，lld 引入历史与候选 diff 均 NOT_OBSERVED。证据：`docs/progress/PRJCONF_REVIEW_1012/FINAL_RESULT.md` 与 raw/001、002。
+
+下一步：人工确认准确 SSH URL 与按该地址克隆的授权 → 获取最新 master → 在允许干净撤销时先撤 Base-Toolchain 的 lld、再叠加 libc++ 三行 → 核对后仅上传 refs/for/master。合入顺序及前提是计划而非已完成状态：先撤 lld 再加 libc++，两项一起合；libcxx-runtimes 已构建并发布后，libc++ Support 才能生效；lld 待验收后重提。Unified 全局 libc++ 本轮不提。未改 codes/spec/config，未构建/上板/起 QuickBuild；只提交推送项目仓阻断材料。
+
 ## Unified 默认 libc++ 试编（2026-09-27）
 
 **PARTIAL：三架构均因本地 Base libc++ RPM 输入缺失而未启动试编。** 本轮固定运行线边表提交 `72c0ad91858db03f84a653d029767efebde9dfa7`，Unified 快照 `20260917.132101`（Base `20260914.073422`）。23 条边中 12 个 Unified 提供方已列源码 VCS；直接 C++ BuildRequires 另有 39 个，发现集合 51 个，超过 30 个的取舍已提问，未自行裁剪或开工。完整证据见 `docs/progress/UNIFIED_NIGHT_0927/FINAL_RESULT.md`。
