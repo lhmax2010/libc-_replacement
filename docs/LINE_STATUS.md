@@ -1,5 +1,11 @@
 # 编译适配线状态
 
+## QuickBuild #1194606 修复任务（基线预检，当前）
+
+**BLOCKED_BASELINE_MISMATCH，按要求停止，尚未实施三个修法。** 指定SSH地址的 `cereal refs/heads/tizen` 实时HEAD为 `896a21f0cbcb34835bba8d39f2a4254d691ea98f`，不等于任务指定 `28aedc95fdc600568c57babf28ff717e0b2bca7d`；精确查询未列出该仓目标sandbox分支。证据 `docs/progress/QB_1194606_FIX/raw/002_cereal_refs.stdout.txt`，命令退出0。未自行改用其它分支/旧SHA，未继续其它包核对或构建，未推包仓。R5及cereal“已推送”计数未改。
+
+人工已裁决的cereal/ICU/qemu修法保持；下一步先确认cereal分支起点，再恢复源码门禁、验证与sandbox推送。完整阻断记录 `docs/progress/QB_1194606_FIX/FINAL_RESULT.md`。当前不能登记“修复已推、可起第二轮QuickBuild”。
+
 ## QuickBuild #1194606（2026-10-13，当前）
 
 **全量构建未通过，只读分析完成，未实施修复。** 258个构建包×3架构：752 succeeded、9 failed、13 excluded，无unresolvable/blocked。cereal三格为构建期performance消费libstdc++风格Boost ABI、提供方已为libc++；ICU三格为tzdata的version经-I.遮蔽libc++标准头；qemu-accel三个变体的x86_64格为两条/emul/usr/lib64/libc++*.so.1未列RPM清单。九格均为EXPECTED_FAILURES基线外新失败，不套用tensorflow2 GCC例外。
