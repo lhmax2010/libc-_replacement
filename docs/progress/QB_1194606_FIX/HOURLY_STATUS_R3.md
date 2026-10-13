@@ -1,0 +1,2 @@
+- 2026-10-13T16:55:03.094164+08:00 cereal: RUNNING, elapsed=5s, observed compile/target lines=0
+- 2026-10-13T16:56:02.468687+08:00 cereal: RUNNING, elapsed=5s, observed compile/target lines=0

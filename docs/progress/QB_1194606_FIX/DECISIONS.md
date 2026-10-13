@@ -12,3 +12,7 @@
 - 当前树实际为空。merge-base返回1且无输出；不把范围log解释成线性新增历史，不把树比较的删除统计说成本轮删除操作。
 - 按授权创建了唯一指定的本地sandbox分支；apply --check因spec不存在返回1，立即停止包任务。未自行填入旧源码，未换补丁方案，未继续icu/qemu。
 - 仅追加项目材料与状态；R5、台账“已推送”仍需实际验收和推送后才能更新。
+
+# R3 补记（2026-10-13）
+
+本轮已按人工 R3 的 manifest SHA 裁决实施，详见 DECISIONS_R3.md 与 FINAL_RESULT_R3.md。cereal ref 阻断已解除；本地实际构建在 performance 的 uniform_int_distribution<char> 处失败，按原 FIX 第8条停止，不推三个候选、不自行补源码或跳过目标。ICU/qemu 构建 NOT_OBSERVED。R101 cereal 判定依授权修订，但如实保留未推送，12/55/6/0 不是 12 已推。项目证据提交前扫描暂存范围与常见凭据格式，结果见 STAGED_CHECK_R3.json；公开邮箱、SSH 仓 URL 不当作凭据。

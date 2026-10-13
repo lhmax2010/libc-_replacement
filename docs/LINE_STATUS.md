@@ -1,12 +1,22 @@
 # 编译适配线状态
 
-## QuickBuild #1194606 修复任务（基线预检，当前）
+## QuickBuild #1194606 修复 R3（当前，验收失败后停止）
+
+cereal 真实源码 ref 已确认：tizen_base/manifest 为 `28aedc95fdc600568c57babf28ff717e0b2bca7d`；tizen 的 `896a21f0` 是 Initial empty repository 空树占位，不能作为 QuickBuild 源码。ICU 使用已推 sandbox `dcbb3fb4`，qemu-accel 使用 manifest `2737f3bf` 而非较新的 tizen_base HEAD。三份候选仅在本地提交：cereal `d62ccf97`、ICU `b7ab6868`、qemu-accel `3b8d6274`；均未推送。
+
+RBS `20261012.081855` 的实际 x86_64 根里，五份 spec × 四种宏组合差异门禁通过，payload 实测 w5.xzdio。cereal GBS 在约 450.5 秒后退出 1：performance.cpp:261/280 的 `std::uniform_int_distribution<char>` 被 libc++ 类型断言拒绝。CLANG_USE_LIBCPP=ON 已实际生效，但未到 performance 链接，不能宣称原 basic_binary_oprimitive 问题已实测消失。按原 FIX 第 8 条停止；ICU/qemu 的本地构建与验收 NOT_OBSERVED，未自行新增源码修法、未跳过 performance。现场和首错见 `docs/progress/QB_1194606_FIX/FINAL_RESULT_R3.md`、`failure-cereal_R3/`，构建树保留。
+
+R101 cereal 按人工裁决登记为需要改、**未推送**。最新判定计数 12/55/6/0，已推仍 11，不能混写为 12 已推。BASE_LEDGER 后续说明见 `CEREAL_CORRECTION_1194606_R3.md`。`QUICKBUILD_BRANCHES_R5.tsv` 暂保留原 12 行，全部远端核对 MATCH，不纳入失败/未验收的本地 SHA；它不是三项修复完成后的开工清单。
+
+下一步：人工裁决 cereal performance 新编译错误的修法，以及是否先继续另两包验证 → 通过对应验收后才推 sandbox、更新完整 R5 → 人工决定第二轮 QuickBuild。本轮没有上板、没有启动 QuickBuild、没有修改 codes/。
+
+## QuickBuild #1194606 修复任务（R1/R2 基线预检历史）
 
 **最新：BLOCKED_PATCH_NOT_APPLICABLE，按要求停止。** 人工允许从cereal当前tizen `896a21f0cbcb34835bba8d39f2a4254d691ea98f`起建后，已在tmp完整克隆并建立指定本地sandbox分支。但该提交说明为Initial empty repository、ls-tree为空；与28aedc95比较显示211文件/52728行删除（仅树比较，非本轮操作），CMakeLists.txt与packaging/cereal.spec均不存在。`git apply --check`退出1：`error: packaging/cereal.spec: No such file or directory`。完整diff和原始证据在 `docs/progress/QB_1194606_FIX/FINAL_RESULT_R2.md`、raw/019–028。没有退回旧SHA、导入旧源码、实施补丁或构建，未推包仓。R5及已推送台账未改。
 
 人工已裁决的cereal/ICU/qemu修法保持；下一步须明确含真实源码的cereal基线或空仓如何引入源码，再恢复其余门禁、验证与sandbox推送。icu/qemu实时核查尚未继续。初始及续跑记录均保留。当前不能登记“修复已推、可起第二轮QuickBuild”。
 
-## QuickBuild #1194606（2026-10-13，当前）
+## QuickBuild #1194606（2026-10-13，只读分析历史）
 
 **全量构建未通过，只读分析完成，未实施修复。** 258个构建包×3架构：752 succeeded、9 failed、13 excluded，无unresolvable/blocked。cereal三格为构建期performance消费libstdc++风格Boost ABI、提供方已为libc++；ICU三格为tzdata的version经-I.遮蔽libc++标准头；qemu-accel三个变体的x86_64格为两条/emul/usr/lib64/libc++*.so.1未列RPM清单。九格均为EXPECTED_FAILURES基线外新失败，不套用tensorflow2 GCC例外。
 
