@@ -1,6 +1,14 @@
 # 编译适配线状态
 
-## QuickBuild #1194606 修复 R4（当前：cereal 已推，另两包门禁待裁决）
+## QuickBuild #1194606 修复 R4（最新：三包已验收推送）
+
+人工修订 ICU / qemu 门禁后完成补验。ICU libicudata 无指定 C++ 符号，libicui18n 的 _ZNSt3__1 与 GLIBCXX/CXXABI_ 命中均 0、NEEDED 含 libc++abi；六库按新门禁通过，b7ab6868d425e3190057e6d9f3c2b69646793df1 已推。qemu armv7l/aarch64 复用成功构建，riscv64 补建退出 0；三变体的额外条目全部分为补丁新增 A=2、既有依赖/失败轮证据 B=6，目标工具入口差异单列 ARCH。三份源清单与主包/python 清单交叉核查通过，3b8d6274822cc2c2ce373eff7b921f5b3de3062e 已推；未再改包方案。
+
+cereal a681c106a5866b6113b90a25307bf3abb3e76334 已推与原验收不变。R5 为 **14 行，可作为第二轮 QuickBuild 开工清单**；逐行远端回核见 QB_1194606_FIX/REMOTE_CHECK_R4_adjudicated.json。最新结果与逐文件溯源表见 FINAL_RESULT_R4.md 顶部、QEMU_PROVENANCE_REVISED_R4.tsv。旧 FAIL、原清单差异、技术性采集失败均保留，不回写成当时已通过。
+
+下一步：**人工按 QUICKBUILD_BRANCHES_R5.tsv 起第二轮 QuickBuild → 与 #1194606 原失败逐项对账**。本轮无上板、无新 QuickBuild、无 Gerrit master 或 codes/ 改动；只做已授权 sandbox 普通推送。R101 cereal 已推及判定计数 12/55/6/0 不变；不把 qemu 的构建打包修复另计作新增 C++ 适配判定。
+
+## QuickBuild #1194606 修复 R4（初次收尾历史：门禁待裁决）
 
 cereal 保留 d62ccf97，追加批准的两处 performance int 分布转 char 源码补丁 a681c106a5866b6113b90a25307bf3abb3e76334；已推 sandbox/lhmax2025/libcxx-migration 并核对远端。四组宏、x86_64 完整构建与 performance 链接通过，原 basic_binary_oprimitive / basic_binary_iprimitive 未定义引用已实测消失；NEEDED 有 libc++、无 libstdc++；cereal-devel 清单不变、90 个头文件逐字节相同。tizen 分支空树占位的提醒仍适用，实际源码来自 manifest 28aedc95。
 

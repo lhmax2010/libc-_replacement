@@ -1,6 +1,12 @@
 # 状态
 
-## R4 当前续跑
+## R4 人工裁决后（最新）
+
+**三个包均 PUSHED，验收已闭合。** cereal a681c106 保持；ICU 六库按符号/NEEDED 修订门禁通过，b7ab6868 已推并回核；qemu 补做 riscv64 完整构建（三变体 GBS 均 0），清单差异按 A/B/ARCH 逐项溯源通过，3b8d6274 已推并回核。没有新改任何包配方。
+
+R5 更新 14 行，原 12 行只换 ICU，再增 cereal/qemu。最新回核见 REMOTE_CHECK_R4_adjudicated.json。**可作为第二轮 QuickBuild 开工清单**，但 QuickBuild 仍由人工启动。FINAL_RESULT_R4.md 顶部为新结论，下方旧 FAIL 保留为历史。项目补充材料推送回执见 PUSH_RECEIPT_R4_ADJUDICATED.md。
+
+## R4 初次收尾（历史）
 
 **PARTIAL，构建已停止，待人工审阅门禁差异。** cereal 追加 a681c106（父 d62ccf97 不动），四组宏、完整构建、performance 链接/NEEDED、前版清单与 90 个头文件内容检查全部 PASS，已推指定 sandbox 并回核。
 

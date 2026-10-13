@@ -1,4 +1,73 @@
-# QuickBuild #1194606 修复 R4：cereal 已推送，其余两包产物门禁未通过
+# QuickBuild #1194606 修复 R4（含人工裁决后的补验与推送）
+
+## 最新结论：三个包均 PUSHED
+
+人工修订门禁后，ICU 六份库符号检查通过；qemu 三变体均完成 x86_64 构建、清单自洽与逐项溯源验收。cereal 沿用本轮原验收，不重跑、不改提交。三包均已普通推送到各自 sandbox/lhmax2025/libcxx-migration 并回核。下方原“部分完成 / FAIL”章节完整保留，属于裁决前历史，不再代表当前门禁结论。
+
+| 包 | 最新状态 | 远端 SHA | 验收依据 |
+|---|---|---|---|
+| cereal | PUSHED | a681c106a5866b6113b90a25307bf3abb3e76334 | 原性能链接、NEEDED、90 个头文件逐字节检查 PASS；d62ccf97 保留 |
+| icu | PUSHED | b7ab6868d425e3190057e6d9f3c2b69646793df1 | ICU_ADJUDICATION_R4.json；raw/R4_058–060 |
+| qemu-accel | PUSHED | 3b8d6274822cc2c2ce373eff7b921f5b3de3062e | QEMU_GATE_REVISED_R4.json；raw/R4_070–071 |
+
+QUICKBUILD_BRANCHES_R5.tsv 更新为 **14 行**（原 12 行更新 ICU，再增加 cereal、qemu-accel 各一行）。**可作为第二轮 QuickBuild 开工清单**；逐行回核记录为 REMOTE_CHECK_R4_adjudicated.json、raw/R4_remote_adjudicated_01–14。三份 qemu spec 在同一源码仓、同一远端提交，不增加另外两行。本轮未启动 QuickBuild，下一轮仍由人工发起。
+
+### 补验一：ICU 的实际符号条件
+
+| 库 | `_ZNSt3__1` 未定义符号行数 | GLIBCXX/CXXABI_ 版本引用行数 | 直接 libc++ NEEDED | 新门禁 |
+|---|---:|---:|---|---|
+| libicudata.so.78.1 | 0 | 0 | 无 | PASS，批准的数据例外；亦无 `_ZSt` 开头符号 |
+| libicui18n.so.78.1 | 0 | 0 | 无 | PASS，有 libc++abi NEEDED，满足批准的条件例外 |
+| libicuio.so.78.1 | 8 | 0 | 有 | PASS |
+| libicutest.so.78.1 | 0 | 0 | 有 | PASS |
+| libicutu.so.78.1 | 24 | 0 | 有 | PASS |
+| libicuuc.so.78.1 | 6 | 0 | 有 | PASS |
+
+六份均无 libstdc++.so.6 NEEDED。另检查含 const 限定的 std::__1 自身符号前缀（`_ZNKSt3__1` 等），仍满足“引用该库自身符号者必须直接依赖 libc++”；不能把 ICU 函数参数里出现 std 类型名等同于 std 自身符号的欠链接。完整 nm -D --undefined-only 与 readelf 在 raw/adjudication_R4/libicu*-nm.stdout、libicu*-needed.stdout（文件名中的点转为下划线）；指定三条命令计数原文 raw/R4_045。计数为 0 时 grep 返回 1，未写成工具故障。
+
+tz2icu 的 -iquote、完整 RPM、原版清单对照沿用前文实测；没有修改 ICU 链接参数。原 verify-icu_R4/result.json 的旧门禁 FAIL 保留，新结论独立记录。
+
+### 补验二：qemu 三变体
+
+| 变体（构建宿主均 x86_64） | GBS 退出码 / 秒 | 两条 .so.1 各一次 | unpackaged | 清单/溯源 | 结果 |
+|---|---|---|---|---|---|
+| armv7l | 0 / 305.551（沿用） | 是 | 无 | A/B/ARCH 逐项闭合 | PASS |
+| aarch64 | 0 / 240.286（沿用） | 是 | 无 | 对旧版新增 8 项：A=2、B=6 | PASS |
+| riscv64 | 0 / 265.404（补建） | 是 | 无 | A/B/ARCH 逐项闭合 | PASS |
+
+三份 `%{_sourcedir}/clang-accel.list` 原文在 raw/adjudication_R4/<arch>-clang-accel-list.stdout；与 aarch64 的逐行 diff 在 <arch>-variant-list.diff。armv7l/riscv64 的差异仅两条带 target_arch 的 clang/clang++ 入口（换名前后排序位置也改变）；除这些精确入口替换后排序核对，未忽略其它路径、未丢弃重复项。两个 .so.1 各恰好一次。额外 .so.1.0 按后给出的 B 类溯源裁决验收，不再引用先前“没有其它 libc++* 条目”的限制。
+
+主包与 python-accel：三变体的源清单原文、各 RPM 的 rpm -qlp 全文和交叉核对保存在 raw/qemu_gate_revised_R4/；源清单条目均被各自 RPM 覆盖，补丁新增的两条 SONAME 路径未进入这两个子包，完整 build.log 无 unpackaged。按新条款不再要求前版对照，也不把该核查扩大为所有二进制内容不变。全部 RPM 名、大小、SHA、清单在 QEMU_RPM_INVENTORY_REVISED_R4.json。
+
+### 每一项清单差异的来源（适用于三个变体）
+
+以下库路径均位于 `/emul/usr/lib64/`。逐变体、逐文件的完整记录另见 QEMU_PROVENANCE_REVISED_R4.tsv；其中省略目录的证据文件名均在 raw/adjudication_R4/。
+
+| 文件 | 解释类型 | 实际证据 |
+|---|---|---|
+| libc++.so.1 | A：本补丁新增 | raw/066_R3_qemu_show.stdout.txt，模板与三 spec 的循环仅追加这两条；三源清单各一次 |
+| libc++abi.so.1 | A：本补丁新增 | 同上 |
+| libc++.so.1.0 | B：原失败轮已出现 | ../QB_1194606/excerpts/qemu-accel-<arch>-x86_64.txt:33，Missing build-id；三变体原文摘在 raw/R4_063 |
+| libc++abi.so.1.0 | B：原失败轮已出现 | 上述各文件:34；raw/R4_063 |
+| libLLVM.so.22.1 | B：输入与 ldd 链带入 | 前版 /emul Clang 的 readelf 与新 RPM 的 readelf；<arch>-input-rpm.stdout、<arch>-ldd-original-inputs.stdout |
+| libclang-cpp.so.22.1 | B：输入与 ldd 链带入 | 同上；新 Clang 直接 NEEDED，此两库亦在原 QuickBuild 警告中 |
+| libatomic.so.1 | B：ldd 链带入 | <arch>-ldd-original-inputs.stdout 中实际解析为 /lib64/libatomic.so.1；前后 Clang 依赖对照同上 |
+| libatomic.so.1.2.0 | B：上述 SONAME 的真实文件 | <arch>-ldd-realpaths-v2.stdout：/lib64/libatomic.so.1 → /usr/lib64/libatomic.so.1.2.0；spec:314–320 把 readlink -f 的结果加入清单 |
+| /emul/usr/bin/<target_arch>-clang、clang++ | ARCH：架构工具入口 | <arch>-variant-list.diff；spec:640–644 的目标前缀符号链接/清单生成；不计 FAIL |
+
+双重证据的具体位置：旧 RPM 解出的 /emul/usr/bin/clang-22 的 readelf 为 raw/adjudication_R4/previous-clang-needed.stdout，NEEDED 含 libstdc++.so.6、不含 libLLVM/libclang-cpp；新 RPM 同路径的 readelf 为 raw/qemu_gate_revised_R4/new-rpm-clang-needed.stdout，直接含 libc++、libc++abi、libLLVM.so.22.1、libclang-cpp.so.22.1、libc。新输入 rpmdb 明确是 llvm/clang 22.1.8-3.4、VCS 5c169afc。旧 clang-accel RPM 的 requires 未声明精确 LLVM RPM 版本，不能据此臆造旧 release，采用人工允许的前后 ELF NEEDED 对照证据。
+
+保留构建根中的 ldd 输出按 spec:335–345 的输入列表只读重放，未改清单、未重建、未更换输入；保存每个 executable 与完整依赖行。libatomic 的真实路径和 spec 原有的路径归一/去重规则与最终源清单对得上。此证据是补取时的实际输出，不冒充构建当时已记录的 ldd 输出。
+
+### 收尾与限制
+
+新门禁、工具采集修正及原始失败保留方式见 DECISIONS_R4.md。riscv64 仍使用 -j1、nice19、ionice idle、MemoryMax=16536461312 字节、w5.xzdio，RESOURCE 与执行快照落盘。三包源提交本轮续跑未变，不改 codes/、不上板、不启动 QuickBuild。R101 cereal 与 12/55/6/0 判定计数沿用上一段完成结果；ICU/qemu 是已有判定之外的本次构建修复，不另增“需要改”的计数。
+
+最新下一步：人工使用 14 行 R5 起第二轮 QuickBuild，再与 #1194606 逐项对账。本轮验证只覆盖指定 x86_64 构建及 qemu 三个变体，不能代替下一轮三架构总部实测。项目仓补充材料普通提交推送，最新回执另记。
+
+---
+
+## 以下为门禁修订前的完整历史报告
 
 **部分完成；不可作为第二轮 QuickBuild 开工清单。** cereal 追加批准的源码补丁，完成编译、链接、RPM 与头文件对照并推送。ICU、qemu 已执行的构建均退出 0、原 QuickBuild 错误已实测消失，但分别未满足本轮明确的 NEEDED / 文件清单门禁；不自行降低门禁，未推这两包。qemu 在 aarch64 验收 FAIL 后停止该包，riscv64 未启动。现场全部保留，等待人工审阅。
 

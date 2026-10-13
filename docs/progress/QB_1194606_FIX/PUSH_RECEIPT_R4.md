@@ -1,5 +1,7 @@
 # R4 推送回执
 
+> 此为第一次收尾的历史回执。人工裁决后 ICU/qemu 已补验推送，最新见 PUSH_RECEIPT_R4_ADJUDICATED.md 与 FINAL_RESULT_R4.md 顶部。
+
 项目材料提交：06031854f6be3b8916db791aa820dc12031332f4。
 
 普通推送命令：`git push origin HEAD:refs/heads/codex/r5-ehabi-diagnosis`，退出 0；远端 ls-remote 已核对同 SHA。原文 raw/R4_035_push.*、raw/R4_036_project_remote.*。本回执及该推送的完整输出另作后续项目证据提交，最终远端 SHA 在交接回复给出。

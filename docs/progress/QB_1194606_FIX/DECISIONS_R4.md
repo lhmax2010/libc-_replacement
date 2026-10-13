@@ -1,5 +1,14 @@
 # R4 决定与实施口径
 
+## 人工裁决后追加（以前的 FAIL 保留为历史）
+
+- 使用人工随后修订的 ICU 门禁：六库均无 libstdc++ NEEDED、无 GLIBCXX/CXXABI_ 版本引用；引用 std::__1 自身符号者须直接依赖 libc++。libicudata 的指定符号为 0；libicui18n 的两项 grep 计数均为 0 且 NEEDED 含 libc++abi，按授权登记例外。grep 无匹配退出 1 是计数 0 的正常语义，原文保留。
+- qemu 两条答复中，后给出的 A/B 逐项溯源裁决明确覆盖三变体，并说“不再引用只多两条”；据此不再把旧“无其它 libc++* 条目”用于拒绝已获 B 类证据的 .so.1.0。仍保留每条 .so.1 恰一次、原始列表、无 unpackaged、跨变体仅目标工具入口差异、主包/python 清单交叉核查。
+- 不再查找不存在的 armv7l/riscv64 前版同名 RPM。保留前版 aarch64 的完整原始 diff；架构入口变化标 ARCH、不计 FAIL，其余 8 项逐一分为 A（2 条补丁新增）和 B（6 条原失败日志或现有 ldd 链带入）。旧 RPM 与新 RPM 的 /emul/usr/bin/clang-22 分别解到新的 tmp 目录，只读 readelf，不改既有文件。
+- ldd 证据是在保留的同一构建根中，以只读 bwrap 重放 spec:335–345 的全部输入 glob，保存每个输入的 ldd 原文；不把它冒充构建当时原始输出，也不重新执行会修改清单的 prepare_package_list。rpmdb 的输入版本与 SHA 所属 VCS一并记录。
+- 技术性采集问题均留痕后修正，未更改包方案：R4_049 的日志命名 with_suffix 冲突导致拒绝覆盖，改为标签点号转下划线后 R4_052 成功；R4_051 的旧 readlink 不接受多参数，R4_055 改为逐个路径并使用 ldd 实际 /lib64/libatomic 路径；R4_062 的目标三元组替换改变了排序位置，原 diff 只有两条工具入口变化，改为替换后排序比较（保留重复项计数，不用集合丢计数）后 R4_065 成功。各旧记录不删。
+- ICU 复用 R4 构建产物，仅补只读符号门禁；qemu armv7l/aarch64 复用已成功构建，riscv64 补一次完整构建，退出 0。没有新增源码或 spec 改动。
+
 - 保留 cereal d62ccf97 不动；追加第二笔 a681c106a5866b6113b90a25307bf3abb3e76334。新增 packaging 补丁仅替换 performance.cpp 两个 char 分布表达式，与人工文字完全一致。所有工具链都应用，不使用 SKIP_PERFORMANCE_COMPARISON。
 - 实际 rpm 4.14.1 的 rpmspec -P 对 `%patch -P 0 -p1` 保持字面形式（raw/R4_002）；依授权改为 `%{__patch} -p1 < %{PATCH0}`。四组宏严格比较忽略纯空行后，差异只含既有 libc++ 选项与新增 Patch0/调用，全部 PASS。
 - ICU b7ab6868、qemu-accel 3b8d6274 内容保持不变。R4 授权某包失败后继续其它包，取代 R3 的整轮停止方式；不自行改失败修法。

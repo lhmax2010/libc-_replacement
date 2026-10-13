@@ -1,5 +1,7 @@
 # qemu-accel 首个确定的验收失败（不是编译错误）
 
+> 后续状态：人工改为 A/B/ARCH 逐项溯源后，额外 6 项均有证据；补建 riscv64 退出 0，三变体 QEMU_GATE_REVISED_R4.json 全 PASS，3b8d6274 已推。以下旧门禁记录不删除。
+
 armv7l 与 aarch64 变体均在 x86_64 构建退出 0，生成 clang-accel RPM，要求的两条 .so.1 路径均存在，原 unpackaged 报错均已实测消失。
 
 与前一版同变体 aarch64 的 clang-accel-0.4-2.1.x86_64.rpm 对照，候选新增 8 项、删除 0 项，不满足“其它清单条目只多这两条”。新增原文：
