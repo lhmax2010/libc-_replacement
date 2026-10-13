@@ -1,0 +1,344 @@
+commit
+# Copyright (C) 2016 and later: Unicode, Inc. and others.
+# License & terms of use: http://www.unicode.org/copyright.html
+# Some Portions Copyright (c) 2006-2012 IBM and others. All Rights Reserved.
+
+srcdir = @srcdir@
+top_srcdir = @top_srcdir@
+
+top_builddir = ../..
+
+subdir = tools/tzcode
+
+include $(top_builddir)/icudefs.mk
+
+ifeq ($(TZDATA),)
+TZDATA = $(firstword $(wildcard ./tzdata*.tar.gz) $(wildcard $(srcdir)/tzdata*.tar.gz))
+endif
+ifeq ($(TZCODE),)
+TZCODE = $(firstword $(wildcard ./tzcode*.tar.gz) $(wildcard $(srcdir)/tzcode*.tar.gz))
+endif
+
+
+PRIMARY_DATA = africa antarctica asia australasia europe northamerica southamerica
+SUPPLEMENTAL_DATA = etcetera factory backward
+#DEPRECATED_DATA = pacificnew systemv solar87 solar88 solar89
+#TDATA =	$(PRIMARY_DATA) $(SUPPLEMENTAL_DATA) $(DEPRECATED_DATA)
+TDATA =	$(PRIMARY_DATA) $(SUPPLEMENTAL_DATA)
+
+TZDIR=zoneinfo
+
+# https://man7.org/linux/man-pages/man2/symlink.2.html
+CFLAGS+=-D_POSIX_C_SOURCE=200112L
+CPPFLAGS+= -DTZDIR=\"$(TZDIR)\" 
+
+# more data
+XDATA=zone.tab leapseconds iso3166.tab
+ICUDATA=ZoneMetaData.java icu_zone.txt tz2icu zoneinfo64.txt zoneinfo.txt
+
+VANGUARD_DIR= ./vanguard
+
+# For TZ DB/ICU comparison
+TZORIG=./tzorig
+TZORIG_TZDIR=./tzorig/tzdir
+TZORIG_ABS := $(shell pwd)/tzorig
+TZORIG_TZDIR_ABS := $(TZORIG_ABS)/tzdir
+TZORIG_OPTS := CFLAGS="-D_POSIX_C_SOURCE $(TZORIG_EXTRA_CFLAGS)" TZDIR=$(TZORIG_TZDIR_ABS)
+
+
+## Options for building zdumps
+ZDUMPOUT=$(shell pwd)/zdumpout
+ICUZDUMPOUT=$(shell pwd)/icuzdumpout
+
+ZDUMP_OPTS= -v -a -d $(ZDUMPOUT) -c 1902,2038 -i
+ICUZDUMP_OPTS= -a -d $(ICUZDUMPOUT)
+
+# Executables & objects
+OBJECTS= zic.o localtime.o asctime.o scheck.o ialloc.o
+ZICTARG=$(BINDIR)/zic$(EXEEXT)
+ZICEXEC=$(TOOLBINDIR)/zic$(TOOLEXEEXT)
+TZ2ICUTARG=$(BINDIR)/tz2icu$(EXEEXT)
+TZ2ICUEXEC=$(TOOLBINDIR)/tz2icu$(TOOLEXEEXT)
+ICUZDUMPTARG=$(BINDIR)/icuzdump$(EXEEXT)
+ICUZDUMPEXEC=$(TOOLBINDIR)/icuzdump$(TOOLEXEEXT)
+
+ifeq ($(TZDATA),)
+all: 
+	@echo ERROR "tzdata*.tar.gz" can\'t be found.
+	@false
+else
+all: icu_data
+endif
+
+TZCODE_TARGETS= tzorig check-dump
+
+ifeq ($(TZCODE),)
+# we're broken.
+$(TZCODE_TARGETS):
+	@echo ERROR "tzcode*.tar.gz" can\'t be found.
+	@false
+
+else
+ifeq ($(TZDATA),)
+# we're broken.
+$(TZCODE_TARGETS):
+	@echo ERROR "tzdata*.tar.gz" can\'t be found.
+	@false
+else
+tzorig:	$(TZCODE) $(TZDATA)
+	-$(RMV) ./tzorig/
+	mkdir $@
+	mkdir $(TZORIG_TZDIR)
+	gunzip -d < $(TZDATA) | ( cd $@ ; tar xf - )
+	gunzip -d < $(TZCODE) | ( cd $@ ; tar xf - )
+	for tzfile in $(TDATA) ; do \
+		mv $(TZORIG)/$$tzfile $(TZORIG)/$$tzfile.bak && \
+		awk -v DATAFORM=rearguard -f $(TZORIG)/ziguard.awk $(TZORIG)/$$tzfile.bak > $(TZORIG)/$$tzfile; \
+	done
+	-mv $(TZORIG)/zdump.c $(TZORIG)/zdump.c.orig
+	cp $(srcdir)/zdump.c $(TZORIG)/zdump.c
+	-mv $(TZORIG)/factory $(TZORIG)/factory.orig
+	cat $(TZORIG)/factory.orig $(srcdir)/icuzones > $(TZORIG)/factory
+	-mv $(TZORIG)/zishrink.awk $(TZORIG)/zishrink.awk.orig
+	sed -e '/if (line ~ \/^R SystemV \/) return/s/^/#/' $(TZORIG)/zishrink.awk.orig > $(TZORIG)/zishrink.awk
+#	-mv $(TZORIG)/Makefile $(TZORIG)/Makefile.orig
+#	sed -e "s/^BACKWARD=.*/BACKWARD= backward pacificnew/" $(TZORIG)/Makefile.orig > $(TZORIG)/Makefile
+	$(MAKE) -C $@ $(TZORIG_OPTS) tzdir.h zdump zones
+
+$(ZDUMPOUT): tzorig
+	( cd $(TZORIG) ; ./zdump$(EXEEXT) $(ZDUMP_OPTS) )
+	find $(ZDUMPOUT) -name '*--ICU' -exec sh -c 'mv "$${0}" $${0%--ICU}' {} \;
+
+dump-out: $(ZDUMPOUT) $(ICUZDUMPOUT)
+
+check-dump: dump-out
+	diff -r zdumpout icuzdumpout
+
+endif
+endif
+
+$(ICUZDUMPOUT): $(ICUZDUMPEXEC)
+	-$(RMV) $(ICUZDUMPOUT)
+	-mkdir $(ICUZDUMPOUT)
+	$(INVOKE) $(ICUZDUMPEXEC) $(ICUZDUMP_OPTS)
+
+
+#
+# old 'tz' rules start here
+#
+
+
+$(ZICTARG):		$(OBJECTS) $(TDATA) $(srcdir)/tz2icu.h
+		$(CC) $(CFLAGS) $(TZORIG_EXTRA_CFLAGS) $(LFLAGS) -I$(srcdir) $(OBJECTS) $(LDLIBS) -o $@
+
+$(TZ2ICUTARG):	$(srcdir)/tz2icu.cpp $(srcdir)/tz2icu.h
+		$(CXX) $(CXXFLAGS) -I$(srcdir) -I$(top_srcdir)/common $(srcdir)/tz2icu.cpp -o $@
+
+$(ICUZDUMPTARG):	$(srcdir)/icuzdump.cpp
+		$(LINK.cc)  -I$(srcdir) -I$(top_srcdir)/common -I$(top_srcdir)/i18n -I$(top_srcdir)/tools/toolutil -I$(top_srcdir)/io  -pedantic $(srcdir)/icuzdump.cpp $(LIBICUUC) $(LIBICUDT) $(LIBICUI18N) $(LIBICUIO) $(LIBICUTOOLUTIL) -o $@
+
+
+$(TDATA): tdatamarker
+
+tdatamarker: $(TZDATA)
+	mkdir $(VANGUARD_DIR)
+	gunzip -d < $(TZDATA) | tar xf - --exclude=Makefile
+	for tzfile in $(TDATA) ; do \
+		mv $$tzfile $(VANGUARD_DIR)/$$tzfile && \
+		awk -v DATAFORM=rearguard -f ziguard.awk $(VANGUARD_DIR)/$$tzfile > $$tzfile; \
+	done
+	touch $@
+
+posix_only:	$(ZICEXEC) $(TDATA) $(srcdir)/icuzones
+		$(ZICEXEC) -d $(TZDIR) -L /dev/null $(TDATA) $(srcdir)/icuzones
+
+
+icu_data:	$(TZ2ICUEXEC) posix_only
+		$(TZ2ICUEXEC) $(TZDIR) zone.tab `echo $(TZDATA) | sed -e "s/.*\/tzdata//;s/\.tar\.gz$$//"`
+		$(TZ2ICUEXEC) $(TZDIR) zone.tab `echo $(TZDATA) | sed -e "s/.*\/tzdata//;s/\.tar\.gz$$//"` --old
+
+clean:
+		-rm -f core *.o *.out zdump${EXEEXT} $(ZICTARG) date $(TZ2ICUTARG)
+		@echo ICU specific cleanup:
+		-rm -f $(ICUDATA)
+		-rm -rf $(TZDIR)
+		-rm -rf $(VANGUARD_DIR)
+		-$(RMV) $(ICUZDUMPTARG) tzorig ./zdumpout/ ./icuzdumpout/
+ifneq ($(TZDATA),)
+		-rm -rf `gunzip -d < $(TZDATA) | tar tf - --exclude=Makefile | grep -o '[^ ]*$$' | tr '\n' ' '`
+		-rm -f tdatamarker
+endif
+
+checkclean:
+
+dataclean: clean
+	-rm -f $(TDATA) $(XDATA)
+
+distclean:	dataclean clean
+	-rm -f Makefile
+
+Makefile: $(srcdir)/Makefile.in  $(top_builddir)/config.status
+	cd $(top_builddir) \
+	&& CONFIG_FILES=$(subdir)/$@ CONFIG_HEADERS= $(SHELL) ./config.status
+
+
+do
+  mv ${buildroot_emul_path}%{_bindir}/%{target_arch}-$bin ${buildroot_emul_path}%{_bindir}/$bin
+  ln -s $bin ${buildroot_emul_path}%{_bindir}/%{target_arch}-$bin
+  echo "%{emul_path}%{_bindir}/$bin" >> %{_sourcedir}/all-accel.list
+done
+ln -s gcc ${buildroot_emul_path}/%{_bindir}/cc
+echo '%{emul_path}%{_bindir}/cc' >> %{_sourcedir}/all-accel.list
+
+# rpmbuild when generating 'requires' tag for gobject-introspection binaries
+# selects (64-bit) suffix for libs based on ${HOSTTYPE} bash variable
+# so we replace x86_64 to armv7l to avoid bogus dependencies
+%ifarch x86_64
+%{?armv7l:
+sed -i -e "s/x86_64/armv7l/g" ${buildroot_emul_path}%{_bindir}/bash
+}
+%endif
+
+# Default Tizen gcc build dir, must be synchronized with linaro-gcc spec
+# definition. Expected to be 'home/abuild/rpmbuild/BUILD/gcc-${version}/obj/'
+gcc_build_dir=%{_builddir}/gcc-${gcc_version}/obj
+
+# create symlinks for gcc build (CC_FOR_TARGET)
+mkdir -p ${buildroot_emul_path}${gcc_build_dir}/gcc
+for binary in as cpp gcc-ar gcc-nm gcc-ranlib gcov nm
+do
+  ln -sf %{emul_path}%{_bindir}/${binary} ${buildroot_emul_path}${gcc_build_dir}/gcc/${binary}
+  echo "%{emul_path}${gcc_build_dir}/gcc/${binary}" >> %{_sourcedir}/all-accel.list
+done
+for binary in cc1 cc1plus collect2 lto1 lto-wrapper f951
+do
+  ln -sf %{emul_path}${gcc_install_dir}${binary} ${buildroot_emul_path}${gcc_build_dir}/gcc/${binary}
+  echo "%{emul_path}${gcc_build_dir}/gcc/${binary}" >> %{_sourcedir}/all-accel.list
+done
+ln -sf %{emul_path}%{_bindir}/gcc ${buildroot_emul_path}${gcc_build_dir}/gcc/xgcc
+ln -sf %{emul_path}%{_bindir}/g++ ${buildroot_emul_path}${gcc_build_dir}/gcc/xg++
+echo "%{emul_path}${gcc_build_dir}/gcc/xgcc" >> %{_sourcedir}/all-accel.list
+echo "%{emul_path}${gcc_build_dir}/gcc/xg++" >> %{_sourcedir}/all-accel.list
+
+# support /lib/cpp
+ln -sf %{emul_path}%{_bindir}/cpp ${buildroot_emul_path}/usr/lib/cpp
+echo '%{emul_path}/usr/lib/cpp' >> %{_sourcedir}/all-accel.list
+
+# generate baselibs.conf for current architecture to prevent rpm overwriting in download repo
+echo  %{cross}
+cat > %{_sourcedir}/baselibs_prologue << EOF
+arch i686 targets %{cross}:%{cross}
+arch i686 targets %{cross}:x86-%{cross}
+arch x86_64 targets %{cross}:%{cross}
+arch x86_64 targets %{cross}:x86_64-%{cross}
+EOF
+cat %{_sourcedir}/baselibs_prologue %{_sourcedir}/baselibs_body > %{_sourcedir}/baselibs.conf
+
+# By default this is ${gcc_install_dir}/liblto_plugin.so
+target_liblto_plugin="$(%{target_arch}-gcc -print-file-name=liblto_plugin.so)"
+# update baselibs.conf, overwrite LTO plugin
+sed -e "s,#PLUGIN_POSTIN#,if [ -d $(dirname ${target_liblto_plugin}) ]; then\"\n  post \" mv ${target_liblto_plugin} ${target_liblto_plugin}_backup \&\& ln -sf %{emul_path}${target_liblto_plugin} ${target_liblto_plugin}\"\n  post \"fi," -i %{_sourcedir}/baselibs.conf
+sed -e "s,#PLUGIN_POSTUN#,mv ${target_liblto_plugin}_backup ${target_liblto_plugin}," -i %{_sourcedir}/baselibs.conf
+
+# Use /usr/lib for cross clang libdir on armv7l architecture
+%{?armv7l:
+awk '/post "/ && !x {print "  post \"echo export\\ CLANG_NO_LIBDIR_SUFFIX=1 >> /etc/profile\""; print $0; x=1;next} 1' %{_sourcedir}/baselibs.conf > baselibs_updated && mv baselibs_updated %{_sourcedir}/baselibs.conf
+}
+
+%{?multilib:
+awk '/post "/ && !x {print "  post \"echo '%{emul_path}/lib' >> /etc/ld.so.conf\"\n"; print $0; x=1;next} 1' %{_sourcedir}/baselibs.conf > baselibs_updated && mv baselibs_updated %{_sourcedir}/baselibs.conf
+}
+
+# Remove the ld-$VERSION.so to prevent name clashing with native ld.so
+find ${buildroot_emul_path}%{_libdir} -name 'ld-*.so' -delete
+sed -e '\|%{emul_path}%{_libdir}/ld-[[:digit:]].*\.so|d' -i %{_sourcedir}/all-accel.list
+
+# allow build of baselibs.conf
+sed -e "/targettype %{cross} block!/d" -i %{_sourcedir}/baselibs.conf
+
+# Various clang{,++}-* files in the original clang package are
+# symlinks to clang-<major version>. prepare_package_list() above
+# causes those files to be separate copies in ${builldroot_emul_path}.
+# This recreates the original symlink structure in /emul
+clang_major=`%{_bindir}/clang --version | sed -ne 's/^.*[cC]lang version\s\+\([[:digit:]]\+\).*$/\1/p'`
+clang="clang-$clang_major"
+emul_bin="${buildroot_emul_path}%{_bindir}"
+for file in $emul_bin/clang-* $emul_bin/clang++; do
+    if [ "$file" = "$emul_bin/$clang" ]; then
+        continue
+    fi
+    if cmp "$file" "$emul_bin/$clang"; then
+        rm "$file"
+        ln -s $clang "$file"
+    fi
+done
+
+# Plain clang binary is not copied by "prepare_package_list clang"
+# call. We've just added it as symlink and now need to add it to the
+# future rpm file list
+ln -s $clang "$emul_bin/clang"
+echo "%{_bindir}/clang" >> clang.list
+
+# Create target-triple symlinks and add them to file list
+for bin in clang clang++; do
+    ln -s $bin "$emul_bin/%{target_arch}-$bin"
+    echo "%{_bindir}/%{target_arch}-$bin" >> clang.list
+done
+
+## Prepare file lists for packages
+# Change libdir to handle symlinks right
+find . %{_sourcedir} -name '*.list' -exec sed -e 's|%{emul_path}/%{_lib}|%{emul_path}%{_libdir}|' -i {} \;
+# Join native and multilib lists
+cat %{_sourcedir}/all-accel.list %{?multilib:%{_sourcedir}/multilib-accel.list} | sort -u > %{_sourcedir}/qemu-accel.list
+
+## python-accel
+# Generate list of all python files
+find %{buildroot} -name '*.py' | sed -e "s|${buildroot_emul_path}||" >> python.list
+# Generate list of all python3 files
+find ${buildroot_emul_path}%{_libdir}/${host_python3} -type f | sed -e "s|${buildroot_emul_path}||" >> python.list
+# Add python3 dependant libraries
+for library in ffi gdbm ncursesw panelw python3 tinfow; do
+  find ${buildroot_emul_path}%{_libdir} -name "lib${library}.*" | sed -e "s|${buildroot_emul_path}||" >> python.list
+done
+sed -e 's|^|%{emul_path}|;s|%{emul_path}/%{_lib}|%{emul_path}%{_libdir}|' python.list | sort -u > python-full.list
+# Remove common files from python-accel
+comm -13 %{_sourcedir}/qemu-accel.list python-full.list | sort -u > %{_sourcedir}/python-accel.list
+
+## clang-accel
+# Prepare clang files list
+sed -e 's|^|%{emul_path}|;s|%{emul_path}/%{_lib}|%{emul_path}%{_libdir}|' clang.list | sort -u > clang-full.list
+# Remove common files from clang-accel
+comm -13 %{_sourcedir}/qemu-accel.list clang-full.list > %{_sourcedir}/clang-accel.list
+
+#Fix build error with rpm 4.14.1:#Not a directory
+# Add symlinks to qemu-accel packaging
+echo '%{emul_path}/bin' >> %{_sourcedir}/qemu-accel.list
+echo '%{emul_path}/%{_lib}' >> %{_sourcedir}/qemu-accel.list
+%{?multilib:echo '%{emul_path}/lib' >> %{_sourcedir}/qemu-accel.list}
+
+mv ${buildroot_emul_path}%{emul_path}$LD ${buildroot_emul_path}$LD
+rm -rf ${buildroot_emul_path}%{emul_path}
+
+%fdupes %{buildroot}
+%filter_provides_in %{emul_path}
+
+%post
+ldconfig
+
+%postun
+ldconfig
+
+%postun -n python-accel
+ldconfig
+
+%files -f %{_sourcedir}/qemu-accel.list
+%defattr(-,root,root)
+%exclude %{emul_path}%{py_libdir}/*
+
+%files -n python-accel -f %{_sourcedir}/python-accel.list
+%defattr(-,root,root)
+
+%files -n clang-accel -f %{_sourcedir}/clang-accel.list
+%defattr(-,root,root)
+
+%changelog

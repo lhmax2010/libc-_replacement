@@ -1,5 +1,15 @@
 # 编译适配线状态
 
+## QuickBuild #1194606（2026-10-13，当前）
+
+**全量构建未通过，只读分析完成，未实施修复。** 258个构建包×3架构：752 succeeded、9 failed、13 excluded，无unresolvable/blocked。cereal三格为构建期performance消费libstdc++风格Boost ABI、提供方已为libc++；ICU三格为tzdata的version经-I.遮蔽libc++标准头；qemu-accel三个变体的x86_64格为两条/emul/usr/lib64/libc++*.so.1未列RPM清单。九格均为EXPECTED_FAILURES基线外新失败，不套用tensorflow2 GCC例外。
+
+12个指定构建包实际checkout/export SHA均匹配QUICKBUILD_BRANCHES_R4.tsv（实际branch名未观测）；LLVM/runtime三格succeeded，bpftrace两适用架构succeeded。**发布manifest的ICU为e4a4d741，实际执行dcbb3fb4，元数据不一致挂账。** 日志PROJECT_CONFIG含三行libc++ Support/Keep，build_ldflags无fuse-ld=lld；不以内容一致推定Gerrit356690已合入/被使用。
+
+证据及候选diff：docs/progress/QB_1194606/FINAL_RESULT.md、BUILD_STATUS.md。原始17份日志合计13,267,844字节留tmp/QB_1194606/downloads/logs/，URL/SHA在DOWNLOADS.tsv。人工登录profile保留tmp/QB_1194606/browser-profile/，不入库、不导出cookie。成功构建不冒充本次RPM的安装/板测/全部ELF门禁。
+
+挂账：ICU manifest身份；cereal“头文件交付物无需运行时迁移”不覆盖构建期Boost基准，本次不改旧11包判定；qemu清单漏项确定，具体ldd路径过滤机制未观测；候选修法均未经构建。下一步：**人工审阅三类候选修法与cereal构建策略 → 授权后定点验证/修复 → 人工决定新QuickBuild并对账。** 下文“人工起首次QuickBuild”等为历史阶段记录。
+
 ## Base project_config 评审上传（2026-10-12）
 
 **当前 R3：已压为单笔评审 356690 patchset 3，356689 已作废。** [356690](https://review.tizen.org/gerrit/c/scm/meta/qb/+/356690/3) 新 SHA `e13ce91df74fe79237a3b6afe2e1443b8a8e8d00`，保留 Change-Id I0403eb61…，作者/提交人/Signed-off-by 均 Hao Lin。新 tree 与 R2 最终 tree `04f46636709cd42b7967e3c7bd40cb6098d61cfa` 相同，直接以原 master 为父节点；配置内容未改变。Gerrit 返回 updated: 1，远端 /3 引用一致，356689 查询确认为 ABANDONED；master 仍为 0bb6ff…。证据 `docs/progress/PRJCONF_REVIEW_1012/FINAL_RESULT_R3.md`。以下 R1/R2 段落仅为历史，不再表示当前需合入两项。
