@@ -1,5 +1,7 @@
 # QuickBuild #1194606 修复任务：基线门禁阻断
 
+**续跑后的最新结果见 [FINAL_RESULT_R2.md](FINAL_RESULT_R2.md)：人工已授权从896a21f0起建，但该提交是空树，补丁检查退出1，当前阻断改为 BLOCKED_PATCH_NOT_APPLICABLE。以下保留首次门禁记录。**
+
 **BLOCKED_BASELINE_MISMATCH。** 在克隆前的只读远端核对中，cereal 的当前 tizen HEAD 与任务指定的实际 checkout SHA 不一致。按第一部分第1条“不一致则停下回报”停止，未继续其它包、未应用补丁、未构建、未建立或推送包仓分支。
 
 ## 1. 实际证据

@@ -2,9 +2,9 @@
 
 ## QuickBuild #1194606 修复任务（基线预检，当前）
 
-**BLOCKED_BASELINE_MISMATCH，按要求停止，尚未实施三个修法。** 指定SSH地址的 `cereal refs/heads/tizen` 实时HEAD为 `896a21f0cbcb34835bba8d39f2a4254d691ea98f`，不等于任务指定 `28aedc95fdc600568c57babf28ff717e0b2bca7d`；精确查询未列出该仓目标sandbox分支。证据 `docs/progress/QB_1194606_FIX/raw/002_cereal_refs.stdout.txt`，命令退出0。未自行改用其它分支/旧SHA，未继续其它包核对或构建，未推包仓。R5及cereal“已推送”计数未改。
+**最新：BLOCKED_PATCH_NOT_APPLICABLE，按要求停止。** 人工允许从cereal当前tizen `896a21f0cbcb34835bba8d39f2a4254d691ea98f`起建后，已在tmp完整克隆并建立指定本地sandbox分支。但该提交说明为Initial empty repository、ls-tree为空；与28aedc95比较显示211文件/52728行删除（仅树比较，非本轮操作），CMakeLists.txt与packaging/cereal.spec均不存在。`git apply --check`退出1：`error: packaging/cereal.spec: No such file or directory`。完整diff和原始证据在 `docs/progress/QB_1194606_FIX/FINAL_RESULT_R2.md`、raw/019–028。没有退回旧SHA、导入旧源码、实施补丁或构建，未推包仓。R5及已推送台账未改。
 
-人工已裁决的cereal/ICU/qemu修法保持；下一步先确认cereal分支起点，再恢复源码门禁、验证与sandbox推送。完整阻断记录 `docs/progress/QB_1194606_FIX/FINAL_RESULT.md`。当前不能登记“修复已推、可起第二轮QuickBuild”。
+人工已裁决的cereal/ICU/qemu修法保持；下一步须明确含真实源码的cereal基线或空仓如何引入源码，再恢复其余门禁、验证与sandbox推送。icu/qemu实时核查尚未继续。初始及续跑记录均保留。当前不能登记“修复已推、可起第二轮QuickBuild”。
 
 ## QuickBuild #1194606（2026-10-13，当前）
 
