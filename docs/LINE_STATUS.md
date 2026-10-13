@@ -1,6 +1,16 @@
 # 编译适配线状态
 
-## QuickBuild #1194606 修复 R3（当前，验收失败后停止）
+## QuickBuild #1194606 修复 R4（当前：cereal 已推，另两包门禁待裁决）
+
+cereal 保留 d62ccf97，追加批准的两处 performance int 分布转 char 源码补丁 a681c106a5866b6113b90a25307bf3abb3e76334；已推 sandbox/lhmax2025/libcxx-migration 并核对远端。四组宏、x86_64 完整构建与 performance 链接通过，原 basic_binary_oprimitive / basic_binary_iprimitive 未定义引用已实测消失；NEEDED 有 libc++、无 libstdc++；cereal-devel 清单不变、90 个头文件逐字节相同。tizen 分支空树占位的提醒仍适用，实际源码来自 manifest 28aedc95。
+
+ICU b7ab6868 构建退出 0、tz2icu -iquote 修复实测，但 libicudata 与 libicui18n 没有直接 libc++.so.1 NEEDED，不满足 R4“各 .so”门禁，未推。qemu 候选 3b8d6274 未改；armv7l/aarch64 变体均在 x86_64 写包成功，无原 unpackaged 错误；aarch64 对前版同变体清单新增 8 项而非仅 2 项，门禁 FAIL，不推；依“失败停止该包”riscv64 未启动。armv7l 对应前版 RPM 未取得，不能用跨变体清单证明一致。
+
+证据：docs/progress/QB_1194606_FIX/FINAL_RESULT_R4.md、verify-*_R4/、两个 FIRST_ERROR_R4.md。R5 当前 13 行远端均 MATCH，ICU 保持旧已推 dcbb，qemu 未加入；**不可作为第二轮 QuickBuild 开工清单**。R101 cereal 更新已推，判定计数 12/55/6/0、需改集合 12 个已有已推分支，不代表本轮后续修复都通过。BASE_LEDGER 的历史记录保留，另加 R4 补记。
+
+下一步：人工裁决 ICU 两份库的直接依赖门禁，以及 qemu 额外清单项/缺失变体基线 → 继续未闭合验收并仅推通过者 → 完整 R5 → 人工决定第二轮 QuickBuild。本轮不上板、不起 QuickBuild、不改 codes/；所有构建与验收现场保留。
+
+## QuickBuild #1194606 修复 R3（历史，验收失败后停止）
 
 cereal 真实源码 ref 已确认：tizen_base/manifest 为 `28aedc95fdc600568c57babf28ff717e0b2bca7d`；tizen 的 `896a21f0` 是 Initial empty repository 空树占位，不能作为 QuickBuild 源码。ICU 使用已推 sandbox `dcbb3fb4`，qemu-accel 使用 manifest `2737f3bf` 而非较新的 tizen_base HEAD。三份候选仅在本地提交：cereal `d62ccf97`、ICU `b7ab6868`、qemu-accel `3b8d6274`；均未推送。
 

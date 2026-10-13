@@ -1,0 +1,4 @@
+- 2026-10-13T21:32:17.394508+08:00 cereal: RUNNING, elapsed=5s, observed compile/target lines=0
+- 2026-10-13T21:36:46.227143+08:00 icu: RUNNING, elapsed=5s, observed compile/target lines=0
+- 2026-10-13T21:42:05.168360+08:00 qemu-accel: RUNNING, elapsed=5s, observed compile/target lines=0
+- 2026-10-13T21:47:53.238925+08:00 qemu-accel: RUNNING, elapsed=5s, observed compile/target lines=0
